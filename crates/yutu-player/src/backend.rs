@@ -1,8 +1,11 @@
 //! Audio backends. `RodioBackend` is real (pure Rust decode via symphonia).
-//! Stream-URL resolution (Innertube player + PO token) lands in Phase 4;
-//! until then, playback is local/synth sources + clear errors for URLs.
+//! Network streams download to memory (`fetch_bytes`) and decode from a
+//! `Cursor` (`decode_bytes`); Innertube resolution + PO tokens live in
+//! `yutu_core::{InnertubeBackend, fetch_po_token}`.
 
 use rodio::source::{SineWave, Source};
+use rodio::Decoder;
+use std::io::Cursor;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +55,22 @@ impl RodioBackend {
         self.player.append(source);
     }
 
+    /// Decode in-memory audio (WAV/MP3/Opus/AAC via symphonia) and play it.
+    /// Runs on any async runtime (iced's tokio executor in the app).
+    pub fn play_bytes(&self, bytes: Vec<u8>) -> Result<(), PlayerError> {
+        let source = decode_bytes(bytes)?;
+        self.player.append(source);
+        Ok(())
+    }
+
+    /// Download a stream URL fully, then play it. Whole-song buffering is
+    /// deliberate v1 simplicity (songs are a few MB); range-streaming is a
+    /// later optimization.
+    pub async fn fetch_and_play(&self, url: &str) -> Result<(), PlayerError> {
+        let bytes = fetch_bytes(url).await?;
+        self.play_bytes(bytes)
+    }
+
     pub fn pause(&self) {
         self.player.pause();
     }
@@ -75,6 +94,28 @@ impl AudioBackend for RodioBackend {
     }
 }
 
+/// Download a URL into memory. HTTP errors (notably GVS 403s) surface as
+/// `PlayerError::Stream` with the status preserved for PO-token hints.
+pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| PlayerError::Stream(format!("GET {url}: {e}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(PlayerError::Stream(format!("GET {url}: HTTP {status}")));
+    }
+    response
+        .bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| PlayerError::Stream(format!("read {url}: {e}")))
+}
+
+/// Decode in-memory audio without touching hardware (headless-testable).
+pub fn decode_bytes(bytes: Vec<u8>) -> Result<Decoder<Cursor<Vec<u8>>>, PlayerError> {
+    Decoder::try_from(Cursor::new(bytes)).map_err(|e| PlayerError::Stream(format!("decode: {e:?}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +135,50 @@ mod tests {
         backend.resume();
         backend.stop();
         assert!(backend.is_ok());
+    }
+
+    /// Minimal 0.1s mono 16-bit 44.1kHz WAV, built by hand (no deps).
+    fn wav_bytes() -> Vec<u8> {
+        let rate: u32 = 44_100;
+        let n: usize = (rate as usize) / 10;
+        let mut data = Vec::with_capacity(44 + n * 2);
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&((36 + n * 2) as u32).to_le_bytes());
+        data.extend_from_slice(b"WAVEfmt ");
+        data.extend_from_slice(&16u32.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        data.extend_from_slice(&1u16.to_le_bytes()); // mono
+        data.extend_from_slice(&rate.to_le_bytes());
+        data.extend_from_slice(&(rate * 2).to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&16u16.to_le_bytes());
+        data.extend_from_slice(b"data");
+        data.extend_from_slice(&((n * 2) as u32).to_le_bytes());
+        for i in 0..n {
+            let s = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
+            data.extend_from_slice(&((s * 0.2 * i16::MAX as f32) as i16).to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn decodes_in_memory_wav_without_hardware() {
+        use std::num::NonZero;
+        let source = decode_bytes(wav_bytes()).expect("decode wav");
+        assert_eq!(source.channels(), NonZero::new(1).unwrap());
+        assert_eq!(source.sample_rate(), NonZero::new(44_100).unwrap());
+        assert!(source.count() > 0);
+    }
+
+    #[test]
+    fn garbage_is_a_decode_error_not_a_panic() {
+        assert!(decode_bytes(b"not audio at all".to_vec()).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: fetches example.com"]
+    async fn live_fetch_bytes() {
+        let bytes = fetch_bytes("https://example.com").await.expect("fetch");
+        assert!(!bytes.is_empty());
     }
 }

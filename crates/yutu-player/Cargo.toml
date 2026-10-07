@@ -10,6 +10,8 @@ yutu-core = { path = "../yutu-core" }
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
+reqwest = { version = "0.13", default-features = false, features = ["default-tls"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [dev-dependencies]
 serde_json = "1"
