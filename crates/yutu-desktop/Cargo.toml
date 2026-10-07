@@ -1,0 +1,9 @@
+[package]
+name = "yutu-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop integration: MPRIS, tray hints, media keys (yutu-mux)"
+license = "MIT"
+
+[dependencies]
+yutu-core = { path = "../yutu-core" }

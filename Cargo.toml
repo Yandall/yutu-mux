@@ -14,6 +14,7 @@ members = [
     "crates/yutu-core",
     "crates/yutu-player",
     "crates/yutu-ui",
+    "crates/yutu-desktop",
 ]
 
 [dependencies]
