@@ -9,11 +9,15 @@ Phase 0 scaffold. `MockBackend` only — no network, no audio yet.
 ## Run
 
 ```sh
-cargo run
-cargo test
+cargo run            # native Iced GUI (needs display + audio)
+cargo test           # headless-safe (audio tests skip without device)
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Toolchain: `mise use -g rust@stable` (rust 1.99+).
+Toolchain: `mise use -g rust@stable` (rust 1.99+). System deps: ALSA,
+X11/Wayland, SQLite, OpenSSL (present on most Linux desktops).
+
+Library (likes/history) persists to `$XDG_DATA_HOME/yutu-mux/library.db`.
 
 ## Layout
 
