@@ -1,0 +1,44 @@
+[
+  {
+    "video_id": "isiofhN6_vc",
+    "album": {
+      "name": "The Beatles 1967 - 1970 (Remastered 2009)",
+      "id": "MPREb_LAgCGKzQToD"
+    },
+    "duration": "5:08",
+    "title": "A Day In The Life",
+    "artists": [
+      {
+        "name": "The Beatles",
+        "id": "UCc4K7GrH3FBSvhZl5uJbCUA"
+      }
+    ],
+    "like_status": "LIKE",
+    "thumbnails": [],
+    "explicit": "NotExplicit",
+    "is_available": true,
+    "playlist_id": "RDAMVMisiofhN6_vc"
+  },
+  {
+    "video_id": "sAG3m3p9UeI",
+    "album": {
+      "name": "Revolver (Deluxe)",
+      "id": "MPREb_1qBJliVHLOD"
+    },
+    "duration": "3:01",
+    "title": "I'm Only Sleeping (2022 Mix)",
+    "artists": [
+      {
+        "name": "The Beatles"
+      },
+      {
+        "name": "George Martin"
+      }
+    ],
+    "like_status": "INDIFFERENT",
+    "thumbnails": [],
+    "explicit": "NotExplicit",
+    "is_available": true,
+    "playlist_id": "RDAMVMsAG3m3p9UeI"
+  }
+]

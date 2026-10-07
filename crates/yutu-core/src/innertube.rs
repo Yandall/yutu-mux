@@ -4,12 +4,19 @@
 //! keep working with [`crate::backend::MockBackend`].
 //!
 //! What is live vs stubbed (see `docs/INNERTUBE.md` for the full picture):
-//! - LIVE: anonymous + cookie-file connection, `search_suggestions`,
-//!   filtered `search` queries ([`InnertubeBackend::search_tracks`],
+//! - LIVE: anonymous + cookie-file + Google-OAuth-device-flow connection,
+//!   `search_suggestions`, filtered `search` queries
+//!   ([`InnertubeBackend::search_tracks`],
 //!   [`InnertubeBackend::search_albums`], [`InnertubeBackend::search_artists`]
 //!   via `YtMusic::search_songs` / `search_albums` / `search_artists`),
-//!   per-video `player`-endpoint probes (the same endpoint real stream
-//!   resolution uses) via [`InnertubeBackend::resolve_stream`].
+//!   login-gated library queries ([`InnertubeBackend::library_songs`],
+//!   [`InnertubeBackend::liked_songs`] via the `LM` playlist,
+//!   [`InnertubeBackend::library_albums`]), radio recommendations
+//!   ([`InnertubeBackend::recommendations_for`] — there is no home query in
+//!   `ytmapi-rs` 0.3, so no `home_feed`), YTM lyrics
+//!   ([`InnertubeBackend::song_lyrics`]), and per-video `player`-endpoint
+//!   probes (the same endpoint real stream resolution uses) via
+//!   [`InnertubeBackend::resolve_stream`].
 //! - STUBBED: direct audio-stream URL extraction. `ytmapi-rs` 0.3 exposes no
 //!   `streamingData` parser, so [`extract_audio_url`] best-effort scans the raw
 //!   `player` JSON for an `adaptiveFormats` audio `url`. Ciphered
@@ -26,13 +33,17 @@
 use std::path::Path;
 
 use ytmapi_rs::auth::noauth::NoAuthToken;
+use ytmapi_rs::auth::oauth::OAuthToken;
 use ytmapi_rs::auth::BrowserToken;
-use ytmapi_rs::common::{VideoID, YoutubeID};
-use ytmapi_rs::parse::{SearchResultAlbum, SearchResultArtist, SearchResultSong};
+use ytmapi_rs::common::{PlaylistID, VideoID, YoutubeID};
+use ytmapi_rs::parse::{
+    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong, TableListSong,
+    WatchPlaylistTrack,
+};
 use ytmapi_rs::query::GetSongTrackingUrlQuery;
 use ytmapi_rs::YtMusic;
 
-use crate::auth::CookieAuth;
+use crate::auth::{CookieAuth, OAuthPersist};
 use crate::models::{Album, Artist, Track};
 use crate::stream::{StreamClient, StreamError, StreamRequest};
 
@@ -50,6 +61,7 @@ pub struct InnertubeBackend {
 enum Inner {
     Anonymous(YtMusic<NoAuthToken>),
     Cookie(YtMusic<BrowserToken>),
+    OAuth(YtMusic<OAuthToken>),
 }
 
 impl InnertubeBackend {
@@ -83,6 +95,35 @@ impl InnertubeBackend {
             .map_err(|_| "innertube cookie login failed (bad/expired cookie?)".to_string())
     }
 
+    /// Connect with a Google OAuth token bundle (see
+    /// [`crate::auth::poll_google_login`]).
+    ///
+    /// Synchronous: `YtMusic::from_auth_token` performs no network I/O (like
+    /// the cookie path, credentials are only exercised on first query). The
+    /// token material is never logged.
+    pub fn connect_with_oauth(persist: &OAuthPersist) -> Result<Self, String> {
+        Ok(Self {
+            inner: Inner::OAuth(YtMusic::from_auth_token(persist.to_token())),
+        })
+    }
+
+    /// Refresh the OAuth access token in place and return the fresh bundle.
+    ///
+    /// `ytmapi-rs` rejects queries made with an expiring token client-side,
+    /// so callers holding a long-lived [`OAuthPersist`] should call this when
+    /// library/lyrics queries start failing, then re-save the result with
+    /// [`OAuthPersist::save_to_file`]. Errors on non-OAuth backends.
+    pub async fn refresh_oauth(&mut self) -> Result<OAuthPersist, String> {
+        match &mut self.inner {
+            Inner::OAuth(client) => client
+                .refresh_token()
+                .await
+                .map(OAuthPersist::from_token)
+                .map_err(|e| format!("oauth refresh failed: {e}")),
+            _ => Err("refresh_oauth needs a Google-OAuth backend (see connect_with_oauth)".into()),
+        }
+    }
+
     /// One real read query, proving the client is wired: returns suggestion
     /// texts for `q` (concatenated runs, formatting stripped).
     pub async fn search_suggestions(&self, q: &str) -> Result<Vec<String>, String> {
@@ -92,6 +133,10 @@ impl InnertubeBackend {
                 .await
                 .map_err(|e| format!("search suggestions failed: {e}"))?,
             Inner::Cookie(client) => client
+                .get_search_suggestions(q)
+                .await
+                .map_err(|e| format!("search suggestions failed: {e}"))?,
+            Inner::OAuth(client) => client
                 .get_search_suggestions(q)
                 .await
                 .map_err(|e| format!("search suggestions failed: {e}"))?,
@@ -116,6 +161,10 @@ impl InnertubeBackend {
                 .search_songs(query)
                 .await
                 .map_err(|e| format!("search songs failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .search_songs(query)
+                .await
+                .map_err(|e| format!("search songs failed: {e}"))?,
         };
         Ok(songs.iter().map(song_to_track).collect())
     }
@@ -129,6 +178,10 @@ impl InnertubeBackend {
                 .await
                 .map_err(|e| format!("search albums failed: {e}"))?,
             Inner::Cookie(client) => client
+                .search_albums(query)
+                .await
+                .map_err(|e| format!("search albums failed: {e}"))?,
+            Inner::OAuth(client) => client
                 .search_albums(query)
                 .await
                 .map_err(|e| format!("search albums failed: {e}"))?,
@@ -147,8 +200,149 @@ impl InnertubeBackend {
                 .search_artists(query)
                 .await
                 .map_err(|e| format!("search artists failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .search_artists(query)
+                .await
+                .map_err(|e| format!("search artists failed: {e}"))?,
         };
         Ok(artists.iter().map(artist_to_artist).collect())
+    }
+
+    /// All songs in the user's library (`FEmusic_liked_videos` browse).
+    ///
+    /// Auth: cookie OR Google OAuth (`GetLibrarySongsQuery` is
+    /// `impl<A: LoggedIn>` upstream, and only those two tokens are
+    /// `LoggedIn`). Anonymous backends get a local error, no network.
+    pub async fn library_songs(&self) -> Result<Vec<Track>, String> {
+        let songs: Vec<TableListSong> = match &self.inner {
+            Inner::Anonymous(_) => {
+                return Err("library_songs requires login (cookie or Google OAuth)".into());
+            }
+            Inner::Cookie(client) => client
+                .get_library_songs()
+                .await
+                .map_err(|e| format!("library songs failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_library_songs()
+                .await
+                .map_err(|e| format!("library songs failed: {e}"))?,
+        };
+        Ok(songs.iter().map(table_song_to_track).collect())
+    }
+
+    /// The user's liked-music tracks, via the `LM` liked playlist
+    /// (`get_playlist_tracks` — `ytmapi-rs` 0.3 exposes no dedicated
+    /// liked-songs query).
+    ///
+    /// Auth: cookie OR Google OAuth in practice — the query itself is
+    /// `impl<A: AuthToken>` so anonymous attempts hit the server and fail
+    /// there. Song and video items map to [`Track`]; podcast episodes are
+    /// skipped (not music).
+    pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
+        let items = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_playlist_tracks(PlaylistID::from_raw("LM"))
+                .await
+                .map_err(|e| format!("liked songs failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_playlist_tracks(PlaylistID::from_raw("LM"))
+                .await
+                .map_err(|e| format!("liked songs failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_playlist_tracks(PlaylistID::from_raw("LM"))
+                .await
+                .map_err(|e| format!("liked songs failed: {e}"))?,
+        };
+        Ok(items.iter().filter_map(playlist_item_to_track).collect())
+    }
+
+    /// All albums in the user's library.
+    ///
+    /// Auth: cookie OR Google OAuth (same `LoggedIn` bound as
+    /// [`Self::library_songs`); anonymous backends get a local error.
+    /// Mapping reuses [`album_to_album`].
+    pub async fn library_albums(&self) -> Result<Vec<Album>, String> {
+        let albums = match &self.inner {
+            Inner::Anonymous(_) => {
+                return Err("library_albums requires login (cookie or Google OAuth)".into());
+            }
+            Inner::Cookie(client) => client
+                .get_library_albums()
+                .await
+                .map_err(|e| format!("library albums failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_library_albums()
+                .await
+                .map_err(|e| format!("library albums failed: {e}"))?,
+        };
+        Ok(albums.iter().map(album_to_album).collect())
+    }
+
+    /// Radio/autoplay recommendations seeded by `video_id` (watch playlist).
+    ///
+    /// There is deliberately no `home_feed`: `ytmapi-rs` 0.3 exposes no home
+    /// query (only taste-profile and moods/genre queries under
+    /// `FEmusic_home`-adjacent browse ids, none returning a track feed), so
+    /// recommendations come from `get_watch_playlist_from_video_id` instead.
+    ///
+    /// Auth: works on ALL backends including anonymous
+    /// (`GetWatchPlaylistQuery` is `impl<A: AuthToken>` upstream).
+    pub async fn recommendations_for(&self, video_id: &str) -> Result<Vec<Track>, String> {
+        let tracks = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_watch_playlist_from_video_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("recommendations failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_watch_playlist_from_video_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("recommendations failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_watch_playlist_from_video_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("recommendations failed: {e}"))?,
+        };
+        Ok(tracks.iter().map(watch_track_to_track).collect())
+    }
+
+    /// YouTube Music lyrics for `video_id` as plain text lines (no timing —
+    /// timing is LRCLIB's job).
+    ///
+    /// Two-step upstream flow: `get_lyrics_id` (watch `next` endpoint) then
+    /// `get_lyrics` (browse the lyrics id). Both queries are
+    /// `impl<A: AuthToken>`, so this is attempted on all backends; in
+    /// practice lyric availability is per-track server-side (many tracks have
+    /// none — that surfaces as an API error here).
+    pub async fn song_lyrics(&self, video_id: &str) -> Result<Vec<String>, String> {
+        let lyrics_id = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_lyrics_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("lyrics id failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_lyrics_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("lyrics id failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_lyrics_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("lyrics id failed: {e}"))?,
+        };
+        let lyrics = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_lyrics(lyrics_id)
+                .await
+                .map_err(|e| format!("lyrics failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_lyrics(lyrics_id)
+                .await
+                .map_err(|e| format!("lyrics failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_lyrics(lyrics_id)
+                .await
+                .map_err(|e| format!("lyrics failed: {e}"))?,
+        };
+        Ok(lyrics.lyrics.lines().map(str::to_string).collect())
     }
 
     /// Resolve `req.video_id` to a playable URL, walking the
@@ -218,6 +412,11 @@ impl InnertubeBackend {
                     .await
             }
             Inner::Cookie(backend) => {
+                backend
+                    .raw_json_query::<GetSongTrackingUrlQuery<'_>>(query)
+                    .await
+            }
+            Inner::OAuth(backend) => {
                 backend
                     .raw_json_query::<GetSongTrackingUrlQuery<'_>>(query)
                     .await
@@ -485,6 +684,70 @@ fn artist_to_artist(artist: &SearchResultArtist) -> Artist {
     }
 }
 
+/// Map one library/playlist song row to our [`Track`]: artists joined with
+/// `", "` (the search path gets a pre-joined string from the API), album
+/// always present in this row type, duration parsed like search hits.
+fn table_song_to_track(song: &TableListSong) -> Track {
+    Track {
+        id: song.video_id.get_raw().to_string(),
+        title: song.title.clone(),
+        artist: join_names(song.artists.iter().map(|a| a.name.as_str())),
+        album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
+        duration_secs: parse_duration_secs(&song.duration),
+    }
+}
+
+/// Map one liked-playlist item to our [`Track`]. Songs and uploaded songs
+/// carry artists + album; plain videos carry a channel name and no album;
+/// podcast episodes are not music → `None` (skipped by callers).
+fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
+    match item {
+        PlaylistItem::Song(song) => Some(Track {
+            id: song.video_id.get_raw().to_string(),
+            title: song.title.clone(),
+            artist: join_names(song.artists.iter().map(|a| a.name.as_str())),
+            album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
+            duration_secs: parse_duration_secs(&song.duration),
+        }),
+        PlaylistItem::Video(video) => Some(Track {
+            id: video.video_id.get_raw().to_string(),
+            title: video.title.clone(),
+            artist: video.channel_name.clone(),
+            album: None,
+            duration_secs: parse_duration_secs(&video.duration),
+        }),
+        PlaylistItem::UploadSong(song) => Some(Track {
+            id: song.video_id.get_raw().to_string(),
+            title: song.title.clone(),
+            artist: join_names(song.artists.iter().map(|a| a.name.as_str())),
+            album: song
+                .album
+                .as_ref()
+                .map(|a| a.name.clone())
+                .filter(|name| !name.is_empty()),
+            duration_secs: parse_duration_secs(&song.duration),
+        }),
+        PlaylistItem::Episode(_) => None,
+    }
+}
+
+/// Map one watch-playlist (radio) row to our [`Track`]: no album id survives
+/// this endpoint, only author + duration text.
+fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
+    Track {
+        id: track.video_id.get_raw().to_string(),
+        title: track.title.clone(),
+        artist: track.author.clone(),
+        album: None,
+        duration_secs: parse_duration_secs(&track.duration),
+    }
+}
+
+/// Join artist names the way the search API pre-joins them (`, `).
+fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    names.collect::<Vec<_>>().join(", ")
+}
+
 /// Parse `"m:ss"` / `"h:mm:ss"` (also bare seconds) to seconds.
 /// Empty or malformed input → `0` (never fails: it feeds `duration_secs`).
 fn parse_duration_secs(raw: &str) -> u32 {
@@ -510,6 +773,27 @@ fn parse_duration_secs(raw: &str) -> u32 {
 pub fn parse_search_tracks_fixture(json: &str) -> Vec<Track> {
     serde_json::from_str::<Vec<SearchResultSong>>(json)
         .map(|songs| songs.iter().map(song_to_track).collect())
+        .unwrap_or_default()
+}
+
+/// Fixture/test helper: parse a saved `get_library_songs` response (a JSON
+/// array of `TableListSong`, see `fixtures/library_songs.json`) with the
+/// same [`table_song_to_track`] mapping as [`InnertubeBackend::library_songs`].
+/// Unparseable JSON → empty vec.
+pub fn parse_library_songs_fixture(json: &str) -> Vec<Track> {
+    serde_json::from_str::<Vec<TableListSong>>(json)
+        .map(|songs| songs.iter().map(table_song_to_track).collect())
+        .unwrap_or_default()
+}
+
+/// Fixture/test helper: parse a saved `get_watch_playlist_from_video_id`
+/// response (a JSON array of `WatchPlaylistTrack`, see
+/// `fixtures/watch_playlist.json`) with the same [`watch_track_to_track`]
+/// mapping as [`InnertubeBackend::recommendations_for`].
+/// Unparseable JSON → empty vec.
+pub fn parse_watch_playlist_fixture(json: &str) -> Vec<Track> {
+    serde_json::from_str::<Vec<WatchPlaylistTrack>>(json)
+        .map(|tracks| tracks.iter().map(watch_track_to_track).collect())
         .unwrap_or_default()
 }
 
@@ -624,6 +908,245 @@ mod tests {
         let err = CookieAuth::from_file(&path).unwrap_err();
         assert!(err.contains("empty"));
         assert!(!err.contains("   "));
+    }
+
+    // ---- Library / recommendations / lyrics mapping (offline) ----
+
+    #[test]
+    fn library_songs_fixture_parses_to_tracks() {
+        let tracks = parse_library_songs_fixture(include_str!("../fixtures/library_songs.json"));
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(
+            tracks[0],
+            Track {
+                id: "isiofhN6_vc".into(),
+                title: "A Day In The Life".into(),
+                artist: "The Beatles".into(),
+                album: Some("The Beatles 1967 - 1970 (Remastered 2009)".into()),
+                duration_secs: 308,
+            }
+        );
+        // Multiple artists join the way the search API pre-joins them.
+        assert_eq!(tracks[1].artist, "The Beatles, George Martin");
+        assert_eq!(tracks[1].duration_secs, 181);
+    }
+
+    #[test]
+    fn library_songs_fixture_rejects_garbage() {
+        assert!(parse_library_songs_fixture("not json").is_empty());
+    }
+
+    #[test]
+    fn watch_playlist_fixture_parses_to_tracks() {
+        let tracks = parse_watch_playlist_fixture(include_str!("../fixtures/watch_playlist.json"));
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(
+            tracks[0],
+            Track {
+                id: "45cYwDMibGo".into(),
+                title: "Come Together (Remastered 2009)".into(),
+                artist: "The Beatles".into(),
+                album: None,
+                duration_secs: 260,
+            }
+        );
+        assert_eq!(tracks[1].duration_secs, 186);
+    }
+
+    #[test]
+    fn playlist_items_map_songs_videos_and_skip_episodes() {
+        let song: PlaylistItem = serde_json::from_value(serde_json::json!({
+            "Song": {
+                "video_id": "vid1",
+                "track_no": 1,
+                "album": {"name": "Album One", "id": "MPRE1"},
+                "duration": "2:30",
+                "title": "Song One",
+                "artists": [{"name": "Somebody"}],
+                "like_status": "LIKE",
+                "thumbnails": [],
+                "explicit": "NotExplicit",
+                "is_available": true,
+                "playlist_id": "LM"
+            }
+        }))
+        .unwrap();
+        let video: PlaylistItem = serde_json::from_value(serde_json::json!({
+            "Video": {
+                "video_id": "vid2",
+                "track_no": 2,
+                "duration": "10:00",
+                "title": "Video Two",
+                "channel_name": "A Channel",
+                "channel_id": "UCxyz",
+                "like_status": "INDIFFERENT",
+                "thumbnails": [],
+                "is_available": true,
+                "playlist_id": "LM"
+            }
+        }))
+        .unwrap();
+        let episode: PlaylistItem = serde_json::from_value(serde_json::json!({
+            "Episode": {
+                "episode_id": "ep1",
+                "track_no": 3,
+                "date": "Live",
+                "duration": "Live",
+                "title": "Episode Three",
+                "podcast_name": "A Podcast",
+                "podcast_id": "PLpod",
+                "like_status": "INDIFFERENT",
+                "thumbnails": [],
+                "is_available": true
+            }
+        }))
+        .unwrap();
+        let tracks: Vec<Track> = [song, video, episode]
+            .iter()
+            .filter_map(playlist_item_to_track)
+            .collect();
+        assert_eq!(
+            tracks.len(),
+            2,
+            "episodes are not music and must be skipped"
+        );
+        assert_eq!(tracks[0].artist, "Somebody");
+        assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
+        assert_eq!(tracks[1].artist, "A Channel");
+        assert_eq!(tracks[1].album, None);
+    }
+
+    #[test]
+    fn lyrics_response_splits_into_plain_lines() {
+        // `Lyrics` is `#[non_exhaustive]`, so build it via serde.
+        let lyrics: ytmapi_rs::parse::Lyrics = serde_json::from_value(serde_json::json!({
+            "lyrics": "line one\nline two\n\nline four",
+            "source": "LyricFind",
+        }))
+        .unwrap();
+        assert_eq!(lyrics.source, "LyricFind");
+        let lines: Vec<String> = lyrics.lyrics.lines().map(str::to_string).collect();
+        assert_eq!(lines, vec!["line one", "line two", "", "line four"]);
+    }
+
+    // ---- OAuth persist (offline: fabricated token JSON, no network) ----
+
+    /// Minimal `OAuthToken` JSON mirroring its serde shape (private fields are
+    /// still deserializable from outside the crate).
+    fn fabricated_oauth_json() -> String {
+        serde_json::json!({
+            "token_type": "Bearer",
+            "access_token": "ya29.test-access-TOKEN",
+            "refresh_token": "1//test-refresh-SECRET",
+            "expires_in": 3599,
+            "request_time": {"secs_since_epoch": 1790000000, "nanos_since_epoch": 0},
+            "client_id": "test-client-id",
+            "client_secret": "test-client-SECRET"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn oauth_persist_round_trips_through_file() {
+        use crate::auth::OAuthPersist;
+        use ytmapi_rs::auth::oauth::OAuthToken;
+
+        let token: OAuthToken =
+            serde_json::from_str(&fabricated_oauth_json()).expect("fabricated token parses");
+        let persist = OAuthPersist::from_token(token);
+        let dir = std::env::temp_dir();
+        let path = dir.join("yutu-test-oauth-persist.json");
+        persist.save_to_file(&path).expect("save oauth persist");
+        let loaded = OAuthPersist::load_from_file(&path).expect("load oauth persist");
+        // Same token material survives the round trip (compared via re-serialised form).
+        let before = serde_json::to_string(persist.token()).unwrap();
+        let after = serde_json::to_string(loaded.token()).unwrap();
+        assert_eq!(before, after);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oauth_persist_file_is_owner_only() {
+        use crate::auth::OAuthPersist;
+        use std::os::unix::fs::PermissionsExt;
+        use ytmapi_rs::auth::oauth::OAuthToken;
+
+        let token: OAuthToken =
+            serde_json::from_str(&fabricated_oauth_json()).expect("fabricated token parses");
+        let dir = std::env::temp_dir();
+        let path = dir.join("yutu-test-oauth-perms.json");
+        // Pre-create with loose perms: save must tighten them.
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        OAuthPersist::from_token(token)
+            .save_to_file(&path)
+            .expect("save oauth persist");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "oauth file must be owner-only, got {mode:o}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oauth_persist_never_leaks_in_debug_or_errors() {
+        use crate::auth::OAuthPersist;
+        use ytmapi_rs::auth::oauth::OAuthToken;
+
+        let token: OAuthToken =
+            serde_json::from_str(&fabricated_oauth_json()).expect("fabricated token parses");
+        let debug = format!("{:?}", OAuthPersist::from_token(token));
+        assert!(
+            !debug.contains("ya29.test-access-TOKEN"),
+            "access token leaked: {debug}"
+        );
+        assert!(
+            !debug.contains("test-refresh-SECRET"),
+            "refresh token leaked: {debug}"
+        );
+        assert!(
+            !debug.contains("test-client-SECRET"),
+            "client secret leaked: {debug}"
+        );
+
+        // Parse errors name the path but never echo file contents.
+        let dir = std::env::temp_dir();
+        let path = dir.join("yutu-test-oauth-garbage.json");
+        std::fs::write(&path, "super-secret-garbage-TOKEN").unwrap();
+        let err = OAuthPersist::load_from_file(&path).unwrap_err();
+        assert!(
+            err.contains("yutu-test-oauth-garbage.json"),
+            "error names path: {err}"
+        );
+        assert!(
+            !err.contains("super-secret-garbage-TOKEN"),
+            "content leaked: {err}"
+        );
+        let missing = dir.join("yutu-test-oauth-missing.json");
+        let _ = std::fs::remove_file(&missing);
+        assert!(OAuthPersist::load_from_file(&missing).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oauth_connect_builds_backend_without_network() {
+        use crate::auth::OAuthPersist;
+        use ytmapi_rs::auth::oauth::OAuthToken;
+
+        let token: OAuthToken =
+            serde_json::from_str(&fabricated_oauth_json()).expect("fabricated token parses");
+        let backend =
+            InnertubeBackend::connect_with_oauth(&OAuthPersist::from_token(token)).unwrap();
+        assert!(matches!(backend.inner, Inner::OAuth(_)));
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: oauth refresh rejects non-OAuth backend (needs anonymous connect)"]
+    async fn oauth_refresh_rejects_non_oauth_backend() {
+        let mut backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let err = backend.refresh_oauth().await.unwrap_err();
+        assert!(err.contains("OAuth"), "unexpected error: {err}");
     }
 
     // ---- Live-network tests: always `#[ignore]`; CI runs offline. ----
@@ -798,5 +1321,56 @@ mod tests {
             !minted.tokens.is_empty(),
             "sidecar returned zero tokens for {video}"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: OAuth library songs"]
+    async fn live_oauth_library_songs() {
+        use crate::auth::OAuthPersist;
+
+        let Ok(path) = std::env::var("YUTU_TEST_OAUTH_FILE") else {
+            eprintln!("SKIP: set YUTU_TEST_OAUTH_FILE to a saved OAuth token file");
+            return;
+        };
+        let persist = OAuthPersist::load_from_file(Path::new(&path)).expect("load oauth persist");
+        let backend = InnertubeBackend::connect_with_oauth(&persist).expect("oauth connect");
+        let songs = backend.library_songs().await.expect("library songs");
+        assert!(
+            !songs.is_empty(),
+            "expected non-empty library songs for the OAuth account"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: cookie library songs + liked songs"]
+    async fn live_cookie_library_songs() {
+        let Ok(path) = std::env::var("YUTU_TEST_COOKIE_FILE") else {
+            eprintln!("SKIP: set YUTU_TEST_COOKIE_FILE to a browser cookie file");
+            return;
+        };
+        let backend = InnertubeBackend::connect_with_cookie_file(Path::new(&path))
+            .await
+            .expect("cookie connect");
+        let songs = backend.library_songs().await.expect("library songs");
+        assert!(
+            !songs.is_empty(),
+            "expected non-empty library songs for the cookie account"
+        );
+        // Liked playlist may legitimately be empty; only assert it resolves.
+        let _ = backend.liked_songs().await.expect("liked songs");
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: YTM lyrics for a known video"]
+    async fn live_song_lyrics() {
+        let Ok(video_id) = std::env::var("YUTU_TEST_LYRICS_VIDEO_ID") else {
+            eprintln!("SKIP: set YUTU_TEST_LYRICS_VIDEO_ID to a video id with lyrics");
+            return;
+        };
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let lines = backend.song_lyrics(&video_id).await.expect("lyrics");
+        assert!(!lines.is_empty(), "expected lyric lines for {video_id}");
     }
 }

@@ -4,11 +4,13 @@ Native Rust YouTube Music desktop app. Iced UI. Linux + macOS. See `PLAN.md`.
 
 ## Status
 
-Working native app on `MockBackend`: Home/Search/Queue/Library/Settings +
-Artist/Album/Playlist/Lyrics/Radio views, Up Next editor, user playlists
-(persisted), audible test-tone playback, EQ presets, offline-cache tracker,
-local scan. Live Innertube behind the `innertube` feature (anonymous +
-cookie, suggestions + stream fallback, PO-token aware).
+Working native app on real YouTube Music data (no mock fixtures in the UI):
+Home/Search/Queue/Library/Settings + Artist/Album/Playlist/Lyrics/Radio
+views, Up Next editor with click-to-jump + shuffle/repeat, user playlists
+(persisted), real search + streaming playback (yt-dlp + Innertube, on by
+default), EQ presets, disk-backed offline cache, local scan, scrobble
+submission (Last.fm + ListenBrainz), live MPRIS. OAuth device-flow login,
+library fetch, and LRCLIB lyrics live in `yutu-core` (UI wiring in progress).
 
 ## Run
 

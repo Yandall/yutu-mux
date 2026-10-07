@@ -21,5 +21,6 @@ reqwest = { version = "0.13", default-features = false, features = [
 
 [features]
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest"]
+lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
 

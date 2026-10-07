@@ -4,8 +4,14 @@
 //! *name* (the actual coefficients live in [`crate::eq`]). No audio I/O
 //! here, so there are no `Send`/thread issues; the future mpv backend can
 //! observe this controller and drive mpv accordingly.
+//!
+//! Playback position: the controller keeps a wall-clock mirror of the rodio
+//! approach (`play_started_at` + accumulated paused time) as the UI-facing
+//! source of truth for mock/rodio playback. mpv consumers should prefer
+//! `MpvBackend::position_secs()` (the real `time-pos` property) instead.
 
 use crate::queue::Queue;
+use std::time::{Duration, Instant};
 use yutu_core::Track;
 
 /// Playback transport state.
@@ -18,12 +24,18 @@ pub enum PlaybackState {
 }
 
 /// Controller owning queue + state + volume + EQ preset name.
+///
+/// The playback clock (`play_started_at` + `paused_accum`) mirrors the
+/// [`crate::backend::RodioBackend`] wall-clock: `play_started_at` is `Some`
+/// while time is accumulating and `None` while paused or stopped.
 #[derive(Debug)]
 pub struct Player {
     queue: Queue,
     state: PlaybackState,
     volume: f32,
     eq_preset_name: String,
+    play_started_at: Option<Instant>,
+    paused_accum: Duration,
 }
 
 impl Default for Player {
@@ -33,6 +45,8 @@ impl Default for Player {
             state: PlaybackState::Stopped,
             volume: 1.0,
             eq_preset_name: "Flat".to_string(),
+            play_started_at: None,
+            paused_accum: Duration::ZERO,
         }
     }
 }
@@ -101,6 +115,7 @@ impl Player {
     pub fn play(&mut self) {
         if self.queue.current().is_some() {
             self.state = PlaybackState::Playing;
+            self.start_clock();
         }
     }
 
@@ -108,6 +123,7 @@ impl Player {
     pub fn pause(&mut self) {
         if self.state == PlaybackState::Playing {
             self.state = PlaybackState::Paused;
+            self.freeze_clock();
         }
     }
 
@@ -115,12 +131,14 @@ impl Player {
     pub fn resume(&mut self) {
         if self.state == PlaybackState::Paused {
             self.state = PlaybackState::Playing;
+            self.continue_clock();
         }
     }
 
     /// Stop (keeps the queue position).
     pub fn stop(&mut self) {
         self.state = PlaybackState::Stopped;
+        self.reset_clock();
     }
 
     /// Advance; `Playing` on success, `Stopped` at the end of queue.
@@ -129,11 +147,13 @@ impl Player {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<&Track> {
         let advanced = self.queue.next_track().is_some();
-        self.state = if advanced {
-            PlaybackState::Playing
+        if advanced {
+            self.state = PlaybackState::Playing;
+            self.start_clock();
         } else {
-            PlaybackState::Stopped
-        };
+            self.state = PlaybackState::Stopped;
+            self.reset_clock();
+        }
         if advanced {
             self.queue.current()
         } else {
@@ -143,6 +163,10 @@ impl Player {
 
     /// Go back; `Playing` on success (queue never returns `None` here
     /// unless empty, in which case state becomes `Stopped`).
+    ///
+    /// A successful step resets the clock to the start of the new track;
+    /// the clock runs only when the resulting state is `Playing` (so a
+    /// step taken while `Paused` leaves the fresh position frozen at zero).
     pub fn prev(&mut self) -> Option<&Track> {
         let has_prev = self.queue.prev_track().is_some();
         if has_prev {
@@ -151,8 +175,13 @@ impl Player {
             if self.state == PlaybackState::Stopped {
                 self.state = PlaybackState::Playing;
             }
+            self.reset_clock();
+            if self.state == PlaybackState::Playing {
+                self.continue_clock();
+            }
         } else {
             self.state = PlaybackState::Stopped;
+            self.reset_clock();
         }
         self.queue.current()
     }
@@ -160,6 +189,45 @@ impl Player {
     /// Set volume, clamped to `0.0..=1.0`.
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// UI-facing playback position in seconds (>= 0.0): accumulated wall
+    /// time since the current track started. Frozen while paused, zero
+    /// after [`Player::stop`] or before any playback.
+    #[must_use]
+    pub fn position_secs(&self) -> f64 {
+        let extra = self
+            .play_started_at
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::ZERO);
+        (self.paused_accum + extra).as_secs_f64().max(0.0)
+    }
+
+    /// Reset the playback clock to zero and stop counting (used by
+    /// [`Player::stop`] and track transitions).
+    pub fn reset_clock(&mut self) {
+        self.paused_accum = Duration::ZERO;
+        self.play_started_at = None;
+    }
+
+    /// Reset to zero and start counting from now (new track / restart).
+    fn start_clock(&mut self) {
+        self.paused_accum = Duration::ZERO;
+        self.play_started_at = Some(Instant::now());
+    }
+
+    /// Freeze accumulation at the current position (pause).
+    fn freeze_clock(&mut self) {
+        if let Some(since) = self.play_started_at.take() {
+            self.paused_accum += since.elapsed();
+        }
+    }
+
+    /// Continue counting from the frozen position (resume).
+    fn continue_clock(&mut self) {
+        if self.play_started_at.is_none() {
+            self.play_started_at = Some(Instant::now());
+        }
     }
 }
 
@@ -265,5 +333,64 @@ mod tests {
         let mut p = Player::new();
         p.set_eq_preset("Rock");
         assert_eq!(p.eq_preset_name(), "Rock");
+    }
+
+    #[test]
+    fn clock_freezes_on_pause_and_resets_on_stop() {
+        let mut p = player_with(2);
+        assert_eq!(p.position_secs(), 0.0);
+
+        p.play();
+        assert!(p.position_secs() >= 0.0);
+
+        // Freeze: two immediate reads are exactly equal (no running part,
+        // no sleeps needed).
+        p.pause();
+        let frozen_a = p.position_secs();
+        let frozen_b = p.position_secs();
+        assert_eq!(frozen_a, frozen_b);
+
+        // Resume continues from the frozen position.
+        p.resume();
+        assert!(p.position_secs() >= frozen_b);
+
+        // Stop resets to zero.
+        p.stop();
+        assert_eq!(p.position_secs(), 0.0);
+    }
+
+    #[test]
+    fn clock_resets_on_play_and_next() {
+        let mut p = player_with(3);
+        p.play();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let before = p.position_secs();
+        assert!(before > 0.0, "expected elapsed time, got {before}");
+
+        // Re-playing restarts the clock.
+        p.play();
+        let restarted = p.position_secs();
+        assert!(
+            restarted < before,
+            "play should reset the clock: {before} -> {restarted}"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let before_next = p.position_secs();
+        assert!(before_next > restarted);
+
+        // Advancing to the next track resets the clock.
+        assert!(p.next().is_some());
+        let after_next = p.position_secs();
+        assert!(
+            after_next < before_next,
+            "next should reset the clock: {before_next} -> {after_next}"
+        );
+
+        // Running to the end of the queue stops and resets the clock.
+        assert!(p.next().is_some());
+        assert!(p.next().is_none());
+        assert_eq!(p.state(), PlaybackState::Stopped);
+        assert_eq!(p.position_secs(), 0.0);
     }
 }

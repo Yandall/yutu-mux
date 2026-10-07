@@ -18,6 +18,12 @@
 - Release pipeline: fixed Flatpak manifest, `release.yml` tarball flow,
   `docs/PACKAGING.md`
 - Spotify-style dark UI: sidebar / center / Now-playing panel / player bar
+- No-mock UI: live search/radio by default, real-track catalog, Jump Back
+  In home, queue click-to-jump + shuffle/repeat controls
+- Playback clock: wall-clock position on rodio, real `time-pos` on mpv
+- Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
+- Google login: OAuth device flow, library/liked/albums, YTM lyrics,
+  watch-based recommendations
 
 ## 0.1.0
 

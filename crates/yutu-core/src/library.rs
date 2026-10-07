@@ -73,6 +73,19 @@ impl LibraryStore {
         Ok(n > 0)
     }
 
+    /// Every liked track id (no catalog probe needed — no mock data).
+    pub fn liked_ids(&self) -> Result<Vec<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT track_id FROM likes ORDER BY track_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     pub fn record_play(&self, track_id: &str, played_at_unix: i64) -> Result<(), String> {
         self.conn
             .execute(
@@ -244,6 +257,18 @@ mod tests {
         assert!(s.is_liked("m1").unwrap());
         s.unlike("m1").unwrap();
         assert!(!s.is_liked("m1").unwrap());
+    }
+
+    #[test]
+    fn liked_ids_lists_without_catalog_probe() {
+        let s = LibraryStore::in_memory().unwrap();
+        assert!(s.liked_ids().unwrap().is_empty());
+        s.like("vid-b").unwrap();
+        s.like("vid-a").unwrap();
+        s.like("vid-a").unwrap();
+        assert_eq!(s.liked_ids().unwrap(), vec!["vid-a", "vid-b"]);
+        s.unlike("vid-a").unwrap();
+        assert_eq!(s.liked_ids().unwrap(), vec!["vid-b"]);
     }
 
     #[test]

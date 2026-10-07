@@ -1,9 +1,9 @@
-//! yutu-ui: native Iced app (Phase 3 — basic YT Music views on MockBackend).
+//! yutu-ui: native Iced app — real YouTube Music data only, no mock fixtures.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use yutu_core::{
-    forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore,
-    MockBackend, MusicBackend, Playlist, SearchResults, Track,
+    forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore, Playlist,
+    SearchResults, Track,
 };
 use yutu_player::{EqPreset, Queue, RodioBackend};
 
@@ -181,6 +181,17 @@ pub enum Message {
     PlayWeeklyMix,
     PlayForgotten,
     StreamIdChanged(String),
+    SearchCompleted {
+        query: String,
+        result: Result<SearchResults, String>,
+    },
+    RadioReady {
+        seed: String,
+        result: Result<Vec<Track>, String>,
+    },
+    QueueJump(usize),
+    ToggleShuffle,
+    CycleRepeat,
     PlayStreamId,
     StreamResolved {
         video_id: String,
@@ -215,35 +226,44 @@ pub struct AppState {
     /// Video-ID input for real-stream playback (innertube feature).
     pub stream_id_input: String,
     paused: bool,
-    backend: MockBackend,
     audio: Option<RodioBackend>,
     library_path: String,
+    /// Real-track catalog: every track the app has seen (search, radio,
+    /// playlists). ID lookups resolve here — never fixtures.
+    catalog: HashMap<String, Track>,
+    /// Last complete real search (local filtering base for `SearchChanged`).
+    search_base: SearchResults,
+    /// A real search is in flight (loading indicator).
+    searching: bool,
+    /// Current radio sequence (filled by `RadioReady`).
+    radio_tracks: Vec<Track>,
     /// MPRIS handle for live desktop propagation (`None` in tests/headless).
     mpris: Option<yutu_desktop::SharedPlayer>,
 }
 
-/// Deterministic mock radio: seed first, then same-artist tracks, then the rest.
-pub fn radio_for(seed_id: &str) -> Vec<Track> {
-    let fixtures = MockBackend::fixture_tracks();
-    let start = fixtures.iter().position(|t| t.id == seed_id).unwrap_or(0);
-    let seed_artist = fixtures
+/// Deterministic radio ordering: seed first, then same-artist tracks, then
+/// the rest. Pure helper over caller-supplied (real) tracks.
+pub fn order_radio(seed_id: &str, tracks: &[Track]) -> Vec<Track> {
+    order_radio_impl(seed_id, tracks)
+}
+
+fn order_radio_impl(seed_id: &str, tracks: &[Track]) -> Vec<Track> {
+    let start = tracks.iter().position(|t| t.id == seed_id).unwrap_or(0);
+    let seed_artist = tracks
         .get(start)
         .map(|t| t.artist.clone())
         .unwrap_or_default();
-    let mut seq = Vec::with_capacity(fixtures.len());
-    let seed_actual = fixtures
-        .get(start)
-        .map(|t| t.id.clone())
-        .unwrap_or_default();
-    if let Some(t) = fixtures.get(start) {
+    let mut seq = Vec::with_capacity(tracks.len());
+    let seed_actual = tracks.get(start).map(|t| t.id.clone()).unwrap_or_default();
+    if let Some(t) = tracks.get(start) {
         seq.push(t.clone());
     }
-    for t in &fixtures {
+    for t in tracks {
         if t.id != seed_actual && t.artist == seed_artist {
             seq.push(t.clone());
         }
     }
-    for t in &fixtures {
+    for t in tracks {
         if t.id != seed_actual && t.artist != seed_artist {
             seq.push(t.clone());
         }
@@ -251,10 +271,60 @@ pub fn radio_for(seed_id: &str) -> Vec<Track> {
     seq
 }
 
-fn find_track(id: &str) -> Option<Track> {
-    MockBackend::fixture_tracks()
-        .into_iter()
-        .find(|t| t.id == id)
+/// Fixture-backed radio for unit tests (never user-visible).
+#[cfg(test)]
+fn radio_for(seed_id: &str) -> Vec<Track> {
+    order_radio(seed_id, &yutu_core::MockBackend::fixture_tracks())
+}
+
+impl AppState {
+    /// Resolve a track id from the real catalog (search/radio/playlist data).
+    fn find_track(&self, id: &str) -> Option<Track> {
+        self.catalog.get(id).cloned()
+    }
+
+    /// Register freshly fetched tracks; returns them for chaining.
+    fn register_tracks(&mut self, tracks: Vec<Track>) -> Vec<Track> {
+        for t in &tracks {
+            self.catalog.insert(t.id.clone(), t.clone());
+        }
+        tracks
+    }
+
+    /// Everything the app has really seen (discovery candidate pool).
+    fn catalog_tracks(&self) -> Vec<Track> {
+        let mut v: Vec<Track> = self.catalog.values().cloned().collect();
+        v.sort_by(|a, b| a.title.cmp(&b.title));
+        v
+    }
+}
+
+/// Case-insensitive substring filter over a full search result set.
+fn filter_results(base: &SearchResults, query: &str) -> SearchResults {
+    let q = query.to_lowercase();
+    if q.trim().is_empty() {
+        return SearchResults::default();
+    }
+    SearchResults {
+        tracks: base
+            .tracks
+            .iter()
+            .filter(|t| t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+        albums: base
+            .albums
+            .iter()
+            .filter(|a| a.title.to_lowercase().contains(&q) || a.artist.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+        artists: base
+            .artists
+            .iter()
+            .filter(|a| a.name.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+    }
 }
 
 /// Offline builds: only the yt-dlp path exists; without the binary installed
@@ -264,6 +334,50 @@ async fn resolve_via_raw(video_id: &str) -> Result<Vec<u8>, String> {
     Err(format!(
         "yt-dlp not found and this is an offline build ({video_id}). Install yt-dlp or rebuild with `--features innertube`."
     ))
+}
+
+/// Real search over the live Innertube API: tracks, albums and artists.
+/// Each category fails open (empty vec) so one bad query cannot sink the
+/// other two; only a failed *connection* or a triple failure errors.
+#[cfg(feature = "innertube")]
+async fn live_search(query: &str) -> Result<SearchResults, String> {
+    use yutu_core::InnertubeBackend;
+    let backend = InnertubeBackend::connect_anonymous().await?;
+    let tracks = backend.search_tracks(query).await;
+    let albums = backend.search_albums(query).await;
+    let artists = backend.search_artists(query).await;
+    match (tracks, albums, artists) {
+        (Err(e), Err(_), Err(_)) => Err(e),
+        (tracks, albums, artists) => Ok(SearchResults {
+            tracks: tracks.unwrap_or_default(),
+            albums: albums.unwrap_or_default(),
+            artists: artists.unwrap_or_default(),
+        }),
+    }
+}
+
+/// Radio sequence for a seed: the seed first, same-artist tracks next,
+/// everything else after.
+#[cfg(feature = "innertube")]
+async fn live_radio(seed: &str, artist: &str) -> Result<Vec<Track>, String> {
+    use yutu_core::InnertubeBackend;
+    let backend = InnertubeBackend::connect_anonymous().await?;
+    let found = backend.search_tracks(artist).await?;
+    let mut seq: Vec<Track> = Vec::with_capacity(found.len());
+    if let Some(t) = found.iter().find(|t| t.id == seed).cloned() {
+        seq.push(t);
+    }
+    for t in &found {
+        if t.id != seed && t.artist == artist && !seq.iter().any(|x| x.id == t.id) {
+            seq.push(t.clone());
+        }
+    }
+    for t in &found {
+        if t.id != seed && !seq.iter().any(|x| x.id == t.id) {
+            seq.push(t.clone());
+        }
+    }
+    Ok(seq)
 }
 
 /// Resolve a video ID to bytes. yt-dlp goes first (maintained decipher, no
@@ -350,13 +464,8 @@ fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>, Vec<Playlist>, u
         Ok(s) => s,
         Err(_) => return empty,
     };
-    // Likes: probe fixture ids (mock phase); real phase lists all.
-    let mut liked = HashSet::new();
-    for t in MockBackend::fixture_tracks() {
-        if store.is_liked(&t.id).unwrap_or(false) {
-            liked.insert(t.id.clone());
-        }
-    }
+    // Likes: every id in SQLite — no catalog probe, no fixtures.
+    let liked: HashSet<String> = store.liked_ids().unwrap_or_default().into_iter().collect();
     let history = store
         .history(50)
         .unwrap_or_default()
@@ -378,8 +487,6 @@ impl AppState {
     }
 
     pub fn with_library_path(library_path: String) -> (Self, iced::Task<Message>) {
-        let backend = MockBackend::new();
-        let results = backend.search("");
         let audio = match RodioBackend::try_new() {
             Ok(a) => Some(a),
             Err(e) => {
@@ -395,7 +502,7 @@ impl AppState {
             Self {
                 route: Route::Home,
                 search_query: String::new(),
-                results,
+                results: SearchResults::default(),
                 queue: Queue::default(),
                 liked,
                 history,
@@ -413,9 +520,12 @@ impl AppState {
                 scrobble_fm_sk: String::new(),
                 stream_id_input: String::new(),
                 paused: false,
-                backend,
                 audio,
                 library_path,
+                catalog: HashMap::new(),
+                search_base: SearchResults::default(),
+                searching: false,
+                radio_tracks: Vec::new(),
                 mpris: None,
             },
             iced::Task::none(),
@@ -603,7 +713,7 @@ impl AppState {
     }
 
     fn enqueue_track_task(&mut self, id: &str) -> iced::Task<Message> {
-        match find_track(id) {
+        match self.find_track(id) {
             Some(t) => self.enqueue(t),
             None => {
                 self.status = format!("Track not found: {id}.");
@@ -666,12 +776,12 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Weekly Mix from persisted history + in-memory likes + fixture catalog.
+    /// Weekly Mix from persisted history + in-memory likes + real catalog.
     pub fn weekly_mix_tracks(&self) -> Vec<Track> {
         weekly_mix(
             &self.discovery_history(),
             &self.liked,
-            &MockBackend::fixture_tracks(),
+            &self.catalog_tracks(),
             10,
             now_unix(),
         )
@@ -682,33 +792,31 @@ impl AppState {
         forgotten_favorites(
             &self.liked,
             &self.discovery_history(),
-            &MockBackend::fixture_tracks(),
+            &self.catalog_tracks(),
             now_unix(),
         )
     }
 
     fn all_playlists(&self) -> Vec<Playlist> {
-        let mut all = self.backend.playlists();
-        all.extend(self.user_playlists.iter().cloned());
-        all
+        self.user_playlists.clone()
     }
 
     fn find_playlist(&self, id: &str) -> Option<Playlist> {
         self.all_playlists().into_iter().find(|p| p.id == id)
     }
 
-    /// Accept an artist id ("ar1") or name ("The Beatles").
+    /// Accept an artist id, a catalog track id, or a plain name.
     fn resolve_artist_name(&self, id_or_name: &str) -> String {
         if let Some(a) = self.results.artists.iter().find(|a| a.id == id_or_name) {
             return a.name.clone();
         }
+        if let Some(t) = self.catalog.get(id_or_name) {
+            return t.artist.clone();
+        }
         if self.results.artists.iter().any(|a| a.name == id_or_name) {
             return id_or_name.to_string();
         }
-        if MockBackend::fixture_tracks()
-            .iter()
-            .any(|t| t.artist == id_or_name)
-        {
+        if self.catalog.values().any(|t| t.artist == id_or_name) {
             return id_or_name.to_string();
         }
         self.results
@@ -719,19 +827,23 @@ impl AppState {
     }
 
     fn artist_tracks(&self, artist: &str) -> Vec<Track> {
-        MockBackend::fixture_tracks()
-            .into_iter()
+        let mut v: Vec<Track> = self
+            .catalog
+            .values()
             .filter(|t| t.artist == artist)
-            .collect()
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| a.title.cmp(&b.title));
+        v
     }
 
     fn artist_albums(&self, artist: &str) -> Vec<Album> {
         let mut albums: Vec<Album> = self
-            .backend
-            .search("")
+            .results
             .albums
-            .into_iter()
+            .iter()
             .filter(|a| a.artist == artist)
+            .cloned()
             .collect();
         for t in self.artist_tracks(artist) {
             if let Some(title) = t.album.clone() {
@@ -748,23 +860,29 @@ impl AppState {
         albums
     }
 
-    /// Accept an album id ("a1") or title ("Abbey Road").
+    /// Accept an album id, a catalog track id, or a plain title.
     fn resolve_album_title(&self, id_or_title: &str) -> String {
-        self.backend
-            .search("")
-            .albums
-            .iter()
-            .find(|a| a.id == id_or_title)
-            .map(|a| a.title.clone())
-            .unwrap_or_else(|| id_or_title.to_string())
+        if let Some(a) = self.results.albums.iter().find(|a| a.id == id_or_title) {
+            return a.title.clone();
+        }
+        if let Some(t) = self.catalog.get(id_or_title) {
+            if let Some(album) = t.album.as_deref() {
+                return album.to_string();
+            }
+        }
+        id_or_title.to_string()
     }
 
     fn album_tracks(&self, id_or_title: &str) -> Vec<Track> {
         let title = self.resolve_album_title(id_or_title);
-        MockBackend::fixture_tracks()
-            .into_iter()
+        let mut v: Vec<Track> = self
+            .catalog
+            .values()
             .filter(|t| t.album.as_deref() == Some(title.as_str()))
-            .collect()
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| a.title.cmp(&b.title));
+        v
     }
 
     /// Dispatcher: actions with async follow-ups (scrobble submits) return
@@ -807,12 +925,53 @@ impl AppState {
             }
             Message::Navigate(r) => self.navigate(r),
             Message::SearchChanged(q) => {
-                self.search_query = q;
-                self.results = self.backend.search(&self.search_query);
+                self.search_query = q.clone();
+                self.results = filter_results(&self.search_base, &q);
+                self.route = Route::Search;
             }
             Message::Search => {
-                self.results = self.backend.search(&self.search_query);
-                self.route = Route::Search;
+                let q = self.search_query.trim().to_string();
+                #[cfg(feature = "innertube")]
+                {
+                    if q.is_empty() {
+                        self.status = "Type something to search YouTube Music.".into();
+                        self.route = Route::Search;
+                    } else {
+                        self.status = format!("Searching YouTube Music for “{q}”…");
+                        self.searching = true;
+                        self.route = Route::Search;
+                        self.publish_mpris();
+                        return Self::search_task(q);
+                    }
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = q;
+                    self.status =
+                        "Real search needs `--features innertube` (offline build).".into();
+                    self.route = Route::Search;
+                }
+            }
+            Message::SearchCompleted { query, result } => {
+                self.searching = false;
+                match result {
+                    Ok(search) => {
+                        let n = search.tracks.len();
+                        let tracks = self.register_tracks(search.tracks);
+                        let search = SearchResults { tracks, ..search };
+                        self.search_base = search.clone();
+                        self.results = filter_results(&search, &self.search_query);
+                        // Empty filter (e.g. capped query) still shows everything.
+                        if self.results.tracks.is_empty() && !search.tracks.is_empty() {
+                            self.results = search;
+                        }
+                        self.route = Route::Search;
+                        self.status = format!("{n} songs for “{query}”.");
+                    }
+                    Err(e) => {
+                        self.status = format!("Search failed: {e}");
+                    }
+                }
             }
             Message::NewPlaylistNameChanged(n) => {
                 self.new_playlist_name = n;
@@ -856,7 +1015,23 @@ impl AppState {
                 }
             }
             Message::Next => {
-                if self.queue.next_track().is_some() {
+                if self.queue.shuffle && self.queue.len() > 1 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos() as usize)
+                        .unwrap_or(0);
+                    let mut i = now % self.queue.len();
+                    if Some(i) == self.queue.position() {
+                        i = (i + 1) % self.queue.len();
+                    }
+                    if self.queue.jump_to(i) {
+                        if let Some(a) = &self.audio {
+                            a.play_test_tone();
+                        }
+                        self.paused = false;
+                        self.status = "Next (shuffled).".into();
+                    }
+                } else if self.queue.next_track().is_some() {
                     if let Some(a) = &self.audio {
                         a.play_test_tone();
                     }
@@ -906,11 +1081,64 @@ impl AppState {
             Message::OpenAlbum(id) => self.route = Route::Album(id),
             Message::OpenPlaylist(id) => self.route = Route::PlaylistDetail(id),
             Message::OpenLyrics(id) => self.route = Route::Lyrics(id),
-            Message::StartRadio(seed) => {
-                let seq = radio_for(&seed);
-                let label = format!("Radio (seed {seed})");
-                self.route = Route::Radio(seed);
-                self.queue_many(seq, &label);
+            Message::StartRadio(seed) => match self.find_track(&seed) {
+                None => {
+                    self.status =
+                        format!("Radio needs a known track — search for it first ({seed}).");
+                }
+                Some(t) => {
+                    let artist = t.artist.clone();
+                    #[cfg(feature = "innertube")]
+                    {
+                        self.status = format!("Starting radio for {} — {}…", t.title, t.artist);
+                        self.route = Route::Radio(seed.clone());
+                        self.publish_mpris();
+                        return Self::radio_task(seed, artist);
+                    }
+                    #[cfg(not(feature = "innertube"))]
+                    {
+                        let _ = artist;
+                        self.status = "Radio needs `--features innertube`.".into();
+                    }
+                }
+            },
+            Message::RadioReady { seed, result } => match result {
+                Ok(tracks) => {
+                    let n = tracks.len();
+                    let tracks = self.register_tracks(tracks);
+                    self.radio_tracks = tracks.clone();
+                    self.route = Route::Radio(seed.clone());
+                    self.queue_many(tracks, &format!("Radio (seed {seed})"));
+                    if n == 0 {
+                        self.status = format!("Radio (seed {seed}): nothing found.");
+                    }
+                }
+                Err(e) => {
+                    self.status = format!("Radio failed: {e}");
+                }
+            },
+            Message::QueueJump(i) => {
+                if self.queue.jump_to(i) {
+                    if let Some(a) = &self.audio {
+                        a.play_test_tone();
+                    }
+                    self.paused = false;
+                    if let Some(t) = self.queue.current() {
+                        self.status = format!("Playing {} — {}.", t.title, t.artist);
+                    }
+                }
+            }
+            Message::ToggleShuffle => {
+                self.queue.shuffle = !self.queue.shuffle;
+                self.status = if self.queue.shuffle {
+                    "Shuffle on.".into()
+                } else {
+                    "Shuffle off.".into()
+                };
+            }
+            Message::CycleRepeat => {
+                let mode = self.queue.cycle_repeat();
+                self.status = format!("Repeat: {mode:?}.");
             }
             Message::PlayAll => {
                 let (tracks, label) = match &self.route {
@@ -926,7 +1154,7 @@ impl AppState {
                         Some(p) => (p.tracks.clone(), format!("Playlist {}", p.title)),
                         None => (Vec::new(), "Playlist not found".into()),
                     },
-                    Route::Radio(seed) => (radio_for(seed), format!("Radio (seed {seed})")),
+                    Route::Radio(_) => (self.radio_tracks.clone(), "Radio".to_string()),
                     Route::Discovery => (self.weekly_mix_tracks(), "Weekly Mix".to_string()),
                     _ => (self.results.tracks.clone(), "Search results".to_string()),
                 };
@@ -956,7 +1184,7 @@ impl AppState {
             Message::AddToPlaylist {
                 playlist_id,
                 track_id,
-            } => match find_track(&track_id) {
+            } => match self.find_track(&track_id) {
                 None => self.status = format!("Track not found: {track_id}."),
                 Some(track) => match self.user_playlists.iter().position(|p| p.id == playlist_id) {
                     None => {
@@ -1099,15 +1327,39 @@ impl AppState {
         )
     }
 
+    /// Real YouTube Music search (needs the `innertube` feature): one
+    /// anonymous connection, three category queries run in sequence.
+    /// Partial success is kept — only a total failure errors.
+    #[cfg(feature = "innertube")]
+    fn search_task(query: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = live_search(&query).await;
+                (query, result)
+            },
+            |(query, result)| Message::SearchCompleted { query, result },
+        )
+    }
+
+    /// Radio seed: same-artist tracks first, then the rest of the search.
+    #[cfg(feature = "innertube")]
+    fn radio_task(seed: String, artist: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = live_radio(&seed, &artist).await;
+                (seed, result)
+            },
+            |(seed, result)| Message::RadioReady { seed, result },
+        )
+    }
+
     pub fn theme(&self) -> iced::Theme {
         iced::Theme::Dark
     }
 
-    fn radio_seed(&self) -> String {
-        self.queue
-            .current()
-            .map(|t| t.id.clone())
-            .unwrap_or_else(|| "m1".into())
+    /// Radio seed: the current track, if the app has actually seen one.
+    fn radio_seed(&self) -> Option<String> {
+        self.queue.current().map(|t| t.id.clone())
     }
 
     fn is_nav(&self, route: &Route) -> bool {
@@ -1164,6 +1416,11 @@ impl AppState {
         use iced::Fill;
         let seed = self.radio_seed();
         let radio_active = matches!(self.route, Route::Radio(_));
+        let radio_msg = match seed {
+            Some(id) => Message::StartRadio(id),
+            // Nothing playing yet: radio starts from Search instead.
+            None => Message::Navigate(Route::Search),
+        };
         let playlists: Vec<iced::Element<'_, Message>> = self
             .all_playlists()
             .into_iter()
@@ -1209,7 +1466,7 @@ impl AppState {
                         .width(Fill),
                     button(text("📻  Radio").size(14))
                         .style(nav_style(radio_active))
-                        .on_press(Message::StartRadio(seed))
+                        .on_press(radio_msg)
                         .padding(8)
                         .width(Fill),
                     button(text("⚙  Settings").size(14))
@@ -1313,6 +1570,24 @@ impl AppState {
             .map(|t| t.artist.clone())
             .unwrap_or_else(|| "Pick something from Home or Search".into());
         let play_symbol = if self.paused { "▶" } else { "⏸" };
+        let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
+            button(text("🔀").size(14))
+                .style(green_play)
+                .on_press(Message::ToggleShuffle)
+                .padding(7)
+                .into()
+        } else {
+            button(text("🔀").size(14))
+                .style(button::text)
+                .on_press(Message::ToggleShuffle)
+                .padding(7)
+                .into()
+        };
+        let repeat_label: String = match self.queue.repeat {
+            yutu_player::RepeatMode::Off => "⟳".into(),
+            yutu_player::RepeatMode::All => "⟳ All".into(),
+            yutu_player::RepeatMode::One => "⟳ 1".into(),
+        };
         container(
             column![
                 text(self.status.clone()).size(12).color(MUTED),
@@ -1321,6 +1596,7 @@ impl AppState {
                         .spacing(1)
                         .width(Fill),
                     row![
+                        shuffle_button,
                         button(text("⏮").size(16))
                             .style(button::text)
                             .on_press(Message::Prev)
@@ -1332,6 +1608,10 @@ impl AppState {
                         button(text("⏭").size(16))
                             .style(button::text)
                             .on_press(Message::Next)
+                            .padding(8),
+                        button(text(repeat_label).size(13))
+                            .style(button::text)
+                            .on_press(Message::CycleRepeat)
                             .padding(8),
                     ]
                     .spacing(6)
@@ -1368,9 +1648,29 @@ impl AppState {
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
             Route::Home => {
-                let picks: Vec<Track> = self.results.tracks.iter().take(6).cloned().collect();
+                let mut seen = std::collections::HashSet::new();
+                let mut recent: Vec<Track> = Vec::new();
+                for id in self.history.iter().rev() {
+                    if recent.len() >= 6 {
+                        break;
+                    }
+                    if seen.insert(id.clone()) {
+                        if let Some(t) = self.find_track(id) {
+                            recent.push(t);
+                        }
+                    }
+                }
+                let picks: Vec<Track> = recent;
                 let grid: iced::Element<'_, Message> = if picks.is_empty() {
-                    text("No tracks — try Search.").color(MUTED).into()
+                    column![
+                        text("Your recent plays will appear here.").color(MUTED),
+                        button(text("🔍 Search YouTube Music").size(13))
+                            .style(green_play)
+                            .on_press(Message::Navigate(Route::Search))
+                            .padding(8),
+                    ]
+                    .spacing(8)
+                    .into()
                 } else {
                     // One card per row (robust in Iced's box layout; reads like
                     // Spotify's quick-pick list at this window size).
@@ -1420,7 +1720,7 @@ impl AppState {
                     )
                     .style(card_bg)
                     .padding(10),
-                    text("Quick picks").size(19),
+                    text("Jump back in").size(19),
                     grid,
                     text("Made for you").size(19),
                     row![
@@ -1503,11 +1803,21 @@ impl AppState {
                         .into()
                     })
                     .collect();
+                let search_note: iced::Element<'_, Message> = if self.searching {
+                    text("Searching YouTube Music…").color(MUTED).into()
+                } else if rows.is_empty() && albums.is_empty() && artists.is_empty() {
+                    text("Results land here — type above and hit Enter (live search).")
+                        .color(MUTED)
+                        .into()
+                } else {
+                    text("").size(1).into()
+                };
                 column![
                     text_input("What do you want to play?", &self.search_query)
                         .on_input(Message::SearchChanged)
                         .on_submit(Message::Search)
                         .width(Fill),
+                    search_note,
                     Self::section("Tracks", rows),
                     Self::section("Albums", albums),
                     Self::section("Artists", artists),
@@ -1516,6 +1826,27 @@ impl AppState {
                 .into()
             }
             Route::Queue => {
+                let pos = self.queue.position();
+                let header: iced::Element<'_, Message> = match self.queue.current() {
+                    Some(t) => column![
+                        text("Now playing").size(12).color(MUTED),
+                        text(format!("{} — {}", t.title, t.artist)).size(17),
+                        text(format!(
+                            "Track {} of {} · Shuffle {} · Repeat {:?}",
+                            pos.map(|p| p + 1).unwrap_or(0),
+                            self.queue.len(),
+                            if self.queue.shuffle { "on" } else { "off" },
+                            self.queue.repeat,
+                        ))
+                        .size(12)
+                        .color(MUTED),
+                    ]
+                    .spacing(2)
+                    .into(),
+                    None => text("Queue is empty — search for music first.")
+                        .color(MUTED)
+                        .into(),
+                };
                 let rows: Vec<iced::Element<'_, Message>> = self
                     .queue
                     .items()
@@ -1524,10 +1855,22 @@ impl AppState {
                     .map(|(i, t)| {
                         use iced::widget::{button, row, text};
                         use iced::Fill;
+                        let is_current = Some(i) == pos;
+                        let marker = if is_current { "● " } else { "" };
                         row![
-                            text(format!("{}. {} — {}", i + 1, t.title, t.artist))
-                                .size(14)
-                                .width(Fill),
+                            button(
+                                text(format!("{marker}{}. {} — {}", i + 1, t.title, t.artist))
+                                    .size(14)
+                                    .color(if is_current {
+                                        SPOT_GREEN
+                                    } else {
+                                        iced::Color::WHITE
+                                    })
+                            )
+                            .style(button::text)
+                            .on_press(Message::QueueJump(i))
+                            .padding(4)
+                            .width(Fill),
                             button(text("↑").size(12))
                                 .style(button::text)
                                 .on_press(Message::QueueUp(i))
@@ -1543,31 +1886,60 @@ impl AppState {
                         ]
                         .spacing(4)
                         .align_y(iced::alignment::Vertical::Center)
-                        .padding(3)
+                        .padding(2)
                         .into()
                     })
                     .collect();
                 column![
                     row![
                         text("Up Next").size(22).width(Fill),
-                        button(text("Clear").size(13))
+                        button(
+                            text(if self.queue.shuffle {
+                                "🔀 On"
+                            } else {
+                                "🔀 Off"
+                            })
+                            .size(12)
+                        )
+                        .style(button::text)
+                        .on_press(Message::ToggleShuffle)
+                        .padding(6),
+                        button(text(format!("⟳ {:?}", self.queue.repeat)).size(12))
+                            .style(button::text)
+                            .on_press(Message::CycleRepeat)
+                            .padding(6),
+                        button(text("Clear").size(12))
                             .style(button::text)
                             .on_press(Message::QueueClear)
                             .padding(6),
                     ]
+                    .spacing(4)
                     .align_y(iced::alignment::Vertical::Center),
+                    header,
                     column(rows).spacing(2),
                 ]
                 .spacing(10)
                 .into()
             }
             Route::Library => {
-                let liked: Vec<iced::Element<'_, Message>> = self
+                let liked_tracks: Vec<Track> = self
                     .liked
                     .iter()
-                    .filter_map(|id| find_track(id))
-                    .map(|t| self.track_row(&t))
+                    .filter_map(|id| self.find_track(id))
                     .collect();
+                let liked_missing = self.liked.len().saturating_sub(liked_tracks.len());
+                let liked: Vec<iced::Element<'_, Message>> =
+                    liked_tracks.iter().map(|t| self.track_row(t)).collect();
+                let liked_note: iced::Element<'_, Message> = if liked_missing > 0 {
+                    text(format!(
+                        "{liked_missing} liked song(s) not in cache — search for them."
+                    ))
+                    .size(12)
+                    .color(MUTED)
+                    .into()
+                } else {
+                    text("").size(1).into()
+                };
                 let playlists: Vec<iced::Element<'_, Message>> = self
                     .all_playlists()
                     .into_iter()
@@ -1597,7 +1969,9 @@ impl AppState {
                 let new_name = self.new_playlist_name.clone();
                 column![
                     text("Your Library").size(22),
-                    Self::section("Liked", liked),
+                    text("Liked").size(19),
+                    liked_note,
+                    column(liked).spacing(2),
                     Self::section("Playlists", playlists),
                     row![
                         text_input("New playlist name…", &self.new_playlist_name)
@@ -1808,20 +2182,14 @@ impl AppState {
                 }
             },
             Route::Lyrics(id) => {
-                let title = find_track(id)
+                let title = self
+                    .find_track(id)
                     .map(|t| format!("{} — {}", t.title, t.artist))
                     .unwrap_or_else(|| id.clone());
-                let content: iced::Element<'_, Message> = match self.backend.lyrics(id) {
-                    Some(ly) => column(
-                        ly.lines
-                            .into_iter()
-                            .map(|l| text(l.text).size(14).into())
-                            .collect::<Vec<_>>(),
-                    )
-                    .spacing(4)
-                    .into(),
-                    None => text("No lyrics available.").color(MUTED).into(),
-                };
+                let content: iced::Element<'_, Message> =
+                    text("Lyrics providers are landing next — no login needed.")
+                        .color(MUTED)
+                        .into();
                 column![
                     text(title).size(22),
                     row![
@@ -1841,9 +2209,13 @@ impl AppState {
                 .into()
             }
             Route::Radio(seed) => {
-                let rows: Vec<iced::Element<'_, Message>> =
-                    radio_for(seed).iter().map(|t| self.track_row(t)).collect();
-                let seed_label = find_track(seed)
+                let rows: Vec<iced::Element<'_, Message>> = self
+                    .radio_tracks
+                    .iter()
+                    .map(|t| self.track_row(t))
+                    .collect();
+                let seed_label = self
+                    .find_track(seed)
                     .map(|t| format!("{} — {}", t.title, t.artist))
                     .unwrap_or_else(|| seed.clone());
                 column![
@@ -1906,10 +2278,26 @@ mod tests {
     static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
 
     /// Isolated state per test — never touches the real library.db.
+    /// Fabricated track (no fixtures needed for most update-logic tests).
+    fn mk_track(id: &str, title: &str, artist: &str) -> Track {
+        Track {
+            id: id.into(),
+            title: title.into(),
+            artist: artist.into(),
+            album: None,
+            duration_secs: 200,
+        }
+    }
+
     fn test_state() -> AppState {
         let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!("yutu-test-{}-{}.db", std::process::id(), n));
-        let (s, _) = AppState::with_library_path(path.to_string_lossy().into_owned());
+        let (mut s, _) = AppState::with_library_path(path.to_string_lossy().into_owned());
+        // Unit-test scaffolding: seed the catalog so id-based flows resolve.
+        // User-visible views never read fixtures.
+        for t in yutu_core::MockBackend::fixture_tracks() {
+            s.catalog.insert(t.id.clone(), t);
+        }
         s
     }
 
@@ -1923,8 +2311,73 @@ mod tests {
     #[test]
     fn search_updates_results() {
         let mut s = test_state();
+        // A completed real search lands in results + catalog.
+        let _ = s.update(Message::SearchCompleted {
+            query: "beatles".into(),
+            result: Ok(SearchResults {
+                tracks: vec![
+                    mk_track("v1", "Yesterday", "The Beatles"),
+                    mk_track("v2", "Yellow Submarine", "The Beatles"),
+                ],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
+        assert_eq!(s.results.tracks.len(), 2);
+        assert!(s.find_track("v1").is_some());
+        assert!(!s.searching);
+        // Keystrokes filter the landed payload locally (no network).
         let _ = s.update(Message::SearchChanged("yesterday".into()));
         assert_eq!(s.results.tracks.len(), 1);
+        assert_eq!(s.results.tracks[0].id, "v1");
+        // Failures report without clobbering landed results.
+        let _ = s.update(Message::SearchCompleted {
+            query: "x".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("offline"));
+        assert_eq!(s.results.tracks.len(), 1);
+    }
+
+    #[test]
+    fn radio_ready_queues_fetched_sequence() {
+        let mut s = test_state();
+        // Unknown seed: no catalog entry, honest error, nothing queued.
+        let _ = s.update(Message::StartRadio("unknown-id".into()));
+        assert!(s.status.contains("search for it first"));
+        assert!(s.queue.is_empty());
+        // Known seed (catalog): radio view entered; payload queues on ready.
+        let _ = s.update(Message::StartRadio("m1".into()));
+        let _ = s.update(Message::RadioReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("v9", "Come Together", "The Beatles")]),
+        });
+        assert_eq!(s.route, Route::Radio("m1".into()));
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.radio_tracks.len(), 1);
+        // Failures report cleanly.
+        let _ = s.update(Message::RadioReady {
+            seed: "m1".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("Radio failed"));
+    }
+
+    #[test]
+    fn queue_jump_and_repeat_controls() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::QueueJump(1));
+        assert_eq!(s.queue.position(), Some(1));
+        let _ = s.update(Message::QueueJump(99));
+        assert_eq!(s.queue.position(), Some(1));
+        let _ = s.update(Message::ToggleShuffle);
+        assert!(s.queue.shuffle);
+        let _ = s.update(Message::ToggleShuffle);
+        assert!(!s.queue.shuffle);
+        let _ = s.update(Message::CycleRepeat);
+        assert_eq!(s.queue.repeat, yutu_player::RepeatMode::All);
     }
 
     #[test]
@@ -1962,12 +2415,12 @@ mod tests {
             track_id: "nope".into(),
         });
         assert_eq!(s.user_playlists[0].tracks.len(), 1);
-        // Built-in playlists are read-only.
+        // Unknown playlists are rejected.
         let _ = s.update(Message::AddToPlaylist {
-            playlist_id: "p1".into(),
+            playlist_id: "nope".into(),
             track_id: "m1".into(),
         });
-        assert_eq!(s.find_playlist("p1").unwrap().tracks.len(), 3);
+        assert_eq!(s.user_playlists[0].tracks.len(), 1);
         // Remove + delete.
         let _ = s.update(Message::RemoveFromPlaylist {
             playlist_id: pid.clone(),
@@ -1978,9 +2431,9 @@ mod tests {
         let _ = s.update(Message::DeletePlaylist(pid.clone()));
         assert!(s.user_playlists.is_empty());
         assert_eq!(s.route, Route::Library);
-        // Built-in playlists can't be deleted.
-        let _ = s.update(Message::DeletePlaylist("p1".into()));
-        assert!(s.find_playlist("p1").is_some());
+        // Deleting an unknown playlist is a no-op with a message.
+        let _ = s.update(Message::DeletePlaylist("nope".into()));
+        assert!(s.user_playlists.is_empty());
     }
 
     #[test]
@@ -2001,28 +2454,49 @@ mod tests {
     #[test]
     fn route_navigation() {
         let mut s = test_state();
-        let _ = s.update(Message::OpenArtist("ar1".into()));
-        assert_eq!(s.route, Route::Artist("ar1".into()));
-        let _ = s.update(Message::OpenAlbum("a1".into()));
-        assert_eq!(s.route, Route::Album("a1".into()));
-        let _ = s.update(Message::OpenPlaylist("p1".into()));
-        assert_eq!(s.route, Route::PlaylistDetail("p1".into()));
+        let _ = s.update(Message::OpenArtist("The Beatles".into()));
+        assert_eq!(s.route, Route::Artist("The Beatles".into()));
+        let _ = s.update(Message::CreatePlaylist("Gym".into()));
+        let pid = s.user_playlists[0].id.clone();
+        let _ = s.update(Message::OpenPlaylist(pid.clone()));
+        assert_eq!(s.route, Route::PlaylistDetail(pid));
         let _ = s.update(Message::OpenLyrics("m4".into()));
         assert_eq!(s.route, Route::Lyrics("m4".into()));
         let _ = s.update(Message::StartRadio("m1".into()));
         assert_eq!(s.route, Route::Radio("m1".into()));
-        assert_eq!(s.queue.len(), 5);
+        assert!(s.queue.is_empty());
+        let _ = s.update(Message::RadioReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("v1", "Yesterday", "The Beatles")]),
+        });
+        assert_eq!(s.queue.len(), 1);
     }
 
     #[test]
     fn play_all_queues_current_detail_view() {
         let mut s = test_state();
-        let _ = s.update(Message::OpenAlbum("a1".into()));
+        let _ = s.update(Message::SearchCompleted {
+            query: "beatles".into(),
+            result: Ok(SearchResults {
+                tracks: vec![
+                    mk_track("v1", "Yesterday", "The Beatles"),
+                    mk_track("v2", "Hey Jude", "The Beatles"),
+                ],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
         let _ = s.update(Message::PlayAll);
-        assert_eq!(s.queue.len(), 3); // Abbey Road: m1, m2, m3.
-        let _ = s.update(Message::OpenPlaylist("p1".into()));
+        assert_eq!(s.queue.len(), 2);
+        let _ = s.update(Message::CreatePlaylist("Gym".into()));
+        let pid = s.user_playlists[0].id.clone();
+        let _ = s.update(Message::AddToPlaylist {
+            playlist_id: pid.clone(),
+            track_id: "v1".into(),
+        });
+        let _ = s.update(Message::OpenPlaylist(pid));
         let _ = s.update(Message::PlayAll);
-        assert_eq!(s.queue.len(), 6);
+        assert_eq!(s.queue.len(), 3);
     }
 
     #[test]
@@ -2208,6 +2682,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let p = path.to_string_lossy().into_owned();
         let (mut s, _) = AppState::with_library_path(p.clone());
+        for t in yutu_core::MockBackend::fixture_tracks() {
+            s.catalog.insert(t.id.clone(), t);
+        }
         let _ = s.update(Message::CreatePlaylist("Gym".into()));
         let pid = s.user_playlists[0].id.clone();
         let _ = s.update(Message::AddToPlaylist {
@@ -2222,5 +2699,20 @@ mod tests {
         assert_eq!(s2.user_playlists[0].tracks[0].id, "m1");
         // Loaded ids reserve the sequence: next create must not collide.
         // (seq resumes from max uN.)
+    }
+
+    /// Live composition check: the UI's `live_search` over the real API.
+    #[cfg(feature = "innertube")]
+    #[tokio::test]
+    #[ignore = "live network: UI search composition over core Innertube queries"]
+    async fn live_ui_search_returns_tracks() {
+        let r = super::live_search("Beatles").await.expect("live UI search");
+        assert!(!r.tracks.is_empty(), "expected real tracks for Beatles");
+        assert!(
+            r.tracks
+                .iter()
+                .all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry playable ids + titles"
+        );
     }
 }
