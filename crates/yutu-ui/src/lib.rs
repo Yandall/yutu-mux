@@ -1348,6 +1348,11 @@ impl AppState {
             self.status = format!("{label}: nothing to queue.");
             return iced::Task::none();
         }
+        // A bulk queue (radio/play-all) absorbs matching autoplay ids so
+        // the two lists never show the same song twice.
+        let incoming: std::collections::HashSet<&str> =
+            tracks.iter().map(|t| t.id.as_str()).collect();
+        self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
         let first_new = self.queue.len();
         for t in tracks {
             self.queue.push(t);
@@ -3369,7 +3374,7 @@ impl AppState {
     }
 
     fn right_panel_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, mouse_area, row, text};
+        use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
         use iced::Fill;
         let current = self.queue.current().cloned();
         let pos = self.queue.position();
@@ -3412,7 +3417,6 @@ impl AppState {
             .queue
             .items()
             .iter()
-            .take(9)
             .enumerate()
             .map(|(i, t)| {
                 let is_current = Some(i) == pos;
@@ -3461,24 +3465,27 @@ impl AppState {
             .autoplay
             .iter()
             .enumerate()
-            .take(5)
             .map(|(i, t)| {
-                row![
-                    self.thumb(t),
-                    button(
-                        text(format!("{} — {}", t.title, t.artist))
-                            .size(12)
-                            .color(MUTED)
-                    )
-                    .style(button::text)
-                    .on_press(Message::PlayAutoplay(i))
-                    .padding(3)
-                    .width(Fill),
-                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                ]
-                .spacing(6)
-                .align_y(iced::alignment::Vertical::Center)
-                .padding(2)
+                let menu_id = t.id.clone();
+                mouse_area(
+                    row![
+                        self.thumb(t),
+                        button(
+                            text(format!("{} — {}", t.title, t.artist))
+                                .size(12)
+                                .color(MUTED)
+                        )
+                        .style(button::text)
+                        .on_press(Message::PlayAutoplay(i))
+                        .padding(3)
+                        .width(Fill),
+                        text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .padding(2),
+                )
+                .on_right_press(Message::OpenContext(menu_id))
                 .into()
             })
             .collect();
@@ -3495,12 +3502,12 @@ impl AppState {
         let list: iced::Element<'_, Message> = match self.right_tab {
             RightTab::Queue => column![
                 text("Up next").size(13).color(MUTED),
-                column(upcoming).spacing(0),
-                auto_block,
                 button(text(format!("Clear queue ({})", self.queue.len())).size(12))
                     .style(button::text)
                     .on_press(Message::QueueClear)
                     .padding(4),
+                scrollable(column![column(upcoming).spacing(0), auto_block,].spacing(2))
+                    .height(Fill),
             ]
             .spacing(4)
             .into(),
@@ -3955,12 +3962,20 @@ impl AppState {
                         let marker = if is_current { "● " } else { "" };
                         let jump = t.id.clone();
                         let remove_id = t.id.clone();
-                        // The ✕ brightens on hover (idle rows stay clean).
-                        let x_color = if self.hovered_queue == Some(i) {
-                            iced::Color::WHITE
-                        } else {
-                            MUTED
-                        };
+                        // The ✕ only exists on hover (placeholder holds
+                        // the layout so rows never jump).
+                        let remove_btn: iced::Element<'_, Message> =
+                            if self.hovered_queue == Some(i) {
+                                button(text("✕").size(12))
+                                    .style(button::text)
+                                    .on_press(Message::RemoveFromQueue(remove_id))
+                                    .padding(5)
+                                    .into()
+                            } else {
+                                iced::widget::Space::new()
+                                    .width(iced::Length::Fixed(24.0))
+                                    .into()
+                            };
                         mouse_area(
                             row![
                                 button(
@@ -3984,10 +3999,7 @@ impl AppState {
                                     .style(button::text)
                                     .on_press(Message::QueueDown(i))
                                     .padding(5),
-                                button(text("✕").size(12).color(x_color))
-                                    .style(button::text)
-                                    .on_press(Message::RemoveFromQueue(remove_id))
-                                    .padding(5),
+                                remove_btn,
                             ]
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center)
@@ -4510,24 +4522,28 @@ impl AppState {
                                         .enumerate()
                                         .take(8)
                                         .map(|(i, q)| {
-                                            row![
-                                                self.thumb(q),
-                                                button(
-                                                    text(format!("{} — {}", q.title, q.artist))
-                                                        .size(12)
+                                            let menu_id = q.id.clone();
+                                            mouse_area(
+                                                row![
+                                                    self.thumb(q),
+                                                    button(
+                                                        text(format!("{} — {}", q.title, q.artist))
+                                                            .size(12)
+                                                            .color(MUTED),
+                                                    )
+                                                    .style(button::text)
+                                                    .on_press(Message::PlayAutoplay(i))
+                                                    .padding(4)
+                                                    .width(Fill),
+                                                    text(fmt_time(q.duration_secs as f64))
+                                                        .size(11)
                                                         .color(MUTED),
-                                                )
-                                                .style(button::text)
-                                                .on_press(Message::PlayAutoplay(i))
-                                                .padding(4)
-                                                .width(Fill),
-                                                text(fmt_time(q.duration_secs as f64))
-                                                    .size(11)
-                                                    .color(MUTED),
-                                            ]
-                                            .spacing(8)
-                                            .align_y(iced::alignment::Vertical::Center)
-                                            .padding(2)
+                                                ]
+                                                .spacing(8)
+                                                .align_y(iced::alignment::Vertical::Center)
+                                                .padding(2),
+                                            )
+                                            .on_right_press(Message::OpenContext(menu_id))
                                             .into()
                                         })
                                         .collect::<Vec<_>>(),
@@ -4801,8 +4817,17 @@ impl AppState {
         // closes it via its own handler.
         let menu = container(
             column![
-                text(t.title.clone()).size(16),
-                text(t.artist.clone()).size(12).color(MUTED),
+                row![
+                    self.thumb_sized(&t, 56.0),
+                    column![
+                        text(t.title.clone()).size(16),
+                        text(t.artist.clone()).size(12).color(MUTED),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                ]
+                .spacing(10)
+                .align_y(iced::alignment::Vertical::Center),
                 column(items).spacing(0),
             ]
             .spacing(8),
@@ -5801,6 +5826,20 @@ mod tests {
         assert!(s.status.contains("autoplay"));
         let _ = s.update(Message::RemoveAutoplay(9));
         assert!(s.status.contains("Nothing at autoplay"));
+    }
+
+    #[test]
+    fn bulk_queue_absorbs_matching_autoplay() {
+        let mut s = test_state();
+        let _ = s.update(Message::PlayNow("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m4", "Fresh", "Y")]),
+        });
+        assert_eq!(s.autoplay.len(), 1);
+        let _ = s.queue_many(vec![mk_track("m4", "Fresh", "Y")], "Radio");
+        assert!(s.autoplay.is_empty());
+        assert!(s.queue.items().iter().any(|t| t.id == "m4"));
     }
 
     #[test]

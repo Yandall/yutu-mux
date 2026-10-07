@@ -27,11 +27,15 @@
 //!    from the same lock, so external clients (player widgets, media keys
 //!    via `playerctld`, desktop "now playing" indicators) observe the update
 //!    on their next property read.
-//! 3. Follow-up work (not done here): emit `PropertiesChanged` for
-//!    `Metadata` / `PlaybackStatus` when the state mutates, which needs the
-//!    live [`zbus::Connection`] (returned by [`serve`]) to reach the
-//!    `SignalEmitter`; and route incoming `Play` / `Pause` / `Next` /
-//!    `Previous` calls back into the Iced playback controller.
+//! 3. Inbound transport (`Play` / `Pause` / `Next` / `Previous` / `Seek` /
+//!    `SetPosition` / volume) is enqueued as [`PlayerCommand`] in the shared
+//!    state; the UI drains the inbox on its tick and applies each command
+//!    to the real playback controller.
+//! 4. [`watch_and_signal`] diffs the shared state 1Hz and emits
+//!    `PropertiesChanged` for `Metadata` / `PlaybackStatus` / `Volume`, so
+//!    desktop widgets track the timeline (interpolating `Position` with
+//!    `Rate`). Run it next to the [`serve`] connection (see
+//!    `src/main.rs`).
 //!
 //! For the macOS equivalent, see [`crate::macos_notes`].
 
@@ -58,6 +62,14 @@ pub const KEY_TITLE: &str = "xesam:title";
 pub const KEY_ARTIST: &str = "xesam:artist";
 pub const KEY_ALBUM: &str = "xesam:album";
 pub const KEY_LENGTH: &str = "mpris:length";
+
+/// Signal-relevant player snapshot (track + status + volume).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerSnapshot {
+    track_id: String,
+    status: PlaybackStatus,
+    volume: f64,
+}
 
 /// MPRIS playback status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -169,6 +181,19 @@ impl MprisPlayer {
     /// Replace the playback status. Called by the UI layer on play/pause/stop.
     pub fn set_status(&mut self, status: PlaybackStatus) {
         self.status = status;
+    }
+
+    /// Signal-relevant snapshot: track + status + volume.
+    ///
+    /// The serve-side watch loop diffs these 1Hz and emits
+    /// `PropertiesChanged` on change. Position is deliberately excluded:
+    /// clients poll it and interpolate with `Rate`.
+    pub fn snapshot(&self) -> PlayerSnapshot {
+        PlayerSnapshot {
+            track_id: self.now_playing.track_id.clone(),
+            status: self.status,
+            volume: self.volume,
+        }
     }
 
     /// Enqueue a desktop transport command for the UI tick to apply.
@@ -445,6 +470,11 @@ impl MprisService {
     }
 
     #[zbus(property)]
+    fn rate(&self) -> f64 {
+        1.0
+    }
+
+    #[zbus(property)]
     fn minimum_rate(&self) -> f64 {
         1.0
     }
@@ -551,6 +581,66 @@ pub async fn serve(state: SharedPlayer) -> Result<zbus::Connection, String> {
         .map_err(|err| format!("failed to establish D-Bus connection: {err}"))
 }
 
+/// Watch loop: diff shared state 1Hz and emit `PropertiesChanged` for the
+/// Player interface when track/status/volume change.
+///
+/// Without these signals, desktop widgets read `Metadata`/`PlaybackStatus`
+/// once and never update (stuck timeline). Position itself is not
+/// signalled — clients poll it and interpolate with `Rate` — and seeks
+/// surface on the next poll (≤1s late).
+pub async fn watch_and_signal(conn: zbus::Connection, state: SharedPlayer) {
+    use std::borrow::Cow;
+    use zbus::fdo::Properties;
+    use zbus::object_server::SignalEmitter;
+    use zbus::zvariant::{Dict, Value};
+
+    let path = zbus::zvariant::ObjectPath::try_from(OBJECT_PATH).expect("valid object path");
+    let emitter = SignalEmitter::from_parts(conn, path);
+    let iface: zbus::names::InterfaceName<'static> = "org.mpris.MediaPlayer2.Player"
+        .try_into()
+        .expect("valid interface name");
+    let mut last: Option<PlayerSnapshot> = None;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let (snap, changed) = {
+            let player = state.lock().unwrap_or_else(|poison| poison.into_inner());
+            let snap = player.snapshot();
+            let mut changed: HashMap<&str, Value<'_>> = HashMap::new();
+            let is_new = last.as_ref() != Some(&snap);
+            if is_new {
+                if last.as_ref().map(|p| p.track_id.as_str()) != Some(snap.track_id.as_str()) {
+                    let dict: HashMap<String, Value<'_>> = player
+                        .metadata_map()
+                        .into_iter()
+                        .map(|(k, v)| (k, Value::from(v)))
+                        .collect();
+                    changed.insert("Metadata", Value::Dict(Dict::from(dict)));
+                }
+                if last.as_ref().map(|p| p.status) != Some(snap.status) {
+                    changed.insert(
+                        "PlaybackStatus",
+                        Value::from(snap.status.as_str().to_owned()),
+                    );
+                }
+                if last.as_ref().map(|p| p.volume) != Some(snap.volume) {
+                    changed.insert("Volume", Value::from(snap.volume));
+                }
+            }
+            (snap, changed)
+        };
+        last = Some(snap);
+        if !changed.is_empty() {
+            let _ = Properties::properties_changed(
+                &emitter,
+                iface.clone(),
+                changed,
+                Cow::Borrowed(&[]),
+            )
+            .await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +692,16 @@ mod tests {
             player.push_command(PlayerCommand::Next);
         }
         assert!(player.drain_commands().len() <= 16);
+    }
+
+    #[test]
+    fn snapshot_tracks_id_status_and_volume() {
+        let mut player = MprisPlayer::new(sample_track(), PlaybackStatus::Playing, 1.0);
+        let a = player.snapshot();
+        player.set_status(PlaybackStatus::Paused);
+        assert_ne!(a, player.snapshot());
+        player.set_status(PlaybackStatus::Playing);
+        assert_eq!(a, player.snapshot());
     }
 
     #[test]
