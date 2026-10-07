@@ -10,6 +10,7 @@ yutu-core = { path = "../yutu-core" }
 yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
 iced = { version = "0.14", features = ["tokio", "image"] }
+tokio = { version = "1", features = ["time"] }
 
 [features]
 # Default is the real app: live search/radio + scrobble submission + mpv
