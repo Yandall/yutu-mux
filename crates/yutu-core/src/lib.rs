@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod innertube;
 pub mod library;
 pub mod models;
+pub mod pot;
 pub mod scrobble;
 pub mod stream;
 
@@ -17,6 +18,7 @@ pub use discovery::{forgotten_favorites, weekly_mix};
 pub use innertube::InnertubeBackend;
 pub use library::LibraryStore;
 pub use models::{Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults, Track};
+pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 pub use scrobble::{
     api_sig, build_listen_payload, build_scrobble_params, should_scrobble, Scrobble,
 };
