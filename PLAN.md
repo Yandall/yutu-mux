@@ -142,10 +142,9 @@ Done: user can plausibly replace Spotify for daily listening.
 1. Phase 0 scaffold + green check (done, `2c2b3e0`)
 2. Phase 1 models + mock + cache (done, `749b701`)
 3. Phase 2 audible playback (done, `746443f`)
-4. Phase 3 views: shell + queue editor (done, `99cbdaf` + `b04fa8e`); detail views/radio/lyrics/playlists/shortcuts (in progress, parallel track)
-5. Phase 4 innertube: policy + reports (done, `843639b`); live `ytmapi-rs` wiring (in progress, parallel track)
-6. Phase 5 audio adv: EQ presets + offline cache + local scan + controller (in progress, parallel track)
-7. Phase 5 desktop: MPRIS/tray, scrobble, discovery mix, command palette (queued)
-8. Phase 6 packaging (queued)
+4. Phase 3 views: shell + queue editor (done, `99cbdaf` + `b04fa8e`); detail views/radio/lyrics/playlists/shortcuts (done, `87a75a0`); persistent playlists (done, `a68646e`); EQ/scrobble/discovery panels (in progress)
+5. Phase 4 innertube: policy + reports (done, `843639b`); live `ytmapi-rs` wiring (done, `ae7418d`, live-verified)
+6. Phase 5 audio adv: EQ presets + offline cache + local scan + controller (done, `b1951ed`); scrobble + discovery core (done, `692b51c`); MPRIS/tray (done, `e762ae9`)
+7. Phase 6 packaging: flatpak draft + troubleshooting (done, `15ddf69`); artifacts + 0.1.0 tag (queued)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
