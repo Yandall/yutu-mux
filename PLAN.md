@@ -155,5 +155,6 @@ Done: user can plausibly replace Spotify for daily listening.
 14. Round 3: suggestion popup + Enter-to-Search, play-now queue replace + autoplay tail, play-next insert, context menu (… button), offline download, NowPlaying drawer, YTM slim sidebar + collapse, honest EQ, cookie import (no OAuth client), bigger nav
 15. Round 4: queue/autoplay split views, hover ✕ + menu remove, undimmed frozen menu, MPRIS command inbox (play/pause/next/prev/seek/volume), seek-hold anti-flicker, in-app error log
 16. Round 5: Lucide icons (zero emoji), Fisher-Yates shuffle + repeat-one fix + widget shuffle/loop, snappier search (pre-results), panel drag reorder, scrollbar clearance, Spotify search/artist/album views
+17. Round 6: physical shuffle w/ restore, filled icons, red theme, rounded UI, hover states, icon alignment, drag ghost/preview, volume tooltip, whole-row clicks, autoplay hover remove, lyric styling, pin/unpin sidebars
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
