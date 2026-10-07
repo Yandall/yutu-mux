@@ -55,6 +55,13 @@
   dismisses, right-clicking another row moves it in one step
 - Add-to-queue is append-only (never hijacks playback); new loads cut
   the old song instantly for immediate feedback
+- Spotify queue split: manual Queue + radio Autoplay tail (shifts in at
+  the end, survives clear); hover reveals row ✕, menu removes from
+  either list; menu no longer dims the UI and lost its ✕
+- Desktop controls work: MPRIS Play/Pause/Next/Prev/Seek/SetPosition/
+  Volume via a command inbox drained on tick; lyric verse-click
+  flicker fixed with a 1.2s manual position clock after seeks
+- Playback failures log to stderr + Settings (Recent playback errors)
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

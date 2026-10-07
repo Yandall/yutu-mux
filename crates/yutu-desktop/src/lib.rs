@@ -12,8 +12,8 @@ pub mod mpris;
 pub mod tray;
 
 pub use mpris::{
-    MprisPlayer, MprisRoot, MprisService, PlaybackStatus, SharedPlayer, KEY_ALBUM, KEY_ARTIST,
-    KEY_LENGTH, KEY_TITLE, KEY_TRACK_ID, OBJECT_PATH, SERVICE_NAME,
+    MprisPlayer, MprisRoot, MprisService, PlaybackStatus, PlayerCommand, SharedPlayer, KEY_ALBUM,
+    KEY_ARTIST, KEY_LENGTH, KEY_TITLE, KEY_TRACK_ID, OBJECT_PATH, SERVICE_NAME,
 };
 pub use tray::TrayState;
 

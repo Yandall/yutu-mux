@@ -47,16 +47,6 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
-/// Translucent scrim behind the context menu.
-fn dim_bg(_: &iced::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgba8(
-            0, 0, 0, 0.78,
-        ))),
-        ..Default::default()
-    }
-}
-
 fn player_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(SIDEBAR_BG)),
@@ -230,6 +220,14 @@ pub enum Message {
     },
     /// Insert after the current item (context menu: play next).
     PlayNext(String),
+    /// Play an autoplay-tail item now (it joins the manual queue).
+    PlayAutoplay(usize),
+    /// Remove one occurrence from the manual queue (menu / hover ✕).
+    RemoveFromQueue(String),
+    /// Drop an autoplay-tail item by index.
+    RemoveAutoplay(usize),
+    /// Queue-page hover tracking (reveals the row ✕).
+    QueueHover(Option<usize>),
     /// Context menu open/close: right-click (per-row `mouse_area`) or the
     /// per-row `…` button opens it at the last cursor position.
     OpenContext(String),
@@ -542,6 +540,17 @@ pub struct AppState {
     sidebar_filter: String,
     /// Autoplay tail belongs to this seed (stale arrivals drop).
     autoplay_for: Option<String>,
+    /// Spotify-style split: manual queue (user picks) plays first, then
+    /// this radio-picked tail ("Next up"). Never persisted.
+    autoplay: Vec<Track>,
+    /// Queue-page row under the cursor (hover reveals its ✕).
+    hovered_queue: Option<usize>,
+    /// Recent playback/fetch failures (capped, surfaced in Settings).
+    error_log: Vec<String>,
+    /// Manual position clock deadline after a user seek (anti-flicker).
+    seek_hold_until: Option<std::time::Instant>,
+    /// Last Tick instant (drives the manual clock during a seek hold).
+    last_tick: Option<std::time::Instant>,
     /// Cookie-file path for import (Settings).
     cookie_path: String,
     /// Where the queue is playing from (playlist/artist/radio label).
@@ -925,6 +934,11 @@ impl AppState {
                 sidebar_expanded: true,
                 sidebar_filter: String::new(),
                 autoplay_for: None,
+                autoplay: Vec::new(),
+                hovered_queue: None,
+                error_log: Vec::new(),
+                seek_hold_until: None,
+                last_tick: None,
                 cookie_path: String::new(),
                 playing_from: String::new(),
                 artwork: HashMap::new(),
@@ -1147,7 +1161,9 @@ impl AppState {
                     true
                 }
                 Err(e) => {
-                    self.status = format!("Playback failed for {}: {e}", t.id);
+                    let msg = format!("Playback failed for {}: {e}", t.id);
+                    self.log_error(msg.clone());
+                    self.status = msg;
                     false
                 }
             },
@@ -1170,7 +1186,7 @@ impl AppState {
         } else if self.queue.repeat == yutu_player::RepeatMode::All {
             items.first().map(|t| t.id.clone())
         } else {
-            None
+            self.autoplay.first().map(|t| t.id.clone())
         }
     }
 
@@ -1192,7 +1208,10 @@ impl AppState {
         }
     }
 
-    /// Shuffle-aware queue step (no audio here). True when current changed.
+    /// Manual queue first (shuffle/repeat apply there); when it truly ends
+    /// and repeat is Off, the autoplay tail shifts in head-first so the
+    /// single current-pointer (progress/lyrics/MPRIS) keeps working.
+    /// True when current changed.
     fn advance_queue(&mut self) -> bool {
         if self.queue.shuffle && self.queue.len() > 1 {
             let now = std::time::SystemTime::now()
@@ -1203,10 +1222,22 @@ impl AppState {
             if Some(i) == self.queue.position() {
                 i = (i + 1) % self.queue.len();
             }
-            self.queue.jump_to(i)
-        } else {
-            self.queue.next_track().is_some()
+            return self.queue.jump_to(i);
         }
+        if self.queue.next_track().is_some() {
+            return true;
+        }
+        // Manual queue truly ended: autoplay tail (repeat All/One loop the
+        // manual queue by design, like Spotify's repeat).
+        if self.queue.repeat == yutu_player::RepeatMode::Off && !self.autoplay.is_empty() {
+            let t = self.autoplay.remove(0);
+            self.history.push(t.id.clone());
+            self.persist_play(&t.id);
+            self.queue.push(t);
+            self.queue.jump_to(self.queue.len().saturating_sub(1));
+            return true;
+        }
+        false
     }
 
     fn apply_volume(&self) {
@@ -1493,6 +1524,24 @@ impl AppState {
         .into()
     }
 
+    /// In-app error log: the same lines that go to stderr (capped at 30).
+    fn error_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{column, text};
+        if self.error_log.is_empty() {
+            return text("No errors recorded.").size(12).color(MUTED).into();
+        }
+        column(
+            self.error_log
+                .iter()
+                .rev()
+                .take(10)
+                .map(|e| text(e.clone()).size(11).color(MUTED).into())
+                .collect::<Vec<_>>(),
+        )
+        .spacing(2)
+        .into()
+    }
+
     /// Offline builds: cookie import needs the innertube feature.
     #[cfg(not(feature = "innertube"))]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
@@ -1539,6 +1588,134 @@ impl AppState {
                 .padding(8)
                 .into(),
         }
+    }
+
+    /// Record a playback/fetch failure for the Settings error log (capped)
+    /// and stderr (same line, so journald and the in-app log agree).
+    fn log_error(&mut self, msg: String) {
+        eprintln!("[yutu-play] {msg}");
+        if self.error_log.len() >= 30 {
+            self.error_log.remove(0);
+        }
+        self.error_log.push(msg);
+    }
+
+    /// Seek to an absolute position: backend first, manual clock +
+    /// anti-flicker hold on success, logged honest error otherwise.
+    fn seek_to_secs(&mut self, pos: f64) {
+        let pos = pos.max(0.0);
+        match &self.audio {
+            None => {
+                self.status = "No audio device.".into();
+            }
+            Some(audio) => match audio.seek_secs(pos) {
+                Ok(()) => {
+                    self.position_secs = pos;
+                    // Hold the manual clock ~1.2s: the backend still
+                    // reports the pre-seek position for a tick or two.
+                    self.seek_hold_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(1200));
+                }
+                Err(e) => {
+                    let msg = format!("Seek failed ({e}).");
+                    self.log_error(msg.clone());
+                    self.status = msg;
+                }
+            },
+        }
+    }
+
+    /// Apply one desktop transport command (MPRIS widget / media keys).
+    /// Next/Previous return their real play tasks (dropping them would
+    /// move the pointer without ever fetching audio).
+    fn apply_player_command(&mut self, cmd: yutu_desktop::PlayerCommand) -> iced::Task<Message> {
+        use yutu_desktop::PlayerCommand as C;
+        match cmd {
+            C::Play => {
+                if self.paused {
+                    if let Some(a) = &self.audio {
+                        a.resume();
+                    }
+                    self.paused = false;
+                    self.status = "Resumed (desktop).".into();
+                }
+            }
+            C::Pause => {
+                if let Some(a) = &self.audio {
+                    a.pause();
+                }
+                self.paused = true;
+                self.status = "Paused (desktop).".into();
+            }
+            C::PlayPause => {
+                if self.paused {
+                    if let Some(a) = &self.audio {
+                        a.resume();
+                    }
+                    self.paused = false;
+                    self.status = "Resumed (desktop).".into();
+                } else {
+                    if let Some(a) = &self.audio {
+                        a.pause();
+                    }
+                    self.paused = true;
+                    self.status = "Paused (desktop).".into();
+                }
+            }
+            C::Stop => {
+                if let Some(a) = &self.audio {
+                    a.stop();
+                }
+                self.paused = true;
+                self.status = "Stopped (desktop).".into();
+            }
+            C::Next => {
+                if self.advance_queue() {
+                    self.apply_volume();
+                    return self.play_current_task();
+                }
+            }
+            C::Previous => {
+                if self.queue.prev_track().is_some() {
+                    self.apply_volume();
+                    return self.play_current_task();
+                }
+            }
+            C::Seek(offset) => {
+                self.seek_to_secs(self.position_secs + offset);
+            }
+            C::SetPosition(pos) => {
+                self.seek_to_secs(pos);
+            }
+            C::SetVolume(v) => {
+                self.volume = (v as f32).clamp(0.0, 1.0);
+                if let Some(a) = &self.audio {
+                    a.set_volume(self.volume);
+                }
+            }
+        }
+        iced::Task::none()
+    }
+
+    /// Drain desktop transport commands queued since the last tick.
+    fn drain_player_commands(&mut self) -> iced::Task<Message> {
+        let cmds: Vec<yutu_desktop::PlayerCommand> = self
+            .mpris
+            .as_ref()
+            .map(|h| {
+                h.lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .drain_commands()
+            })
+            .unwrap_or_default();
+        if cmds.is_empty() {
+            return iced::Task::none();
+        }
+        let mut tasks = Vec::new();
+        for cmd in cmds {
+            tasks.push(self.apply_player_command(cmd));
+        }
+        iced::Task::batch(tasks)
     }
 
     /// Publish current track/status/volume to the MPRIS handle (if any) so
@@ -1994,7 +2171,11 @@ impl AppState {
             }
             Message::QueueClear => {
                 self.queue.clear();
-                self.status = "Queue cleared.".into();
+                self.status = if self.autoplay.is_empty() {
+                    "Queue cleared.".into()
+                } else {
+                    format!("Queue cleared ({} autoplay kept).", self.autoplay.len())
+                };
             }
             Message::OpenArtist(id) => self.go(Route::Artist(id)),
             Message::OpenAlbum(id) => self.go(Route::Album(id)),
@@ -2281,6 +2462,7 @@ impl AppState {
                         self.queue.jump_to(0);
                         self.playing_from = "Single + autoplay".into();
                         self.autoplay_for = Some(id.clone());
+                        self.autoplay.clear();
                         self.history.push(id.clone());
                         self.persist_play(&id);
                         self.apply_volume();
@@ -2301,27 +2483,33 @@ impl AppState {
             }
             Message::AutoplayReady { seed, result } => {
                 match result {
-                    Err(_) => {}
+                    Err(e) => {
+                        // Quiet: the tail is best-effort, but keep the log.
+                        self.log_error(format!("Autoplay for {seed} failed: {e}"));
+                    }
                     Ok(tracks) => {
                         let tracks = self.register_tracks(tracks);
                         // Stale (user moved on): catalog only, no append.
                         if self.autoplay_for.as_deref() != Some(seed.as_str()) {
                             return iced::Task::none();
                         }
-                        let queued: std::collections::HashSet<String> =
-                            self.queue.items().iter().map(|t| t.id.clone()).collect();
+                        let known: std::collections::HashSet<String> = self
+                            .queue
+                            .items()
+                            .iter()
+                            .chain(self.autoplay.iter())
+                            .map(|t| t.id.clone())
+                            .collect();
                         let fresh: Vec<Track> = tracks
                             .into_iter()
-                            .filter(|t| t.id != seed && !queued.contains(&t.id))
+                            .filter(|t| t.id != seed && !known.contains(&t.id))
                             .take(10)
                             .collect();
                         if fresh.is_empty() {
                             return iced::Task::none();
                         }
                         let art = self.artwork_tasks(&fresh);
-                        for t in fresh {
-                            self.queue.push(t);
-                        }
+                        self.autoplay.extend(fresh);
                         self.publish_mpris();
                         return iced::Task::batch(art);
                     }
@@ -2347,6 +2535,56 @@ impl AppState {
                         let _ = at;
                     }
                 }
+            }
+            Message::PlayAutoplay(i) => {
+                self.close_menu();
+                match self.autoplay.get(i).cloned() {
+                    None => {
+                        self.status = format!("Nothing at autoplay index {i}.");
+                    }
+                    Some(t) => {
+                        self.autoplay.remove(i);
+                        self.queue.push(t);
+                        self.queue.jump_to(self.queue.len().saturating_sub(1));
+                        self.apply_volume();
+                        self.publish_mpris();
+                        return self.play_current_task();
+                    }
+                }
+            }
+            Message::RemoveFromQueue(id) => {
+                self.close_menu();
+                let was_current = self.queue.current().is_some_and(|t| t.id == id);
+                if self.queue.remove_id(&id) {
+                    self.status = format!("Removed {id} from the queue.");
+                    if was_current {
+                        // The ghost must not keep playing: move on, or stop.
+                        if self.advance_queue() {
+                            self.apply_volume();
+                            self.publish_mpris();
+                            return self.play_current_task();
+                        }
+                        if let Some(a) = &self.audio {
+                            a.stop();
+                        }
+                        self.position_secs = 0.0;
+                        self.loading_track = None;
+                    }
+                } else {
+                    self.status = format!("Not in queue: {id}.");
+                }
+            }
+            Message::RemoveAutoplay(i) => {
+                self.close_menu();
+                if i < self.autoplay.len() {
+                    let t = self.autoplay.remove(i);
+                    self.status = format!("Removed {} from autoplay.", t.title);
+                } else {
+                    self.status = format!("Nothing at autoplay index {i}.");
+                }
+            }
+            Message::QueueHover(h) => {
+                self.hovered_queue = h;
             }
             Message::OpenContext(id) => {
                 self.open_menu(id);
@@ -2403,7 +2641,9 @@ impl AppState {
                     self.status = format!("Downloaded {track_id} for offline listening.");
                 }
                 Err(e) => {
-                    self.status = format!("Download failed for {track_id}: {e}");
+                    let msg = format!("Download failed for {track_id}: {e}");
+                    self.log_error(msg.clone());
+                    self.status = msg;
                 }
             },
             Message::ToggleSidebar => {
@@ -2563,8 +2803,26 @@ impl AppState {
                     }
                 }
             }
-            Message::Tick(_) => {
-                self.position_secs = self.audio_position();
+            Message::Tick(now) => {
+                // Desktop transport commands first (widget / media keys).
+                let mut tasks = vec![self.drain_player_commands()];
+                // Position clock: manual advance while a user seek settles
+                // (the backend reports the stale pre-seek position for a
+                // tick or two — that stale tick is the lyrics flicker).
+                let dt = self
+                    .last_tick
+                    .map(|last| now.duration_since(last).as_secs_f64())
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 2.0);
+                self.last_tick = Some(now);
+                if self.seek_hold_until.is_some_and(|until| now < until) {
+                    if !self.paused {
+                        self.position_secs = (self.position_secs + dt).max(0.0);
+                    }
+                } else {
+                    self.seek_hold_until = None;
+                    self.position_secs = self.audio_position();
+                }
                 let duration = self.audio_duration();
                 // Prefetch the next song while this one still plays (>75%).
                 // One attempt per track — failures stay silent until advance.
@@ -2578,7 +2836,7 @@ impl AppState {
                         if self.prefetch_attempted.as_deref() != Some(id.as_str()) {
                             self.prefetch_attempted = Some(id.clone());
                             self.publish_mpris();
-                            return Self::prefetch_task(id);
+                            tasks.push(Self::prefetch_task(id));
                         }
                     }
                 }
@@ -2594,26 +2852,13 @@ impl AppState {
                 {
                     self.end_advanced = true;
                     self.publish_mpris();
-                    return self.play_current_task();
+                    tasks.push(self.play_current_task());
                 }
                 self.publish_mpris();
-                return iced::Task::none();
+                return iced::Task::batch(tasks);
             }
             Message::SeekTo(pos) => {
-                let pos = pos as f64;
-                match &self.audio {
-                    None => {
-                        self.status = "No audio device.".into();
-                    }
-                    Some(audio) => match audio.seek_secs(pos) {
-                        Ok(()) => {
-                            self.position_secs = pos;
-                        }
-                        Err(e) => {
-                            self.status = format!("Seek failed ({e}).");
-                        }
-                    },
-                }
+                self.seek_to_secs(pos as f64);
             }
             Message::UrlResolved { track_id, result } => {
                 // Only the in-flight track may report; anything else is stale.
@@ -2623,7 +2868,9 @@ impl AppState {
                 self.loading_track = None;
                 match result {
                     Err(e) => {
-                        self.status = format!("Playback failed for {track_id}: {e}");
+                        let msg = format!("Playback failed for {track_id}: {e}");
+                        self.log_error(msg.clone());
+                        self.status = msg;
                     }
                     Ok(url) => {
                         if let Some(expires) = url_expiry(&url) {
@@ -2653,7 +2900,9 @@ impl AppState {
                 self.loading_track = None;
                 match result {
                     Err(e) => {
-                        self.status = format!("Playback failed for {video_id}: {e}");
+                        let msg = format!("Playback failed for {video_id}: {e}");
+                        self.log_error(msg.clone());
+                        self.status = msg;
                     }
                     Ok(bytes) => {
                         // Stale arrival (user moved on): drop, keep playing.
@@ -2680,7 +2929,9 @@ impl AppState {
                                     }
                                 }
                                 Err(e) => {
-                                    self.status = format!("Playback failed for {video_id}: {e}");
+                                    let msg = format!("Playback failed for {video_id}: {e}");
+                                    self.log_error(msg.clone());
+                                    self.status = msg;
                                 }
                             },
                         }
@@ -3206,10 +3457,46 @@ impl AppState {
                 .color(MUTED)
                 .into()
         };
+        let auto_mini: Vec<iced::Element<'_, Message>> = self
+            .autoplay
+            .iter()
+            .enumerate()
+            .take(5)
+            .map(|(i, t)| {
+                row![
+                    self.thumb(t),
+                    button(
+                        text(format!("{} — {}", t.title, t.artist))
+                            .size(12)
+                            .color(MUTED)
+                    )
+                    .style(button::text)
+                    .on_press(Message::PlayAutoplay(i))
+                    .padding(3)
+                    .width(Fill),
+                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(2)
+                .into()
+            })
+            .collect();
+        let auto_block: iced::Element<'_, Message> = if auto_mini.is_empty() {
+            text("").size(1).into()
+        } else {
+            column![
+                text("Autoplay").size(13).color(MUTED),
+                column(auto_mini).spacing(0),
+            ]
+            .spacing(2)
+            .into()
+        };
         let list: iced::Element<'_, Message> = match self.right_tab {
             RightTab::Queue => column![
-                text("Next up").size(13).color(MUTED),
+                text("Up next").size(13).color(MUTED),
                 column(upcoming).spacing(0),
+                auto_block,
                 button(text(format!("Clear queue ({})", self.queue.len())).size(12))
                     .style(button::text)
                     .on_press(Message::QueueClear)
@@ -3640,9 +3927,10 @@ impl AppState {
                         text("Now playing").size(12).color(MUTED),
                         text(format!("{} — {}", t.title, t.artist)).size(17),
                         text(format!(
-                            "Track {} of {} · Shuffle {} · Repeat {:?}",
+                            "Track {} of {} · {} autoplay · Shuffle {} · Repeat {:?}",
                             pos.map(|p| p + 1).unwrap_or(0),
                             self.queue.len(),
+                            self.autoplay.len(),
                             if self.queue.shuffle { "on" } else { "off" },
                             self.queue.repeat,
                         ))
@@ -3666,6 +3954,13 @@ impl AppState {
                         let is_current = Some(i) == pos;
                         let marker = if is_current { "● " } else { "" };
                         let jump = t.id.clone();
+                        let remove_id = t.id.clone();
+                        // The ✕ brightens on hover (idle rows stay clean).
+                        let x_color = if self.hovered_queue == Some(i) {
+                            iced::Color::WHITE
+                        } else {
+                            MUTED
+                        };
                         mouse_area(
                             row![
                                 button(
@@ -3689,9 +3984,9 @@ impl AppState {
                                     .style(button::text)
                                     .on_press(Message::QueueDown(i))
                                     .padding(5),
-                                button(text("✕").size(12))
+                                button(text("✕").size(12).color(x_color))
                                     .style(button::text)
-                                    .on_press(Message::QueueRemove(i))
+                                    .on_press(Message::RemoveFromQueue(remove_id))
                                     .padding(5),
                             ]
                             .spacing(4)
@@ -3699,9 +3994,56 @@ impl AppState {
                             .padding(2),
                         )
                         .on_right_press(Message::OpenContext(jump))
+                        .on_enter(Message::QueueHover(Some(i)))
+                        .on_exit(Message::QueueHover(None))
                         .into()
                     })
                     .collect();
+                let auto_rows: Vec<iced::Element<'_, Message>> = self
+                    .autoplay
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        use iced::widget::{button, mouse_area, row, text};
+                        use iced::Fill;
+                        let menu_id = t.id.clone();
+                        mouse_area(
+                            row![
+                                button(
+                                    text(format!("{}. {} — {}", i + 1, t.title, t.artist))
+                                        .size(13)
+                                        .color(MUTED),
+                                )
+                                .style(button::text)
+                                .on_press(Message::PlayAutoplay(i))
+                                .padding(4)
+                                .width(Fill),
+                                text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                                button(text("✕").size(12))
+                                    .style(button::text)
+                                    .on_press(Message::RemoveAutoplay(i))
+                                    .padding(5),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .padding(2),
+                        )
+                        .on_right_press(Message::OpenContext(menu_id))
+                        .into()
+                    })
+                    .collect();
+                let auto_section: iced::Element<'_, Message> = if auto_rows.is_empty() {
+                    text("").size(1).into()
+                } else {
+                    column![
+                        text("Autoplay — similar, plays after your queue")
+                            .size(13)
+                            .color(MUTED),
+                        column(auto_rows).spacing(2),
+                    ]
+                    .spacing(4)
+                    .into()
+                };
                 column![
                     row![
                         text("Up Next").size(22).width(Fill),
@@ -3728,7 +4070,9 @@ impl AppState {
                     .spacing(4)
                     .align_y(iced::alignment::Vertical::Center),
                     header,
+                    text("Queue — your picks").size(13).color(MUTED),
                     column(rows).spacing(2),
+                    auto_section,
                 ]
                 .spacing(10)
                 .into()
@@ -3903,6 +4247,8 @@ impl AppState {
                     self.google_section(),
                     text("Cookie import (no OAuth client needed)").size(17),
                     self.cookie_section(),
+                    text("Recent playback errors").size(17),
+                    self.error_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
                         .color(MUTED),
@@ -4154,9 +4500,42 @@ impl AppState {
                             ]
                             .spacing(8)
                             .width(Fill),
-                            column![text("Up next").size(17), column(upcoming).spacing(2),]
-                                .spacing(6)
-                                .width(350),
+                            column![
+                                text("Up next").size(17),
+                                column(upcoming).spacing(2),
+                                text("Autoplay").size(14).color(MUTED),
+                                column(
+                                    self.autoplay
+                                        .iter()
+                                        .enumerate()
+                                        .take(8)
+                                        .map(|(i, q)| {
+                                            row![
+                                                self.thumb(q),
+                                                button(
+                                                    text(format!("{} — {}", q.title, q.artist))
+                                                        .size(12)
+                                                        .color(MUTED),
+                                                )
+                                                .style(button::text)
+                                                .on_press(Message::PlayAutoplay(i))
+                                                .padding(4)
+                                                .width(Fill),
+                                                text(fmt_time(q.duration_secs as f64))
+                                                    .size(11)
+                                                    .color(MUTED),
+                                            ]
+                                            .spacing(8)
+                                            .align_y(iced::alignment::Vertical::Center)
+                                            .padding(2)
+                                            .into()
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )
+                                .spacing(2),
+                            ]
+                            .spacing(6)
+                            .width(350),
                         ]
                         .spacing(20),
                     ]
@@ -4385,6 +4764,26 @@ impl AppState {
                 .width(Fill)
                 .into(),
         ];
+        if self.queue.items().iter().any(|q| q.id == t.id) {
+            items.push(
+                button(text("🗑  Remove from queue").size(14))
+                    .style(button::text)
+                    .on_press(Message::RemoveFromQueue(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+            );
+        }
+        if let Some(ai) = self.autoplay.iter().position(|q| q.id == t.id) {
+            items.push(
+                button(text("🗑  Remove from autoplay").size(14))
+                    .style(button::text)
+                    .on_press(Message::RemoveAutoplay(ai))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+            );
+        }
         for pl in self.user_playlists.iter().take(5) {
             items.push(
                 button(text(format!("📁  Add to {}", pl.title)).size(14))
@@ -4402,19 +4801,8 @@ impl AppState {
         // closes it via its own handler.
         let menu = container(
             column![
-                row![
-                    column![
-                        text(t.title.clone()).size(16),
-                        text(t.artist.clone()).size(12).color(MUTED),
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                    button(text("✕").size(14))
-                        .style(button::text)
-                        .on_press(Message::CloseContext)
-                        .padding(6),
-                ]
-                .align_y(iced::alignment::Vertical::Center),
+                text(t.title.clone()).size(16),
+                text(t.artist.clone()).size(12).color(MUTED),
                 column(items).spacing(0),
             ]
             .spacing(8),
@@ -4425,14 +4813,10 @@ impl AppState {
         // Dismiss layer: left-click outside closes the menu. It sets no
         // right-press handler, so right-clicks pass through to the rows
         // below — right-clicking another song moves the menu in one step.
-        let scrim: iced::Element<'_, Message> = mouse_area(
-            container(text("").size(1))
-                .style(dim_bg)
-                .width(Fill)
-                .height(Fill),
-        )
-        .on_press(Message::CloseContext)
-        .into();
+        let scrim: iced::Element<'_, Message> =
+            mouse_area(container(text("").size(1)).width(Fill).height(Fill))
+                .on_press(Message::CloseContext)
+                .into();
         // Cursor-anchored placement (clamped on screen), YTM-style.
         let (mx, my) = menu_pos(self.menu_at, self.window);
         let placed: iced::Element<'_, Message> = container(column![
@@ -5183,7 +5567,8 @@ mod tests {
         });
         assert_eq!(s.queue.len(), 1);
         assert!(s.find_track("old").is_some());
-        // Current seed: seed + dupes filtered, tail appended.
+        // Current seed: seed + dupes filtered, tail appended (manual
+        // queue untouched — Spotify split).
         let _ = s.update(Message::AutoplayReady {
             seed: "m3".into(),
             result: Ok(vec![
@@ -5191,14 +5576,19 @@ mod tests {
                 mk_track("m4", "Fresh", "Y"),
             ]),
         });
-        assert_eq!(s.queue.len(), 2);
-        assert_eq!(s.queue.items()[1].id, "m4");
-        // Failures stay silent.
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.autoplay.len(), 1);
+        assert_eq!(s.autoplay[0].id, "m4");
+        // Peek sees the tail past the manual end (prefetch crosses over).
+        assert_eq!(s.peek_next_id().as_deref(), Some("m4"));
+        // Failures log without touching either list.
         let _ = s.update(Message::AutoplayReady {
             seed: "m3".into(),
             result: Err("offline".into()),
         });
-        assert_eq!(s.queue.len(), 2);
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.autoplay.len(), 1);
+        assert!(s.error_log.iter().any(|e| e.contains("Autoplay")));
     }
 
     #[test]
@@ -5353,6 +5743,139 @@ mod tests {
         );
         // Unknown cursor/window: sane on-screen default.
         assert_eq!(menu_pos(None, None), (200.0, 150.0));
+    }
+
+    #[test]
+    fn autoplay_tail_shifts_in_when_queue_ends() {
+        let mut s = test_state();
+        let _ = s.update(Message::PlayNow("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m4", "Fresh", "Y")]),
+        });
+        assert_eq!(s.queue.len(), 1);
+        // Manual end → head of the tail becomes the current song.
+        let _ = s.update(Message::Next);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m4"));
+        assert!(s.autoplay.is_empty());
+        // Playing a tail item directly moves it into the manual queue.
+        let _ = s.update(Message::PlayNow("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m5", "Other", "Z")]),
+        });
+        let _ = s.update(Message::PlayAutoplay(0));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m5"));
+        assert!(s.autoplay.is_empty());
+        let _ = s.update(Message::PlayAutoplay(9));
+        assert!(s.status.contains("Nothing at autoplay"));
+    }
+
+    #[test]
+    fn queue_remove_advances_when_current_goes() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::QueueJump(0));
+        // Upcoming instance goes; current untouched.
+        let _ = s.update(Message::RemoveFromQueue("m2".into()));
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert!(s.status.contains("Removed m2"));
+        // Removing the current song moves playback on.
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::QueueJump(0));
+        let _ = s.update(Message::RemoveFromQueue("m1".into()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        // Absent id: honest error.
+        let _ = s.update(Message::RemoveFromQueue("ghost".into()));
+        assert!(s.status.contains("Not in queue"));
+        // Tail removal by index.
+        let _ = s.update(Message::PlayNow("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m4", "Fresh", "Y")]),
+        });
+        let _ = s.update(Message::RemoveAutoplay(0));
+        assert!(s.autoplay.is_empty());
+        assert!(s.status.contains("autoplay"));
+        let _ = s.update(Message::RemoveAutoplay(9));
+        assert!(s.status.contains("Nothing at autoplay"));
+    }
+
+    #[test]
+    fn queue_hover_tracks_cursor() {
+        let mut s = test_state();
+        assert!(s.hovered_queue.is_none());
+        let _ = s.update(Message::QueueHover(Some(2)));
+        assert_eq!(s.hovered_queue, Some(2));
+        let _ = s.update(Message::QueueHover(None));
+        assert!(s.hovered_queue.is_none());
+    }
+
+    #[test]
+    fn desktop_commands_drive_playback() {
+        use std::sync::{Arc, Mutex};
+        let mut s = test_state();
+        let handle: yutu_desktop::SharedPlayer =
+            Arc::new(Mutex::new(yutu_desktop::MprisPlayer::default()));
+        s.mpris = Some(handle.clone());
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::QueueJump(0));
+        // Widget pause flips the app within one tick.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::Pause);
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        assert!(s.paused);
+        assert!(s.status.contains("desktop"));
+        // Widget next advances the real queue.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::Next);
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        // Widget volume lands too.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::SetVolume(0.5));
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        assert!((s.volume - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn seek_hold_advances_manually_then_resyncs() {
+        use std::time::{Duration, Instant};
+        let mut s = test_state();
+        s.position_secs = 10.0;
+        let t0 = Instant::now();
+        s.last_tick = Some(t0);
+        s.seek_hold_until = Some(t0 + Duration::from_secs(5));
+        let _ = s.update(Message::Tick(t0 + Duration::from_millis(500)));
+        assert!((s.position_secs - 10.5).abs() < 0.05);
+        // Expired hold: backend clock wins again.
+        s.seek_hold_until = Some(t0);
+        s.position_secs = 99.0;
+        let _ = s.update(Message::Tick(t0 + Duration::from_secs(10)));
+        assert!(s.seek_hold_until.is_none());
+        assert!(s.position_secs < 50.0);
+    }
+
+    #[test]
+    fn playback_failures_land_in_the_error_log() {
+        let mut s = test_state();
+        assert!(s.error_log.is_empty());
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Err("403 Forbidden".into()),
+        });
+        assert_eq!(s.error_log.len(), 1);
+        assert!(s.error_log[0].contains("m1"));
     }
 
     #[test]

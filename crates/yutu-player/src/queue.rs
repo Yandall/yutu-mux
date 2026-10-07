@@ -62,6 +62,28 @@ impl Queue {
         self.index = None;
     }
 
+    /// Remove one occurrence of `track_id`, preferring the instance at or
+    /// after the current position (the one the user sees ahead), falling
+    /// back to the nearest one before it. Returns false when absent.
+    /// Index bookkeeping mirrors [`Queue::remove_at`].
+    pub fn remove_id(&mut self, track_id: &str) -> bool {
+        let at = self
+            .index
+            .and_then(|cur| {
+                self.items
+                    .iter()
+                    .enumerate()
+                    .skip(cur)
+                    .find(|(_, t)| t.id == track_id)
+                    .map(|(i, _)| i)
+            })
+            .or_else(|| self.items.iter().position(|t| t.id == track_id));
+        match at {
+            Some(i) => self.remove_at(i),
+            None => false,
+        }
+    }
+
     /// Insert `track` right after the current item (play-next). Empty queue:
     /// behaves like [`Queue::push`]. Returns the inserted position.
     pub fn insert_next(&mut self, track: Track) -> usize {
@@ -186,6 +208,21 @@ mod tests {
         assert_eq!(q.position(), Some(2));
         assert!(Queue::default().position().is_none());
         assert!(!Queue::default().jump_to(0));
+    }
+
+    #[test]
+    fn remove_id_prefers_upcoming_occurrence() {
+        let mut q = queue_of(3);
+        q.push(MockBackend::fixture_tracks()[0].clone()); // m1 twice
+        assert!(q.remove_id("m1"));
+        // Current is m1 itself (index 0) → that instance goes.
+        assert_eq!(q.items().len(), 3);
+        assert_eq!(q.items()[0].id, "m2");
+        assert!(!q.remove_id("zzz"));
+        // Removing the current item keeps a valid index.
+        assert!(q.jump_to(2));
+        assert!(q.remove_id(q.current().unwrap().id.clone().as_str()));
+        assert!(q.position().unwrap() < q.len());
     }
 
     #[test]
