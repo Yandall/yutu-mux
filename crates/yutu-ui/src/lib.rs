@@ -527,6 +527,9 @@ pub struct AppState {
     show_suggest: bool,
     /// Context menu open for this track id (None = closed).
     context_menu: Option<String>,
+    /// Cursor position frozen when the menu opened (the menu must not
+    /// chase the mouse while the user aims at it).
+    menu_at: Option<iced::Point>,
     /// Last cursor position (window coords — anchors the context menu).
     cursor: Option<iced::Point>,
     /// Last window size (clamps the context menu on screen).
@@ -914,6 +917,7 @@ impl AppState {
                 suggest_gen: 0,
                 show_suggest: false,
                 context_menu: None,
+                menu_at: None,
                 cursor: None,
                 window: None,
                 sidebar_expanded: true,
@@ -1498,6 +1502,18 @@ impl AppState {
             .into()
     }
 
+    /// Open the context menu, freezing the cursor so the menu stays put.
+    fn open_menu(&mut self, id: String) {
+        self.menu_at = self.cursor;
+        self.context_menu = Some(id);
+    }
+
+    /// Close the context menu and drop its anchor.
+    fn close_menu(&mut self) {
+        self.context_menu = None;
+        self.menu_at = None;
+    }
+
     /// Artwork at any square size (home cards use 52, rows use 40).
     fn thumb_sized(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
         use iced::widget::{container, image, text};
@@ -1715,7 +1731,7 @@ impl AppState {
             }
             Message::EnqueueTrack(id) => {
                 self.show_suggest = false;
-                self.context_menu = None;
+                self.close_menu();
                 let task = self.enqueue_track_task(&id);
                 self.publish_mpris();
                 task
@@ -1973,7 +1989,7 @@ impl AppState {
             Message::OpenAlbum(id) => self.go(Route::Album(id)),
             Message::OpenPlaylist(id) => self.go(Route::PlaylistDetail(id)),
             Message::OpenLyrics(id) => {
-                self.context_menu = None;
+                self.close_menu();
                 self.go(Route::Lyrics(id.clone()));
                 #[cfg(feature = "lyrics")]
                 {
@@ -2015,7 +2031,7 @@ impl AppState {
                 }
             }
             Message::StartRadio(seed) => {
-                self.context_menu = None;
+                self.close_menu();
                 match self.find_track(&seed) {
                     None => {
                         self.status =
@@ -2220,7 +2236,7 @@ impl AppState {
                 }
             }
             Message::PlayNow(id) => {
-                self.context_menu = None;
+                self.close_menu();
                 self.show_suggest = false;
                 match self.find_track(&id) {
                     None => {
@@ -2280,7 +2296,7 @@ impl AppState {
                 }
             }
             Message::PlayNext(id) => {
-                self.context_menu = None;
+                self.close_menu();
                 self.show_suggest = false;
                 match self.find_track(&id) {
                     None => {
@@ -2301,7 +2317,7 @@ impl AppState {
                 }
             }
             Message::OpenContext(id) => {
-                self.context_menu = Some(id);
+                self.open_menu(id);
             }
             Message::CursorMoved(p) => {
                 self.cursor = Some(p);
@@ -2312,10 +2328,10 @@ impl AppState {
                 return iced::Task::none();
             }
             Message::CloseContext => {
-                self.context_menu = None;
+                self.close_menu();
             }
             Message::OpenTrackAlbum(id) => {
-                self.context_menu = None;
+                self.close_menu();
                 match self.find_track(&id) {
                     Some(t) => match t.album.clone() {
                         Some(album) => self.go(Route::Album(album)),
@@ -2329,7 +2345,7 @@ impl AppState {
                 }
             }
             Message::OpenTrackArtist(id) => {
-                self.context_menu = None;
+                self.close_menu();
                 match self.find_track(&id) {
                     Some(t) => self.go(Route::Artist(t.artist.clone())),
                     None => {
@@ -2338,7 +2354,7 @@ impl AppState {
                 }
             }
             Message::DownloadTrack(id) => {
-                self.context_menu = None;
+                self.close_menu();
                 match self.find_track(&id) {
                     None => {
                         self.status = format!("Track not found: {id}.");
@@ -4386,7 +4402,7 @@ impl AppState {
         .on_press(Message::CloseContext)
         .into();
         // Cursor-anchored placement (clamped on screen), YTM-style.
-        let (mx, my) = menu_pos(self.cursor, self.window);
+        let (mx, my) = menu_pos(self.menu_at, self.window);
         let placed: iced::Element<'_, Message> = container(column![
             iced::widget::Space::new().height(iced::Length::Fixed(my)),
             row![
@@ -5273,6 +5289,22 @@ mod tests {
         );
         // Unknown cursor/window: sane on-screen default.
         assert_eq!(menu_pos(None, None), (200.0, 150.0));
+    }
+
+    #[test]
+    fn context_menu_freezes_position_while_open() {
+        let mut s = test_state();
+        let _ = s.update(Message::CursorMoved(iced::Point::new(100.0, 120.0)));
+        let _ = s.update(Message::OpenContext("m1".into()));
+        assert_eq!(s.menu_at, Some(iced::Point::new(100.0, 120.0)));
+        // Mouse keeps moving (aiming at the menu): the anchor holds.
+        let _ = s.update(Message::CursorMoved(iced::Point::new(900.0, 700.0)));
+        assert_eq!(s.menu_at, Some(iced::Point::new(100.0, 120.0)));
+        assert_eq!(s.context_menu.as_deref(), Some("m1"));
+        // Closing drops the anchor.
+        let _ = s.update(Message::CloseContext);
+        assert!(s.menu_at.is_none());
+        assert!(s.context_menu.is_none());
     }
 
     #[test]
