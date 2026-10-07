@@ -150,5 +150,6 @@ Done: user can plausibly replace Spotify for daily listening.
 9. Phase 5/6 parallel push: scrobble submit + MPRIS live + mpv backend + disk cache + release pipeline (this session); Innertube real search backend (done, pending UI wiring)
 10. MVP push: no-mock UI (live search/radio default, catalog, queue/player controls) + playback clock + LRCLIB lyrics + OAuth login/library/YTM lyrics (this session; UI wiring for lyrics/login next)
 11. Real playback: click-to-play real audio (mpv default, rodio fallback), progress + draggable seek, auto-advance, video-ID paste removed, tone retired
+12. Instant round: progressive streaming, URL cache + prefetch, synced-lyrics view, thumbnails everywhere, browser nav, Home search, centered bar (drag-drop queue deferred: no Iced primitive)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

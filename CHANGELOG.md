@@ -25,6 +25,15 @@
   UI removed; test tone retired
 - Player bar: elapsed/total times, draggable progress, auto-advance at
   track end, artwork placeholder + like, live MPRIS position
+- Instant playback: mpv streams URLs progressively (no full download),
+  expire-aware URL cache (back/replay instant), next-song prefetch at 75%,
+  1s-early auto-advance; rodio keeps the download path
+- Synced lyrics view: LRCLIB fetch on open, current-line highlight
+  following playback, plain/instrumental fallbacks
+- Thumbnails in search rows, queue, right panel and player bar
+  (60px YTM art, async cached); durations on rows
+- Browser nav (back/forward + history), Home search bar with inline
+  results, truly centered player bar, honest empty states
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

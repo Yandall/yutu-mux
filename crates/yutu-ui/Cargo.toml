@@ -9,16 +9,17 @@ license = "MIT"
 yutu-core = { path = "../yutu-core" }
 yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
-iced = { version = "0.14", features = ["tokio"] }
+iced = { version = "0.14", features = ["tokio", "image"] }
 
 [features]
 # Default is the real app: live search/radio + scrobble submission + mpv
 # playback (seek/position/EQ). `--no-default-features` is the offline
 # compile check (empty states, rodio-only).
-default = ["submit", "innertube", "mpv"]
+default = ["submit", "innertube", "mpv", "lyrics"]
 innertube = ["yutu-core/innertube"]
 submit = ["yutu-core/submit"]
 mpv = ["yutu-player/mpv"]
+lyrics = ["yutu-core/lyrics"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
