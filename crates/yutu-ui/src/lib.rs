@@ -1,8 +1,11 @@
 //! yutu-ui: native Iced app (Phase 3 — basic YT Music views on MockBackend).
 
 use std::collections::HashSet;
-use yutu_core::{Album, LibraryStore, MockBackend, MusicBackend, Playlist, SearchResults, Track};
-use yutu_player::{Queue, RodioBackend};
+use yutu_core::{
+    forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore,
+    MockBackend, MusicBackend, Playlist, SearchResults, Track,
+};
+use yutu_player::{EqPreset, Queue, RodioBackend};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Route {
@@ -11,6 +14,7 @@ pub enum Route {
     Search,
     Queue,
     Library,
+    Discovery,
     Settings,
     Artist(String),
     Album(String),
@@ -55,6 +59,11 @@ pub enum Message {
         track_id: String,
     },
     DeletePlaylist(String),
+    SelectEqPreset(String),
+    ScrobbleToggled(bool),
+    ScrobbleUserChanged(String),
+    PlayWeeklyMix,
+    PlayForgotten,
 }
 
 pub struct AppState {
@@ -69,6 +78,12 @@ pub struct AppState {
     pub user_playlists: Vec<Playlist>,
     pub new_playlist_name: String,
     pub playlist_seq: u64,
+    /// Selected EQ preset name (in-memory only; never persisted).
+    pub eq_preset: String,
+    /// Scrobble toggle (in-memory only; submission is stubbed).
+    pub scrobble_enabled: bool,
+    /// Scrobble username (in-memory only; never persisted).
+    pub scrobble_user: String,
     paused: bool,
     backend: MockBackend,
     audio: Option<RodioBackend>,
@@ -108,6 +123,13 @@ fn find_track(id: &str) -> Option<Track> {
     MockBackend::fixture_tracks()
         .into_iter()
         .find(|t| t.id == id)
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// XDG data dir without extra deps: $XDG_DATA_HOME or ~/.local/share.
@@ -179,6 +201,9 @@ impl AppState {
                 user_playlists,
                 new_playlist_name: String::new(),
                 playlist_seq,
+                eq_preset: "Flat".into(),
+                scrobble_enabled: false,
+                scrobble_user: String::new(),
                 paused: false,
                 backend,
                 audio,
@@ -262,6 +287,14 @@ impl AppState {
         self.status = format!("Queued: {} — {}", track.title, track.artist);
         self.history.push(track.id.clone());
         self.persist_play(&track.id);
+        // Scrobble eligibility on a full play (played_secs = duration).
+        // Submission itself is stubbed — never claimed as real.
+        if self.scrobble_enabled && should_scrobble(track.duration_secs, track.duration_secs) {
+            self.status.push_str(&format!(
+                " | Scrobble-ready: {} (Last.fm/ListenBrainz submit stubbed)",
+                track.title
+            ));
+        }
         self.queue.push(track);
         if let Some(a) = &self.audio {
             a.play_test_tone();
@@ -289,6 +322,54 @@ impl AppState {
         if let Some(t) = self.results.tracks.get(i).cloned() {
             self.enqueue(t);
         }
+    }
+
+    /// Validate + select an EQ preset (in-memory only; never persisted).
+    fn select_eq_preset(&mut self, name: &str) {
+        match EqPreset::preset_by_name(name) {
+            Some(p) => match p.validate() {
+                Ok(()) => {
+                    // Honest copy: the rodio path has no EQ node yet, so the
+                    // selection only takes effect with the mpv backend.
+                    self.eq_preset = p.name.clone();
+                    self.status = format!("EQ: {} — takes effect with mpv backend", p.name);
+                }
+                Err(e) => {
+                    self.status = format!("EQ preset invalid: {e}.");
+                }
+            },
+            None => {
+                self.status = format!("Unknown EQ preset: {name}.");
+            }
+        }
+    }
+
+    /// Persisted play history for discovery (up to 200 entries).
+    fn discovery_history(&self) -> Vec<HistoryEntry> {
+        LibraryStore::open(&self.library_path)
+            .and_then(|s| s.history(200))
+            .unwrap_or_default()
+    }
+
+    /// Weekly Mix from persisted history + in-memory likes + fixture catalog.
+    pub fn weekly_mix_tracks(&self) -> Vec<Track> {
+        weekly_mix(
+            &self.discovery_history(),
+            &self.liked,
+            &MockBackend::fixture_tracks(),
+            10,
+            now_unix(),
+        )
+    }
+
+    /// Forgotten Favorites from in-memory likes + persisted history + catalog.
+    pub fn forgotten_tracks(&self) -> Vec<Track> {
+        forgotten_favorites(
+            &self.liked,
+            &self.discovery_history(),
+            &MockBackend::fixture_tracks(),
+            now_unix(),
+        )
     }
 
     fn all_playlists(&self) -> Vec<Playlist> {
@@ -500,6 +581,7 @@ impl AppState {
                         None => (Vec::new(), "Playlist not found".into()),
                     },
                     Route::Radio(seed) => (radio_for(seed), format!("Radio (seed {seed})")),
+                    Route::Discovery => (self.weekly_mix_tracks(), "Weekly Mix".to_string()),
                     _ => (self.results.tracks.clone(), "Search results".to_string()),
                 };
                 if tracks.is_empty() {
@@ -582,12 +664,40 @@ impl AppState {
                     self.status = format!("Playlist {id} is built-in and can't be deleted.");
                 }
             }
+            Message::SelectEqPreset(name) => self.select_eq_preset(&name),
+            Message::ScrobbleToggled(on) => {
+                self.scrobble_enabled = on;
+                self.status = if on {
+                    "Scrobbling enabled (submit stubbed).".into()
+                } else {
+                    "Scrobbling disabled.".into()
+                };
+            }
+            Message::ScrobbleUserChanged(u) => {
+                self.scrobble_user = u;
+            }
+            Message::PlayWeeklyMix => {
+                let tracks = self.weekly_mix_tracks();
+                if tracks.is_empty() {
+                    self.status = "Weekly Mix: nothing to queue.".into();
+                } else {
+                    self.queue_many(tracks, "Weekly Mix");
+                }
+            }
+            Message::PlayForgotten => {
+                let tracks = self.forgotten_tracks();
+                if tracks.is_empty() {
+                    self.status = "Forgotten Favorites: nothing to queue.".into();
+                } else {
+                    self.queue_many(tracks, "Forgotten Favorites");
+                }
+            }
         }
         iced::Task::none()
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, row, scrollable, slider, text, text_input};
+        use iced::widget::{button, checkbox, column, row, scrollable, slider, text, text_input};
         use iced::{Fill, Shrink};
 
         let radio_seed = self
@@ -600,6 +710,7 @@ impl AppState {
             button("Search").on_press(Message::Navigate(Route::Search)),
             button("Queue").on_press(Message::Navigate(Route::Queue)),
             button("Library").on_press(Message::Navigate(Route::Library)),
+            button("Discovery").on_press(Message::Navigate(Route::Discovery)),
             button("Settings").on_press(Message::Navigate(Route::Settings)),
             button("Radio").on_press(Message::StartRadio(radio_seed)),
         ]
@@ -826,16 +937,112 @@ impl AppState {
                 .spacing(8)
                 .into()
             }
-            Route::Settings => column![
-                text("Settings").size(20),
-                text(format!("Volume: {:.0}%", self.volume * 100.0)),
-                slider(0.0..=1.0, self.volume, Message::SetVolume),
-                text("Auth: anonymous (cookie import: Phase 4)."),
-                text("Backend: MockBackend — Innertube behind `innertube` feature (Phase 4)."),
-                text("Keys: Space play/pause, n next, p prev, / search."),
-            ]
-            .spacing(8)
-            .into(),
+            Route::Discovery => {
+                let weekly = self.weekly_mix_tracks();
+                let forgotten = self.forgotten_tracks();
+                let weekly_rows: Vec<iced::Element<'_, Message>> = weekly
+                    .iter()
+                    .map(|t| {
+                        row![
+                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
+                            button(if self.liked.contains(&t.id) {
+                                "♥"
+                            } else {
+                                "♡"
+                            })
+                            .on_press(Message::Like(t.id.clone())),
+                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
+                        ]
+                        .spacing(8)
+                        .into()
+                    })
+                    .collect();
+                let forgotten_rows: Vec<iced::Element<'_, Message>> = forgotten
+                    .iter()
+                    .map(|t| {
+                        row![
+                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
+                            button(if self.liked.contains(&t.id) {
+                                "♥"
+                            } else {
+                                "♡"
+                            })
+                            .on_press(Message::Like(t.id.clone())),
+                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
+                        ]
+                        .spacing(8)
+                        .into()
+                    })
+                    .collect();
+                let weekly_section: iced::Element<'_, Message> = if weekly_rows.is_empty() {
+                    text("Weekly Mix is empty — play and like some music.").into()
+                } else {
+                    column(weekly_rows).spacing(4).into()
+                };
+                let forgotten_section: iced::Element<'_, Message> = if forgotten_rows.is_empty() {
+                    text("No forgotten favorites — like some music.").into()
+                } else {
+                    column(forgotten_rows).spacing(4).into()
+                };
+                column![
+                    text("Discovery (offline, from local history)").size(20),
+                    text("Weekly Mix").size(18),
+                    button("Play all (Weekly Mix)").on_press(Message::PlayWeeklyMix),
+                    weekly_section,
+                    text("Forgotten Favorites (liked, unplayed 30+ days)").size(18),
+                    button("Play all (Forgotten)").on_press(Message::PlayForgotten),
+                    forgotten_section,
+                ]
+                .spacing(8)
+                .into()
+            }
+            Route::Settings => {
+                let eq_names: Vec<String> = EqPreset::builtin_presets()
+                    .into_iter()
+                    .map(|p| p.name)
+                    .collect();
+                let current_eq = self.eq_preset.clone();
+                let eq_buttons: Vec<iced::Element<'_, Message>> = eq_names
+                    .into_iter()
+                    .map(|n| {
+                        let label = if n == current_eq {
+                            format!("● {n}")
+                        } else {
+                            n.clone()
+                        };
+                        button(text(label))
+                            .on_press(Message::SelectEqPreset(n))
+                            .into()
+                    })
+                    .collect();
+                column![
+                    text("Settings").size(20),
+                    text(format!("Volume: {:.0}%", self.volume * 100.0)),
+                    slider(0.0..=1.0, self.volume, Message::SetVolume),
+                    text("Auth: anonymous (cookie import: Phase 4)."),
+                    text("Backend: MockBackend — Innertube behind `innertube` feature (Phase 4)."),
+                    text("Keys: Space play/pause, n next, p prev, / search."),
+                    text("EQ preset (in-memory only; rodio path has no EQ node yet)").size(18),
+                    row(eq_buttons).spacing(6),
+                    text(format!("Current EQ: {current_eq}")),
+                    text("Scrobbling (in-memory only; submission stubbed)").size(18),
+                    checkbox(self.scrobble_enabled)
+                        .label("Enable scrobbling")
+                        .on_toggle(Message::ScrobbleToggled),
+                    text_input("Last.fm / ListenBrainz user…", &self.scrobble_user)
+                        .on_input(Message::ScrobbleUserChanged),
+                    text(format!(
+                        "Scrobble user: {}",
+                        if self.scrobble_user.is_empty() {
+                            "(not set)"
+                        } else {
+                            &self.scrobble_user
+                        }
+                    )),
+                ]
+                .spacing(8)
+                .into()
+            }
             Route::Artist(id) => {
                 let name = self.resolve_artist_name(id);
                 let tracks = self.artist_tracks(&name);
@@ -1189,6 +1396,77 @@ mod tests {
         assert!(s.paused);
         let _ = s.update(Message::TogglePause);
         assert!(!s.paused);
+    }
+
+    #[test]
+    fn eq_preset_selection_valid_and_invalid() {
+        let mut s = test_state();
+        assert_eq!(s.eq_preset, "Flat");
+        let _ = s.update(Message::SelectEqPreset("Rock".into()));
+        assert_eq!(s.eq_preset, "Rock");
+        assert!(s.status.contains("EQ: Rock"));
+        assert!(s.status.contains("mpv backend"));
+        // Case-insensitive lookup keeps the canonical name.
+        let _ = s.update(Message::SelectEqPreset("pop".into()));
+        assert_eq!(s.eq_preset, "Pop");
+        // Unknown names leave the selection unchanged.
+        let _ = s.update(Message::SelectEqPreset("Nope".into()));
+        assert_eq!(s.eq_preset, "Pop");
+        assert!(s.status.contains("Unknown EQ preset"));
+    }
+
+    #[test]
+    fn discovery_sections_nonempty_with_seeded_history() {
+        let mut s = test_state();
+        let _ = s.update(Message::Like("m1".into()));
+        let _ = s.update(Message::Like("m2".into()));
+        // Seed plays older than 24h so the Weekly Mix doesn't skip them.
+        let old = now_unix() - 5 * 86_400;
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        store.record_play("m2", old).unwrap();
+        store.record_play("m3", old).unwrap();
+        let weekly = s.weekly_mix_tracks();
+        assert!(!weekly.is_empty(), "weekly mix should be non-empty");
+        let forgotten = s.forgotten_tracks();
+        // m1 is liked and never played -> forgotten.
+        assert!(forgotten.iter().any(|t| t.id == "m1"));
+        // Play-all appends via the existing queue path.
+        let _ = s.update(Message::PlayWeeklyMix);
+        assert_eq!(s.queue.len(), weekly.len());
+        assert!(s.status.contains("Weekly Mix"));
+        let _ = s.update(Message::PlayForgotten);
+        assert_eq!(s.queue.len(), weekly.len() + forgotten.len());
+    }
+
+    #[test]
+    fn discovery_play_all_empty_is_graceful() {
+        let s = test_state();
+        assert!(s.weekly_mix_tracks().is_empty());
+        assert!(s.forgotten_tracks().is_empty());
+        let mut s = s;
+        let _ = s.update(Message::PlayWeeklyMix);
+        assert!(s.status.contains("nothing to queue"));
+        let _ = s.update(Message::PlayForgotten);
+        assert!(s.status.contains("nothing to queue"));
+    }
+
+    #[test]
+    fn scrobble_status_on_enqueue_when_enabled() {
+        let mut s = test_state();
+        assert!(!s.scrobble_enabled);
+        let _ = s.update(Message::ScrobbleToggled(true));
+        assert!(s.scrobble_enabled);
+        assert!(s.status.contains("stubbed"));
+        let _ = s.update(Message::ScrobbleUserChanged("alice".into()));
+        assert_eq!(s.scrobble_user, "alice");
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        assert!(s.status.contains("Scrobble-ready:"));
+        assert!(s.status.contains("stubbed"));
+        // Disabled by default: no scrobble text on enqueue.
+        let mut s2 = test_state();
+        let _ = s2.update(Message::EnqueueTrack("m1".into()));
+        assert!(!s2.status.contains("Scrobble-ready"));
+        assert!(!s2.status.contains("submit stubbed"));
     }
 
     #[test]
