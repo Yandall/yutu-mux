@@ -7,3 +7,5 @@ license = "MIT"
 
 [dependencies]
 yutu-core = { path = "../yutu-core" }
+zbus = "5"
+tokio = { version = "1", features = ["rt", "macros"] }
