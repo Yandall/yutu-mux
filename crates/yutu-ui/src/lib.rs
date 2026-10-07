@@ -9,6 +9,7 @@ pub enum Route {
     #[default]
     Home,
     Search,
+    Queue,
     Library,
     Settings,
 }
@@ -26,6 +27,10 @@ pub enum Message {
     Prev,
     Like(String),
     SetVolume(f32),
+    QueueRemove(usize),
+    QueueUp(usize),
+    QueueDown(usize),
+    QueueClear,
 }
 
 pub struct AppState {
@@ -211,6 +216,19 @@ impl AppState {
                     a.set_volume(self.volume);
                 }
             }
+            Message::QueueRemove(i) => {
+                self.queue.remove_at(i);
+            }
+            Message::QueueUp(i) => {
+                self.queue.move_up(i);
+            }
+            Message::QueueDown(i) => {
+                self.queue.move_down(i);
+            }
+            Message::QueueClear => {
+                self.queue.clear();
+                self.status = "Queue cleared.".into();
+            }
         }
         iced::Task::none()
     }
@@ -222,6 +240,7 @@ impl AppState {
         let nav = row![
             button("Home").on_press(Message::Navigate(Route::Home)),
             button("Search").on_press(Message::Navigate(Route::Search)),
+            button("Queue").on_press(Message::Navigate(Route::Queue)),
             button("Library").on_press(Message::Navigate(Route::Library)),
             button("Settings").on_press(Message::Navigate(Route::Settings)),
         ]
@@ -285,6 +304,31 @@ impl AppState {
                     input,
                     button("Search").on_press(Message::Search),
                     scrollable(column(rows).spacing(4))
+                ]
+                .spacing(8)
+                .into()
+            }
+            Route::Queue => {
+                let rows: Vec<iced::Element<'_, Message>> = self
+                    .queue
+                    .items()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        row![
+                            text(format!("{}. {} — {}", i + 1, t.title, t.artist)).width(Fill),
+                            button("↑").on_press(Message::QueueUp(i)),
+                            button("↓").on_press(Message::QueueDown(i)),
+                            button("✕").on_press(Message::QueueRemove(i)),
+                        ]
+                        .spacing(6)
+                        .into()
+                    })
+                    .collect();
+                column![
+                    text("Up Next").size(20),
+                    button("Clear queue").on_press(Message::QueueClear),
+                    scrollable(column(rows).spacing(4)),
                 ]
                 .spacing(8)
                 .into()
