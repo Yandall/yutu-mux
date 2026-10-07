@@ -22,7 +22,7 @@ yutu-core = { path = "crates/yutu-core" }
 yutu-player = { path = "crates/yutu-player" }
 yutu-ui = { path = "crates/yutu-ui" }
 yutu-desktop = { path = "crates/yutu-desktop" }
-iced = "0.14"
+iced = { version = "0.14", features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "macros", "signal"] }
 
 [profile.release]
