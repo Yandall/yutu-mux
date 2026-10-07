@@ -1,0 +1,7 @@
+{
+  "playabilityStatus": {
+    "status": "UNPLAYABLE",
+    "reason": "This video is no longer available (redacted fixture)."
+  },
+  "videoDetails": { "videoId": "REDACTED", "title": "Redacted fixture" }
+}

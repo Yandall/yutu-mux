@@ -1,0 +1,21 @@
+{
+  "playabilityStatus": { "status": "OK", "playableInEmbed": true },
+  "streamingData": {
+    "adaptiveFormats": [
+      {
+        "itag": 251,
+        "mimeType": "audio/webm; codecs=\"opus\"",
+        "bitrate": 160000,
+        "url": "https://example.invalid/audio.webm",
+        "contentLength": "1234567"
+      },
+      {
+        "itag": 22,
+        "mimeType": "video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"",
+        "bitrate": 2000000,
+        "url": "https://example.invalid/video.mp4"
+      }
+    ]
+  },
+  "videoDetails": { "videoId": "REDACTED", "title": "Redacted fixture" }
+}
