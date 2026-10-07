@@ -53,6 +53,8 @@
 - Real right-click context menu at the cursor (mouse_area +
   cursor/window tracking, clamped on screen); left-click/Esc
   dismisses, right-clicking another row moves it in one step
+- Add-to-queue is append-only (never hijacks playback); new loads cut
+  the old song instantly for immediate feedback
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
