@@ -10,6 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 rusqlite = "0.32"
+md5 = "0.8"
 ytmapi-rs = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 

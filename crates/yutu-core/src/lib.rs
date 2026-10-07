@@ -2,16 +2,22 @@
 
 pub mod auth;
 pub mod backend;
+pub mod discovery;
 #[cfg(feature = "innertube")]
 pub mod innertube;
 pub mod library;
 pub mod models;
+pub mod scrobble;
 pub mod stream;
 
 pub use auth::{AuthState, CookieAuth};
 pub use backend::{MockBackend, MusicBackend};
+pub use discovery::{forgotten_favorites, weekly_mix};
 #[cfg(feature = "innertube")]
 pub use innertube::InnertubeBackend;
 pub use library::LibraryStore;
 pub use models::{Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults, Track};
+pub use scrobble::{
+    api_sig, build_listen_payload, build_scrobble_params, should_scrobble, Scrobble,
+};
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
