@@ -62,6 +62,20 @@ impl Queue {
         self.index = None;
     }
 
+    /// Insert `track` right after the current item (play-next). Empty queue:
+    /// behaves like [`Queue::push`]. Returns the inserted position.
+    pub fn insert_next(&mut self, track: Track) -> usize {
+        let at = match self.index {
+            Some(i) => (i + 1).min(self.items.len()),
+            None => {
+                self.push(track);
+                return 0;
+            }
+        };
+        self.items.insert(at, track);
+        at
+    }
+
     pub fn move_up(&mut self, i: usize) -> bool {
         if i == 0 || i >= self.items.len() {
             return false;
@@ -172,6 +186,20 @@ mod tests {
         assert_eq!(q.position(), Some(2));
         assert!(Queue::default().position().is_none());
         assert!(!Queue::default().jump_to(0));
+    }
+
+    #[test]
+    fn insert_next_lands_after_current() {
+        let mut q = queue_of(3);
+        assert_eq!(q.position(), Some(0));
+        let t = MockBackend::fixture_tracks()[4].clone();
+        assert_eq!(q.insert_next(t), 1);
+        assert_eq!(q.items()[1].id, "m5");
+        assert_eq!(q.position(), Some(0));
+        // Empty queue: insert acts as push.
+        let mut q = Queue::default();
+        assert_eq!(q.insert_next(MockBackend::fixture_tracks()[0].clone()), 0);
+        assert_eq!(q.position(), Some(0));
     }
 
     #[test]

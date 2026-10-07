@@ -152,5 +152,6 @@ Done: user can plausibly replace Spotify for daily listening.
 11. Real playback: click-to-play real audio (mpv default, rodio fallback), progress + draggable seek, auto-advance, video-ID paste removed, tone retired
 12. Instant round: progressive streaming, URL cache + prefetch, synced-lyrics view, thumbnails everywhere, browser nav, Home search, centered bar (drag-drop queue deferred: no Iced primitive)
 13. Round 2: as-you-type debounced search (stays on page, stale-safe), clickable + following lyrics, Spotify-style refresh (quick-pick grid, library chips, Queue/Recent tabs, global header), Google device-flow login + library/liked import
+14. Round 3: suggestion popup + Enter-to-Search, play-now queue replace + autoplay tail, play-next insert, context menu (… button), offline download, NowPlaying drawer, YTM slim sidebar + collapse, honest EQ, cookie import (no OAuth client), bigger nav
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
