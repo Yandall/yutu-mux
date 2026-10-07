@@ -50,6 +50,9 @@
   (Home/Search/Library + filter + inline create + collapse rail)
 - Honest EQ status (mpv-only filters; rodio reports it); bigger nav
   buttons; cookie-file import (normal browser login, no OAuth client)
+- Real right-click context menu at the cursor (mouse_area +
+  cursor/window tracking, clamped on screen); left-click/Esc
+  dismisses, right-clicking another row moves it in one step
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

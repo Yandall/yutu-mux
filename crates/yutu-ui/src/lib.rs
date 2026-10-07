@@ -228,10 +228,12 @@ pub enum Message {
     },
     /// Insert after the current item (context menu: play next).
     PlayNext(String),
-    /// Context menu open/close (Iced has no right-click primitive; the
-    /// per-row `…` button opens the same menu YouTube Music shows).
+    /// Context menu open/close: right-click (per-row `mouse_area`) or the
+    /// per-row `…` button opens it at the last cursor position.
     OpenContext(String),
     CloseContext,
+    CursorMoved(iced::Point),
+    WindowResized(iced::Size),
     /// Context menu: jump to this track's album/artist detail.
     OpenTrackAlbum(String),
     OpenTrackArtist(String),
@@ -454,6 +456,22 @@ fn url_expiry(url: &str) -> Option<u64> {
         .find_map(|p| p.strip_prefix("expire=").and_then(|v| v.parse().ok()))
 }
 
+/// Context-menu origin from the last cursor position, clamped so the
+/// 300px menu never runs off screen. Falls back to a sane default when
+/// the cursor/window are still unknown (e.g. keyboard-opened).
+fn menu_pos(cursor: Option<iced::Point>, window: Option<iced::Size>) -> (f32, f32) {
+    const MENU_W: f32 = 300.0;
+    const MENU_H: f32 = 470.0;
+    let (cx, cy) = cursor.map(|p| (p.x, p.y)).unwrap_or((200.0, 150.0));
+    let (ww, hh) = window
+        .map(|s| (s.width, s.height))
+        .unwrap_or((1280.0, 800.0));
+    (
+        cx.min((ww - MENU_W).max(0.0)).max(0.0),
+        cy.min((hh - MENU_H).max(0.0)).max(0.0),
+    )
+}
+
 /// Format seconds as `m:ss` for the player bar.
 fn fmt_time(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
@@ -509,6 +527,10 @@ pub struct AppState {
     show_suggest: bool,
     /// Context menu open for this track id (None = closed).
     context_menu: Option<String>,
+    /// Last cursor position (window coords — anchors the context menu).
+    cursor: Option<iced::Point>,
+    /// Last window size (clamps the context menu on screen).
+    window: Option<iced::Size>,
     /// Sidebar expanded (false = icon rail).
     sidebar_expanded: bool,
     /// Playlist filter text in the sidebar.
@@ -892,6 +914,8 @@ impl AppState {
                 suggest_gen: 0,
                 show_suggest: false,
                 context_menu: None,
+                cursor: None,
+                window: None,
                 sidebar_expanded: true,
                 sidebar_filter: String::new(),
                 autoplay_for: None,
@@ -959,12 +983,24 @@ impl AppState {
                 iced::keyboard::Key::Character("/") => Some(Message::Navigate(Route::Search)),
                 iced::keyboard::Key::Character("n") => Some(Message::Next),
                 iced::keyboard::Key::Character("p") => Some(Message::Prev),
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                    Some(Message::CloseContext)
+                }
                 _ => None,
             },
             _ => None,
         });
         let tick = iced::time::every(std::time::Duration::from_millis(500)).map(Message::Tick);
-        iced::Subscription::batch([keys, tick])
+        let events = iced::event::listen().filter_map(|event| match event {
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                Some(Message::CursorMoved(position))
+            }
+            iced::Event::Window(iced::window::Event::Resized(size)) => {
+                Some(Message::WindowResized(size))
+            }
+            _ => None,
+        });
+        iced::Subscription::batch([keys, tick, events])
     }
 
     fn persist_like(&self, id: &str, liked: bool) {
@@ -2267,6 +2303,14 @@ impl AppState {
             Message::OpenContext(id) => {
                 self.context_menu = Some(id);
             }
+            Message::CursorMoved(p) => {
+                self.cursor = Some(p);
+                return iced::Task::none();
+            }
+            Message::WindowResized(sz) => {
+                self.window = Some(sz);
+                return iced::Task::none();
+            }
             Message::CloseContext => {
                 self.context_menu = None;
             }
@@ -2830,38 +2874,41 @@ impl AppState {
     /// One compact track row: green play, title/artist, heart. All other
     /// actions live on detail screens — this killed the button-soup.
     fn track_row(&self, t: &Track) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, row, text};
+        use iced::widget::{button, column, mouse_area, row, text};
         use iced::Fill;
         let heart = if self.liked.contains(&t.id) {
             "♥"
         } else {
             "♡"
         };
-        row![
-            self.thumb(t),
-            button(text("▶").size(13))
-                .style(green_play)
-                .on_press(Message::PlayNow(t.id.clone()))
-                .padding(6),
-            column![
-                text(t.title.clone()).size(14),
-                text(t.artist.clone()).size(12).color(MUTED),
+        mouse_area(
+            row![
+                self.thumb(t),
+                button(text("▶").size(13))
+                    .style(green_play)
+                    .on_press(Message::PlayNow(t.id.clone()))
+                    .padding(6),
+                column![
+                    text(t.title.clone()).size(14),
+                    text(t.artist.clone()).size(12).color(MUTED),
+                ]
+                .spacing(2)
+                .width(Fill),
+                text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                button(text(heart).size(15))
+                    .style(button::text)
+                    .on_press(Message::Like(t.id.clone()))
+                    .padding(6),
+                button(text("…").size(15))
+                    .style(button::text)
+                    .on_press(Message::OpenContext(t.id.clone()))
+                    .padding(6),
             ]
-            .spacing(2)
-            .width(Fill),
-            text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
-            button(text(heart).size(15))
-                .style(button::text)
-                .on_press(Message::Like(t.id.clone()))
-                .padding(6),
-            button(text("…").size(15))
-                .style(button::text)
-                .on_press(Message::OpenContext(t.id.clone()))
-                .padding(6),
-        ]
-        .spacing(8)
-        .align_y(iced::alignment::Vertical::Center)
-        .padding(4)
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .padding(4),
+        )
+        .on_right_press(Message::OpenContext(t.id.clone()))
         .into()
     }
 
@@ -3023,7 +3070,7 @@ impl AppState {
     }
 
     fn right_panel_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let current = self.queue.current().cloned();
         let pos = self.queue.position();
@@ -3070,24 +3117,28 @@ impl AppState {
             .enumerate()
             .map(|(i, t)| {
                 let is_current = Some(i) == pos;
-                row![
-                    self.thumb(t),
-                    button(text(format!("{} — {}", t.title, t.artist)).size(12).color(
-                        if is_current {
-                            SPOT_GREEN
-                        } else {
-                            iced::Color::WHITE
-                        }
-                    ))
-                    .style(button::text)
-                    .on_press(Message::QueueJump(i))
-                    .padding(3)
-                    .width(Fill),
-                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                ]
-                .spacing(6)
-                .align_y(iced::alignment::Vertical::Center)
-                .padding(2)
+                let menu_id = t.id.clone();
+                mouse_area(
+                    row![
+                        self.thumb(t),
+                        button(text(format!("{} — {}", t.title, t.artist)).size(12).color(
+                            if is_current {
+                                SPOT_GREEN
+                            } else {
+                                iced::Color::WHITE
+                            }
+                        ))
+                        .style(button::text)
+                        .on_press(Message::QueueJump(i))
+                        .padding(3)
+                        .width(Fill),
+                        text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .padding(2),
+                )
+                .on_right_press(Message::OpenContext(menu_id))
                 .into()
             })
             .collect();
@@ -3138,18 +3189,26 @@ impl AppState {
                         recent
                             .iter()
                             .map(|t| {
-                                row![
-                                    self.thumb(t),
-                                    button(text(format!("{} — {}", t.title, t.artist)).size(12))
+                                let menu_id = t.id.clone();
+                                mouse_area(
+                                    row![
+                                        self.thumb(t),
+                                        button(
+                                            text(format!("{} — {}", t.title, t.artist)).size(12)
+                                        )
                                         .style(button::text)
                                         .on_press(Message::EnqueueTrack(t.id.clone()))
                                         .padding(3)
                                         .width(Fill),
-                                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                                .padding(2)
+                                        text(fmt_time(t.duration_secs as f64))
+                                            .size(11)
+                                            .color(MUTED),
+                                    ]
+                                    .spacing(6)
+                                    .align_y(iced::alignment::Vertical::Center)
+                                    .padding(2),
+                                )
+                                .on_right_press(Message::OpenContext(menu_id))
                                 .into()
                             })
                             .collect::<Vec<_>>(),
@@ -3308,7 +3367,8 @@ impl AppState {
 
     fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{
-            button, checkbox, column, container, row, scrollable, slider, text, text_input,
+            button, checkbox, column, container, mouse_area, row, scrollable, slider, text,
+            text_input,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -3354,24 +3414,28 @@ impl AppState {
                             let cards: Vec<iced::Element<'_, Message>> = pair
                                 .iter()
                                 .map(|t| {
-                                    button(
-                                        row![
-                                            self.thumb_sized(t, 52.0),
-                                            column![
-                                                text(t.title.clone()).size(14),
-                                                text(t.artist.clone()).size(12).color(MUTED),
+                                    let menu_id = t.id.clone();
+                                    mouse_area(
+                                        button(
+                                            row![
+                                                self.thumb_sized(t, 52.0),
+                                                column![
+                                                    text(t.title.clone()).size(14),
+                                                    text(t.artist.clone()).size(12).color(MUTED),
+                                                ]
+                                                .spacing(2)
+                                                .width(Fill),
                                             ]
-                                            .spacing(2)
-                                            .width(Fill),
-                                        ]
-                                        .spacing(10)
-                                        .padding(6)
-                                        .align_y(iced::alignment::Vertical::Center),
+                                            .spacing(10)
+                                            .padding(6)
+                                            .align_y(iced::alignment::Vertical::Center),
+                                        )
+                                        .style(card_button)
+                                        .on_press(Message::PlayNow(t.id.clone()))
+                                        .padding(0)
+                                        .width(Fill),
                                     )
-                                    .style(card_button)
-                                    .on_press(Message::EnqueueTrack(t.id.clone()))
-                                    .padding(0)
-                                    .width(Fill)
+                                    .on_right_press(Message::OpenContext(menu_id))
                                     .into()
                                 })
                                 .collect();
@@ -3549,40 +3613,44 @@ impl AppState {
                     .iter()
                     .enumerate()
                     .map(|(i, t)| {
-                        use iced::widget::{button, row, text};
+                        use iced::widget::{button, mouse_area, row, text};
                         use iced::Fill;
                         let is_current = Some(i) == pos;
                         let marker = if is_current { "● " } else { "" };
-                        row![
-                            button(
-                                text(format!("{marker}{}. {} — {}", i + 1, t.title, t.artist))
-                                    .size(14)
-                                    .color(if is_current {
-                                        SPOT_GREEN
-                                    } else {
-                                        iced::Color::WHITE
-                                    })
-                            )
-                            .style(button::text)
-                            .on_press(Message::QueueJump(i))
-                            .padding(4)
-                            .width(Fill),
-                            button(text("↑").size(12))
+                        let jump = t.id.clone();
+                        mouse_area(
+                            row![
+                                button(
+                                    text(format!("{marker}{}. {} — {}", i + 1, t.title, t.artist))
+                                        .size(14)
+                                        .color(if is_current {
+                                            SPOT_GREEN
+                                        } else {
+                                            iced::Color::WHITE
+                                        })
+                                )
                                 .style(button::text)
-                                .on_press(Message::QueueUp(i))
-                                .padding(5),
-                            button(text("↓").size(12))
-                                .style(button::text)
-                                .on_press(Message::QueueDown(i))
-                                .padding(5),
-                            button(text("✕").size(12))
-                                .style(button::text)
-                                .on_press(Message::QueueRemove(i))
-                                .padding(5),
-                        ]
-                        .spacing(4)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .padding(2)
+                                .on_press(Message::QueueJump(i))
+                                .padding(4)
+                                .width(Fill),
+                                button(text("↑").size(12))
+                                    .style(button::text)
+                                    .on_press(Message::QueueUp(i))
+                                    .padding(5),
+                                button(text("↓").size(12))
+                                    .style(button::text)
+                                    .on_press(Message::QueueDown(i))
+                                    .padding(5),
+                                button(text("✕").size(12))
+                                    .style(button::text)
+                                    .on_press(Message::QueueRemove(i))
+                                    .padding(5),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .padding(2),
+                        )
+                        .on_right_press(Message::OpenContext(jump))
                         .into()
                     })
                     .collect();
@@ -4188,7 +4256,7 @@ impl AppState {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text, Stack};
+        use iced::widget::{button, column, container, mouse_area, row, text, Stack};
         use iced::Fill;
         let main = row![
             self.sidebar_view(),
@@ -4305,15 +4373,31 @@ impl AppState {
         )
         .style(card_bg)
         .padding(14)
-        .width(320);
-        let overlay: iced::Element<'_, Message> = container(menu)
-            .style(dim_bg)
-            .width(Fill)
-            .height(Fill)
-            .align_x(iced::alignment::Horizontal::Center)
-            .align_y(iced::alignment::Vertical::Center)
-            .into();
-        Stack::with_children(vec![base, overlay]).into()
+        .width(300);
+        // Dismiss layer: left-click outside closes the menu. It sets no
+        // right-press handler, so right-clicks pass through to the rows
+        // below — right-clicking another song moves the menu in one step.
+        let scrim: iced::Element<'_, Message> = mouse_area(
+            container(text("").size(1))
+                .style(dim_bg)
+                .width(Fill)
+                .height(Fill),
+        )
+        .on_press(Message::CloseContext)
+        .into();
+        // Cursor-anchored placement (clamped on screen), YTM-style.
+        let (mx, my) = menu_pos(self.cursor, self.window);
+        let placed: iced::Element<'_, Message> = container(column![
+            iced::widget::Space::new().height(iced::Length::Fixed(my)),
+            row![
+                iced::widget::Space::new().width(iced::Length::Fixed(mx)),
+                menu,
+            ],
+        ])
+        .width(Fill)
+        .height(Fill)
+        .into();
+        Stack::with_children(vec![base, scrim, placed]).into()
     }
 }
 
@@ -5172,6 +5256,36 @@ mod tests {
         let _ = s.update(Message::EnqueueTrack("m1".into()));
         let _ = s.update(Message::Navigate(Route::NowPlaying));
         assert_eq!(s.route, Route::NowPlaying);
+    }
+
+    #[test]
+    fn menu_pos_anchors_at_cursor_and_clamps() {
+        let win = Some(iced::Size::new(1280.0, 800.0));
+        // Free space: origin == cursor.
+        assert_eq!(
+            menu_pos(Some(iced::Point::new(100.0, 120.0)), win),
+            (100.0, 120.0)
+        );
+        // Near the bottom-right: clamped so 300x470 stays visible.
+        assert_eq!(
+            menu_pos(Some(iced::Point::new(1200.0, 700.0)), win),
+            (980.0, 330.0)
+        );
+        // Unknown cursor/window: sane on-screen default.
+        assert_eq!(menu_pos(None, None), (200.0, 150.0));
+    }
+
+    #[test]
+    fn cursor_and_window_tracking_store() {
+        let mut s = test_state();
+        assert!(s.cursor.is_none());
+        let _ = s.update(Message::CursorMoved(iced::Point::new(11.0, 22.0)));
+        assert_eq!(s.cursor, Some(iced::Point::new(11.0, 22.0)));
+        let _ = s.update(Message::WindowResized(iced::Size::new(1600.0, 900.0)));
+        assert_eq!(s.window, Some(iced::Size::new(1600.0, 900.0)));
+        // Right-click opens the menu for the row's track.
+        let _ = s.update(Message::OpenContext("m1".into()));
+        assert_eq!(s.context_menu.as_deref(), Some("m1"));
     }
 
     #[test]
