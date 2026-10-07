@@ -1,0 +1,10 @@
+[package]
+name = "yutu-player"
+version = "0.1.0"
+edition = "2021"
+description = "Queue state machine + audio backend trait (yutu-mux)"
+license = "MIT"
+
+[dependencies]
+yutu-core = { path = "../yutu-core" }
+thiserror = "1"
