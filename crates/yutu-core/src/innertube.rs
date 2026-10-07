@@ -192,6 +192,7 @@ impl InnertubeBackend {
             Err(StreamError::PoTokenRequired { .. }) => {
                 let bin = botguard_bin.to_string();
                 let video_id = req.video_id.clone();
+                eprintln!("[yutu-stream] PO-gated; minting via sidecar {bin}");
                 let minted = tokio::task::spawn_blocking({
                     let video_id = video_id.clone();
                     move || crate::pot::fetch_po_token(&bin, &video_id)
@@ -199,21 +200,53 @@ impl InnertubeBackend {
                 .await
                 .map_err(|e| StreamError::Network(format!("sidecar task: {e}")))?
                 .map_err(StreamError::Network)?;
-                let content_token = minted
-                    .tokens
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| StreamError::Network("sidecar returned no tokens".into()))?;
-                let session_token = minted.tokens.get(1).cloned();
-                let raw = raw_player_with_token(&video_id, &content_token).await?;
-                let value: serde_json::Value = serde_json::from_str(&raw)
-                    .map_err(|e| StreamError::Network(format!("token player JSON: {e}")))?;
-                let url = extract_audio_url(&value)
-                    .ok_or_else(|| classify_no_url(&value, StreamClient::WebMusic, &video_id))?;
-                Ok(ResolvedStream {
-                    url,
-                    pot_token: session_token,
-                })
+                eprintln!(
+                    "[yutu-stream] minted {} token(s), snapshot={}",
+                    minted.tokens.len(),
+                    minted.tokens.is_empty()
+                );
+                // Token order (content- vs session-bound) is undocumented, so
+                // try each minted token as the player poToken in turn.
+                let mut last_err = StreamError::PoTokenRequired {
+                    client: "web_music",
+                };
+                for (i, content_token) in minted.tokens.iter().enumerate() {
+                    eprintln!("[yutu-stream] player POST attempt with token #{i}");
+                    match raw_player_with_token(&video_id, content_token).await {
+                        Err(e) => {
+                            eprintln!("[yutu-stream] token #{i} POST failed: {e}");
+                            last_err = e;
+                        }
+                        Ok(raw) => {
+                            let value: serde_json::Value =
+                                serde_json::from_str(&raw).map_err(|e| {
+                                    StreamError::Network(format!("token player JSON: {e}"))
+                                })?;
+                            eprintln!(
+                                "[yutu-stream] token #{i} playability={}",
+                                value
+                                    .pointer("/playabilityStatus/status")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("?"),
+                            );
+                            match extract_audio_url(&value) {
+                                Some(url) => {
+                                    eprintln!("[yutu-stream] token #{i} yielded URL");
+                                    return Ok(ResolvedStream {
+                                        url,
+                                        pot_token: minted.tokens.get(1).cloned(),
+                                    });
+                                }
+                                None => {
+                                    last_err =
+                                        classify_no_url(&value, StreamClient::WebMusic, &video_id);
+                                    eprintln!("[yutu-stream] token #{i} no URL: {last_err}");
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(last_err)
             }
         }
     }
@@ -245,6 +278,7 @@ async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String,
         .text()
         .await
         .map_err(|e| StreamError::Network(format!("token player body: {e}")))?;
+    eprintln!("[yutu-stream] player POST HTTP {status}");
     if !status.is_success() {
         return Err(classify_player_error(
             &format!("{status} {text}"),
