@@ -8,4 +8,8 @@ license = "MIT"
 [dependencies]
 yutu-core = { path = "../yutu-core" }
 thiserror = "1"
+serde = { version = "1", features = ["derive"] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
+
+[dev-dependencies]
+serde_json = "1"
