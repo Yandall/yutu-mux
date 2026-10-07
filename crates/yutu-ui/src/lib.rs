@@ -64,6 +64,12 @@ pub enum Message {
     ScrobbleUserChanged(String),
     PlayWeeklyMix,
     PlayForgotten,
+    StreamIdChanged(String),
+    PlayStreamId,
+    StreamResolved {
+        video_id: String,
+        result: Result<Vec<u8>, String>,
+    },
 }
 
 pub struct AppState {
@@ -84,6 +90,8 @@ pub struct AppState {
     pub scrobble_enabled: bool,
     /// Scrobble username (in-memory only; never persisted).
     pub scrobble_user: String,
+    /// Video-ID input for real-stream playback (innertube feature).
+    pub stream_id_input: String,
     paused: bool,
     backend: MockBackend,
     audio: Option<RodioBackend>,
@@ -123,6 +131,23 @@ fn find_track(id: &str) -> Option<Track> {
     MockBackend::fixture_tracks()
         .into_iter()
         .find(|t| t.id == id)
+}
+
+/// Resolve a video ID to bytes: anonymous Innertube connect, fallback-chain
+/// stream resolution, then download. PO-token gating surfaces as an
+/// actionable error (install the sidecar / use token-free clients).
+#[cfg(feature = "innertube")]
+async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
+    use yutu_core::{InnertubeBackend, StreamRequest};
+    let backend = InnertubeBackend::connect_anonymous().await?;
+    let mut req = StreamRequest::new(video_id);
+    let url = backend
+        .resolve_stream(&mut req)
+        .await
+        .map_err(|e| format!("{e} — {}", e.hint()))?;
+    yutu_player::fetch_bytes(&url)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn now_unix() -> i64 {
@@ -204,6 +229,7 @@ impl AppState {
                 eq_preset: "Flat".into(),
                 scrobble_enabled: false,
                 scrobble_user: String::new(),
+                stream_id_input: String::new(),
                 paused: false,
                 backend,
                 audio,
@@ -692,8 +718,59 @@ impl AppState {
                     self.queue_many(tracks, "Forgotten Favorites");
                 }
             }
+            Message::StreamIdChanged(id) => {
+                self.stream_id_input = id;
+            }
+            Message::PlayStreamId => {
+                let id = self.stream_id_input.trim().to_string();
+                if id.is_empty() {
+                    self.status = "Paste a YouTube video ID first.".into();
+                } else {
+                    self.status = format!("Resolving stream {id}…");
+                    self.history.push(format!("stream:{id}"));
+                    #[cfg(feature = "innertube")]
+                    return Self::resolve_task(id);
+                    #[cfg(not(feature = "innertube"))]
+                    {
+                        self.status =
+                            "Real streams need `--features innertube` (offline build).".into();
+                    }
+                }
+            }
+            Message::StreamResolved { video_id, result } => match result {
+                Ok(bytes) => match &self.audio {
+                    None => {
+                        self.status = format!("Stream {video_id} fetched, but no audio device.");
+                    }
+                    Some(audio) => match audio.play_bytes(bytes) {
+                        Ok(()) => {
+                            self.status = format!("Playing real stream {video_id}.");
+                            self.paused = false;
+                        }
+                        Err(e) => {
+                            self.status = format!("Decode failed for {video_id}: {e}");
+                        }
+                    },
+                },
+                Err(e) => {
+                    self.status = format!("Stream {video_id} failed: {e}");
+                }
+            },
         }
         iced::Task::none()
+    }
+
+    /// Resolve + download task for a video ID (only built with `innertube`).
+    /// Without the feature, the `PlayStreamId` arm above degrades gracefully.
+    #[cfg(feature = "innertube")]
+    fn resolve_task(video_id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = resolve_and_fetch(&video_id).await;
+                (video_id, result)
+            },
+            |(video_id, result)| Message::StreamResolved { video_id, result },
+        )
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
@@ -1039,6 +1116,11 @@ impl AppState {
                             &self.scrobble_user
                         }
                     )),
+                    text("Real stream (needs `--features innertube`)").size(18),
+                    text_input("YouTube video ID…", &self.stream_id_input)
+                        .on_input(Message::StreamIdChanged)
+                        .on_submit(Message::PlayStreamId),
+                    button("Resolve + play video ID").on_press(Message::PlayStreamId),
                 ]
                 .spacing(8)
                 .into()
@@ -1467,6 +1549,40 @@ mod tests {
         let _ = s2.update(Message::EnqueueTrack("m1".into()));
         assert!(!s2.status.contains("Scrobble-ready"));
         assert!(!s2.status.contains("submit stubbed"));
+    }
+
+    #[test]
+    fn stream_id_flow_offline_build() {
+        let mut s = test_state();
+        let _ = s.update(Message::StreamIdChanged("dQw4w9WgXcQ".into()));
+        assert_eq!(s.stream_id_input, "dQw4w9WgXcQ");
+        // Empty input is rejected before any network.
+        s.stream_id_input.clear();
+        let _ = s.update(Message::PlayStreamId);
+        assert!(s.status.contains("video ID"));
+        // Without the `innertube` feature this degrades gracefully.
+        #[cfg(not(feature = "innertube"))]
+        {
+            s.stream_id_input = "dQw4w9WgXcQ".into();
+            let _ = s.update(Message::PlayStreamId);
+            assert!(s.status.contains("innertube"));
+        }
+    }
+
+    #[test]
+    fn stream_resolved_reports_errors() {
+        let mut s = test_state();
+        let _ = s.update(Message::StreamResolved {
+            video_id: "vid".into(),
+            result: Err("403 Forbidden".into()),
+        });
+        assert!(s.status.contains("vid") && s.status.contains("403"));
+        // Empty bytes deterministically fail decoding (no device needed).
+        let _ = s.update(Message::StreamResolved {
+            video_id: "vid".into(),
+            result: Ok(Vec::new()),
+        });
+        assert!(s.status.contains("vid"));
     }
 
     #[test]
