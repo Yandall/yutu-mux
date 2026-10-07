@@ -7,6 +7,114 @@ use yutu_core::{
 };
 use yutu_player::{EqPreset, Queue, RodioBackend};
 
+// ---------------------------------------------------------------------------
+// Spotify-style theme (dark, green accent). Keeps every view on one visual
+// language: near-black app, slightly lighter sidebar/cards, single green
+// primary action, muted secondary text, text-buttons for row actions.
+// ---------------------------------------------------------------------------
+
+const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0x1D, 0xB9, 0x54);
+const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0x1F, 0xDF, 0x64);
+const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
+const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
+const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
+const SIDEBAR_BG: iced::Color = iced::Color::from_rgb8(0x12, 0x12, 0x12);
+const APP_BG: iced::Color = iced::Color::from_rgb8(0x0A, 0x0A, 0x0A);
+const NAV_ACTIVE_BG: iced::Color = iced::Color::from_rgb8(0x2A, 0x2A, 0x2A);
+
+fn app_bg(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(APP_BG)),
+        ..Default::default()
+    }
+}
+
+fn sidebar_bg(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(SIDEBAR_BG)),
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
+fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(CARD_BG)),
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
+fn player_bg(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(SIDEBAR_BG)),
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
+/// Green circular primary action (Spotify play button).
+fn green_play(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let bg = match status {
+        iced::widget::button::Status::Hovered => SPOT_GREEN_HOVER,
+        _ => SPOT_GREEN,
+    };
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(bg)),
+        text_color: iced::Color::BLACK,
+        border: iced::Border::default().rounded(20),
+        ..Default::default()
+    }
+}
+
+/// Sidebar nav: active gets a pill background, inactive is transparent.
+fn nav_style(
+    active: bool,
+) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    move |_: &iced::Theme, status: iced::widget::button::Status| {
+        let hovered = matches!(
+            status,
+            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+        );
+        let background = if active || hovered {
+            Some(iced::Background::Color(NAV_ACTIVE_BG))
+        } else {
+            None
+        };
+        let text_color = if active || hovered {
+            iced::Color::WHITE
+        } else {
+            MUTED
+        };
+        iced::widget::button::Style {
+            background,
+            text_color,
+            border: iced::Border::default().rounded(6),
+            ..Default::default()
+        }
+    }
+}
+
+/// Card-as-button (playlist / mix tiles).
+fn card_button(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let bg = match status {
+        iced::widget::button::Status::Hovered => CARD_BG_HOVER,
+        _ => CARD_BG,
+    };
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(bg)),
+        text_color: iced::Color::WHITE,
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Route {
     #[default]
@@ -819,48 +927,387 @@ impl AppState {
         )
     }
 
-    pub fn view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, checkbox, column, row, scrollable, slider, text, text_input};
-        use iced::{Fill, Shrink};
+    pub fn theme(&self) -> iced::Theme {
+        iced::Theme::Dark
+    }
 
-        let radio_seed = self
-            .queue
+    fn radio_seed(&self) -> String {
+        self.queue
             .current()
             .map(|t| t.id.clone())
-            .unwrap_or_else(|| "m1".into());
-        let nav = row![
-            button("Home").on_press(Message::Navigate(Route::Home)),
-            button("Search").on_press(Message::Navigate(Route::Search)),
-            button("Queue").on_press(Message::Navigate(Route::Queue)),
-            button("Library").on_press(Message::Navigate(Route::Library)),
-            button("Discovery").on_press(Message::Navigate(Route::Discovery)),
-            button("Settings").on_press(Message::Navigate(Route::Settings)),
-            button("Radio").on_press(Message::StartRadio(radio_seed)),
-        ]
-        .spacing(8);
+            .unwrap_or_else(|| "m1".into())
+    }
 
+    fn is_nav(&self, route: &Route) -> bool {
+        std::mem::discriminant(&self.route) == std::mem::discriminant(route)
+    }
+
+    /// One compact track row: green play, title/artist, heart. All other
+    /// actions live on detail screens — this killed the button-soup.
+    fn track_row(&self, t: &Track) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, row, text};
+        use iced::Fill;
+        let heart = if self.liked.contains(&t.id) {
+            "♥"
+        } else {
+            "♡"
+        };
+        row![
+            button(text("▶").size(13))
+                .style(green_play)
+                .on_press(Message::EnqueueTrack(t.id.clone()))
+                .padding(6),
+            column![
+                text(t.title.clone()).size(14),
+                text(t.artist.clone()).size(12).color(MUTED),
+            ]
+            .spacing(2)
+            .width(Fill),
+            button(text(heart).size(15))
+                .style(button::text)
+                .on_press(Message::Like(t.id.clone()))
+                .padding(6),
+        ]
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center)
+        .padding(4)
+        .into()
+    }
+
+    fn section<'a>(
+        title: &'a str,
+        rows: Vec<iced::Element<'a, Message>>,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{column, text};
+        let list: iced::Element<'_, Message> = if rows.is_empty() {
+            text("Nothing here yet.").size(12).color(MUTED).into()
+        } else {
+            column(rows).spacing(2).into()
+        };
+        column![text(title).size(19), list,].spacing(6).into()
+    }
+
+    fn sidebar_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, text};
+        use iced::Fill;
+        let seed = self.radio_seed();
+        let radio_active = matches!(self.route, Route::Radio(_));
+        let playlists: Vec<iced::Element<'_, Message>> = self
+            .all_playlists()
+            .into_iter()
+            .take(8)
+            .map(|p| {
+                button(text(format!("{} · {}", p.title, p.tracks.len())).size(13))
+                    .style(button::text)
+                    .on_press(Message::OpenPlaylist(p.id.clone()))
+                    .padding(6)
+                    .width(Fill)
+                    .into()
+            })
+            .collect();
+        let liked_n = self.liked.len();
+        container(
+            column![
+                text("yutu-mux").size(22).color(iced::Color::WHITE),
+                column![
+                    button(text("⌂  Home").size(14))
+                        .style(nav_style(self.is_nav(&Route::Home)))
+                        .on_press(Message::Navigate(Route::Home))
+                        .padding(8)
+                        .width(Fill),
+                    button(text("🔍  Search").size(14))
+                        .style(nav_style(self.is_nav(&Route::Search)))
+                        .on_press(Message::Navigate(Route::Search))
+                        .padding(8)
+                        .width(Fill),
+                    button(text("☰  Up Next").size(14))
+                        .style(nav_style(self.is_nav(&Route::Queue)))
+                        .on_press(Message::Navigate(Route::Queue))
+                        .padding(8)
+                        .width(Fill),
+                    button(text("📚  Library").size(14))
+                        .style(nav_style(self.is_nav(&Route::Library)))
+                        .on_press(Message::Navigate(Route::Library))
+                        .padding(8)
+                        .width(Fill),
+                    button(text("✨  Discovery").size(14))
+                        .style(nav_style(self.is_nav(&Route::Discovery)))
+                        .on_press(Message::Navigate(Route::Discovery))
+                        .padding(8)
+                        .width(Fill),
+                    button(text("📻  Radio").size(14))
+                        .style(nav_style(radio_active))
+                        .on_press(Message::StartRadio(seed))
+                        .padding(8)
+                        .width(Fill),
+                    button(text("⚙  Settings").size(14))
+                        .style(nav_style(self.is_nav(&Route::Settings)))
+                        .on_press(Message::Navigate(Route::Settings))
+                        .padding(8)
+                        .width(Fill),
+                ]
+                .spacing(2),
+                text(format!("Liked · {liked_n}")).size(12).color(MUTED),
+                text("Playlists").size(12).color(MUTED),
+                column(playlists).spacing(0),
+            ]
+            .spacing(10),
+        )
+        .style(sidebar_bg)
+        .padding(12)
+        .width(225)
+        .height(Fill)
+        .into()
+    }
+
+    fn right_panel_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, row, text};
+        use iced::Fill;
+        let current = self.queue.current().cloned();
+        let now: iced::Element<'_, Message> = match &current {
+            Some(t) => column![
+                text("Now playing").size(13).color(MUTED),
+                text(t.title.clone()).size(15),
+                text(t.artist.clone()).size(12).color(MUTED),
+                row![
+                    button(text("Lyrics").size(12))
+                        .style(button::text)
+                        .on_press(Message::OpenLyrics(t.id.clone()))
+                        .padding(4),
+                    button(text("Radio").size(12))
+                        .style(button::text)
+                        .on_press(Message::StartRadio(t.id.clone()))
+                        .padding(4),
+                ]
+                .spacing(4),
+            ]
+            .spacing(4)
+            .into(),
+            None => column![
+                text("Now playing").size(13).color(MUTED),
+                text("Nothing queued").size(14).color(MUTED),
+            ]
+            .spacing(4)
+            .into(),
+        };
+        let upcoming: Vec<iced::Element<'_, Message>> = self
+            .queue
+            .items()
+            .iter()
+            .take(9)
+            .enumerate()
+            .map(|(i, t)| {
+                let marker = if current.as_ref().map(|c| c.id == t.id).unwrap_or(false) && i == 0 {
+                    "● "
+                } else {
+                    ""
+                };
+                row![text(format!("{marker}{} — {}", t.title, t.artist))
+                    .size(12)
+                    .width(Fill),]
+                .padding(3)
+                .into()
+            })
+            .collect();
+        container(
+            column![
+                now,
+                text("Next up").size(13).color(MUTED),
+                column(upcoming).spacing(0),
+                button(text(format!("Clear queue ({})", self.queue.len())).size(12))
+                    .style(button::text)
+                    .on_press(Message::QueueClear)
+                    .padding(4),
+            ]
+            .spacing(8),
+        )
+        .style(sidebar_bg)
+        .padding(12)
+        .width(275)
+        .height(Fill)
+        .into()
+    }
+
+    fn player_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, row, slider, text};
+        use iced::Fill;
+        let current = self.queue.current().cloned();
+        let title = current
+            .as_ref()
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| "Nothing playing".into());
+        let artist = current
+            .as_ref()
+            .map(|t| t.artist.clone())
+            .unwrap_or_else(|| "Pick something from Home or Search".into());
+        let play_symbol = if self.paused { "▶" } else { "⏸" };
+        container(
+            column![
+                text(self.status.clone()).size(12).color(MUTED),
+                row![
+                    column![text(title).size(14), text(artist).size(12).color(MUTED),]
+                        .spacing(1)
+                        .width(Fill),
+                    row![
+                        button(text("⏮").size(16))
+                            .style(button::text)
+                            .on_press(Message::Prev)
+                            .padding(8),
+                        button(text(play_symbol).size(17))
+                            .style(green_play)
+                            .on_press(Message::TogglePause)
+                            .padding(10),
+                        button(text("⏭").size(16))
+                            .style(button::text)
+                            .on_press(Message::Next)
+                            .padding(8),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                    row![
+                        text(format!(
+                            "Q:{}  V:{:.0}%",
+                            self.queue.len(),
+                            self.volume * 100.0
+                        ))
+                        .size(12)
+                        .color(MUTED),
+                        slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            .step(0.01_f32)
+                            .width(120),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
+                ]
+                .spacing(12)
+                .align_y(iced::alignment::Vertical::Center),
+            ]
+            .spacing(4),
+        )
+        .style(player_bg)
+        .padding(10)
+        .into()
+    }
+
+    fn center_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{
+            button, checkbox, column, container, row, scrollable, slider, text, text_input,
+        };
+        use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
             Route::Home => {
-                let picks: Vec<iced::Element<'_, Message>> = self
+                let picks: Vec<Track> = self.results.tracks.iter().take(6).cloned().collect();
+                let grid: iced::Element<'_, Message> = if picks.is_empty() {
+                    text("No tracks — try Search.").color(MUTED).into()
+                } else {
+                    // One card per row (robust in Iced's box layout; reads like
+                    // Spotify's quick-pick list at this window size).
+                    column(
+                        picks
+                            .iter()
+                            .map(|t| {
+                                button(
+                                    row![
+                                        text(format!("{} — {}", t.title, t.artist))
+                                            .size(14)
+                                            .width(Fill),
+                                        text("▶").size(13).color(SPOT_GREEN),
+                                    ]
+                                    .spacing(8)
+                                    .padding(12)
+                                    .align_y(iced::alignment::Vertical::Center),
+                                )
+                                .style(card_button)
+                                .on_press(Message::EnqueueTrack(t.id.clone()))
+                                .padding(0)
+                                .into()
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .spacing(8)
+                    .into()
+                };
+                let weekly_n = self.weekly_mix_tracks().len();
+                let forgotten_n = self.forgotten_tracks().len();
+                column![
+                    text("Good evening").size(24),
+                    // Real playback lives here now, not buried in Settings.
+                    container(
+                        row![
+                            text_input("Paste a YouTube video ID…", &self.stream_id_input)
+                                .on_input(Message::StreamIdChanged)
+                                .on_submit(Message::PlayStreamId)
+                                .width(Fill),
+                            button(text("▶ Play").size(14))
+                                .style(green_play)
+                                .on_press(Message::PlayStreamId)
+                                .padding(8),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .style(card_bg)
+                    .padding(10),
+                    text("Quick picks").size(19),
+                    grid,
+                    text("Made for you").size(19),
+                    row![
+                        button(
+                            column![
+                                text("Weekly Mix").size(15),
+                                text(format!("{weekly_n} tracks")).size(12).color(MUTED),
+                            ]
+                            .spacing(2)
+                            .padding(12)
+                            .width(Fill),
+                        )
+                        .style(card_button)
+                        .on_press(Message::PlayWeeklyMix)
+                        .padding(0),
+                        button(
+                            column![
+                                text("Forgotten Favorites").size(15),
+                                text(format!("{forgotten_n} tracks")).size(12).color(MUTED),
+                            ]
+                            .spacing(2)
+                            .padding(12)
+                            .width(Fill),
+                        )
+                        .style(card_button)
+                        .on_press(Message::PlayForgotten)
+                        .padding(0),
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(12)
+                .into()
+            }
+            Route::Search => {
+                let rows: Vec<iced::Element<'_, Message>> = self
                     .results
                     .tracks
                     .iter()
-                    .take(5)
-                    .enumerate()
-                    .map(|(i, t)| {
+                    .map(|t| self.track_row(t))
+                    .collect();
+                let albums: Vec<iced::Element<'_, Message>> = self
+                    .results
+                    .albums
+                    .iter()
+                    .map(|a| {
+                        use iced::widget::{button, row, text};
+                        use iced::Fill;
                         row![
-                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                            button(if self.liked.contains(&t.id) {
-                                "♥"
-                            } else {
-                                "♡"
-                            })
-                            .on_press(Message::Like(t.id.clone())),
-                            button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                            button("Radio").on_press(Message::StartRadio(t.id.clone())),
-                            button("Play").on_press(Message::PlayTrack(i)),
+                            text(format!("{} — {}", a.title, a.artist))
+                                .size(14)
+                                .width(Fill),
+                            button(text("Open").size(12))
+                                .style(button::text)
+                                .on_press(Message::OpenAlbum(a.id.clone()))
+                                .padding(6),
                         ]
                         .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .padding(4)
                         .into()
                     })
                     .collect();
@@ -869,101 +1316,31 @@ impl AppState {
                     .artists
                     .iter()
                     .map(|a| {
+                        use iced::widget::{button, row, text};
+                        use iced::Fill;
                         row![
-                            text(&a.name).width(Fill),
-                            button("Open").on_press(Message::OpenArtist(a.id.clone())),
+                            text(a.name.clone()).size(14).width(Fill),
+                            button(text("Open").size(12))
+                                .style(button::text)
+                                .on_press(Message::OpenArtist(a.id.clone()))
+                                .padding(6),
                         ]
                         .spacing(8)
-                        .into()
-                    })
-                    .collect();
-                let playlists: Vec<iced::Element<'_, Message>> = self
-                    .all_playlists()
-                    .into_iter()
-                    .map(|p| {
-                        row![
-                            text(format!("{} ({} tracks)", p.title, p.tracks.len())).width(Fill),
-                            button("Open").on_press(Message::OpenPlaylist(p.id.clone())),
-                        ]
-                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .padding(4)
                         .into()
                     })
                     .collect();
                 column![
-                    text("Quick picks (mock)").size(20),
-                    column(picks).spacing(4),
-                    text("Artists").size(20),
-                    column(artists).spacing(4),
-                    text("Playlists").size(20),
-                    column(playlists).spacing(4),
+                    text_input("What do you want to play?", &self.search_query)
+                        .on_input(Message::SearchChanged)
+                        .on_submit(Message::Search)
+                        .width(Fill),
+                    Self::section("Tracks", rows),
+                    Self::section("Albums", albums),
+                    Self::section("Artists", artists),
                 ]
-                .spacing(8)
-                .into()
-            }
-            Route::Search => {
-                let input = text_input("Search mock library…", &self.search_query)
-                    .on_input(Message::SearchChanged)
-                    .on_submit(Message::Search);
-                let rows: Vec<iced::Element<'_, Message>> = self
-                    .results
-                    .tracks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        row![
-                            text(format!("{} — {} [{}]", t.title, t.artist, t.id)).width(Fill),
-                            button(if self.liked.contains(&t.id) {
-                                "♥"
-                            } else {
-                                "♡"
-                            })
-                            .on_press(Message::Like(t.id.clone())),
-                            button("Artist").on_press(Message::OpenArtist(t.artist.clone())),
-                            button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                            button("Radio").on_press(Message::StartRadio(t.id.clone())),
-                            button("Play").on_press(Message::PlayTrack(i)),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
-                    .collect();
-                let album_rows: Vec<iced::Element<'_, Message>> = self
-                    .results
-                    .albums
-                    .iter()
-                    .map(|a| {
-                        row![
-                            text(format!("{} — {} [{}]", a.title, a.artist, a.id)).width(Fill),
-                            button("Open").on_press(Message::OpenAlbum(a.id.clone())),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
-                    .collect();
-                let artist_rows: Vec<iced::Element<'_, Message>> = self
-                    .results
-                    .artists
-                    .iter()
-                    .map(|a| {
-                        row![
-                            text(format!("{} [{}]", a.name, a.id)).width(Fill),
-                            button("Open").on_press(Message::OpenArtist(a.id.clone())),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
-                    .collect();
-                column![
-                    input,
-                    button("Search").on_press(Message::Search),
-                    text("Tracks").size(18),
-                    scrollable(column(rows).spacing(4)),
-                    text("Albums").size(18),
-                    column(album_rows).spacing(4),
-                    text("Artists").size(18),
-                    column(artist_rows).spacing(4),
-                ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Queue => {
@@ -973,150 +1350,141 @@ impl AppState {
                     .iter()
                     .enumerate()
                     .map(|(i, t)| {
+                        use iced::widget::{button, row, text};
+                        use iced::Fill;
                         row![
-                            text(format!("{}. {} — {}", i + 1, t.title, t.artist)).width(Fill),
-                            button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                            button("↑").on_press(Message::QueueUp(i)),
-                            button("↓").on_press(Message::QueueDown(i)),
-                            button("✕").on_press(Message::QueueRemove(i)),
+                            text(format!("{}. {} — {}", i + 1, t.title, t.artist))
+                                .size(14)
+                                .width(Fill),
+                            button(text("↑").size(12))
+                                .style(button::text)
+                                .on_press(Message::QueueUp(i))
+                                .padding(5),
+                            button(text("↓").size(12))
+                                .style(button::text)
+                                .on_press(Message::QueueDown(i))
+                                .padding(5),
+                            button(text("✕").size(12))
+                                .style(button::text)
+                                .on_press(Message::QueueRemove(i))
+                                .padding(5),
                         ]
-                        .spacing(6)
+                        .spacing(4)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .padding(3)
                         .into()
                     })
                     .collect();
-                let current_lyrics: iced::Element<'_, Message> = match self.queue.current() {
-                    Some(t) => button("Lyrics for current")
-                        .on_press(Message::OpenLyrics(t.id.clone()))
-                        .into(),
-                    None => text("No current track").into(),
-                };
                 column![
-                    text("Up Next").size(20),
-                    button("Clear queue").on_press(Message::QueueClear),
-                    current_lyrics,
-                    scrollable(column(rows).spacing(4)),
+                    row![
+                        text("Up Next").size(22).width(Fill),
+                        button(text("Clear").size(13))
+                            .style(button::text)
+                            .on_press(Message::QueueClear)
+                            .padding(6),
+                    ]
+                    .align_y(iced::alignment::Vertical::Center),
+                    column(rows).spacing(2),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Library => {
                 let liked: Vec<iced::Element<'_, Message>> = self
                     .liked
                     .iter()
-                    .map(|id| text(format!("♥ {id}")).into())
+                    .filter_map(|id| find_track(id))
+                    .map(|t| self.track_row(&t))
                     .collect();
-                let hist: Vec<iced::Element<'_, Message>> = self
-                    .history
-                    .iter()
-                    .rev()
-                    .take(20)
-                    .map(|id| text(format!("▶ {id}")).into())
-                    .collect();
-                let builtin: Vec<iced::Element<'_, Message>> = self
-                    .backend
-                    .playlists()
+                let playlists: Vec<iced::Element<'_, Message>> = self
+                    .all_playlists()
                     .into_iter()
                     .map(|p| {
+                        use iced::widget::{button, row, text};
+                        use iced::Fill;
                         row![
-                            text(format!("{} ({} tracks)", p.title, p.tracks.len())).width(Fill),
-                            button("Open").on_press(Message::OpenPlaylist(p.id.clone())),
+                            column![
+                                text(p.title.clone()).size(14),
+                                text(format!("{} tracks", p.tracks.len()))
+                                    .size(12)
+                                    .color(MUTED),
+                            ]
+                            .spacing(2)
+                            .width(Fill),
+                            button(text("Open").size(12))
+                                .style(button::text)
+                                .on_press(Message::OpenPlaylist(p.id.clone()))
+                                .padding(6),
                         ]
                         .spacing(8)
-                        .into()
-                    })
-                    .collect();
-                let mine: Vec<iced::Element<'_, Message>> = self
-                    .user_playlists
-                    .iter()
-                    .map(|p| {
-                        row![
-                            text(format!("{} ({} tracks)", p.title, p.tracks.len())).width(Fill),
-                            button("Open").on_press(Message::OpenPlaylist(p.id.clone())),
-                            button("Delete").on_press(Message::DeletePlaylist(p.id.clone())),
-                        ]
-                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .padding(6)
                         .into()
                     })
                     .collect();
                 let new_name = self.new_playlist_name.clone();
                 column![
-                    row![
-                        column![text("Liked").size(18), column(liked).spacing(2)].width(Fill),
-                        column![text("History").size(18), column(hist).spacing(2)].width(Fill),
-                    ]
-                    .spacing(16),
-                    text("Playlists (built-in)").size(18),
-                    column(builtin).spacing(4),
-                    text("My playlists").size(18),
-                    column(mine).spacing(4),
+                    text("Your Library").size(22),
+                    Self::section("Liked", liked),
+                    Self::section("Playlists", playlists),
                     row![
                         text_input("New playlist name…", &self.new_playlist_name)
                             .on_input(Message::NewPlaylistNameChanged)
                             .width(Fill),
-                        button("Create").on_press(Message::CreatePlaylist(new_name)),
+                        button(text("Create").size(13))
+                            .style(green_play)
+                            .on_press(Message::CreatePlaylist(new_name))
+                            .padding(8),
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Discovery => {
-                let weekly = self.weekly_mix_tracks();
-                let forgotten = self.forgotten_tracks();
-                let weekly_rows: Vec<iced::Element<'_, Message>> = weekly
+                let weekly: Vec<iced::Element<'_, Message>> = self
+                    .weekly_mix_tracks()
                     .iter()
-                    .map(|t| {
-                        row![
-                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                            button(if self.liked.contains(&t.id) {
-                                "♥"
-                            } else {
-                                "♡"
-                            })
-                            .on_press(Message::Like(t.id.clone())),
-                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
+                    .map(|t| self.track_row(t))
                     .collect();
-                let forgotten_rows: Vec<iced::Element<'_, Message>> = forgotten
+                let forgotten: Vec<iced::Element<'_, Message>> = self
+                    .forgotten_tracks()
                     .iter()
-                    .map(|t| {
-                        row![
-                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                            button(if self.liked.contains(&t.id) {
-                                "♥"
-                            } else {
-                                "♡"
-                            })
-                            .on_press(Message::Like(t.id.clone())),
-                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
+                    .map(|t| self.track_row(t))
                     .collect();
-                let weekly_section: iced::Element<'_, Message> = if weekly_rows.is_empty() {
-                    text("Weekly Mix is empty — play and like some music.").into()
+                let weekly_section: iced::Element<'_, Message> = if weekly.is_empty() {
+                    text("Play and like some music first.").color(MUTED).into()
                 } else {
-                    column(weekly_rows).spacing(4).into()
+                    column(weekly).spacing(2).into()
                 };
-                let forgotten_section: iced::Element<'_, Message> = if forgotten_rows.is_empty() {
-                    text("No forgotten favorites — like some music.").into()
+                let forgotten_section: iced::Element<'_, Message> = if forgotten.is_empty() {
+                    text("Like some music to fill this.").color(MUTED).into()
                 } else {
-                    column(forgotten_rows).spacing(4).into()
+                    column(forgotten).spacing(2).into()
                 };
                 column![
-                    text("Discovery (offline, from local history)").size(20),
-                    text("Weekly Mix").size(18),
-                    button("Play all (Weekly Mix)").on_press(Message::PlayWeeklyMix),
+                    text("Made for you").size(22),
+                    row![
+                        text("Weekly Mix").size(17).width(Fill),
+                        button(text("▶ Play all").size(13))
+                            .style(green_play)
+                            .on_press(Message::PlayWeeklyMix)
+                            .padding(7),
+                    ]
+                    .align_y(iced::alignment::Vertical::Center),
                     weekly_section,
-                    text("Forgotten Favorites (liked, unplayed 30+ days)").size(18),
-                    button("Play all (Forgotten)").on_press(Message::PlayForgotten),
+                    row![
+                        text("Forgotten Favorites").size(17).width(Fill),
+                        button(text("▶ Play all").size(13))
+                            .style(green_play)
+                            .on_press(Message::PlayForgotten)
+                            .padding(7),
+                    ]
+                    .align_y(iced::alignment::Vertical::Center),
                     forgotten_section,
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Settings => {
@@ -1133,128 +1501,105 @@ impl AppState {
                         } else {
                             n.clone()
                         };
-                        button(text(label))
+                        button(text(label).size(12))
+                            .style(button::text)
                             .on_press(Message::SelectEqPreset(n))
+                            .padding(5)
                             .into()
                     })
                     .collect();
                 column![
-                    text("Settings").size(20),
-                    text(format!("Volume: {:.0}%", self.volume * 100.0)),
-                    slider(0.0..=1.0, self.volume, Message::SetVolume).step(0.01_f32),
-                    text("Auth: anonymous (cookie import: Phase 4)."),
-                    text("Backend: MockBackend — Innertube behind `innertube` feature (Phase 4)."),
-                    text("Keys: Space play/pause, n next, p prev, / search."),
-                    text("EQ preset (in-memory only; rodio path has no EQ node yet)").size(18),
-                    row(eq_buttons).spacing(6),
-                    text(format!("Current EQ: {current_eq}")),
-                    text("Scrobbling (in-memory only; submission stubbed)").size(18),
+                    text("Settings").size(22),
+                    text("Playback").size(17),
+                    row![
+                        text(format!("Volume {:.0}%", self.volume * 100.0))
+                            .size(13)
+                            .width(Fill),
+                        slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            .step(0.01_f32)
+                            .width(160),
+                    ]
+                    .align_y(iced::alignment::Vertical::Center),
+                    row(eq_buttons).spacing(4),
+                    text(format!("EQ: {current_eq} (takes effect with mpv backend)"))
+                        .size(12)
+                        .color(MUTED),
+                    text("Real stream (yt-dlp)").size(17),
+                    text_input("YouTube video ID…", &self.stream_id_input)
+                        .on_input(Message::StreamIdChanged)
+                        .on_submit(Message::PlayStreamId),
+                    button(text("Resolve + play").size(13))
+                        .style(green_play)
+                        .on_press(Message::PlayStreamId)
+                        .padding(8),
+                    text("Scrobbling (submit stubbed)").size(17),
                     checkbox(self.scrobble_enabled)
                         .label("Enable scrobbling")
                         .on_toggle(Message::ScrobbleToggled),
                     text_input("Last.fm / ListenBrainz user…", &self.scrobble_user)
                         .on_input(Message::ScrobbleUserChanged),
-                    text(format!(
-                        "Scrobble user: {}",
-                        if self.scrobble_user.is_empty() {
-                            "(not set)"
-                        } else {
-                            &self.scrobble_user
-                        }
-                    )),
-                    text("Real stream (needs yt-dlp installed)").size(18),
-                    text_input("YouTube video ID…", &self.stream_id_input)
-                        .on_input(Message::StreamIdChanged)
-                        .on_submit(Message::PlayStreamId),
-                    button("Resolve + play video ID").on_press(Message::PlayStreamId),
+                    text("Shortcuts: Space play/pause · n next · p prev · / search")
+                        .size(12)
+                        .color(MUTED),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Artist(id) => {
                 let name = self.resolve_artist_name(id);
-                let tracks = self.artist_tracks(&name);
-                let rows: Vec<iced::Element<'_, Message>> = tracks
+                let rows: Vec<iced::Element<'_, Message>> = self
+                    .artist_tracks(&name)
                     .iter()
-                    .map(|t| {
-                        row![
-                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                            button(if self.liked.contains(&t.id) {
-                                "♥"
-                            } else {
-                                "♡"
-                            })
-                            .on_press(Message::Like(t.id.clone())),
-                            button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                            button("Radio").on_press(Message::StartRadio(t.id.clone())),
-                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
+                    .map(|t| self.track_row(t))
                     .collect();
                 let albums: Vec<iced::Element<'_, Message>> = self
                     .artist_albums(&name)
                     .into_iter()
                     .map(|a| {
+                        use iced::widget::{button, row, text};
+                        use iced::Fill;
                         row![
-                            text(format!(
-                                "{}{}",
-                                a.title,
-                                a.year.map(|y| format!(" ({y})")).unwrap_or_default()
-                            ))
-                            .width(Fill),
-                            button("Open").on_press(Message::OpenAlbum(a.id.clone())),
+                            text(a.title.clone()).size(14).width(Fill),
+                            button(text("Open").size(12))
+                                .style(button::text)
+                                .on_press(Message::OpenAlbum(a.id.clone()))
+                                .padding(6),
                         ]
                         .spacing(8)
+                        .padding(4)
                         .into()
                     })
                     .collect();
                 column![
-                    text(format!("Artist: {name}")).size(20),
-                    button("Play all").on_press(Message::PlayAll),
-                    text("Top tracks").size(18),
-                    column(rows).spacing(4),
-                    text("Albums").size(18),
-                    column(albums).spacing(4),
+                    text(name.clone()).size(24),
+                    text("Artist").size(12).color(MUTED),
+                    button(text("▶ Play all").size(13))
+                        .style(green_play)
+                        .on_press(Message::PlayAll)
+                        .padding(8),
+                    Self::section("Top tracks", rows),
+                    Self::section("Albums", albums),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Album(id) => {
                 let title = self.resolve_album_title(id);
-                let tracks = self.album_tracks(id);
-                let playlist_ids: Vec<(String, String)> = self
-                    .user_playlists
+                let rows: Vec<iced::Element<'_, Message>> = self
+                    .album_tracks(id)
                     .iter()
-                    .map(|p| (p.id.clone(), p.title.clone()))
-                    .collect();
-                let rows: Vec<iced::Element<'_, Message>> = tracks
-                    .iter()
-                    .map(|t| {
-                        let mut r = row![
-                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                            button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
-                        ]
-                        .spacing(8);
-                        for (pid, pname) in &playlist_ids {
-                            r = r.push(button(text(format!("+{pname}"))).on_press(
-                                Message::AddToPlaylist {
-                                    playlist_id: pid.clone(),
-                                    track_id: t.id.clone(),
-                                },
-                            ));
-                        }
-                        r.into()
-                    })
+                    .map(|t| self.track_row(t))
                     .collect();
                 column![
-                    text(format!("Album: {title}")).size(20),
-                    button("Play all").on_press(Message::PlayAll),
-                    column(rows).spacing(4),
+                    text(title).size(24),
+                    text("Album").size(12).color(MUTED),
+                    button(text("▶ Play all").size(13))
+                        .style(green_play)
+                        .on_press(Message::PlayAll)
+                        .padding(8),
+                    column(rows).spacing(2),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::PlaylistDetail(id) => match self.find_playlist(id) {
@@ -1262,30 +1607,20 @@ impl AppState {
                     .spacing(8)
                     .into(),
                 Some(p) => {
-                    let pid = p.id.clone();
-                    let rows: Vec<iced::Element<'_, Message>> = p
-                        .tracks
-                        .iter()
-                        .map(|t| {
-                            row![
-                                text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                                button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                                button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
-                                button("Remove").on_press(Message::RemoveFromPlaylist {
-                                    playlist_id: pid.clone(),
-                                    track_id: t.id.clone(),
-                                }),
-                            ]
-                            .spacing(8)
-                            .into()
-                        })
-                        .collect();
+                    let rows: Vec<iced::Element<'_, Message>> =
+                        p.tracks.iter().map(|t| self.track_row(t)).collect();
                     column![
-                        text(format!("Playlist: {}", p.title)).size(20),
-                        button("Play all").on_press(Message::PlayAll),
-                        column(rows).spacing(4),
+                        text(p.title.clone()).size(24),
+                        text(format!("Playlist · {} tracks", p.tracks.len()))
+                            .size(12)
+                            .color(MUTED),
+                        button(text("▶ Play all").size(13))
+                            .style(green_play)
+                            .on_press(Message::PlayAll)
+                            .padding(8),
+                        column(rows).spacing(2),
                     ]
-                    .spacing(8)
+                    .spacing(10)
                     .into()
                 }
             },
@@ -1297,90 +1632,76 @@ impl AppState {
                     Some(ly) => column(
                         ly.lines
                             .into_iter()
-                            .map(|l| text(l.text).into())
+                            .map(|l| text(l.text).size(14).into())
                             .collect::<Vec<_>>(),
                     )
                     .spacing(4)
                     .into(),
-                    None => text("No lyrics available (mock has lyrics for m4 only).").into(),
+                    None => text("No lyrics available.").color(MUTED).into(),
                 };
                 column![
-                    text(format!("Lyrics: {title}")).size(20),
-                    button("Play").on_press(Message::EnqueueTrack(id.clone())),
-                    button("Radio").on_press(Message::StartRadio(id.clone())),
+                    text(title).size(22),
+                    row![
+                        button(text("▶ Play").size(13))
+                            .style(green_play)
+                            .on_press(Message::EnqueueTrack(id.clone()))
+                            .padding(7),
+                        button(text("Radio").size(13))
+                            .style(button::text)
+                            .on_press(Message::StartRadio(id.clone()))
+                            .padding(7),
+                    ]
+                    .spacing(8),
                     content,
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
             Route::Radio(seed) => {
-                let seq = radio_for(seed);
+                let rows: Vec<iced::Element<'_, Message>> =
+                    radio_for(seed).iter().map(|t| self.track_row(t)).collect();
                 let seed_label = find_track(seed)
                     .map(|t| format!("{} — {}", t.title, t.artist))
                     .unwrap_or_else(|| seed.clone());
-                let rows: Vec<iced::Element<'_, Message>> = seq
-                    .iter()
-                    .map(|t| {
-                        row![
-                            text(format!("{} — {}", t.title, t.artist)).width(Fill),
-                            button("Lyrics").on_press(Message::OpenLyrics(t.id.clone())),
-                            button("Queue").on_press(Message::EnqueueTrack(t.id.clone())),
-                        ]
-                        .spacing(8)
-                        .into()
-                    })
-                    .collect();
                 column![
-                    text(format!("Radio (seed: {seed_label})")).size(20),
-                    row![
-                        button("Start radio (append)").on_press(Message::StartRadio(seed.clone())),
-                        button("Play all (append)").on_press(Message::PlayAll),
-                    ]
-                    .spacing(8),
-                    column(rows).spacing(4),
+                    text(seed_label).size(24),
+                    text("Radio").size(12).color(MUTED),
+                    button(text("▶ Start radio").size(13))
+                        .style(green_play)
+                        .on_press(Message::StartRadio(seed.clone()))
+                        .padding(8),
+                    column(rows).spacing(2),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .into()
             }
         };
+        scrollable(container(body).padding(20).width(Fill))
+            .height(Fill)
+            .into()
+    }
 
-        let now_playing = self
-            .queue
-            .current()
-            .map(|t| format!("{} — {}", t.title, t.artist))
-            .unwrap_or_else(|| "Nothing queued".into());
-        let pause_label = if self.paused { "▶ resume" } else { "⏸" };
-        let player_bar = row![
-            button("⏮").on_press(Message::Prev),
-            button("▶ tone").on_press(Message::PlayTone),
-            button(pause_label).on_press(Message::TogglePause),
-            button("⏹").on_press(Message::Stop),
-            button("⏭").on_press(Message::Next),
-            text(now_playing).width(Fill),
-            text(format!(
-                "Q:{} V:{:.0}%",
-                self.queue.len(),
-                self.volume * 100.0
-            ))
-            .width(Shrink),
+    pub fn view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{column, container, row};
+        use iced::Fill;
+        let main = row![
+            self.sidebar_view(),
+            self.center_view(),
+            self.right_panel_view(),
         ]
-        .spacing(8);
-
-        column![
-            nav,
-            scrollable(body).height(Fill),
-            text(&self.status).size(13),
-            player_bar
-        ]
-        .spacing(10)
-        .padding(12)
-        .into()
+        .spacing(8)
+        .height(Fill);
+        container(column![main, self.player_view()].spacing(8).height(Fill))
+            .style(app_bg)
+            .padding(8)
+            .into()
     }
 }
 
 pub fn run() -> iced::Result {
     iced::application(AppState::new, AppState::update, AppState::view)
         .title("yutu-mux")
+        .theme(AppState::theme)
         .subscription(AppState::subscription)
         .run()
 }
