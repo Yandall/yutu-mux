@@ -77,6 +77,11 @@
 - Spotify-style search/artist/album: top-result hero, numbered popular
   tracks, cover-art album cards, photo artist cards, PLAY/SHUFFLE
   hero pills, scrollbar clears the durations
+- Visible shuffle (physical reorder + snapshot restore), filled transport
+  icons, YouTube-red theme, rounded inputs/surfaces, hover feedback on
+  every clickable, centered icon rows, drag ghost + live preview,
+  tooltip volume, whole-row clicks, autoplay hover remove, bold lyrics
+  with note marker, pin/unpin sidebars with edge-hover reveal
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
