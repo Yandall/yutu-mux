@@ -32,7 +32,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Toolchain: `mise use -g rust@stable` (rust 1.99+). System deps: ALSA,
-X11/Wayland, SQLite, OpenSSL (present on most Linux desktops).
+X11/Wayland, SQLite, OpenSSL (present on most Linux desktops), plus
+`libmpv` for the default playback backend (`sudo pacman -S mpv` /
+`sudo apt install libmpv-dev` / `brew install mpv`).
+`cargo run --no-default-features` builds the rodio-only offline check.
 
 Library (likes/history) persists to `$XDG_DATA_HOME/yutu-mux/library.db`.
 

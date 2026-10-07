@@ -5,6 +5,8 @@ use yutu_core::{
     forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore, Playlist,
     SearchResults, Track,
 };
+#[cfg(feature = "mpv")]
+use yutu_player::MpvBackend;
 use yutu_player::{EqPreset, Queue, RodioBackend};
 
 // ---------------------------------------------------------------------------
@@ -137,7 +139,6 @@ pub enum Message {
     SearchChanged(String),
     Search,
     PlayTrack(usize),
-    PlayTone,
     Pause,
     TogglePause,
     EnqueueTrack(String),
@@ -180,7 +181,6 @@ pub enum Message {
     },
     PlayWeeklyMix,
     PlayForgotten,
-    StreamIdChanged(String),
     SearchCompleted {
         query: String,
         result: Result<SearchResults, String>,
@@ -192,11 +192,135 @@ pub enum Message {
     QueueJump(usize),
     ToggleShuffle,
     CycleRepeat,
-    PlayStreamId,
+    Tick(std::time::Instant),
+    SeekTo(f32),
     StreamResolved {
         video_id: String,
         result: Result<Vec<u8>, String>,
     },
+}
+
+/// Playback sink: mpv when the `mpv` feature is on and libmpv initializes
+/// (real seek + position + audible EQ), otherwise rodio (pure Rust).
+/// The UI only talks to this enum — never to a concrete backend.
+enum AudioOut {
+    Rodio(RodioBackend),
+    #[cfg(feature = "mpv")]
+    Mpv(MpvBackend),
+}
+
+impl AudioOut {
+    fn try_new() -> Option<Self> {
+        #[cfg(feature = "mpv")]
+        if let Ok(mpv) = MpvBackend::new() {
+            return Some(Self::Mpv(mpv));
+        }
+        RodioBackend::try_new().ok().map(Self::Rodio)
+    }
+
+    fn backend_name(&self) -> &'static str {
+        match self {
+            Self::Rodio(_) => "rodio",
+            #[cfg(feature = "mpv")]
+            Self::Mpv(_) => "mpv",
+        }
+    }
+
+    /// Play fully-downloaded bytes (resolve + fetch run in Iced tasks).
+    fn play_track_bytes(&self, bytes: Vec<u8>) -> Result<(), String> {
+        match self {
+            Self::Rodio(a) => a.play_bytes(bytes).map_err(|e| e.to_string()),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a
+                .load_bytes(&bytes)
+                .and_then(|()| a.play())
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    fn pause(&self) {
+        match self {
+            Self::Rodio(a) => a.pause(),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => {
+                let _ = a.pause();
+            }
+        }
+    }
+
+    fn resume(&self) {
+        match self {
+            Self::Rodio(a) => a.resume(),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => {
+                let _ = a.play();
+            }
+        }
+    }
+
+    fn stop(&self) {
+        match self {
+            Self::Rodio(a) => a.stop(),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => {
+                let _ = a.stop();
+            }
+        }
+    }
+
+    fn set_volume(&self, volume: f32) {
+        match self {
+            Self::Rodio(a) => a.set_volume(volume),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => {
+                let _ = a.set_volume(volume);
+            }
+        }
+    }
+
+    fn position_secs(&self) -> f64 {
+        match self {
+            Self::Rodio(a) => a.position_secs(),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a.position_secs(),
+        }
+    }
+
+    /// Backend duration when it knows better (mpv), else `fallback`.
+    fn duration_secs(&self, fallback: f64) -> f64 {
+        #[cfg(feature = "mpv")]
+        if let Self::Mpv(a) = self {
+            let d = a.duration_secs();
+            if d > 1.0 {
+                return d;
+            }
+        }
+        fallback
+    }
+
+    /// Draggable seek: real on mpv, unsupported on rodio.
+    fn seek_secs(&self, secs: f64) -> Result<(), String> {
+        match self {
+            Self::Rodio(a) => a.seek_secs(secs).map_err(|e| e.to_string()),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a.seek_secs(secs).map_err(|e| e.to_string()),
+        }
+    }
+
+    fn apply_eq(&self, preset: &EqPreset) {
+        #[cfg(feature = "mpv")]
+        if let Self::Mpv(a) = self {
+            let _ = a.apply_eq_preset(preset);
+        }
+        #[cfg(not(feature = "mpv"))]
+        let _ = preset;
+    }
+}
+
+/// Format seconds as `m:ss` for the player bar.
+fn fmt_time(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    format!("{}:{:02}", total / 60, total % 60)
 }
 
 pub struct AppState {
@@ -223,10 +347,14 @@ pub struct AppState {
     pub scrobble_fm_key: String,
     pub scrobble_fm_secret: String,
     pub scrobble_fm_sk: String,
-    /// Video-ID input for real-stream playback (innertube feature).
-    pub stream_id_input: String,
     paused: bool,
-    audio: Option<RodioBackend>,
+    audio: Option<AudioOut>,
+    /// Last Tick-observed playback position (drives the progress bar).
+    position_secs: f64,
+    /// Track id currently being fetched (stale arrivals are dropped).
+    loading_track: Option<String>,
+    /// End-of-track auto-advance already fired for the current song.
+    end_advanced: bool,
     library_path: String,
     /// Real-track catalog: every track the app has seen (search, radio,
     /// playlists). ID lookups resolve here — never fixtures.
@@ -487,10 +615,13 @@ impl AppState {
     }
 
     pub fn with_library_path(library_path: String) -> (Self, iced::Task<Message>) {
-        let audio = match RodioBackend::try_new() {
-            Ok(a) => Some(a),
-            Err(e) => {
-                eprintln!("audio unavailable: {e}");
+        let audio = match AudioOut::try_new() {
+            Some(a) => {
+                eprintln!("audio backend: {}", a.backend_name());
+                Some(a)
+            }
+            None => {
+                eprintln!("audio unavailable: no output device");
                 None
             }
         };
@@ -518,9 +649,11 @@ impl AppState {
                 scrobble_fm_key: String::new(),
                 scrobble_fm_secret: String::new(),
                 scrobble_fm_sk: String::new(),
-                stream_id_input: String::new(),
                 paused: false,
                 audio,
+                position_secs: 0.0,
+                loading_track: None,
+                end_advanced: false,
                 library_path,
                 catalog: HashMap::new(),
                 search_base: SearchResults::default(),
@@ -537,7 +670,7 @@ impl AppState {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        iced::keyboard::listen().filter_map(|event| match event {
+        let keys = iced::keyboard::listen().filter_map(|event| match event {
             iced::keyboard::Event::KeyPressed { key, .. } => match key.as_ref() {
                 iced::keyboard::Key::Named(iced::keyboard::key::Named::Space) => {
                     Some(Message::TogglePause)
@@ -549,7 +682,9 @@ impl AppState {
                 _ => None,
             },
             _ => None,
-        })
+        });
+        let tick = iced::time::every(std::time::Duration::from_millis(500)).map(Message::Tick);
+        iced::Subscription::batch([keys, tick])
     }
 
     fn persist_like(&self, id: &str, liked: bool) {
@@ -602,19 +737,94 @@ impl AppState {
         let _ = store.remove_from_playlist(playlist_id, track_id);
     }
 
+    /// Click-to-play: queue the track, jump to it, and fetch real audio.
+    /// The fetch task completes in `StreamResolved`; the tone is gone.
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
-        self.status = format!("Queued: {} — {}", track.title, track.artist);
         self.history.push(track.id.clone());
         self.persist_play(&track.id);
-        let scrobble = self.maybe_scrobble_task(&track);
         self.queue.push(track);
-        if let Some(a) = &self.audio {
-            a.play_test_tone();
-            a.set_volume(self.volume);
-        } else {
+        self.queue.jump_to(self.queue.len().saturating_sub(1));
+        self.apply_volume();
+        let play = self.play_current_task();
+        let just_queued = self.queue.current().cloned();
+        let scrobble = just_queued
+            .map(|t| self.maybe_scrobble_task(&t))
+            .unwrap_or_else(iced::Task::none);
+        if self.audio.is_none() {
             self.status.push_str(" (no audio device)");
+            return scrobble;
         }
-        scrobble
+        iced::Task::batch([scrobble, play])
+    }
+
+    /// Fetch + play whatever is current (no-op on an empty queue).
+    /// Sets `loading_track` so the UI shows progress and stale arrivals drop.
+    fn play_current_task(&mut self) -> iced::Task<Message> {
+        let task = self.fetch_current_task();
+        if let Some(t) = self.queue.current() {
+            self.status = format!("Loading {} — {}…", t.title, t.artist);
+        }
+        task
+    }
+
+    /// Same fetch without touching the status line (bulk actions keep theirs).
+    fn fetch_current_task(&mut self) -> iced::Task<Message> {
+        match self.queue.current().cloned() {
+            None => iced::Task::none(),
+            Some(t) => {
+                self.loading_track = Some(t.id.clone());
+                self.end_advanced = false;
+                self.paused = false;
+                self.position_secs = 0.0;
+                Self::resolve_task(t.id)
+            }
+        }
+    }
+
+    /// Shuffle-aware queue step (no audio here). True when current changed.
+    fn advance_queue(&mut self) -> bool {
+        if self.queue.shuffle && self.queue.len() > 1 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as usize)
+                .unwrap_or(0);
+            let mut i = now % self.queue.len();
+            if Some(i) == self.queue.position() {
+                i = (i + 1) % self.queue.len();
+            }
+            self.queue.jump_to(i)
+        } else {
+            self.queue.next_track().is_some()
+        }
+    }
+
+    fn apply_volume(&self) {
+        if let Some(a) = &self.audio {
+            a.set_volume(self.volume);
+        }
+    }
+
+    /// Backend clock (drives the progress bar + MPRIS position).
+    fn audio_position(&self) -> f64 {
+        self.audio
+            .as_ref()
+            .map(|a| a.position_secs())
+            .unwrap_or(0.0)
+            .max(0.0)
+    }
+
+    /// Backend duration when it knows better, else the track's metadata.
+    fn audio_duration(&self) -> f64 {
+        let fallback = self
+            .queue
+            .current()
+            .map(|t| t.duration_secs as f64)
+            .unwrap_or(0.0);
+        self.audio
+            .as_ref()
+            .map(|a| a.duration_secs(fallback))
+            .unwrap_or(fallback)
+            .max(0.0)
     }
 
     /// Build the scrobble-submit task for a just-queued full play, if
@@ -688,18 +898,22 @@ impl AppState {
             .push_str(" | Scrobble-ready (rebuild with `--features submit`)");
     }
 
-    /// Bulk-append without spamming history (one entry-free push per track).
-    fn queue_many(&mut self, tracks: Vec<Track>, label: &str) {
+    /// Bulk-append without spamming history (one entry-free push per track),
+    /// then play the first new track for real.
+    fn queue_many(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
         let n = tracks.len();
+        if n == 0 {
+            self.status = format!("{label}: nothing to queue.");
+            return iced::Task::none();
+        }
+        let first_new = self.queue.len();
         for t in tracks {
             self.queue.push(t);
         }
-        if let Some(a) = &self.audio {
-            a.play_test_tone();
-            a.set_volume(self.volume);
-        }
-        self.paused = false;
+        self.queue.jump_to(first_new);
         self.status = format!("{label}: queued {n} track(s).");
+        self.apply_volume();
+        self.fetch_current_task()
     }
 
     fn play_index(&mut self, i: usize) -> iced::Task<Message> {
@@ -747,6 +961,7 @@ impl AppState {
             yutu_desktop::PlaybackStatus::Playing
         });
         player.set_volume(f64::from(self.volume));
+        player.set_position(self.position_secs);
     }
 
     /// Validate + select an EQ preset (in-memory only; never persisted).
@@ -754,10 +969,13 @@ impl AppState {
         match EqPreset::preset_by_name(name) {
             Some(p) => match p.validate() {
                 Ok(()) => {
-                    // Honest copy: the rodio path has no EQ node yet, so the
-                    // selection only takes effect with the mpv backend.
                     self.eq_preset = p.name.clone();
-                    self.status = format!("EQ: {} — takes effect with mpv backend", p.name);
+                    if let Some(audio) = &self.audio {
+                        audio.apply_eq(&p);
+                        self.status = format!("EQ: {} (live on {})", p.name, audio.backend_name());
+                    } else {
+                        self.status = format!("EQ: {} (no audio device)", p.name);
+                    }
                 }
                 Err(e) => {
                     self.status = format!("EQ preset invalid: {e}.");
@@ -976,14 +1194,6 @@ impl AppState {
             Message::NewPlaylistNameChanged(n) => {
                 self.new_playlist_name = n;
             }
-            Message::PlayTone => {
-                if let Some(a) = &self.audio {
-                    a.play_test_tone();
-                    self.status = "Playing test tone (real streams: Phase 4).".into();
-                } else {
-                    self.status = "No audio device.".into();
-                }
-            }
             Message::Pause => {
                 if let Some(a) = &self.audio {
                     a.pause();
@@ -1015,37 +1225,17 @@ impl AppState {
                 }
             }
             Message::Next => {
-                if self.queue.shuffle && self.queue.len() > 1 {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.subsec_nanos() as usize)
-                        .unwrap_or(0);
-                    let mut i = now % self.queue.len();
-                    if Some(i) == self.queue.position() {
-                        i = (i + 1) % self.queue.len();
-                    }
-                    if self.queue.jump_to(i) {
-                        if let Some(a) = &self.audio {
-                            a.play_test_tone();
-                        }
-                        self.paused = false;
-                        self.status = "Next (shuffled).".into();
-                    }
-                } else if self.queue.next_track().is_some() {
-                    if let Some(a) = &self.audio {
-                        a.play_test_tone();
-                    }
-                    self.paused = false;
-                    self.status = "Next.".into();
+                if self.advance_queue() {
+                    self.apply_volume();
+                    self.publish_mpris();
+                    return self.play_current_task();
                 }
             }
             Message::Prev => {
                 if self.queue.prev_track().is_some() {
-                    if let Some(a) = &self.audio {
-                        a.play_test_tone();
-                    }
-                    self.paused = false;
-                    self.status = "Previous.".into();
+                    self.apply_volume();
+                    self.publish_mpris();
+                    return self.play_current_task();
                 }
             }
             Message::Like(id) => {
@@ -1108,10 +1298,12 @@ impl AppState {
                     let tracks = self.register_tracks(tracks);
                     self.radio_tracks = tracks.clone();
                     self.route = Route::Radio(seed.clone());
-                    self.queue_many(tracks, &format!("Radio (seed {seed})"));
+                    let task = self.queue_many(tracks, &format!("Radio (seed {seed})"));
                     if n == 0 {
                         self.status = format!("Radio (seed {seed}): nothing found.");
                     }
+                    self.publish_mpris();
+                    return task;
                 }
                 Err(e) => {
                     self.status = format!("Radio failed: {e}");
@@ -1119,13 +1311,9 @@ impl AppState {
             },
             Message::QueueJump(i) => {
                 if self.queue.jump_to(i) {
-                    if let Some(a) = &self.audio {
-                        a.play_test_tone();
-                    }
-                    self.paused = false;
-                    if let Some(t) = self.queue.current() {
-                        self.status = format!("Playing {} — {}.", t.title, t.artist);
-                    }
+                    self.apply_volume();
+                    self.publish_mpris();
+                    return self.play_current_task();
                 }
             }
             Message::ToggleShuffle => {
@@ -1161,7 +1349,9 @@ impl AppState {
                 if tracks.is_empty() {
                     self.status = format!("{label}: nothing to queue.");
                 } else {
-                    self.queue_many(tracks, &label);
+                    let task = self.queue_many(tracks, &label);
+                    self.publish_mpris();
+                    return task;
                 }
             }
             Message::CreatePlaylist(title) => {
@@ -1267,7 +1457,9 @@ impl AppState {
                 if tracks.is_empty() {
                     self.status = "Weekly Mix: nothing to queue.".into();
                 } else {
-                    self.queue_many(tracks, "Weekly Mix");
+                    let task = self.queue_many(tracks, "Weekly Mix");
+                    self.publish_mpris();
+                    return task;
                 }
             }
             Message::PlayForgotten => {
@@ -1275,42 +1467,83 @@ impl AppState {
                 if tracks.is_empty() {
                     self.status = "Forgotten Favorites: nothing to queue.".into();
                 } else {
-                    self.queue_many(tracks, "Forgotten Favorites");
-                }
-            }
-            Message::StreamIdChanged(id) => {
-                self.stream_id_input = id;
-            }
-            Message::PlayStreamId => {
-                let id = self.stream_id_input.trim().to_string();
-                if id.is_empty() {
-                    self.status = "Paste a YouTube video ID first.".into();
-                } else {
-                    self.status = format!("Resolving stream {id}…");
-                    self.history.push(format!("stream:{id}"));
+                    let task = self.queue_many(tracks, "Forgotten Favorites");
                     self.publish_mpris();
-                    return Self::resolve_task(id);
+                    return task;
                 }
             }
-            Message::StreamResolved { video_id, result } => match result {
-                Ok(bytes) => match &self.audio {
+            Message::Tick(_) => {
+                self.position_secs = self.audio_position();
+                // Auto-advance once per track end (mpv holds at duration,
+                // the rodio wall-clock keeps running — both cross it once).
+                let duration = self.audio_duration();
+                if !self.paused
+                    && !self.end_advanced
+                    && duration > 1.0
+                    && self.position_secs >= duration
+                    && self.advance_queue()
+                {
+                    self.end_advanced = true;
+                    self.publish_mpris();
+                    return self.play_current_task();
+                }
+                self.publish_mpris();
+                return iced::Task::none();
+            }
+            Message::SeekTo(pos) => {
+                let pos = pos as f64;
+                match &self.audio {
                     None => {
-                        self.status = format!("Stream {video_id} fetched, but no audio device.");
+                        self.status = "No audio device.".into();
                     }
-                    Some(audio) => match audio.play_bytes(bytes) {
+                    Some(audio) => match audio.seek_secs(pos) {
                         Ok(()) => {
-                            self.status = format!("Playing real stream {video_id}.");
-                            self.paused = false;
+                            self.position_secs = pos;
                         }
                         Err(e) => {
-                            self.status = format!("Decode failed for {video_id}: {e}");
+                            self.status = format!("Seek failed ({e}).");
                         }
                     },
-                },
-                Err(e) => {
-                    self.status = format!("Stream {video_id} failed: {e}");
                 }
-            },
+            }
+            Message::StreamResolved { video_id, result } => {
+                self.loading_track = None;
+                match result {
+                    Err(e) => {
+                        self.status = format!("Playback failed for {video_id}: {e}");
+                    }
+                    Ok(bytes) => {
+                        // Stale arrival (user moved on): drop, keep playing.
+                        let current_id = self
+                            .queue
+                            .current()
+                            .map(|t| t.id.clone())
+                            .unwrap_or_default();
+                        if video_id != current_id {
+                            return iced::Task::none();
+                        }
+                        match &self.audio {
+                            None => {
+                                self.status =
+                                    format!("Stream {video_id} fetched, but no audio device.");
+                            }
+                            Some(audio) => match audio.play_track_bytes(bytes) {
+                                Ok(()) => {
+                                    self.paused = false;
+                                    self.end_advanced = false;
+                                    self.position_secs = 0.0;
+                                    if let Some(t) = self.queue.current() {
+                                        self.status = format!("♪ {} — {}.", t.title, t.artist);
+                                    }
+                                }
+                                Err(e) => {
+                                    self.status = format!("Playback failed for {video_id}: {e}");
+                                }
+                            },
+                        }
+                    }
+                }
+            }
         }
         self.publish_mpris();
         iced::Task::none()
@@ -1561,15 +1794,38 @@ impl AppState {
         use iced::widget::{button, column, container, row, slider, text};
         use iced::Fill;
         let current = self.queue.current().cloned();
-        let title = current
-            .as_ref()
-            .map(|t| t.title.clone())
-            .unwrap_or_else(|| "Nothing playing".into());
+        let loading = self.loading_track.is_some();
+        let title = if loading {
+            "Loading…".into()
+        } else {
+            current
+                .as_ref()
+                .map(|t| t.title.clone())
+                .unwrap_or_else(|| "Nothing playing".into())
+        };
         let artist = current
             .as_ref()
             .map(|t| t.artist.clone())
-            .unwrap_or_else(|| "Pick something from Home or Search".into());
+            .unwrap_or_else(|| "Search for music, then click a song".into());
         let play_symbol = if self.paused { "▶" } else { "⏸" };
+        let duration = self.audio_duration();
+        let slider_max = duration.max(1.0);
+        let shown_pos = self.position_secs.clamp(0.0, slider_max);
+        let like_button: iced::Element<'_, Message> = match &current {
+            Some(t) => {
+                let heart = if self.liked.contains(&t.id) {
+                    "♥"
+                } else {
+                    "♡"
+                };
+                button(text(heart).size(15).color(SPOT_GREEN))
+                    .style(button::text)
+                    .on_press(Message::Like(t.id.clone()))
+                    .padding(6)
+                    .into()
+            }
+            None => text("").size(1).into(),
+        };
         let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
             button(text("🔀").size(14))
                 .style(green_play)
@@ -1592,30 +1848,51 @@ impl AppState {
             column![
                 text(self.status.clone()).size(12).color(MUTED),
                 row![
-                    column![text(title).size(14), text(artist).size(12).color(MUTED),]
-                        .spacing(1)
-                        .width(Fill),
                     row![
-                        shuffle_button,
-                        button(text("⏮").size(16))
-                            .style(button::text)
-                            .on_press(Message::Prev)
-                            .padding(8),
-                        button(text(play_symbol).size(17))
-                            .style(green_play)
-                            .on_press(Message::TogglePause)
+                        container(text("♪").size(20).color(MUTED))
+                            .style(card_bg)
                             .padding(10),
-                        button(text("⏭").size(16))
-                            .style(button::text)
-                            .on_press(Message::Next)
-                            .padding(8),
-                        button(text(repeat_label).size(13))
-                            .style(button::text)
-                            .on_press(Message::CycleRepeat)
-                            .padding(8),
+                        column![text(title).size(14), text(artist).size(12).color(MUTED),]
+                            .spacing(1),
+                        like_button,
                     ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center),
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .width(Fill),
+                    column![
+                        row![
+                            shuffle_button,
+                            button(text("⏮").size(16))
+                                .style(button::text)
+                                .on_press(Message::Prev)
+                                .padding(8),
+                            button(text(play_symbol).size(17))
+                                .style(green_play)
+                                .on_press(Message::TogglePause)
+                                .padding(10),
+                            button(text("⏭").size(16))
+                                .style(button::text)
+                                .on_press(Message::Next)
+                                .padding(8),
+                            button(text(repeat_label).size(13))
+                                .style(button::text)
+                                .on_press(Message::CycleRepeat)
+                                .padding(8),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center),
+                        row![
+                            text(fmt_time(shown_pos)).size(11).color(MUTED),
+                            slider(0.0..=slider_max as f32, shown_pos as f32, Message::SeekTo)
+                                .step(1.0_f32)
+                                .width(Fill),
+                            text(fmt_time(duration)).size(11).color(MUTED),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
                     row![
                         text(format!(
                             "Q:{}  V:{:.0}%",
@@ -1703,16 +1980,14 @@ impl AppState {
                 let forgotten_n = self.forgotten_tracks().len();
                 column![
                     text("Good evening").size(24),
-                    // Real playback lives here now, not buried in Settings.
                     container(
                         row![
-                            text_input("Paste a YouTube video ID…", &self.stream_id_input)
-                                .on_input(Message::StreamIdChanged)
-                                .on_submit(Message::PlayStreamId)
+                            text("Search YouTube Music, click a song, hear it.")
+                                .size(14)
                                 .width(Fill),
-                            button(text("▶ Play").size(14))
+                            button(text("🔍 Search").size(14))
                                 .style(green_play)
-                                .on_press(Message::PlayStreamId)
+                                .on_press(Message::Navigate(Route::Search))
                                 .padding(8),
                         ]
                         .spacing(8)
@@ -2067,17 +2342,7 @@ impl AppState {
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row(eq_buttons).spacing(4),
-                    text(format!("EQ: {current_eq} (takes effect with mpv backend)"))
-                        .size(12)
-                        .color(MUTED),
-                    text("Real stream (yt-dlp)").size(17),
-                    text_input("YouTube video ID…", &self.stream_id_input)
-                        .on_input(Message::StreamIdChanged)
-                        .on_submit(Message::PlayStreamId),
-                    button(text("Resolve + play").size(13))
-                        .style(green_play)
-                        .on_press(Message::PlayStreamId)
-                        .padding(8),
+                    text(format!("EQ: {current_eq}")).size(12).color(MUTED),
                     text("Scrobbling (submits live when credentials are set)").size(17),
                     checkbox(self.scrobble_enabled)
                         .label("Enable scrobbling")
@@ -2520,7 +2785,7 @@ mod tests {
         let _ = s.update(Message::SelectEqPreset("Rock".into()));
         assert_eq!(s.eq_preset, "Rock");
         assert!(s.status.contains("EQ: Rock"));
-        assert!(s.status.contains("mpv backend"));
+        assert!(s.status.contains("EQ: Rock"));
         // Case-insensitive lookup keeps the canonical name.
         let _ = s.update(Message::SelectEqPreset("pop".into()));
         assert_eq!(s.eq_preset, "Pop");
@@ -2587,7 +2852,7 @@ mod tests {
         let _ = s.update(Message::EnqueueTrack("m1".into()));
         #[cfg(feature = "submit")]
         {
-            assert!(s.status.starts_with("Queued:"));
+            assert!(s.status.contains("Loading"));
             assert!(!s.status.contains("Scrobble-ready"));
         }
         #[cfg(not(feature = "submit"))]
@@ -2645,34 +2910,54 @@ mod tests {
     }
 
     #[test]
-    fn stream_id_flow_offline_build() {
+    fn click_to_play_loads_then_resolves_or_reports() {
         let mut s = test_state();
-        let _ = s.update(Message::StreamIdChanged("dQw4w9WgXcQ".into()));
-        assert_eq!(s.stream_id_input, "dQw4w9WgXcQ");
-        // Empty input is rejected before any network.
-        s.stream_id_input.clear();
-        let _ = s.update(Message::PlayStreamId);
-        assert!(s.status.contains("video ID"));
-        // The resolve task runs async; synchronously we only see Resolving.
-        s.stream_id_input = "dQw4w9WgXcQ".into();
-        let _ = s.update(Message::PlayStreamId);
-        assert!(s.status.contains("Resolving"));
+        // Clicking a song marks it loading (fetch runs async, no network here).
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        assert!(s.status.contains("Loading"));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        // Stale arrival (user moved on): dropped silently.
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Ok(vec![1, 2, 3]),
+        });
+        assert_eq!(s.loading_track, None);
+        assert!(s.queue.current().map(|t| t.id.as_str()) == Some("m2"));
+        // Fetch failure for the current track reports honestly.
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m2".into(),
+            result: Err("403 Forbidden".into()),
+        });
+        assert!(s.status.contains("m2") || s.status.contains("Playback failed"));
     }
 
     #[test]
     fn stream_resolved_reports_errors() {
         let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
         let _ = s.update(Message::StreamResolved {
-            video_id: "vid".into(),
+            video_id: "m1".into(),
             result: Err("403 Forbidden".into()),
         });
-        assert!(s.status.contains("vid") && s.status.contains("403"));
-        // Empty bytes deterministically fail decoding (no device needed).
+        assert!(s.status.contains("m1") && s.status.contains("403"));
+        assert_eq!(s.loading_track, None);
+        // Empty bytes: whatever the backend does (play async / refuse /
+        // no device), it must settle loading and report — never panic.
         let _ = s.update(Message::StreamResolved {
-            video_id: "vid".into(),
+            video_id: "m1".into(),
             result: Ok(Vec::new()),
         });
-        assert!(s.status.contains("vid"));
+        assert_eq!(s.loading_track, None);
+        assert!(
+            s.status.contains('\u{266a}')
+                || s.status.contains("no audio device")
+                || s.status.contains("failed"),
+            "unexpected status: {}",
+            s.status
+        );
     }
 
     #[test]
@@ -2699,6 +2984,52 @@ mod tests {
         assert_eq!(s2.user_playlists[0].tracks[0].id, "m1");
         // Loaded ids reserve the sequence: next create must not collide.
         // (seq resumes from max uN.)
+    }
+
+    /// Full click-to-play path (minus audible sound): catalog insert →
+    /// EnqueueTrack marks loading → resolve+fetch real bytes → StreamResolved
+    /// hands them to the backend → status flips to playing.
+    #[tokio::test]
+    #[ignore = "live: needs yt-dlp + network + an audio backend (mpv loads headless)"]
+    async fn live_click_to_play_real_song() {
+        let Some(_) = yutu_core::find_yt_dlp() else {
+            eprintln!("SKIP: yt-dlp not installed (or set YUTU_YTDLP_BIN)");
+            return;
+        };
+        let video = std::env::var("YUTU_TEST_VIDEO_ID").unwrap_or_else(|_| "JWW8KK8kd1I".into());
+        let mut s = test_state();
+        let Some(_) = &s.audio else {
+            eprintln!("SKIP: no audio backend on this machine");
+            return;
+        };
+        s.catalog.insert(
+            video.clone(),
+            Track {
+                id: video.clone(),
+                title: "live-proof".into(),
+                artist: "yutu".into(),
+                album: None,
+                duration_secs: 200,
+            },
+        );
+        let _ = s.update(Message::EnqueueTrack(video.clone()));
+        assert_eq!(s.loading_track.as_deref(), Some(video.as_str()));
+        let bytes = super::resolve_and_fetch(&video)
+            .await
+            .expect("yt-dlp resolve + chunked fetch");
+        assert!(bytes.len() > 100_000, "suspiciously small stream");
+        let _ = s.update(Message::StreamResolved {
+            video_id: video,
+            result: Ok(bytes),
+        });
+        assert_eq!(s.loading_track, None);
+        assert!(
+            s.status.contains('\u{266a}'),
+            "expected playing status, got: {}",
+            s.status
+        );
+        assert!(s.audio_position() >= 0.0);
+        assert!(s.audio_duration() > 0.0);
     }
 
     /// Live composition check: the UI's `live_search` over the real API.

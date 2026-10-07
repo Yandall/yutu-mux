@@ -12,11 +12,13 @@ yutu-desktop = { path = "../yutu-desktop" }
 iced = { version = "0.14", features = ["tokio"] }
 
 [features]
-# Default is the real app: live search/radio + scrobble submission.
-# `--no-default-features` is the offline compile check (empty states).
-default = ["submit", "innertube"]
+# Default is the real app: live search/radio + scrobble submission + mpv
+# playback (seek/position/EQ). `--no-default-features` is the offline
+# compile check (empty states, rodio-only).
+default = ["submit", "innertube", "mpv"]
 innertube = ["yutu-core/innertube"]
 submit = ["yutu-core/submit"]
+mpv = ["yutu-player/mpv"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
