@@ -53,6 +53,8 @@ pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamErro
     let output = Command::new(bin)
         .args([
             "--get-url",
+            "--quiet",
+            "--no-warnings",
             "-f",
             "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
             "--no-playlist",

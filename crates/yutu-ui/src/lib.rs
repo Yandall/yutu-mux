@@ -47,6 +47,16 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Translucent scrim behind the context menu.
+fn dim_bg(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgba8(
+            0, 0, 0, 0.78,
+        ))),
+        ..Default::default()
+    }
+}
+
 fn player_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(SIDEBAR_BG)),
@@ -131,15 +141,7 @@ pub enum Route {
     PlaylistDetail(String),
     Lyrics(String),
     Radio(String),
-}
-
-/// Sidebar library filter (real catalog data behind each tab).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LibFilter {
-    #[default]
-    Playlists,
-    Albums,
-    Artists,
+    NowPlaying,
 }
 
 /// Right-panel tab: queue or recently played.
@@ -213,8 +215,39 @@ pub enum Message {
     SeekTo(f32),
     NavBack,
     NavForward,
-    SetLibFilter(LibFilter),
     SetRightTab(RightTab),
+    SuggestCompleted {
+        gen: u64,
+        result: Result<Vec<String>, String>,
+    },
+    /// Click-to-play: replace the queue with this track + autoplay tail.
+    PlayNow(String),
+    AutoplayReady {
+        seed: String,
+        result: Result<Vec<Track>, String>,
+    },
+    /// Insert after the current item (context menu: play next).
+    PlayNext(String),
+    /// Context menu open/close (Iced has no right-click primitive; the
+    /// per-row `…` button opens the same menu YouTube Music shows).
+    OpenContext(String),
+    CloseContext,
+    /// Context menu: jump to this track's album/artist detail.
+    OpenTrackAlbum(String),
+    OpenTrackArtist(String),
+    /// Cache the resolved audio bytes for offline listening.
+    DownloadTrack(String),
+    Downloaded {
+        track_id: String,
+        result: Result<(), String>,
+    },
+    ToggleSidebar,
+    SidebarFilterChanged(String),
+    CookiePathChanged(String),
+    CookieImport,
+    CookieImported {
+        result: Result<(Vec<Track>, Vec<String>), String>,
+    },
     HomeSearchChanged(String),
     SearchStay,
     SearchDebounced {
@@ -393,13 +426,24 @@ impl AudioOut {
         }
     }
 
-    fn apply_eq(&self, preset: &EqPreset) {
-        #[cfg(feature = "mpv")]
-        if let Self::Mpv(a) = self {
-            let _ = a.apply_eq_preset(preset);
+    /// Rodio decodes to raw PCM with no filter stage: EQ is mpv-only.
+    /// Callers report this honestly instead of pretending it applied.
+    fn supports_eq(&self) -> bool {
+        match self {
+            Self::Rodio(_) => false,
+            #[cfg(feature = "mpv")]
+            Self::Mpv(_) => true,
         }
+    }
+
+    fn apply_eq(&self, preset: &EqPreset) -> Result<(), String> {
         #[cfg(not(feature = "mpv"))]
         let _ = preset;
+        match self {
+            Self::Rodio(_) => Err("EQ needs the mpv backend (libmpv)".into()),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a.apply_eq_preset(preset).map_err(|e| e.to_string()),
+        }
     }
 }
 
@@ -457,9 +501,22 @@ pub struct AppState {
     /// Browser-style back/forward stacks (Route history, capped).
     nav_back: Vec<Route>,
     nav_forward: Vec<Route>,
-    /// Sidebar library tab + right-panel tab (view-only state).
-    lib_filter: LibFilter,
+    /// Right-panel tab (view-only state).
     right_tab: RightTab,
+    /// Suggestion popup: texts + generation + visibility.
+    suggest: Vec<String>,
+    suggest_gen: u64,
+    show_suggest: bool,
+    /// Context menu open for this track id (None = closed).
+    context_menu: Option<String>,
+    /// Sidebar expanded (false = icon rail).
+    sidebar_expanded: bool,
+    /// Playlist filter text in the sidebar.
+    sidebar_filter: String,
+    /// Autoplay tail belongs to this seed (stale arrivals drop).
+    autoplay_for: Option<String>,
+    /// Cookie-file path for import (Settings).
+    cookie_path: String,
     /// Where the queue is playing from (playlist/artist/radio label).
     playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
@@ -543,6 +600,25 @@ impl AppState {
             self.catalog.insert(t.id.clone(), t.clone());
         }
         tracks
+    }
+
+    /// Merge an imported library: catalog + likes (memory + SQLite) +
+    /// artwork tasks for the new tracks.
+    fn merge_imported(
+        &mut self,
+        tracks: Vec<Track>,
+        liked_ids: Vec<String>,
+    ) -> Vec<iced::Task<Message>> {
+        let tracks = self.register_tracks(tracks);
+        for id in &liked_ids {
+            self.liked.insert(id.clone());
+        }
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            for id in &liked_ids {
+                let _ = store.like(id);
+            }
+        }
+        self.artwork_tasks(&tracks)
     }
 
     /// Everything the app has really seen (discovery candidate pool).
@@ -811,8 +887,15 @@ impl AppState {
                 lyrics_loading: None,
                 nav_back: Vec::new(),
                 nav_forward: Vec::new(),
-                lib_filter: LibFilter::Playlists,
                 right_tab: RightTab::Queue,
+                suggest: Vec::new(),
+                suggest_gen: 0,
+                show_suggest: false,
+                context_menu: None,
+                sidebar_expanded: true,
+                sidebar_filter: String::new(),
+                autoplay_for: None,
+                cookie_path: String::new(),
                 playing_from: String::new(),
                 artwork: HashMap::new(),
                 artwork_loading: HashSet::new(),
@@ -1327,6 +1410,48 @@ impl AppState {
         .into()
     }
 
+    /// Cookie import panel: normal browser login, no OAuth client needed.
+    #[cfg(feature = "innertube")]
+    fn cookie_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, row, text, text_input};
+        use iced::Fill;
+        column![
+            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path — no Google Cloud client required.")
+                .size(11)
+                .color(MUTED),
+            row![
+                text_input("/path/to/cookies.txt", &self.cookie_path)
+                    .on_input(Message::CookiePathChanged)
+                    .width(Fill),
+                button(
+                    text(if self.login_busy {
+                        "…"
+                    } else {
+                        "Import"
+                    })
+                    .size(12)
+                )
+                .style(green_play)
+                .on_press(Message::CookieImport)
+                .padding(7),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    /// Offline builds: cookie import needs the innertube feature.
+    #[cfg(not(feature = "innertube"))]
+    fn cookie_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::text;
+        text("Cookie import needs `--features innertube`.")
+            .size(12)
+            .color(MUTED)
+            .into()
+    }
+
     /// Offline builds: login needs the innertube feature.
     #[cfg(not(feature = "innertube"))]
     fn google_section(&self) -> iced::Element<'_, Message> {
@@ -1382,16 +1507,26 @@ impl AppState {
     }
 
     /// Validate + select an EQ preset (in-memory only; never persisted).
+    /// Honest about backends: rodio has no filter stage, so selecting a
+    /// preset there records the choice and says so (it takes effect on mpv).
     fn select_eq_preset(&mut self, name: &str) {
         match EqPreset::preset_by_name(name) {
             Some(p) => match p.validate() {
                 Ok(()) => {
                     self.eq_preset = p.name.clone();
-                    if let Some(audio) = &self.audio {
-                        audio.apply_eq(&p);
-                        self.status = format!("EQ: {} (live on {})", p.name, audio.backend_name());
-                    } else {
-                        self.status = format!("EQ: {} (no audio device)", p.name);
+                    match &self.audio {
+                        None => {
+                            self.status = format!("EQ: {} (no audio device)", p.name);
+                        }
+                        Some(audio) => match audio.apply_eq(&p) {
+                            Ok(()) => {
+                                self.status =
+                                    format!("EQ: {} (live on {})", p.name, audio.backend_name());
+                            }
+                            Err(e) => {
+                                self.status = format!("EQ: {} (saved; {e})", p.name);
+                            }
+                        },
                     }
                 }
                 Err(e) => {
@@ -1401,6 +1536,17 @@ impl AppState {
             None => {
                 self.status = format!("Unknown EQ preset: {name}.");
             }
+        }
+    }
+
+    /// One-line EQ backend note for Settings (honest on rodio builds).
+    fn eq_note(&self) -> String {
+        match &self.audio {
+            Some(a) if a.supports_eq() => "EQ is live on mpv.".into(),
+            Some(_) => {
+                "EQ needs the mpv backend — install libmpv / rebuild with --features mpv.".into()
+            }
+            None => "EQ: no audio device.".into(),
         }
     }
 
@@ -1526,11 +1672,14 @@ impl AppState {
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::PlayTrack(i) => {
+                self.show_suggest = false;
                 let task = self.play_index(i);
                 self.publish_mpris();
                 task
             }
             Message::EnqueueTrack(id) => {
+                self.show_suggest = false;
+                self.context_menu = None;
                 let task = self.enqueue_track_task(&id);
                 self.publish_mpris();
                 task
@@ -1561,9 +1710,6 @@ impl AppState {
             Message::Navigate(r) => self.navigate(r),
             Message::NavBack => self.go_back(),
             Message::NavForward => self.go_forward(),
-            Message::SetLibFilter(f) => {
-                self.lib_filter = f;
-            }
             Message::SetRightTab(t) => {
                 self.right_tab = t;
             }
@@ -1571,16 +1717,38 @@ impl AppState {
                 self.search_query = q.clone();
                 let trimmed = q.trim().to_string();
                 self.search_gen = self.search_gen.wrapping_add(1);
+                self.suggest_gen = self.suggest_gen.wrapping_add(1);
                 if trimmed.is_empty() {
                     self.results = SearchResults::default();
+                    self.suggest.clear();
+                    self.show_suggest = false;
                     self.searching = false;
                 } else if trimmed.len() >= 2 {
+                    self.show_suggest = true;
                     #[cfg(feature = "innertube")]
                     {
                         let gen = self.search_gen;
+                        let sgen = self.suggest_gen;
+                        let q2 = trimmed.clone();
                         self.searching = true;
                         self.publish_mpris();
-                        return Self::search_debounce_task(gen, trimmed);
+                        return iced::Task::batch([
+                            Self::search_debounce_task(gen, trimmed),
+                            Self::suggest_debounce_task(sgen, q2),
+                        ]);
+                    }
+                }
+            }
+            Message::SuggestCompleted { gen, result } => {
+                if gen != self.suggest_gen {
+                    return iced::Task::none();
+                }
+                match result {
+                    Ok(texts) => {
+                        self.suggest = texts.into_iter().take(6).collect();
+                    }
+                    Err(_) => {
+                        self.suggest.clear();
                     }
                 }
             }
@@ -1612,6 +1780,8 @@ impl AppState {
                 }
             }
             Message::SearchStay => {
+                self.show_suggest = false;
+                self.go(Route::Search);
                 let q = self.search_query.trim().to_string();
                 #[cfg(feature = "innertube")]
                 {
@@ -1767,6 +1937,7 @@ impl AppState {
             Message::OpenAlbum(id) => self.go(Route::Album(id)),
             Message::OpenPlaylist(id) => self.go(Route::PlaylistDetail(id)),
             Message::OpenLyrics(id) => {
+                self.context_menu = None;
                 self.go(Route::Lyrics(id.clone()));
                 #[cfg(feature = "lyrics")]
                 {
@@ -1807,27 +1978,30 @@ impl AppState {
                     }
                 }
             }
-            Message::StartRadio(seed) => match self.find_track(&seed) {
-                None => {
-                    self.status =
-                        format!("Radio needs a known track — search for it first ({seed}).");
-                }
-                Some(t) => {
-                    let artist = t.artist.clone();
-                    #[cfg(feature = "innertube")]
-                    {
-                        self.status = format!("Starting radio for {} — {}…", t.title, t.artist);
-                        self.go(Route::Radio(seed.clone()));
-                        self.publish_mpris();
-                        return Self::radio_task(seed, artist);
+            Message::StartRadio(seed) => {
+                self.context_menu = None;
+                match self.find_track(&seed) {
+                    None => {
+                        self.status =
+                            format!("Radio needs a known track — search for it first ({seed}).");
                     }
-                    #[cfg(not(feature = "innertube"))]
-                    {
-                        let _ = artist;
-                        self.status = "Radio needs `--features innertube`.".into();
+                    Some(t) => {
+                        let artist = t.artist.clone();
+                        #[cfg(feature = "innertube")]
+                        {
+                            self.status = format!("Starting radio for {} — {}…", t.title, t.artist);
+                            self.go(Route::Radio(seed.clone()));
+                            self.publish_mpris();
+                            return Self::radio_task(seed, artist);
+                        }
+                        #[cfg(not(feature = "innertube"))]
+                        {
+                            let _ = artist;
+                            self.status = "Radio needs `--features innertube`.".into();
+                        }
                     }
                 }
-            },
+            }
             Message::RadioReady { seed, result } => match result {
                 Ok(tracks) => {
                     let n = tracks.len();
@@ -2009,6 +2183,186 @@ impl AppState {
                     return task;
                 }
             }
+            Message::PlayNow(id) => {
+                self.context_menu = None;
+                self.show_suggest = false;
+                match self.find_track(&id) {
+                    None => {
+                        self.status = format!("Track not found: {id}.");
+                    }
+                    Some(t) => {
+                        let artist = t.artist.clone();
+                        self.queue.clear();
+                        self.queue.push(t);
+                        self.queue.jump_to(0);
+                        self.playing_from = "Single + autoplay".into();
+                        self.autoplay_for = Some(id.clone());
+                        self.history.push(id.clone());
+                        self.persist_play(&id);
+                        self.apply_volume();
+                        self.publish_mpris();
+                        let play = self.play_current_task();
+                        #[cfg(feature = "innertube")]
+                        {
+                            let auto = Self::autoplay_task(id, artist);
+                            return iced::Task::batch([play, auto]);
+                        }
+                        #[cfg(not(feature = "innertube"))]
+                        {
+                            let _ = artist;
+                            return play;
+                        }
+                    }
+                }
+            }
+            Message::AutoplayReady { seed, result } => {
+                match result {
+                    Err(_) => {}
+                    Ok(tracks) => {
+                        let tracks = self.register_tracks(tracks);
+                        // Stale (user moved on): catalog only, no append.
+                        if self.autoplay_for.as_deref() != Some(seed.as_str()) {
+                            return iced::Task::none();
+                        }
+                        let queued: std::collections::HashSet<String> =
+                            self.queue.items().iter().map(|t| t.id.clone()).collect();
+                        let fresh: Vec<Track> = tracks
+                            .into_iter()
+                            .filter(|t| t.id != seed && !queued.contains(&t.id))
+                            .take(10)
+                            .collect();
+                        if fresh.is_empty() {
+                            return iced::Task::none();
+                        }
+                        let art = self.artwork_tasks(&fresh);
+                        for t in fresh {
+                            self.queue.push(t);
+                        }
+                        self.publish_mpris();
+                        return iced::Task::batch(art);
+                    }
+                }
+            }
+            Message::PlayNext(id) => {
+                self.context_menu = None;
+                self.show_suggest = false;
+                match self.find_track(&id) {
+                    None => {
+                        self.status = format!("Track not found: {id}.");
+                    }
+                    Some(t) => {
+                        if self.queue.is_empty() {
+                            self.queue.push(t);
+                            self.queue.jump_to(0);
+                            self.apply_volume();
+                            self.publish_mpris();
+                            return self.play_current_task();
+                        }
+                        let at = self.queue.insert_next(t.clone());
+                        self.status = format!("Queued next: {} — {}.", t.title, t.artist);
+                        let _ = at;
+                    }
+                }
+            }
+            Message::OpenContext(id) => {
+                self.context_menu = Some(id);
+            }
+            Message::CloseContext => {
+                self.context_menu = None;
+            }
+            Message::OpenTrackAlbum(id) => {
+                self.context_menu = None;
+                match self.find_track(&id) {
+                    Some(t) => match t.album.clone() {
+                        Some(album) => self.go(Route::Album(album)),
+                        None => {
+                            self.status = format!("No album for {} — {}.", t.title, t.artist);
+                        }
+                    },
+                    None => {
+                        self.status = format!("Track not found: {id}.");
+                    }
+                }
+            }
+            Message::OpenTrackArtist(id) => {
+                self.context_menu = None;
+                match self.find_track(&id) {
+                    Some(t) => self.go(Route::Artist(t.artist.clone())),
+                    None => {
+                        self.status = format!("Track not found: {id}.");
+                    }
+                }
+            }
+            Message::DownloadTrack(id) => {
+                self.context_menu = None;
+                match self.find_track(&id) {
+                    None => {
+                        self.status = format!("Track not found: {id}.");
+                    }
+                    Some(t) => {
+                        self.status = format!("Downloading {} — {}…", t.title, t.artist);
+                        self.publish_mpris();
+                        return Self::download_task(id);
+                    }
+                }
+            }
+            Message::Downloaded { track_id, result } => match result {
+                Ok(()) => {
+                    self.status = format!("Downloaded {track_id} for offline listening.");
+                }
+                Err(e) => {
+                    self.status = format!("Download failed for {track_id}: {e}");
+                }
+            },
+            Message::ToggleSidebar => {
+                self.sidebar_expanded = !self.sidebar_expanded;
+            }
+            Message::SidebarFilterChanged(f) => {
+                self.sidebar_filter = f;
+            }
+            Message::CookiePathChanged(p) => {
+                self.cookie_path = p;
+            }
+            Message::CookieImport => {
+                let path = self.cookie_path.trim().to_string();
+                #[cfg(feature = "innertube")]
+                {
+                    if path.is_empty() {
+                        self.status =
+                            "Pick your exported cookies file first (see the note below).".into();
+                    } else {
+                        self.login_busy = true;
+                        self.status = "Reading cookies + contacting YouTube Music…".into();
+                        self.publish_mpris();
+                        return Self::cookie_import_task(path);
+                    }
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = path;
+                    self.status =
+                        "Cookie import needs `--features innertube` (offline build).".into();
+                }
+            }
+            Message::CookieImported { result } => {
+                #[cfg(feature = "innertube")]
+                {
+                    self.login_busy = false;
+                }
+                match result {
+                    Ok((tracks, liked_ids)) => {
+                        let n = tracks.len();
+                        let m = liked_ids.len();
+                        let tasks = self.merge_imported(tracks, liked_ids);
+                        self.status = format!("Cookie import: {n} library tracks ({m} liked).");
+                        self.publish_mpris();
+                        return iced::Task::batch(tasks);
+                    }
+                    Err(e) => {
+                        self.status = format!("Cookie import failed: {e}");
+                    }
+                }
+            }
             #[cfg(feature = "innertube")]
             Message::GoogleLoginStart => {
                 self.login_busy = true;
@@ -2107,16 +2461,7 @@ impl AppState {
                     Ok((tracks, liked_ids)) => {
                         let n = tracks.len();
                         let m = liked_ids.len();
-                        let tracks = self.register_tracks(tracks);
-                        for id in &liked_ids {
-                            self.liked.insert(id.clone());
-                        }
-                        if let Ok(store) = LibraryStore::open(&self.library_path) {
-                            for id in &liked_ids {
-                                let _ = store.like(id);
-                            }
-                        }
-                        let tasks = self.artwork_tasks(&tracks);
+                        let tasks = self.merge_imported(tracks, liked_ids);
                         self.status = format!("Imported {n} library tracks ({m} liked).");
                         self.publish_mpris();
                         return iced::Task::batch(tasks);
@@ -2379,6 +2724,89 @@ impl AppState {
         )
     }
 
+    /// Suggestion popup: one light query (texts only, no tracks).
+    #[cfg(feature = "innertube")]
+    async fn live_suggest(query: &str) -> Result<Vec<String>, String> {
+        use yutu_core::InnertubeBackend;
+        let backend = InnertubeBackend::connect_anonymous().await?;
+        backend.search_suggestions(query).await
+    }
+
+    /// Suggestion debounce (shorter than search: the popup must feel instant).
+    #[cfg(feature = "innertube")]
+    fn suggest_debounce_task(gen: u64, query: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let result = Self::live_suggest(&query).await;
+                (gen, result)
+            },
+            |(gen, result)| Message::SuggestCompleted { gen, result },
+        )
+    }
+
+    /// Autoplay tail for [`Message::PlayNow`]: same-artist radio, seed first
+    /// (the caller strips the seed and anything already queued).
+    #[cfg(feature = "innertube")]
+    fn autoplay_task(seed: String, artist: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = live_radio(&seed, &artist).await;
+                (seed, result)
+            },
+            |(seed, result)| Message::AutoplayReady { seed, result },
+        )
+    }
+
+    /// Offline download: resolve + fetch bytes, persist to the disk cache.
+    fn download_task(track_id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result: Result<(), String> = async {
+                    let bytes = resolve_and_fetch(&track_id).await?;
+                    let mut cache = yutu_player::OfflineCache::new(500 * 1024 * 1024);
+                    cache.set_dir(format!("{}/offline_cache", data_dir()));
+                    cache
+                        .store_bytes(&track_id, &bytes)
+                        .map_err(|e| e.to_string())?;
+                    Ok(())
+                }
+                .await;
+                (track_id, result)
+            },
+            |(track_id, result)| Message::Downloaded { track_id, result },
+        )
+    }
+
+    /// Cookie import: normal browser login, no OAuth client needed. The user
+    /// logs into music.youtube.com in their own browser, exports cookies to
+    /// a file, and points the app at it — same library/liked merge as OAuth.
+    #[cfg(feature = "innertube")]
+    fn cookie_import_task(path: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
+                    std::path::Path::new(&path),
+                )
+                .await?;
+                let lib = backend.library_songs().await.unwrap_or_default();
+                let liked = backend.liked_songs().await.unwrap_or_default();
+                if lib.is_empty() && liked.is_empty() {
+                    return Err("empty library — bad cookies file or wrong account?".to_string());
+                }
+                let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
+                let mut all = lib;
+                for t in liked {
+                    if !all.iter().any(|x| x.id == t.id) {
+                        all.push(t);
+                    }
+                }
+                Ok((all, liked_ids))
+            },
+            |result| Message::CookieImported { result },
+        )
+    }
+
     /// Radio seed: same-artist tracks first, then the rest of the search.
     #[cfg(feature = "innertube")]
     fn radio_task(seed: String, artist: String) -> iced::Task<Message> {
@@ -2393,11 +2821,6 @@ impl AppState {
 
     pub fn theme(&self) -> iced::Theme {
         iced::Theme::Dark
-    }
-
-    /// Radio seed: the current track, if the app has actually seen one.
-    fn radio_seed(&self) -> Option<String> {
-        self.queue.current().map(|t| t.id.clone())
     }
 
     fn is_nav(&self, route: &Route) -> bool {
@@ -2418,7 +2841,7 @@ impl AppState {
             self.thumb(t),
             button(text("▶").size(13))
                 .style(green_play)
-                .on_press(Message::EnqueueTrack(t.id.clone()))
+                .on_press(Message::PlayNow(t.id.clone()))
                 .padding(6),
             column![
                 text(t.title.clone()).size(14),
@@ -2430,6 +2853,10 @@ impl AppState {
             button(text(heart).size(15))
                 .style(button::text)
                 .on_press(Message::Like(t.id.clone()))
+                .padding(6),
+            button(text("…").size(15))
+                .style(button::text)
+                .on_press(Message::OpenContext(t.id.clone()))
                 .padding(6),
         ]
         .spacing(8)
@@ -2451,197 +2878,107 @@ impl AppState {
         column![text(title).size(19), list,].spacing(6).into()
     }
 
+    /// YTM-style sidebar: Home + Search, Library with playlist search,
+    /// inline new-playlist creation, and an expand/collapse rail.
+    /// Discovery/Radio/Up Next/Settings live in the header, Home and the
+    /// context menu — the rail stays two sections + library.
     fn sidebar_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{button, column, container, row, text, text_input};
         use iced::Fill;
-        let seed = self.radio_seed();
-        let radio_active = matches!(self.route, Route::Radio(_));
-        let radio_msg = match seed {
-            Some(id) => Message::StartRadio(id),
-            // Nothing playing yet: radio starts from Search instead.
-            None => Message::Navigate(Route::Search),
-        };
-        // Filter chips (real catalog data behind each one).
-        let chip_playlists = button(text("Playlists").size(12))
-            .style(nav_style(self.lib_filter == LibFilter::Playlists))
-            .on_press(Message::SetLibFilter(LibFilter::Playlists))
-            .padding(6);
-        let chip_albums = button(text("Albums").size(12))
-            .style(nav_style(self.lib_filter == LibFilter::Albums))
-            .on_press(Message::SetLibFilter(LibFilter::Albums))
-            .padding(6);
-        let chip_artists = button(text("Artists").size(12))
-            .style(nav_style(self.lib_filter == LibFilter::Artists))
-            .on_press(Message::SetLibFilter(LibFilter::Artists))
-            .padding(6);
-        let lib_list: iced::Element<'_, Message> = match self.lib_filter {
-            LibFilter::Playlists => {
-                let rows: Vec<iced::Element<'_, Message>> = self
-                    .all_playlists()
-                    .into_iter()
-                    .take(8)
-                    .map(|p| {
-                        let art: iced::Element<'_, Message> =
-                            p.tracks.first().map(|t| self.thumb(t)).unwrap_or_else(|| {
-                                container(text("♪").size(14).color(MUTED))
-                                    .style(card_bg)
-                                    .padding(8)
-                                    .into()
-                            });
-                        button(
-                            row![
-                                art,
-                                column![
-                                    text(p.title.clone()).size(13),
-                                    text(format!("Playlist · {} songs", p.tracks.len()))
-                                        .size(11)
-                                        .color(MUTED),
-                                ]
-                                .spacing(1)
-                                .width(Fill),
-                            ]
-                            .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .style(button::text)
-                        .on_press(Message::OpenPlaylist(p.id.clone()))
-                        .padding(4)
-                        .width(Fill)
-                        .into()
-                    })
-                    .collect();
-                column(rows).spacing(2).into()
-            }
-            LibFilter::Albums => {
-                let mut seen = std::collections::HashSet::new();
-                let mut albums: Vec<(String, String)> = Vec::new();
-                let mut sorted = self.catalog_tracks();
-                sorted.sort_by(|a, b| a.title.cmp(&b.title));
-                for t in sorted {
-                    if let Some(album) = t.album.clone() {
-                        if seen.insert(album.clone()) {
-                            albums.push((album, t.artist.clone()));
-                        }
-                    }
-                    if albums.len() >= 8 {
-                        break;
-                    }
-                }
-                let rows: Vec<iced::Element<'_, Message>> = albums
-                    .into_iter()
-                    .map(|(title, artist)| {
-                        button(
-                            column![
-                                text(title.clone()).size(13),
-                                text(format!("Album · {artist}")).size(11).color(MUTED),
-                            ]
-                            .spacing(1)
-                            .width(Fill),
-                        )
-                        .style(button::text)
-                        .on_press(Message::OpenAlbum(title.clone()))
-                        .padding(4)
-                        .width(Fill)
-                        .into()
-                    })
-                    .collect();
-                if rows.is_empty() {
-                    text("No albums yet — search for music.")
-                        .size(12)
-                        .color(MUTED)
-                        .into()
-                } else {
-                    column(rows).spacing(2).into()
-                }
-            }
-            LibFilter::Artists => {
-                let mut seen = std::collections::HashSet::new();
-                let mut artists: Vec<String> = Vec::new();
-                let mut sorted = self.catalog_tracks();
-                sorted.sort_by(|a, b| a.artist.cmp(&b.artist));
-                for t in sorted {
-                    if seen.insert(t.artist.clone()) {
-                        artists.push(t.artist.clone());
-                    }
-                    if artists.len() >= 8 {
-                        break;
-                    }
-                }
-                let rows: Vec<iced::Element<'_, Message>> = artists
-                    .into_iter()
-                    .map(|name| {
-                        button(
-                            column![
-                                text(name.clone()).size(13),
-                                text("Artist").size(11).color(MUTED),
-                            ]
-                            .spacing(1)
-                            .width(Fill),
-                        )
-                        .style(button::text)
-                        .on_press(Message::OpenArtist(name.clone()))
-                        .padding(4)
-                        .width(Fill)
-                        .into()
-                    })
-                    .collect();
-                if rows.is_empty() {
-                    text("No artists yet — search for music.")
-                        .size(12)
-                        .color(MUTED)
-                        .into()
-                } else {
-                    column(rows).spacing(2).into()
-                }
-            }
-        };
-        // Recently played with artwork; the live track glows green.
-        let current_id = self.queue.current().map(|t| t.id.clone());
-        let mut seen = std::collections::HashSet::new();
-        let mut recent: Vec<Track> = Vec::new();
-        for id in self.history.iter().rev() {
-            if recent.len() >= 5 {
-                break;
-            }
-            if seen.insert(id.clone()) {
-                if let Some(t) = self.find_track(id) {
-                    recent.push(t);
-                }
-            }
+        let expand_btn: iced::Element<'_, Message> =
+            button(text(if self.sidebar_expanded { "⏴" } else { "⏵" }).size(14))
+                .style(button::text)
+                .on_press(Message::ToggleSidebar)
+                .padding(8)
+                .into();
+        if !self.sidebar_expanded {
+            return container(
+                column![
+                    button(text("⌂").size(18))
+                        .style(nav_style(self.is_nav(&Route::Home)))
+                        .on_press(Message::Navigate(Route::Home))
+                        .padding(10),
+                    button(text("🔍").size(18))
+                        .style(nav_style(self.is_nav(&Route::Search)))
+                        .on_press(Message::Navigate(Route::Search))
+                        .padding(10),
+                    button(text("📚").size(18))
+                        .style(nav_style(self.is_nav(&Route::Library)))
+                        .on_press(Message::Navigate(Route::Library))
+                        .padding(10),
+                    expand_btn,
+                ]
+                .spacing(2),
+            )
+            .style(sidebar_bg)
+            .padding(8)
+            .width(56)
+            .height(Fill)
+            .into();
         }
-        let recent_rows: Vec<iced::Element<'_, Message>> = recent
-            .iter()
-            .map(|t| {
-                let active = current_id.as_deref() == Some(t.id.as_str());
+        let q = self.sidebar_filter.to_lowercase();
+        let new_name = self.new_playlist_name.clone();
+        let rows: Vec<iced::Element<'_, Message>> = self
+            .all_playlists()
+            .into_iter()
+            .filter(|pl| q.is_empty() || pl.title.to_lowercase().contains(&q))
+            .take(20)
+            .map(|pl| {
+                let art: iced::Element<'_, Message> = pl
+                    .tracks
+                    .first()
+                    .and_then(|t| self.find_track(&t.id))
+                    .map(|t| self.thumb(&t))
+                    .unwrap_or_else(|| {
+                        container(text("♪").size(14).color(MUTED))
+                            .style(card_bg)
+                            .padding(8)
+                            .into()
+                    });
                 button(
                     row![
-                        self.thumb(t),
+                        art,
                         column![
-                            text(t.title.clone()).size(13).color(if active {
-                                SPOT_GREEN
-                            } else {
-                                iced::Color::WHITE
-                            }),
-                            text(t.artist.clone()).size(11).color(MUTED),
+                            text(pl.title.clone()).size(13),
+                            text(format!("Playlist · {} songs", pl.tracks.len()))
+                                .size(11)
+                                .color(MUTED),
                         ]
                         .spacing(1)
                         .width(Fill),
-                        text(if active { "🔊" } else { "" }).size(12),
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center),
                 )
                 .style(button::text)
-                .on_press(Message::EnqueueTrack(t.id.clone()))
+                .on_press(Message::OpenPlaylist(pl.id.clone()))
                 .padding(4)
                 .width(Fill)
                 .into()
             })
             .collect();
-        let liked_n = self.liked.len();
+        let list: iced::Element<'_, Message> = if rows.is_empty() {
+            text(if self.all_playlists().is_empty() {
+                "No playlists yet — create one below."
+            } else {
+                "No playlists match."
+            })
+            .size(12)
+            .color(MUTED)
+            .into()
+        } else {
+            column(rows).spacing(2).into()
+        };
         container(
             column![
-                text("yutu-mux").size(22).color(iced::Color::WHITE),
+                row![
+                    text("yutu-mux")
+                        .size(22)
+                        .color(iced::Color::WHITE)
+                        .width(Fill),
+                    expand_btn,
+                ]
+                .align_y(iced::alignment::Vertical::Center),
                 column![
                     button(text("⌂  Home").size(14))
                         .style(nav_style(self.is_nav(&Route::Home)))
@@ -2653,42 +2990,28 @@ impl AppState {
                         .on_press(Message::Navigate(Route::Search))
                         .padding(8)
                         .width(Fill),
-                    button(text("☰  Up Next").size(14))
-                        .style(nav_style(self.is_nav(&Route::Queue)))
-                        .on_press(Message::Navigate(Route::Queue))
-                        .padding(8)
-                        .width(Fill),
-                    button(text("📚  Library").size(14))
-                        .style(nav_style(self.is_nav(&Route::Library)))
-                        .on_press(Message::Navigate(Route::Library))
-                        .padding(8)
-                        .width(Fill),
-                    button(text("✨  Discovery").size(14))
-                        .style(nav_style(self.is_nav(&Route::Discovery)))
-                        .on_press(Message::Navigate(Route::Discovery))
-                        .padding(8)
-                        .width(Fill),
-                    button(text("📻  Radio").size(14))
-                        .style(nav_style(radio_active))
-                        .on_press(radio_msg)
-                        .padding(8)
-                        .width(Fill),
-                    button(text("⚙  Settings").size(14))
-                        .style(nav_style(self.is_nav(&Route::Settings)))
-                        .on_press(Message::Navigate(Route::Settings))
-                        .padding(8)
-                        .width(Fill),
                 ]
                 .spacing(2),
+                row![button(text("📚  Library").size(14))
+                    .style(nav_style(self.is_nav(&Route::Library)))
+                    .on_press(Message::Navigate(Route::Library))
+                    .padding(4)
+                    .width(Fill),],
+                text_input("Filter playlists…", &self.sidebar_filter)
+                    .on_input(Message::SidebarFilterChanged)
+                    .width(Fill),
+                list,
                 row![
-                    text("📚  Library").size(14).width(Fill),
-                    text(format!("{}", liked_n)).size(11).color(MUTED),
+                    text_input("New playlist…", &self.new_playlist_name)
+                        .on_input(Message::NewPlaylistNameChanged)
+                        .width(Fill),
+                    button(text("＋").size(14))
+                        .style(green_play)
+                        .on_press(Message::CreatePlaylist(new_name))
+                        .padding(7),
                 ]
+                .spacing(6)
                 .align_y(iced::alignment::Vertical::Center),
-                row![chip_playlists, chip_albums, chip_artists].spacing(4),
-                lib_list,
-                text("Recently played").size(12).color(MUTED),
-                column(recent_rows).spacing(0),
             ]
             .spacing(10),
         )
@@ -2964,6 +3287,10 @@ impl AppState {
                         slider(0.0..=1.0, self.volume, Message::SetVolume)
                             .step(0.01_f32)
                             .width(120),
+                        button(text("▲").size(14))
+                            .style(button::text)
+                            .on_press(Message::Navigate(Route::NowPlaying))
+                            .padding(7),
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center)
@@ -3087,7 +3414,14 @@ impl AppState {
                     home_search_results,
                     text("Jump back in").size(19),
                     grid,
-                    text("Made for you").size(19),
+                    row![
+                        text("Made for you").size(19).width(Fill),
+                        button(text("Discovery →").size(12))
+                            .style(button::text)
+                            .on_press(Message::Navigate(Route::Discovery))
+                            .padding(4),
+                    ]
+                    .align_y(iced::alignment::Vertical::Center),
                     row![
                         button(
                             column![
@@ -3429,7 +3763,9 @@ impl AppState {
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row(eq_buttons).spacing(4),
-                    text(format!("EQ: {current_eq}")).size(12).color(MUTED),
+                    text(format!("EQ: {current_eq} · {}", self.eq_note()))
+                        .size(12)
+                        .color(MUTED),
                     text("Scrobbling (submits live when credentials are set)").size(17),
                     checkbox(self.scrobble_enabled)
                         .label("Enable scrobbling")
@@ -3449,6 +3785,8 @@ impl AppState {
                         .secure(true),
                     text("Google account (import your library)").size(17),
                     self.google_section(),
+                    text("Cookie import (no OAuth client needed)").size(17),
+                    self.cookie_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
                         .color(MUTED),
@@ -3616,6 +3954,100 @@ impl AppState {
                 .spacing(10)
                 .into()
             }
+            Route::NowPlaying => match self.queue.current().cloned() {
+                None => column![
+                    text("Nothing playing").size(22),
+                    text("Search above, click a song, hear it.").color(MUTED),
+                ]
+                .spacing(8)
+                .into(),
+                Some(t) => {
+                    let pos = self.queue.position();
+                    let upcoming: Vec<iced::Element<'_, Message>> = self
+                        .queue
+                        .items()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, q)| {
+                            let is_current = Some(i) == pos;
+                            row![
+                                self.thumb(q),
+                                button(text(format!("{} — {}", q.title, q.artist)).size(13).color(
+                                    if is_current {
+                                        SPOT_GREEN
+                                    } else {
+                                        iced::Color::WHITE
+                                    }
+                                ),)
+                                .style(button::text)
+                                .on_press(Message::QueueJump(i))
+                                .padding(4)
+                                .width(Fill),
+                                text(fmt_time(q.duration_secs as f64)).size(11).color(MUTED),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .padding(2)
+                            .into()
+                        })
+                        .collect();
+                    let heart = if self.liked.contains(&t.id) {
+                        "♥"
+                    } else {
+                        "♡"
+                    };
+                    column![
+                        row![
+                            button(text("▼ Close").size(13))
+                                .style(button::text)
+                                .on_press(Message::NavBack)
+                                .padding(7),
+                            text("Now playing").size(13).color(MUTED).width(Fill),
+                        ]
+                        .align_y(iced::alignment::Vertical::Center),
+                        row![
+                            column![
+                                self.thumb_sized(&t, 280.0),
+                                text(t.title.clone()).size(26),
+                                text(t.artist.clone()).size(16).color(MUTED),
+                                text(t.album.clone().unwrap_or_else(|| "Single".into()))
+                                    .size(12)
+                                    .color(MUTED),
+                                text(format!(
+                                    "{} / {}",
+                                    fmt_time(self.position_secs),
+                                    fmt_time(self.audio_duration())
+                                ))
+                                .size(12)
+                                .color(MUTED),
+                                row![
+                                    button(text("Lyrics").size(13))
+                                        .style(button::text)
+                                        .on_press(Message::OpenLyrics(t.id.clone()))
+                                        .padding(7),
+                                    button(text("Radio").size(13))
+                                        .style(button::text)
+                                        .on_press(Message::StartRadio(t.id.clone()))
+                                        .padding(7),
+                                    button(text(heart).size(16).color(SPOT_GREEN))
+                                        .style(button::text)
+                                        .on_press(Message::Like(t.id.clone()))
+                                        .padding(7),
+                                ]
+                                .spacing(8),
+                            ]
+                            .spacing(8)
+                            .width(Fill),
+                            column![text("Up next").size(17), column(upcoming).spacing(2),]
+                                .spacing(6)
+                                .width(350),
+                        ]
+                        .spacing(20),
+                    ]
+                    .spacing(12)
+                    .into()
+                }
+            },
             Route::Radio(seed) => {
                 let rows: Vec<iced::Element<'_, Message>> = self
                     .radio_tracks
@@ -3644,22 +4076,22 @@ impl AppState {
         // Global header, Spotify-style: browser nav + always-visible
         // search (as-you-type, stays on page) + clear + shortcuts.
         let back_btn: iced::Element<'_, Message> = if can_back {
-            button(text("‹").size(16))
+            button(text("‹").size(24))
                 .style(button::text)
                 .on_press(Message::NavBack)
-                .padding(6)
+                .padding(10)
                 .into()
         } else {
-            button(text("‹").size(16)).padding(6).into()
+            button(text("‹").size(24)).padding(10).into()
         };
         let fwd_btn: iced::Element<'_, Message> = if can_forward {
-            button(text("›").size(16))
+            button(text("›").size(24))
                 .style(button::text)
                 .on_press(Message::NavForward)
-                .padding(6)
+                .padding(10)
                 .into()
         } else {
-            button(text("›").size(16)).padding(6).into()
+            button(text("›").size(24)).padding(10).into()
         };
         let clear_btn: iced::Element<'_, Message> = if self.search_query.is_empty() {
             text("").size(1).into()
@@ -3697,8 +4129,58 @@ impl AppState {
         .spacing(4)
         .align_y(iced::alignment::Vertical::Center)
         .into();
+        // Quick-results popup, YouTube-style: suggestions + top tracks.
+        // Enter jumps to the full Search page; picking a track plays now.
+        let qnow = self.search_query.trim().to_string();
+        let suggest_popup: iced::Element<'_, Message> = if self.show_suggest
+            && qnow.len() >= 2
+            && (!self.suggest.is_empty() || !self.results.tracks.is_empty())
+        {
+            let sug_rows: Vec<iced::Element<'_, Message>> = self
+                .suggest
+                .iter()
+                .map(|sug| {
+                    button(
+                        row![
+                            text("🔍").size(13).color(MUTED),
+                            text(sug.clone()).size(13).width(Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .style(button::text)
+                    .on_press(Message::HomeSearchChanged(sug.clone()))
+                    .padding(5)
+                    .width(Fill)
+                    .into()
+                })
+                .collect();
+            let top: Vec<iced::Element<'_, Message>> = self
+                .results
+                .tracks
+                .iter()
+                .take(5)
+                .map(|t| self.track_row(t))
+                .collect();
+            container(
+                column![
+                    column(sug_rows).spacing(0),
+                    text("Top tracks — Enter for all results")
+                        .size(11)
+                        .color(MUTED),
+                    column(top).spacing(2),
+                ]
+                .spacing(6),
+            )
+            .style(card_bg)
+            .padding(10)
+            .into()
+        } else {
+            text("").size(1).into()
+        };
         column![
             header,
+            suggest_popup,
             scrollable(container(body).padding(20).width(Fill)).height(Fill),
         ]
         .spacing(4)
@@ -3706,7 +4188,7 @@ impl AppState {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{column, container, row};
+        use iced::widget::{button, column, container, row, text, Stack};
         use iced::Fill;
         let main = row![
             self.sidebar_view(),
@@ -3715,10 +4197,123 @@ impl AppState {
         ]
         .spacing(8)
         .height(Fill);
-        container(column![main, self.player_view()].spacing(8).height(Fill))
-            .style(app_bg)
-            .padding(8)
-            .into()
+        let base: iced::Element<'_, Message> =
+            container(column![main, self.player_view()].spacing(8).height(Fill))
+                .style(app_bg)
+                .padding(8)
+                .into();
+        let Some(menu_id) = self.context_menu.clone() else {
+            return base;
+        };
+        let Some(t) = self.find_track(&menu_id) else {
+            return base;
+        };
+        let heart = if self.liked.contains(&t.id) {
+            "♥ Liked — unlike"
+        } else {
+            "♡ Like"
+        };
+        let mut items: Vec<iced::Element<'_, Message>> = vec![
+            button(text("▶  Play now").size(14))
+                .style(button::text)
+                .on_press(Message::PlayNow(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("⏭  Play next").size(14))
+                .style(button::text)
+                .on_press(Message::PlayNext(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("➕  Add to queue").size(14))
+                .style(button::text)
+                .on_press(Message::EnqueueTrack(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("📻  Start mix").size(14))
+                .style(button::text)
+                .on_press(Message::StartRadio(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("📝  Lyrics").size(14))
+                .style(button::text)
+                .on_press(Message::OpenLyrics(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text(heart).size(14))
+                .style(button::text)
+                .on_press(Message::Like(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("⬇  Download for offline").size(14))
+                .style(button::text)
+                .on_press(Message::DownloadTrack(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("💿  Go to album").size(14))
+                .style(button::text)
+                .on_press(Message::OpenTrackAlbum(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+            button(text("🧑  Go to artist").size(14))
+                .style(button::text)
+                .on_press(Message::OpenTrackArtist(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
+        ];
+        for pl in self.user_playlists.iter().take(5) {
+            items.push(
+                button(text(format!("📁  Add to {}", pl.title)).size(14))
+                    .style(button::text)
+                    .on_press(Message::AddToPlaylist {
+                        playlist_id: pl.id.clone(),
+                        track_id: t.id.clone(),
+                    })
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+            );
+        }
+        // Playlist adds leave the menu open (multi-add); everything else
+        // closes it via its own handler.
+        let menu = container(
+            column![
+                row![
+                    column![
+                        text(t.title.clone()).size(16),
+                        text(t.artist.clone()).size(12).color(MUTED),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                    button(text("✕").size(14))
+                        .style(button::text)
+                        .on_press(Message::CloseContext)
+                        .padding(6),
+                ]
+                .align_y(iced::alignment::Vertical::Center),
+                column(items).spacing(0),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(14)
+        .width(320);
+        let overlay: iced::Element<'_, Message> = container(menu)
+            .style(dim_bg)
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center)
+            .into();
+        Stack::with_children(vec![base, overlay]).into()
     }
 }
 
@@ -4381,9 +4976,11 @@ mod tests {
     #[test]
     fn sidebar_and_right_tabs_switch() {
         let mut s = test_state();
-        assert_eq!(s.lib_filter, LibFilter::Playlists);
-        let _ = s.update(Message::SetLibFilter(LibFilter::Artists));
-        assert_eq!(s.lib_filter, LibFilter::Artists);
+        assert!(s.sidebar_expanded);
+        let _ = s.update(Message::ToggleSidebar);
+        assert!(!s.sidebar_expanded);
+        let _ = s.update(Message::SidebarFilterChanged("gym".into()));
+        assert_eq!(s.sidebar_filter, "gym");
         assert_eq!(s.right_tab, RightTab::Queue);
         let _ = s.update(Message::SetRightTab(RightTab::Recent));
         assert_eq!(s.right_tab, RightTab::Recent);
@@ -4430,6 +5027,151 @@ mod tests {
             result: Err("403".into()),
         });
         assert!(s.status.contains("failed: 403"));
+    }
+
+    #[test]
+    fn play_now_replaces_queue_and_autoplay_appends() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        assert_eq!(s.queue.len(), 2);
+        // Click-to-play: queue replaced by the single + autoplay follows.
+        let _ = s.update(Message::PlayNow("m3".into()));
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m3"));
+        assert_eq!(s.autoplay_for.as_deref(), Some("m3"));
+        assert_eq!(s.playing_from, "Single + autoplay");
+        // Unknown id: honest error, queue untouched.
+        let _ = s.update(Message::PlayNow("ghost".into()));
+        assert_eq!(s.queue.len(), 1);
+        // Stale autoplay (user moved on): catalog only.
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("old", "Old", "Someone")]),
+        });
+        assert_eq!(s.queue.len(), 1);
+        assert!(s.find_track("old").is_some());
+        // Current seed: seed + dupes filtered, tail appended.
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m3".into(),
+            result: Ok(vec![
+                mk_track("m3", "Dup", "X"),
+                mk_track("m4", "Fresh", "Y"),
+            ]),
+        });
+        assert_eq!(s.queue.len(), 2);
+        assert_eq!(s.queue.items()[1].id, "m4");
+        // Failures stay silent.
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m3".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.queue.len(), 2);
+    }
+
+    #[test]
+    fn play_next_inserts_after_current() {
+        let mut s = test_state();
+        // Empty queue: behaves like enqueue-and-play.
+        let _ = s.update(Message::PlayNext("m1".into()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::QueueJump(0));
+        let _ = s.update(Message::PlayNext("m3".into()));
+        assert_eq!(s.queue.items()[1].id, "m3");
+        assert_eq!(s.queue.position(), Some(0));
+        assert!(s.status.contains("Queued next"));
+        let _ = s.update(Message::PlayNext("ghost".into()));
+        assert!(s.status.contains("not found"));
+    }
+
+    #[test]
+    fn context_menu_opens_navigates_and_closes() {
+        let mut s = test_state();
+        assert!(s.context_menu.is_none());
+        let _ = s.update(Message::OpenContext("m1".into()));
+        assert_eq!(s.context_menu.as_deref(), Some("m1"));
+        let _ = s.update(Message::CloseContext);
+        assert!(s.context_menu.is_none());
+        // Album/artist jump from the menu (m1 carries both).
+        let _ = s.update(Message::OpenContext("m1".into()));
+        let _ = s.update(Message::OpenTrackArtist("m1".into()));
+        assert!(matches!(s.route, Route::Artist(_)));
+        assert!(s.context_menu.is_none());
+        // Unknown track: honest error.
+        let _ = s.update(Message::OpenTrackAlbum("ghost".into()));
+        assert!(s.status.contains("not found"));
+        // Download validates the id before touching the network.
+        let _ = s.update(Message::DownloadTrack("ghost".into()));
+        assert!(s.status.contains("not found"));
+        let _ = s.update(Message::Downloaded {
+            track_id: "m1".into(),
+            result: Ok(()),
+        });
+        assert!(s.status.contains("Downloaded m1"));
+        let _ = s.update(Message::Downloaded {
+            track_id: "m1".into(),
+            result: Err("403".into()),
+        });
+        assert!(s.status.contains("failed"));
+    }
+
+    #[test]
+    fn suggestions_store_and_drop_stale() {
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("bon".into()));
+        let gen = s.suggest_gen;
+        assert!(s.show_suggest);
+        let _ = s.update(Message::SuggestCompleted {
+            gen: gen.wrapping_sub(1),
+            result: Ok(vec!["stale".into()]),
+        });
+        assert!(s.suggest.is_empty());
+        let _ = s.update(Message::SuggestCompleted {
+            gen,
+            result: Ok(vec!["bonobo".into(), "bon iver".into()]),
+        });
+        assert_eq!(s.suggest.len(), 2);
+        // Enter hides the popup and lands on Search.
+        let _ = s.update(Message::SearchStay);
+        assert!(!s.show_suggest);
+        assert_eq!(s.route, Route::Search);
+    }
+
+    #[test]
+    fn cookie_import_validates_and_merges() {
+        let mut s = test_state();
+        let _ = s.update(Message::CookiePathChanged("/tmp/x.txt".into()));
+        assert_eq!(s.cookie_path, "/tmp/x.txt");
+        let _ = s.update(Message::CookieImported {
+            result: Ok((
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+            )),
+        });
+        assert!(s.find_track("c1").is_some());
+        assert!(s.liked.contains("c1"));
+        assert!(s.status.contains("Cookie import"));
+        let _ = s.update(Message::CookieImported {
+            result: Err("bad cookies".into()),
+        });
+        assert!(s.status.contains("bad cookies"));
+    }
+
+    #[test]
+    fn eq_selection_reports_backend_honestly() {
+        let mut s = test_state();
+        let _ = s.update(Message::SelectEqPreset("Rock".into()));
+        assert_eq!(s.eq_preset, "Rock");
+        assert!(s.status.contains("EQ: Rock"));
+    }
+
+    #[test]
+    fn now_playing_route_opens() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::Navigate(Route::NowPlaying));
+        assert_eq!(s.route, Route::NowPlaying);
     }
 
     #[test]

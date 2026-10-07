@@ -42,6 +42,14 @@
   with Playing-from, global search header
 - Google sign-in (device flow, Settings): library + liked import into
   catalog, token at 0600, sign-out clears
+- Click-to-play replaces the queue + same-artist autoplay tail; play-next
+  insert; suggestion popup under the bar (Enter = full Search page)
+- Context menu (… button, right-click N/A in Iced): play/next/queue/mix/
+  lyrics/like/download/album/artist + add-to-playlist; offline download
+  to disk cache; NowPlaying drawer via ▲; YTM-style slim sidebar
+  (Home/Search/Library + filter + inline create + collapse rail)
+- Honest EQ status (mpv-only filters; rodio reports it); bigger nav
+  buttons; cookie-file import (normal browser login, no OAuth client)
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
