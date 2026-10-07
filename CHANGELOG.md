@@ -62,6 +62,12 @@
   Volume via a command inbox drained on tick; lyric verse-click
   flicker fixed with a 1.2s manual position clock after seeks
 - Playback failures log to stderr + Settings (Recent playback errors)
+- Clear queue sits with the manual list (above Autoplay); context menu
+  shows the album cover; bulk queues absorb matching autoplay ids
+- Hover ✕ truly appears (layout-stable placeholder); autoplay rows
+  right-click everywhere; right panel scrolls the full queue + tail
+- Widget timeline fixed: PropertiesChanged signals on track/status/
+  volume change + Rate property (1Hz watch loop next to the bus)
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

@@ -20,17 +20,22 @@ fn spawn_mpris(state: SharedPlayer) {
                 return;
             }
         };
-        let conn = match rt.block_on(yutu_desktop::mpris::serve(state)) {
+        let conn = match rt.block_on(yutu_desktop::mpris::serve(state.clone())) {
             Ok(conn) => conn,
             Err(e) => {
                 eprintln!("mpris unavailable: {e}");
                 return;
             }
         };
-        // Keep the connection alive and serviced until the process exits.
+        // Property-change signals (timeline/track widgets) alongside the
+        // connection keeper until the process exits.
         rt.block_on(async {
-            let _conn = conn;
+            let watch = tokio::spawn(yutu_desktop::mpris::watch_and_signal(
+                conn.clone(),
+                state.clone(),
+            ));
             let _ = tokio::signal::ctrl_c().await;
+            watch.abort();
         });
     });
 }
