@@ -133,13 +133,32 @@ fn find_track(id: &str) -> Option<Track> {
         .find(|t| t.id == id)
 }
 
-/// Resolve a video ID to bytes: anonymous Innertube connect, fallback-chain
-/// stream resolution, then download. On PO-token gating with an installed
-/// sidecar, mints tokens and retries with `poToken`; a bare-URL 403 retries
-/// once with the session token as `&pot=`.
+/// rustypipe resolution (decipher + PO tokens internal). Errors fall through
+/// to the raw probes in `resolve_and_fetch` — this only reports them.
+#[cfg(all(feature = "innertube", feature = "rp"))]
+async fn resolve_via_rustypipe(video_id: &str) -> Result<String, String> {
+    let dir = format!("{}/rustypipe", data_dir());
+    let _ = std::fs::create_dir_all(&dir);
+    let bin = yutu_core::find_botguard_bin();
+    let resolved = yutu_core::resolve_audio_url(video_id, &dir, bin.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resolved.url)
+}
+
+/// Resolve a video ID to bytes. With the `rp` feature, rustypipe's deciphering
+/// player goes first (signatureCipher + sidecar PO tokens); otherwise the raw
+/// WEB_REMIX probes run, with sidecar mint + retry on PO-gating. A bare-URL
+/// 403 retries once with the session token as `&pot=`.
 #[cfg(feature = "innertube")]
 async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
     use yutu_core::{InnertubeBackend, StreamError, StreamRequest};
+    #[cfg(feature = "rp")]
+    if let Ok(url) = resolve_via_rustypipe(video_id).await {
+        return yutu_player::fetch_bytes(&url)
+            .await
+            .map_err(|e| e.to_string());
+    }
     let backend = InnertubeBackend::connect_anonymous().await?;
     let mut req = StreamRequest::new(video_id);
     match backend.resolve_stream(&mut req).await {
@@ -181,12 +200,16 @@ fn now_unix() -> i64 {
 }
 
 /// XDG data dir without extra deps: $XDG_DATA_HOME or ~/.local/share.
-pub fn default_library_path() -> String {
+pub fn data_dir() -> String {
     let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         format!("{home}/.local/share")
     });
-    format!("{base}/yutu-mux/library.db")
+    format!("{base}/yutu-mux")
+}
+
+pub fn default_library_path() -> String {
+    format!("{}/library.db", data_dir())
 }
 
 fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>, Vec<Playlist>, u64) {

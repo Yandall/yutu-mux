@@ -90,3 +90,17 @@ actionable error. Premium accounts are exempt from PO-token gating.
   bookkeeping) are `#[tokio::test]` + `#[ignore]`; run with
   `cargo test -p yutu-core --features innertube -- --ignored` on a networked
   machine.
+
+## Full resolution via `rp` (rustypipe) + licensing
+
+`crates/yutu-core/src/rplayer.rs` (feature `rp`) delegates stream-URL
+resolution to the `rustypipe` crate: signature-cipher decipher (player-JS
+deobfuscator), client fallback, and sidecar PO tokens (auto-detected in
+`PATH`, overridable). The UI tries it first when built with
+`--features yutu-ui/rp` (implies `innertube`), falling back to the raw
+probes above.
+
+**License:** `rustypipe` is GPL-3.0. Building with `rp` links GPL code into
+the binary — binary releases with `rp` must comply with GPL-3.0 (source
+offer, license text). Default builds (no `rp`) link only MIT/Apache-2.0
+crates and stay MIT-pure. Keep the feature opt-in for exactly this reason.

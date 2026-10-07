@@ -12,3 +12,5 @@ iced = { version = "0.14", features = ["tokio"] }
 
 [features]
 innertube = ["yutu-core/innertube"]
+# Full resolution (decipher + sidecar). Implies innertube types.
+rp = ["yutu-core/rp"]

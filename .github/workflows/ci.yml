@@ -5,6 +5,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: System deps (ALSA for rodio/cpal, Wayland+X11 for iced/winit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config libx11-dev libwayland-dev libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
