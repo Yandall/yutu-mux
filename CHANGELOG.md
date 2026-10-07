@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- Real audio resolution: yt-dlp sidecar first (AAC preferred), 1 MiB
+  range-chunked downloads, permanent ignored e2e test
+  (`resolve -> fetch -> decode` green in ~7s)
+- Scrobble submission: Last.fm + ListenBrainz live POSTs (`submit`
+  feature, default-on), Settings credential fields, status reporting
+- MPRIS live: UI publishes track/status/volume to the shared handle on
+  every state change (`playerctl` shows the real track now)
+- `MpvBackend` (`mpv` feature, libmpv2): gapless flag, seek, volume,
+  10-band EQ via `af` chain; rodio stays default
+- Offline cache is disk-backed: store/read/evict-to-disk, LRU file
+  deletion, self-heal on missing files
+- Real Innertube search: `search_tracks/albums/artists` on
+  `InnertubeBackend` (anonymous works) + redacted live fixture
+- Release pipeline: fixed Flatpak manifest, `release.yml` tarball flow,
+  `docs/PACKAGING.md`
+- Spotify-style dark UI: sidebar / center / Now-playing panel / player bar
+
 ## 0.1.0
 
 First working native app (mock library + live Innertube core):

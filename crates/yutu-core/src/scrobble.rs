@@ -1,18 +1,25 @@
-//! Scrobbling payload builders (offline; no network here).
+//! Scrobbling payload builders plus optional network submission.
 //!
 //! Covers two targets:
 //! - Last.fm Audioscrobbler 2.0 (`track.scrobble`): parameter signing via
 //!   `api_sig` (md5 of sorted `key+value` concat + shared secret).
 //! - ListenBrainz `submit-listens`: JSON body shape (`listen_type: single`).
 //!
-//! All constructors are pure. Network submission is intentionally NOT wired
-//! yet: the `submit_*` stubs return `Err("not wired")` so unit tests never
-//! touch the network.
+//! All constructors are pure and always available. Network submission lives
+//! behind the `submit` cargo feature (`submit_lastfm_scrobble`,
+//! `submit_listenbrainz_listen`) so unit tests never touch the network unless
+//! explicitly run as ignored live tests with credentials.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+/// Last.fm Audioscrobbler 2.0 endpoint.
+pub const LASTFM_API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
+
+/// ListenBrainz `submit-listens` endpoint.
+pub const LISTENBRAINZ_SUBMIT_URL: &str = "https://api.listenbrainz.org/1/submit-listens";
 
 /// One play to scrobble.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,14 +136,68 @@ pub fn build_listen_payload(
     })
 }
 
-/// Stub: POST the signed map to Last.fm. Not wired (no HTTP client yet).
-pub fn submit_lastfm_scrobble(_params: &BTreeMap<String, String>) -> Result<(), String> {
-    Err("not wired".to_owned())
+/// POST a signed `track.scrobble` map to Last.fm.
+///
+/// Requires the `submit` cargo feature. Sends `params` as
+/// `application/x-www-form-urlencoded` with a 15 s timeout. Returns `Ok(())`
+/// on HTTP 2xx unless the response body contains `<error` (Last.fm failure
+/// payload). Never logs `params`: it carries the session key (`sk`), which is
+/// secret-adjacent.
+#[cfg(feature = "submit")]
+pub async fn submit_lastfm_scrobble(params: &BTreeMap<String, String>) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("last.fm client build failed: {e}"))?;
+    let response = client
+        .post(LASTFM_API_URL)
+        .form(params)
+        .send()
+        .await
+        .map_err(|e| format!("last.fm request failed: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("last.fm read body failed: {e}"))?;
+    if !status.is_success() {
+        let snippet: String = body.chars().take(500).collect();
+        return Err(format!("last.fm scrobble failed: http {status}: {snippet}"));
+    }
+    if body.contains("<error") {
+        let snippet: String = body.chars().take(500).collect();
+        return Err(format!("last.fm scrobble failed: {snippet}"));
+    }
+    Ok(())
 }
 
-/// Stub: POST the ListenBrainz payload. Not wired (no HTTP client yet).
-pub fn submit_listenbrainz_listen(_payload: &Value) -> Result<(), String> {
-    Err("not wired".to_owned())
+/// POST a `submit-listens` payload to ListenBrainz.
+///
+/// Requires the `submit` cargo feature. Sends `payload` as JSON with
+/// `Authorization: Token {token}` and a 15 s timeout. Returns `Ok(())` on
+/// HTTP 2xx. The token itself is never included in error messages.
+#[cfg(feature = "submit")]
+pub async fn submit_listenbrainz_listen(payload: &Value, token: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("listenbrainz client build failed: {e}"))?;
+    let response = client
+        .post(LISTENBRAINZ_SUBMIT_URL)
+        .header("Authorization", format!("Token {token}"))
+        .json(payload)
+        .send()
+        .await
+        .map_err(|e| format!("listenbrainz request failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(500).collect();
+        return Err(format!(
+            "listenbrainz submit failed: http {status}: {snippet}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -240,13 +301,86 @@ mod tests {
     }
 
     #[test]
-    fn network_stubs_are_not_wired() {
-        let params = build_scrobble_params(&Scrobble::new("A", "T", 1, None), "K", "SK", "S");
-        assert_eq!(submit_lastfm_scrobble(&params).unwrap_err(), "not wired");
-        let payload = build_listen_payload("A", "T", None, 1);
+    fn scrobble_endpoint_urls() {
+        assert_eq!(LASTFM_API_URL, "https://ws.audioscrobbler.com/2.0/");
         assert_eq!(
-            submit_listenbrainz_listen(&payload).unwrap_err(),
-            "not wired"
+            LISTENBRAINZ_SUBMIT_URL,
+            "https://api.listenbrainz.org/1/submit-listens"
         );
+        assert!(LASTFM_API_URL.starts_with("https://"));
+        assert!(LISTENBRAINZ_SUBMIT_URL.starts_with("https://"));
+    }
+
+    #[test]
+    fn built_params_still_sign_correctly() {
+        let s = Scrobble::new("A", "T", 1, Some("R"));
+        let params = build_scrobble_params(&s, "K", "SK", "S");
+        let mut unsigned = params.clone();
+        let sig = unsigned.remove("api_sig").expect("api_sig present");
+        assert_eq!(sig, api_sig(&unsigned, "S"));
+        // Same inputs sign identically; a different secret signs differently.
+        let again = build_scrobble_params(&s, "K", "SK", "S");
+        assert_eq!(again["api_sig"], sig);
+        let other = build_scrobble_params(&s, "K", "SK", "OTHER");
+        assert_ne!(other["api_sig"], sig);
+    }
+
+    #[cfg(feature = "submit")]
+    #[tokio::test]
+    #[ignore]
+    async fn live_lastfm_scrobble_submits() {
+        let api_key = std::env::var("LASTFM_TEST_API_KEY").unwrap_or_default();
+        if api_key.is_empty() {
+            println!("SKIP: LASTFM_TEST_API_KEY not set");
+            return;
+        }
+        let sk = std::env::var("LASTFM_TEST_SK").unwrap_or_default();
+        if sk.is_empty() {
+            println!("SKIP: LASTFM_TEST_SK not set");
+            return;
+        }
+        let secret = std::env::var("LASTFM_TEST_SECRET").unwrap_or_default();
+        if secret.is_empty() {
+            println!("SKIP: LASTFM_TEST_SECRET not set");
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1_700_000_000);
+        let scrobble = Scrobble::new(
+            "yutu-mux test artist",
+            "yutu-mux test track",
+            now - 60,
+            None,
+        );
+        let params = build_scrobble_params(&scrobble, &api_key, &sk, &secret);
+        if let Err(e) = submit_lastfm_scrobble(&params).await {
+            panic!("live Last.fm scrobble failed: {e}");
+        }
+    }
+
+    #[cfg(feature = "submit")]
+    #[tokio::test]
+    #[ignore]
+    async fn live_listenbrainz_submit_sends_single() {
+        let token = std::env::var("LISTENBRAINZ_TEST_TOKEN").unwrap_or_default();
+        if token.is_empty() {
+            println!("SKIP: LISTENBRAINZ_TEST_TOKEN not set");
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1_700_000_000);
+        let payload = build_listen_payload(
+            "yutu-mux test artist",
+            "yutu-mux test track",
+            None,
+            now - 60,
+        );
+        if let Err(e) = submit_listenbrainz_listen(&payload, &token).await {
+            panic!("live ListenBrainz submit failed: {e}");
+        }
     }
 }

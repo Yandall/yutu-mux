@@ -170,6 +170,14 @@ pub enum Message {
     SelectEqPreset(String),
     ScrobbleToggled(bool),
     ScrobbleUserChanged(String),
+    ScrobbleLbTokenChanged(String),
+    ScrobbleFmKeyChanged(String),
+    ScrobbleFmSecretChanged(String),
+    ScrobbleFmSkChanged(String),
+    ScrobbleSubmitted {
+        target: String,
+        result: Result<(), String>,
+    },
     PlayWeeklyMix,
     PlayForgotten,
     StreamIdChanged(String),
@@ -194,16 +202,24 @@ pub struct AppState {
     pub playlist_seq: u64,
     /// Selected EQ preset name (in-memory only; never persisted).
     pub eq_preset: String,
-    /// Scrobble toggle (in-memory only; submission is stubbed).
+    /// Scrobble toggle (in-memory only; submission needs credentials below).
     pub scrobble_enabled: bool,
     /// Scrobble username (in-memory only; never persisted).
     pub scrobble_user: String,
+    /// ListenBrainz user token (in-memory only; never persisted or logged).
+    pub scrobble_lb_token: String,
+    /// Last.fm API key / shared secret / session key (in-memory only).
+    pub scrobble_fm_key: String,
+    pub scrobble_fm_secret: String,
+    pub scrobble_fm_sk: String,
     /// Video-ID input for real-stream playback (innertube feature).
     pub stream_id_input: String,
     paused: bool,
     backend: MockBackend,
     audio: Option<RodioBackend>,
     library_path: String,
+    /// MPRIS handle for live desktop propagation (`None` in tests/headless).
+    mpris: Option<yutu_desktop::SharedPlayer>,
 }
 
 /// Deterministic mock radio: seed first, then same-artist tracks, then the rest.
@@ -391,11 +407,16 @@ impl AppState {
                 eq_preset: "Flat".into(),
                 scrobble_enabled: false,
                 scrobble_user: String::new(),
+                scrobble_lb_token: String::new(),
+                scrobble_fm_key: String::new(),
+                scrobble_fm_secret: String::new(),
+                scrobble_fm_sk: String::new(),
                 stream_id_input: String::new(),
                 paused: false,
                 backend,
                 audio,
                 library_path,
+                mpris: None,
             },
             iced::Task::none(),
         )
@@ -471,18 +492,11 @@ impl AppState {
         let _ = store.remove_from_playlist(playlist_id, track_id);
     }
 
-    fn enqueue(&mut self, track: Track) {
+    fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
         self.status = format!("Queued: {} — {}", track.title, track.artist);
         self.history.push(track.id.clone());
         self.persist_play(&track.id);
-        // Scrobble eligibility on a full play (played_secs = duration).
-        // Submission itself is stubbed — never claimed as real.
-        if self.scrobble_enabled && should_scrobble(track.duration_secs, track.duration_secs) {
-            self.status.push_str(&format!(
-                " | Scrobble-ready: {} (Last.fm/ListenBrainz submit stubbed)",
-                track.title
-            ));
-        }
+        let scrobble = self.maybe_scrobble_task(&track);
         self.queue.push(track);
         if let Some(a) = &self.audio {
             a.play_test_tone();
@@ -490,6 +504,78 @@ impl AppState {
         } else {
             self.status.push_str(" (no audio device)");
         }
+        scrobble
+    }
+
+    /// Build the scrobble-submit task for a just-queued full play, if
+    /// scrobbling is enabled, the play is eligible, and at least one target
+    /// has credentials. Without the `submit` feature this is always none.
+    fn maybe_scrobble_task(&mut self, track: &Track) -> iced::Task<Message> {
+        if !(self.scrobble_enabled && should_scrobble(track.duration_secs, track.duration_secs)) {
+            return iced::Task::none();
+        }
+        #[cfg(not(feature = "submit"))]
+        {
+            let _ = track;
+            self.status_hint_no_scrobble_creds();
+            iced::Task::none()
+        }
+        #[cfg(feature = "submit")]
+        {
+            use yutu_core::{build_listen_payload, build_scrobble_params, Scrobble};
+            let now = now_unix();
+            let mut tasks = Vec::new();
+            if !self.scrobble_lb_token.trim().is_empty() {
+                let payload =
+                    build_listen_payload(&track.artist, &track.title, track.album.as_deref(), now);
+                let token = self.scrobble_lb_token.clone();
+                tasks.push(iced::Task::perform(
+                    async move { yutu_core::submit_listenbrainz_listen(&payload, &token).await },
+                    |result| Message::ScrobbleSubmitted {
+                        target: "ListenBrainz".into(),
+                        result,
+                    },
+                ));
+            }
+            if !(self.scrobble_fm_key.trim().is_empty()
+                || self.scrobble_fm_secret.trim().is_empty()
+                || self.scrobble_fm_sk.trim().is_empty())
+            {
+                let scrobble =
+                    Scrobble::new(&track.artist, &track.title, now, track.album.as_deref());
+                let params = build_scrobble_params(
+                    &scrobble,
+                    &self.scrobble_fm_key,
+                    &self.scrobble_fm_sk,
+                    &self.scrobble_fm_secret,
+                );
+                tasks.push(iced::Task::perform(
+                    async move { yutu_core::submit_lastfm_scrobble(&params).await },
+                    |result| Message::ScrobbleSubmitted {
+                        target: "Last.fm".into(),
+                        result,
+                    },
+                ));
+            }
+            if tasks.is_empty() {
+                self.status_hint_no_scrobble_creds();
+                iced::Task::none()
+            } else {
+                iced::Task::batch(tasks)
+            }
+        }
+    }
+
+    #[cfg(feature = "submit")]
+    fn status_hint_no_scrobble_creds(&mut self) {
+        self.status
+            .push_str(" | Scrobble-ready (add a ListenBrainz token or Last.fm keys in Settings)");
+    }
+
+    #[cfg(not(feature = "submit"))]
+    fn status_hint_no_scrobble_creds(&mut self) {
+        self.status
+            .push_str(" | Scrobble-ready (rebuild with `--features submit`)");
     }
 
     /// Bulk-append without spamming history (one entry-free push per track).
@@ -506,10 +592,51 @@ impl AppState {
         self.status = format!("{label}: queued {n} track(s).");
     }
 
-    fn play_index(&mut self, i: usize) {
-        if let Some(t) = self.results.tracks.get(i).cloned() {
-            self.enqueue(t);
+    fn play_index(&mut self, i: usize) -> iced::Task<Message> {
+        match self.results.tracks.get(i).cloned() {
+            Some(t) => self.enqueue(t),
+            None => {
+                self.status = format!("No track at index {i}.");
+                iced::Task::none()
+            }
         }
+    }
+
+    fn enqueue_track_task(&mut self, id: &str) -> iced::Task<Message> {
+        match find_track(id) {
+            Some(t) => self.enqueue(t),
+            None => {
+                self.status = format!("Track not found: {id}.");
+                iced::Task::none()
+            }
+        }
+    }
+
+    /// Publish current track/status/volume to the MPRIS handle (if any) so
+    /// desktop clients observe live state on property read. No-op headless.
+    /// Poison-tolerant: a poisoned mutex still publishes via the inner guard.
+    fn publish_mpris(&self) {
+        let Some(handle) = self.mpris.as_ref() else {
+            return;
+        };
+        let mut player = handle.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(t) = self.queue.current() {
+            player.update_track(yutu_desktop::NowPlaying {
+                title: t.title.clone(),
+                artist: t.artist.clone(),
+                album: t.album.clone().unwrap_or_default(),
+                track_id: t.id.clone(),
+                length_secs: t.duration_secs,
+            });
+        }
+        player.set_status(if self.queue.current().is_none() {
+            yutu_desktop::PlaybackStatus::Stopped
+        } else if self.paused {
+            yutu_desktop::PlaybackStatus::Paused
+        } else {
+            yutu_desktop::PlaybackStatus::Playing
+        });
+        player.set_volume(f64::from(self.volume));
     }
 
     /// Validate + select an EQ preset (in-memory only; never persisted).
@@ -640,8 +767,44 @@ impl AppState {
             .collect()
     }
 
+    /// Dispatcher: actions with async follow-ups (scrobble submits) return
+    /// their task directly; everything else goes through `update_sync`.
+    /// MPRIS state is published on every path that returns here.
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
+            Message::PlayTrack(i) => {
+                let task = self.play_index(i);
+                self.publish_mpris();
+                task
+            }
+            Message::EnqueueTrack(id) => {
+                let task = self.enqueue_track_task(&id);
+                self.publish_mpris();
+                task
+            }
+            Message::ScrobbleSubmitted { target, result } => {
+                self.status = match &result {
+                    Ok(()) => format!("Scrobbled to {target}."),
+                    Err(e) => format!("Scrobble to {target} failed: {e}"),
+                };
+                self.publish_mpris();
+                iced::Task::none()
+            }
+            message => self.update_sync(message),
+        }
+    }
+
+    /// Synchronous state updates (plus stream-resolve tasks, which are
+    /// Iced-side async, not scrobble submits). Publishes MPRIS before
+    /// returning; the `PlayStreamId` early return publishes explicitly.
+    fn update_sync(&mut self, message: Message) -> iced::Task<Message> {
+        match message {
+            Message::PlayTrack(_) | Message::EnqueueTrack(_) => {
+                unreachable!("async play actions are dispatched in update()")
+            }
+            Message::ScrobbleSubmitted { .. } => {
+                unreachable!("scrobble results are dispatched in update()")
+            }
             Message::Navigate(r) => self.navigate(r),
             Message::SearchChanged(q) => {
                 self.search_query = q;
@@ -651,11 +814,6 @@ impl AppState {
                 self.results = self.backend.search(&self.search_query);
                 self.route = Route::Search;
             }
-            Message::PlayTrack(i) => self.play_index(i),
-            Message::EnqueueTrack(id) => match find_track(&id) {
-                Some(t) => self.enqueue(t),
-                None => self.status = format!("Track not found: {id}."),
-            },
             Message::NewPlaylistNameChanged(n) => {
                 self.new_playlist_name = n;
             }
@@ -856,13 +1014,25 @@ impl AppState {
             Message::ScrobbleToggled(on) => {
                 self.scrobble_enabled = on;
                 self.status = if on {
-                    "Scrobbling enabled (submit stubbed).".into()
+                    "Scrobbling enabled (submits when credentials are set).".into()
                 } else {
                     "Scrobbling disabled.".into()
                 };
             }
             Message::ScrobbleUserChanged(u) => {
                 self.scrobble_user = u;
+            }
+            Message::ScrobbleLbTokenChanged(t) => {
+                self.scrobble_lb_token = t;
+            }
+            Message::ScrobbleFmKeyChanged(k) => {
+                self.scrobble_fm_key = k;
+            }
+            Message::ScrobbleFmSecretChanged(s) => {
+                self.scrobble_fm_secret = s;
+            }
+            Message::ScrobbleFmSkChanged(sk) => {
+                self.scrobble_fm_sk = sk;
             }
             Message::PlayWeeklyMix => {
                 let tracks = self.weekly_mix_tracks();
@@ -890,6 +1060,7 @@ impl AppState {
                 } else {
                     self.status = format!("Resolving stream {id}…");
                     self.history.push(format!("stream:{id}"));
+                    self.publish_mpris();
                     return Self::resolve_task(id);
                 }
             }
@@ -913,6 +1084,7 @@ impl AppState {
                 }
             },
         }
+        self.publish_mpris();
         iced::Task::none()
     }
 
@@ -1532,12 +1704,23 @@ impl AppState {
                         .style(green_play)
                         .on_press(Message::PlayStreamId)
                         .padding(8),
-                    text("Scrobbling (submit stubbed)").size(17),
+                    text("Scrobbling (submits live when credentials are set)").size(17),
                     checkbox(self.scrobble_enabled)
                         .label("Enable scrobbling")
                         .on_toggle(Message::ScrobbleToggled),
-                    text_input("Last.fm / ListenBrainz user…", &self.scrobble_user)
+                    text_input("Display name (informational)…", &self.scrobble_user)
                         .on_input(Message::ScrobbleUserChanged),
+                    text_input("ListenBrainz token…", &self.scrobble_lb_token)
+                        .on_input(Message::ScrobbleLbTokenChanged)
+                        .secure(true),
+                    text_input("Last.fm API key…", &self.scrobble_fm_key)
+                        .on_input(Message::ScrobbleFmKeyChanged),
+                    text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
+                        .on_input(Message::ScrobbleFmSecretChanged)
+                        .secure(true),
+                    text_input("Last.fm session key…", &self.scrobble_fm_sk)
+                        .on_input(Message::ScrobbleFmSkChanged)
+                        .secure(true),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
                         .color(MUTED),
@@ -1698,12 +1881,21 @@ impl AppState {
     }
 }
 
-pub fn run() -> iced::Result {
-    iced::application(AppState::new, AppState::update, AppState::view)
-        .title("yutu-mux")
-        .theme(AppState::theme)
-        .subscription(AppState::subscription)
-        .run()
+pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
+    iced::application(
+        move || {
+            let (mut state, task) = AppState::new();
+            state.mpris = mpris.clone();
+            state.publish_mpris();
+            (state, task)
+        },
+        AppState::update,
+        AppState::view,
+    )
+    .title("yutu-mux")
+    .theme(AppState::theme)
+    .subscription(AppState::subscription)
+    .run()
 }
 
 #[cfg(test)]
@@ -1905,17 +2097,77 @@ mod tests {
         assert!(!s.scrobble_enabled);
         let _ = s.update(Message::ScrobbleToggled(true));
         assert!(s.scrobble_enabled);
-        assert!(s.status.contains("stubbed"));
+        assert!(s.status.contains("credentials"));
         let _ = s.update(Message::ScrobbleUserChanged("alice".into()));
         assert_eq!(s.scrobble_user, "alice");
+        // No credentials: eligibility is reported, nothing submitted.
         let _ = s.update(Message::EnqueueTrack("m1".into()));
-        assert!(s.status.contains("Scrobble-ready:"));
-        assert!(s.status.contains("stubbed"));
+        assert!(s.status.contains("Scrobble-ready"));
+        #[cfg(feature = "submit")]
+        assert!(s.status.contains("Settings"));
+        #[cfg(not(feature = "submit"))]
+        assert!(s.status.contains("--features submit"));
+        // ListenBrainz token set: a submit task is produced (lazy — no
+        // network runs until the Iced runtime polls it).
+        let _ = s.update(Message::ScrobbleLbTokenChanged("tok".into()));
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        #[cfg(feature = "submit")]
+        {
+            assert!(s.status.starts_with("Queued:"));
+            assert!(!s.status.contains("Scrobble-ready"));
+        }
+        #[cfg(not(feature = "submit"))]
+        assert!(s.status.contains("--features submit"));
+        // Credential inputs round-trip.
+        let _ = s.update(Message::ScrobbleFmKeyChanged("k".into()));
+        let _ = s.update(Message::ScrobbleFmSecretChanged("sec".into()));
+        let _ = s.update(Message::ScrobbleFmSkChanged("sk".into()));
+        assert_eq!(s.scrobble_fm_key, "k");
         // Disabled by default: no scrobble text on enqueue.
         let mut s2 = test_state();
         let _ = s2.update(Message::EnqueueTrack("m1".into()));
         assert!(!s2.status.contains("Scrobble-ready"));
-        assert!(!s2.status.contains("submit stubbed"));
+        // Submit results update the status line honestly.
+        let _ = s.update(Message::ScrobbleSubmitted {
+            target: "ListenBrainz".into(),
+            result: Ok(()),
+        });
+        assert!(s.status.contains("Scrobbled to ListenBrainz"));
+        let _ = s.update(Message::ScrobbleSubmitted {
+            target: "Last.fm".into(),
+            result: Err("403".into()),
+        });
+        assert!(s.status.contains("failed: 403"));
+    }
+
+    #[test]
+    fn mpris_publish_never_panics_headless() {
+        // No handle (tests): publish is a no-op.
+        let s = test_state();
+        s.publish_mpris();
+        // Volume clamping + status mapping are covered by publish internals;
+        // reaching here without a handle or bus is the assertion.
+    }
+
+    #[test]
+    fn mpris_publishes_track_and_status_to_shared_handle() {
+        let handle: yutu_desktop::SharedPlayer =
+            std::sync::Arc::new(std::sync::Mutex::new(yutu_desktop::MprisPlayer::default()));
+        let mut s = test_state();
+        s.mpris = Some(handle.clone());
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let player = handle.lock().unwrap();
+        assert_eq!(player.now_playing().title, "Come Together");
+        assert_eq!(player.now_playing().artist, "The Beatles");
+        assert_eq!(player.status(), yutu_desktop::PlaybackStatus::Playing);
+        assert_eq!(player.volume(), f64::from(s.volume));
+        drop(player);
+        // Pause propagates too.
+        let _ = s.update(Message::TogglePause);
+        assert_eq!(
+            handle.lock().unwrap().status(),
+            yutu_desktop::PlaybackStatus::Paused
+        );
     }
 
     #[test]
