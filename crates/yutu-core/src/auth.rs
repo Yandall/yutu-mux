@@ -169,6 +169,7 @@ impl std::fmt::Debug for OAuthPersist {
 /// repeatedly (waiting `interval` seconds between attempts — Google asks for
 /// ~5s) until it returns `Ok(Some(_))` or a hard error.
 #[cfg(feature = "innertube")]
+#[derive(Clone)]
 pub struct GoogleLogin {
     /// URL the user must visit to approve the device request.
     pub verification_url: String,

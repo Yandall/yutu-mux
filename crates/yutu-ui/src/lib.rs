@@ -133,6 +133,23 @@ pub enum Route {
     Radio(String),
 }
 
+/// Sidebar library filter (real catalog data behind each tab).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LibFilter {
+    #[default]
+    Playlists,
+    Albums,
+    Artists,
+}
+
+/// Right-panel tab: queue or recently played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RightTab {
+    #[default]
+    Queue,
+    Recent,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Navigate(Route),
@@ -196,6 +213,8 @@ pub enum Message {
     SeekTo(f32),
     NavBack,
     NavForward,
+    SetLibFilter(LibFilter),
+    SetRightTab(RightTab),
     HomeSearchChanged(String),
     SearchStay,
     SearchDebounced {
@@ -217,6 +236,26 @@ pub enum Message {
     ArtworkReady {
         url: String,
         result: Result<Vec<u8>, String>,
+    },
+    #[cfg(feature = "innertube")]
+    GoogleLoginStart,
+    #[cfg(feature = "innertube")]
+    GoogleLoginBegan {
+        result: Result<yutu_core::GoogleLogin, String>,
+    },
+    #[cfg(feature = "innertube")]
+    GoogleLoginPoll,
+    #[cfg(feature = "innertube")]
+    GoogleLoginPolled {
+        result: Result<Option<yutu_core::OAuthPersist>, String>,
+    },
+    #[cfg(feature = "innertube")]
+    GoogleLogout,
+    #[cfg(feature = "innertube")]
+    LibraryImport,
+    #[cfg(feature = "innertube")]
+    LibraryImported {
+        result: Result<(Vec<Track>, Vec<String>), String>,
     },
     StreamResolved {
         video_id: String,
@@ -418,11 +457,25 @@ pub struct AppState {
     /// Browser-style back/forward stacks (Route history, capped).
     nav_back: Vec<Route>,
     nav_forward: Vec<Route>,
+    /// Sidebar library tab + right-panel tab (view-only state).
+    lib_filter: LibFilter,
+    right_tab: RightTab,
+    /// Where the queue is playing from (playlist/artist/radio label).
+    playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
     artwork: HashMap<String, iced::widget::image::Handle>,
     artwork_loading: HashSet<String>,
     /// Track id a prefetch was already attempted for (no Tick spam).
     prefetch_attempted: Option<String>,
+    /// Google device-flow login in progress (cloned into poll tasks).
+    #[cfg(feature = "innertube")]
+    google_login: Option<yutu_core::GoogleLogin>,
+    /// A saved OAuth token exists on disk (signed in).
+    #[cfg(feature = "innertube")]
+    logged_in: bool,
+    /// A login/library network task is in flight.
+    #[cfg(feature = "innertube")]
+    login_busy: bool,
     /// End-of-track auto-advance already fired for the current song.
     end_advanced: bool,
     library_path: String,
@@ -667,6 +720,24 @@ pub fn default_library_path() -> String {
     format!("{}/library.db", data_dir())
 }
 
+/// Saved Google OAuth token bundle (0600, written by the login flow).
+#[cfg(feature = "innertube")]
+pub fn oauth_path() -> String {
+    format!("{}/youtube_oauth.json", data_dir())
+}
+
+#[cfg(feature = "innertube")]
+fn oauth_path_exists() -> bool {
+    #[cfg(feature = "innertube")]
+    {
+        std::path::Path::new(&oauth_path()).exists()
+    }
+    #[cfg(not(feature = "innertube"))]
+    {
+        false
+    }
+}
+
 fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>, Vec<Playlist>, u64) {
     let empty = (HashSet::new(), Vec::new(), Vec::new(), 0);
     let store = match LibraryStore::open(path) {
@@ -740,9 +811,18 @@ impl AppState {
                 lyrics_loading: None,
                 nav_back: Vec::new(),
                 nav_forward: Vec::new(),
+                lib_filter: LibFilter::Playlists,
+                right_tab: RightTab::Queue,
+                playing_from: String::new(),
                 artwork: HashMap::new(),
                 artwork_loading: HashSet::new(),
                 prefetch_attempted: None,
+                #[cfg(feature = "innertube")]
+                google_login: None,
+                #[cfg(feature = "innertube")]
+                logged_in: oauth_path_exists(),
+                #[cfg(feature = "innertube")]
+                login_busy: false,
                 end_advanced: false,
                 library_path,
                 catalog: HashMap::new(),
@@ -857,6 +937,7 @@ impl AppState {
     /// Click-to-play: queue the track, jump to it, and fetch real audio.
     /// The fetch task completes in `StreamResolved`; the tone is gone.
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
+        self.playing_from = "Single".into();
         self.history.push(track.id.clone());
         self.persist_play(&track.id);
         self.queue.push(track);
@@ -1107,6 +1188,7 @@ impl AppState {
             self.queue.push(t);
         }
         self.queue.jump_to(first_new);
+        self.playing_from = label.to_string();
         self.status = format!("{label}: queued {n} track(s).");
         self.apply_volume();
         self.fetch_current_task()
@@ -1160,13 +1242,110 @@ impl AppState {
 
     /// 40px artwork for rows/panel, ♪ placeholder until loaded.
     fn thumb(&self, track: &Track) -> iced::Element<'_, Message> {
+        self.thumb_sized(track, 40.0)
+    }
+
+    /// Settings login panel: states are signed-in, code-pending, idle.
+    /// The URL is also printed to stderr (clickable in the terminal).
+    #[cfg(feature = "innertube")]
+    fn google_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, row, text};
+        use iced::Fill;
+        if self.logged_in {
+            return row![
+                text("Signed in ✓").size(13).color(SPOT_GREEN).width(Fill),
+                button(
+                    text(if self.login_busy {
+                        "…"
+                    } else {
+                        "Import library"
+                    })
+                    .size(12)
+                )
+                .style(green_play)
+                .on_press(Message::LibraryImport)
+                .padding(7),
+                button(text("Sign out").size(12))
+                    .style(button::text)
+                    .on_press(Message::GoogleLogout)
+                    .padding(7),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .into();
+        }
+        if let Some(login) = self.google_login.clone() {
+            return column![
+                text("1. Open this URL in your browser:")
+                    .size(12)
+                    .color(MUTED),
+                text(login.verification_url.clone()).size(12),
+                text(format!("2. Enter the code: {}", login.user_code)).size(13),
+                row![
+                    button(
+                        text(if self.login_busy {
+                            "Checking…"
+                        } else {
+                            "I’ve approved — check"
+                        })
+                        .size(13)
+                    )
+                    .style(green_play)
+                    .on_press(Message::GoogleLoginPoll)
+                    .padding(8),
+                    button(text("Cancel").size(12))
+                        .style(button::text)
+                        .on_press(Message::GoogleLogout)
+                        .padding(7),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
+            ]
+            .spacing(4)
+            .into();
+        }
+        column![
+            text("Your liked songs + library, imported from YouTube Music.")
+                .size(12)
+                .color(MUTED),
+            text("Needs a free Google OAuth client: set YUTU_OAUTH_CLIENT_ID + YUTU_OAUTH_CLIENT_SECRET (same as youtui — register a desktop client).")
+                .size(11)
+                .color(MUTED),
+            button(
+                text(if self.login_busy {
+                    "Contacting Google…"
+                } else {
+                    "Sign in with Google"
+                })
+                .size(13)
+            )
+            .style(green_play)
+            .on_press(Message::GoogleLoginStart)
+            .padding(8),
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    /// Offline builds: login needs the innertube feature.
+    #[cfg(not(feature = "innertube"))]
+    fn google_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::text;
+        text("Google login needs `--features innertube`.")
+            .size(12)
+            .color(MUTED)
+            .into()
+    }
+
+    /// Artwork at any square size (home cards use 52, rows use 40).
+    fn thumb_sized(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
         use iced::widget::{container, image, text};
         match track
             .thumbnail_url
             .as_deref()
             .and_then(|u| self.artwork.get(u))
         {
-            Some(handle) => image(handle.clone()).width(40).height(40).into(),
+            Some(handle) => image(handle.clone()).width(size).height(size).into(),
             None => container(text("♪").size(16).color(MUTED))
                 .style(card_bg)
                 .padding(8)
@@ -1382,6 +1561,12 @@ impl AppState {
             Message::Navigate(r) => self.navigate(r),
             Message::NavBack => self.go_back(),
             Message::NavForward => self.go_forward(),
+            Message::SetLibFilter(f) => {
+                self.lib_filter = f;
+            }
+            Message::SetRightTab(t) => {
+                self.right_tab = t;
+            }
             Message::HomeSearchChanged(q) => {
                 self.search_query = q.clone();
                 let trimmed = q.trim().to_string();
@@ -1824,6 +2009,123 @@ impl AppState {
                     return task;
                 }
             }
+            #[cfg(feature = "innertube")]
+            Message::GoogleLoginStart => {
+                self.login_busy = true;
+                self.status = "Contacting Google for a device code…".into();
+                self.publish_mpris();
+                return Self::google_begin_task();
+            }
+            #[cfg(feature = "innertube")]
+            Message::GoogleLoginBegan { result } => {
+                self.login_busy = false;
+                match result {
+                    Ok(login) => {
+                        // Terminal copy: the URL is clickable there; the
+                        // Settings panel shows it as text (Iced copy TBA).
+                        eprintln!(
+                            "[yutu-login] open {} and enter {}",
+                            login.verification_url, login.user_code
+                        );
+                        self.google_login = Some(login);
+                        self.status =
+                            "Approve in your browser, then press “I’ve approved — check”.".into();
+                    }
+                    Err(e) => {
+                        self.status = format!("Sign-in failed: {e}");
+                    }
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::GoogleLoginPoll => match self.google_login.clone() {
+                None => {
+                    self.status = "Press “Sign in with Google” first.".into();
+                }
+                Some(login) => {
+                    self.login_busy = true;
+                    self.status = "Checking approval…".into();
+                    self.publish_mpris();
+                    return Self::google_poll_task(login);
+                }
+            },
+            #[cfg(feature = "innertube")]
+            Message::GoogleLoginPolled { result } => {
+                self.login_busy = false;
+                match result {
+                    Ok(Some(persist)) => {
+                        match persist.save_to_file(std::path::Path::new(&oauth_path())) {
+                            Ok(()) => {
+                                self.logged_in = true;
+                                self.google_login = None;
+                                self.status = "Signed in — importing your library…".into();
+                                self.publish_mpris();
+                                return Self::library_import_task();
+                            }
+                            Err(e) => {
+                                self.status = format!("Sign-in failed: {e}");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        self.status =
+                            "Still waiting — approve in your browser, then press Check again."
+                                .into();
+                    }
+                    Err(e) => {
+                        if e.contains("expired") {
+                            self.google_login = None;
+                            self.status =
+                                "Code expired — press “Sign in with Google” to restart.".into();
+                        } else {
+                            self.status = format!("Check failed: {e}");
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::GoogleLogout => {
+                let _ = std::fs::remove_file(oauth_path());
+                self.logged_in = false;
+                self.google_login = None;
+                self.status = "Signed out (token file removed).".into();
+            }
+            #[cfg(feature = "innertube")]
+            Message::LibraryImport => {
+                if !self.logged_in {
+                    self.status = "Sign in with Google first.".into();
+                } else {
+                    self.login_busy = true;
+                    self.status = "Importing your library…".into();
+                    self.publish_mpris();
+                    return Self::library_import_task();
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::LibraryImported { result } => {
+                self.login_busy = false;
+                match result {
+                    Ok((tracks, liked_ids)) => {
+                        let n = tracks.len();
+                        let m = liked_ids.len();
+                        let tracks = self.register_tracks(tracks);
+                        for id in &liked_ids {
+                            self.liked.insert(id.clone());
+                        }
+                        if let Ok(store) = LibraryStore::open(&self.library_path) {
+                            for id in &liked_ids {
+                                let _ = store.like(id);
+                            }
+                        }
+                        let tasks = self.artwork_tasks(&tracks);
+                        self.status = format!("Imported {n} library tracks ({m} liked).");
+                        self.publish_mpris();
+                        return iced::Task::batch(tasks);
+                    }
+                    Err(e) => {
+                        self.status = format!("Library import failed: {e}");
+                    }
+                }
+            }
             Message::Tick(_) => {
                 self.position_secs = self.audio_position();
                 let duration = self.audio_duration();
@@ -2033,6 +2335,50 @@ impl AppState {
         )
     }
 
+    /// Google device-flow: request the code pair (network I/O).
+    #[cfg(feature = "innertube")]
+    fn google_begin_task() -> iced::Task<Message> {
+        iced::Task::perform(
+            async move { yutu_core::begin_google_login().await },
+            |result| Message::GoogleLoginBegan { result },
+        )
+    }
+
+    /// Google device-flow: one approval poll (caller retries on pending).
+    #[cfg(feature = "innertube")]
+    fn google_poll_task(login: yutu_core::GoogleLogin) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move { yutu_core::poll_google_login(&login).await },
+            |result| Message::GoogleLoginPolled { result },
+        )
+    }
+
+    /// Signed-in library import: library songs + liked ids (catalog merge).
+    #[cfg(feature = "innertube")]
+    fn library_import_task() -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let persist =
+                    yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path()))?;
+                let backend = yutu_core::InnertubeBackend::connect_with_oauth(&persist)?;
+                let lib = backend.library_songs().await.unwrap_or_default();
+                let liked = backend.liked_songs().await.unwrap_or_default();
+                if lib.is_empty() && liked.is_empty() {
+                    return Err("empty library — is this the right Google account?".to_string());
+                }
+                let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
+                let mut all = lib;
+                for t in liked {
+                    if !all.iter().any(|x| x.id == t.id) {
+                        all.push(t);
+                    }
+                }
+                Ok((all, liked_ids))
+            },
+            |result| Message::LibraryImported { result },
+        )
+    }
+
     /// Radio seed: same-artist tracks first, then the rest of the search.
     #[cfg(feature = "innertube")]
     fn radio_task(seed: String, artist: String) -> iced::Task<Message> {
@@ -2106,7 +2452,7 @@ impl AppState {
     }
 
     fn sidebar_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, text};
+        use iced::widget::{button, column, container, row, text};
         use iced::Fill;
         let seed = self.radio_seed();
         let radio_active = matches!(self.route, Route::Radio(_));
@@ -2115,17 +2461,181 @@ impl AppState {
             // Nothing playing yet: radio starts from Search instead.
             None => Message::Navigate(Route::Search),
         };
-        let playlists: Vec<iced::Element<'_, Message>> = self
-            .all_playlists()
-            .into_iter()
-            .take(8)
-            .map(|p| {
-                button(text(format!("{} · {}", p.title, p.tracks.len())).size(13))
-                    .style(button::text)
-                    .on_press(Message::OpenPlaylist(p.id.clone()))
-                    .padding(6)
-                    .width(Fill)
-                    .into()
+        // Filter chips (real catalog data behind each one).
+        let chip_playlists = button(text("Playlists").size(12))
+            .style(nav_style(self.lib_filter == LibFilter::Playlists))
+            .on_press(Message::SetLibFilter(LibFilter::Playlists))
+            .padding(6);
+        let chip_albums = button(text("Albums").size(12))
+            .style(nav_style(self.lib_filter == LibFilter::Albums))
+            .on_press(Message::SetLibFilter(LibFilter::Albums))
+            .padding(6);
+        let chip_artists = button(text("Artists").size(12))
+            .style(nav_style(self.lib_filter == LibFilter::Artists))
+            .on_press(Message::SetLibFilter(LibFilter::Artists))
+            .padding(6);
+        let lib_list: iced::Element<'_, Message> = match self.lib_filter {
+            LibFilter::Playlists => {
+                let rows: Vec<iced::Element<'_, Message>> = self
+                    .all_playlists()
+                    .into_iter()
+                    .take(8)
+                    .map(|p| {
+                        let art: iced::Element<'_, Message> =
+                            p.tracks.first().map(|t| self.thumb(t)).unwrap_or_else(|| {
+                                container(text("♪").size(14).color(MUTED))
+                                    .style(card_bg)
+                                    .padding(8)
+                                    .into()
+                            });
+                        button(
+                            row![
+                                art,
+                                column![
+                                    text(p.title.clone()).size(13),
+                                    text(format!("Playlist · {} songs", p.tracks.len()))
+                                        .size(11)
+                                        .color(MUTED),
+                                ]
+                                .spacing(1)
+                                .width(Fill),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(button::text)
+                        .on_press(Message::OpenPlaylist(p.id.clone()))
+                        .padding(4)
+                        .width(Fill)
+                        .into()
+                    })
+                    .collect();
+                column(rows).spacing(2).into()
+            }
+            LibFilter::Albums => {
+                let mut seen = std::collections::HashSet::new();
+                let mut albums: Vec<(String, String)> = Vec::new();
+                let mut sorted = self.catalog_tracks();
+                sorted.sort_by(|a, b| a.title.cmp(&b.title));
+                for t in sorted {
+                    if let Some(album) = t.album.clone() {
+                        if seen.insert(album.clone()) {
+                            albums.push((album, t.artist.clone()));
+                        }
+                    }
+                    if albums.len() >= 8 {
+                        break;
+                    }
+                }
+                let rows: Vec<iced::Element<'_, Message>> = albums
+                    .into_iter()
+                    .map(|(title, artist)| {
+                        button(
+                            column![
+                                text(title.clone()).size(13),
+                                text(format!("Album · {artist}")).size(11).color(MUTED),
+                            ]
+                            .spacing(1)
+                            .width(Fill),
+                        )
+                        .style(button::text)
+                        .on_press(Message::OpenAlbum(title.clone()))
+                        .padding(4)
+                        .width(Fill)
+                        .into()
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    text("No albums yet — search for music.")
+                        .size(12)
+                        .color(MUTED)
+                        .into()
+                } else {
+                    column(rows).spacing(2).into()
+                }
+            }
+            LibFilter::Artists => {
+                let mut seen = std::collections::HashSet::new();
+                let mut artists: Vec<String> = Vec::new();
+                let mut sorted = self.catalog_tracks();
+                sorted.sort_by(|a, b| a.artist.cmp(&b.artist));
+                for t in sorted {
+                    if seen.insert(t.artist.clone()) {
+                        artists.push(t.artist.clone());
+                    }
+                    if artists.len() >= 8 {
+                        break;
+                    }
+                }
+                let rows: Vec<iced::Element<'_, Message>> = artists
+                    .into_iter()
+                    .map(|name| {
+                        button(
+                            column![
+                                text(name.clone()).size(13),
+                                text("Artist").size(11).color(MUTED),
+                            ]
+                            .spacing(1)
+                            .width(Fill),
+                        )
+                        .style(button::text)
+                        .on_press(Message::OpenArtist(name.clone()))
+                        .padding(4)
+                        .width(Fill)
+                        .into()
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    text("No artists yet — search for music.")
+                        .size(12)
+                        .color(MUTED)
+                        .into()
+                } else {
+                    column(rows).spacing(2).into()
+                }
+            }
+        };
+        // Recently played with artwork; the live track glows green.
+        let current_id = self.queue.current().map(|t| t.id.clone());
+        let mut seen = std::collections::HashSet::new();
+        let mut recent: Vec<Track> = Vec::new();
+        for id in self.history.iter().rev() {
+            if recent.len() >= 5 {
+                break;
+            }
+            if seen.insert(id.clone()) {
+                if let Some(t) = self.find_track(id) {
+                    recent.push(t);
+                }
+            }
+        }
+        let recent_rows: Vec<iced::Element<'_, Message>> = recent
+            .iter()
+            .map(|t| {
+                let active = current_id.as_deref() == Some(t.id.as_str());
+                button(
+                    row![
+                        self.thumb(t),
+                        column![
+                            text(t.title.clone()).size(13).color(if active {
+                                SPOT_GREEN
+                            } else {
+                                iced::Color::WHITE
+                            }),
+                            text(t.artist.clone()).size(11).color(MUTED),
+                        ]
+                        .spacing(1)
+                        .width(Fill),
+                        text(if active { "🔊" } else { "" }).size(12),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .style(button::text)
+                .on_press(Message::EnqueueTrack(t.id.clone()))
+                .padding(4)
+                .width(Fill)
+                .into()
             })
             .collect();
         let liked_n = self.liked.len();
@@ -2170,15 +2680,21 @@ impl AppState {
                         .width(Fill),
                 ]
                 .spacing(2),
-                text(format!("Liked · {liked_n}")).size(12).color(MUTED),
-                text("Playlists").size(12).color(MUTED),
-                column(playlists).spacing(0),
+                row![
+                    text("📚  Library").size(14).width(Fill),
+                    text(format!("{}", liked_n)).size(11).color(MUTED),
+                ]
+                .align_y(iced::alignment::Vertical::Center),
+                row![chip_playlists, chip_albums, chip_artists].spacing(4),
+                lib_list,
+                text("Recently played").size(12).color(MUTED),
+                column(recent_rows).spacing(0),
             ]
             .spacing(10),
         )
         .style(sidebar_bg)
         .padding(12)
-        .width(225)
+        .width(235)
         .height(Fill)
         .into()
     }
@@ -2252,9 +2768,24 @@ impl AppState {
                 .into()
             })
             .collect();
-        container(
-            column![
-                now,
+        let tab_queue = button(text("Queue").size(12))
+            .style(nav_style(self.right_tab == RightTab::Queue))
+            .on_press(Message::SetRightTab(RightTab::Queue))
+            .padding(6);
+        let tab_recent = button(text("Recent").size(12))
+            .style(nav_style(self.right_tab == RightTab::Recent))
+            .on_press(Message::SetRightTab(RightTab::Recent))
+            .padding(6);
+        let from_line: iced::Element<'_, Message> = if self.playing_from.is_empty() {
+            text("").size(1).into()
+        } else {
+            text(format!("Playing from  {}", self.playing_from))
+                .size(12)
+                .color(MUTED)
+                .into()
+        };
+        let list: iced::Element<'_, Message> = match self.right_tab {
+            RightTab::Queue => column![
                 text("Next up").size(13).color(MUTED),
                 column(upcoming).spacing(0),
                 button(text(format!("Clear queue ({})", self.queue.len())).size(12))
@@ -2262,13 +2793,55 @@ impl AppState {
                     .on_press(Message::QueueClear)
                     .padding(4),
             ]
-            .spacing(8),
-        )
-        .style(sidebar_bg)
-        .padding(12)
-        .width(275)
-        .height(Fill)
-        .into()
+            .spacing(4)
+            .into(),
+            RightTab::Recent => {
+                let mut seen = std::collections::HashSet::new();
+                let mut recent: Vec<Track> = Vec::new();
+                for id in self.history.iter().rev() {
+                    if recent.len() >= 9 {
+                        break;
+                    }
+                    if seen.insert(id.clone()) {
+                        if let Some(t) = self.find_track(id) {
+                            recent.push(t);
+                        }
+                    }
+                }
+                if recent.is_empty() {
+                    text("No recent plays yet.").size(12).color(MUTED).into()
+                } else {
+                    column(
+                        recent
+                            .iter()
+                            .map(|t| {
+                                row![
+                                    self.thumb(t),
+                                    button(text(format!("{} — {}", t.title, t.artist)).size(12))
+                                        .style(button::text)
+                                        .on_press(Message::EnqueueTrack(t.id.clone()))
+                                        .padding(3)
+                                        .width(Fill),
+                                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                                ]
+                                .spacing(6)
+                                .align_y(iced::alignment::Vertical::Center)
+                                .padding(2)
+                                .into()
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .spacing(0)
+                    .into()
+                }
+            }
+        };
+        container(column![row![tab_queue, tab_recent].spacing(4), from_line, now, list,].spacing(8))
+            .style(sidebar_bg)
+            .padding(12)
+            .width(285)
+            .height(Fill)
+            .into()
     }
 
     fn player_view(&self) -> iced::Element<'_, Message> {
@@ -2416,7 +2989,7 @@ impl AppState {
                 let mut seen = std::collections::HashSet::new();
                 let mut recent: Vec<Track> = Vec::new();
                 for id in self.history.iter().rev() {
-                    if recent.len() >= 6 {
+                    if recent.len() >= 8 {
                         break;
                     }
                     if seen.insert(id.clone()) {
@@ -2425,86 +2998,92 @@ impl AppState {
                         }
                     }
                 }
+                // Liked tracks fill an empty history so the grid is alive.
+                if recent.is_empty() {
+                    let mut liked: Vec<Track> = self
+                        .liked
+                        .iter()
+                        .filter_map(|id| self.find_track(id))
+                        .take(8)
+                        .collect();
+                    liked.sort_by(|a, b| a.title.cmp(&b.title));
+                    recent = liked;
+                }
                 let picks: Vec<Track> = recent;
                 let grid: iced::Element<'_, Message> = if picks.is_empty() {
                     column![
                         text("Your recent plays will appear here.").color(MUTED),
-                        button(text("🔍 Search YouTube Music").size(13))
-                            .style(green_play)
-                            .on_press(Message::Navigate(Route::Search))
-                            .padding(8),
+                        text("Type in the search bar above — results land as you type.")
+                            .size(12)
+                            .color(MUTED),
                     ]
                     .spacing(8)
                     .into()
                 } else {
-                    // One card per row (robust in Iced's box layout; reads like
-                    // Spotify's quick-pick list at this window size).
-                    column(
-                        picks
-                            .iter()
-                            .map(|t| {
-                                button(
-                                    row![
-                                        text(format!("{} — {}", t.title, t.artist))
-                                            .size(14)
+                    // Two-across quick picks, Spotify-style: artwork + title.
+                    let rows: Vec<iced::Element<'_, Message>> = picks
+                        .chunks(2)
+                        .map(|pair| {
+                            let cards: Vec<iced::Element<'_, Message>> = pair
+                                .iter()
+                                .map(|t| {
+                                    button(
+                                        row![
+                                            self.thumb_sized(t, 52.0),
+                                            column![
+                                                text(t.title.clone()).size(14),
+                                                text(t.artist.clone()).size(12).color(MUTED),
+                                            ]
+                                            .spacing(2)
                                             .width(Fill),
-                                        text("▶").size(13).color(SPOT_GREEN),
-                                    ]
-                                    .spacing(8)
-                                    .padding(12)
-                                    .align_y(iced::alignment::Vertical::Center),
-                                )
-                                .style(card_button)
-                                .on_press(Message::EnqueueTrack(t.id.clone()))
-                                .padding(0)
-                                .into()
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .spacing(8)
-                    .into()
-                };
-                let home_hits: iced::Element<'_, Message> = if self.searching {
-                    text("Searching YouTube Music…").color(MUTED).into()
-                } else if self.search_query.trim().is_empty() {
-                    text("").size(1).into()
-                } else if self.results.tracks.is_empty() {
-                    text("No matches — try another search.").color(MUTED).into()
-                } else {
-                    let top: Vec<iced::Element<'_, Message>> = self
-                        .results
-                        .tracks
-                        .iter()
-                        .take(6)
-                        .map(|t| self.track_row(t))
+                                        ]
+                                        .spacing(10)
+                                        .padding(6)
+                                        .align_y(iced::alignment::Vertical::Center),
+                                    )
+                                    .style(card_button)
+                                    .on_press(Message::EnqueueTrack(t.id.clone()))
+                                    .padding(0)
+                                    .width(Fill)
+                                    .into()
+                                })
+                                .collect();
+                            row(cards).spacing(8).into()
+                        })
                         .collect();
-                    column![
-                        column(top).spacing(2),
-                        button(text("See all results →").size(12))
-                            .style(button::text)
-                            .on_press(Message::Navigate(Route::Search))
-                            .padding(4),
-                    ]
-                    .spacing(4)
-                    .into()
+                    column(rows).spacing(8).into()
                 };
+                let home_hits: iced::Element<'_, Message> =
+                    if self.searching && self.results.tracks.is_empty() {
+                        text("Searching YouTube Music…").color(MUTED).into()
+                    } else if self.search_query.trim().is_empty() {
+                        text("").size(1).into()
+                    } else if self.results.tracks.is_empty() {
+                        text("No matches yet — keep typing.").color(MUTED).into()
+                    } else {
+                        let top: Vec<iced::Element<'_, Message>> = self
+                            .results
+                            .tracks
+                            .iter()
+                            .take(6)
+                            .map(|t| self.track_row(t))
+                            .collect();
+                        column![
+                            text("Top results").size(17),
+                            column(top).spacing(2),
+                            button(text("See all results →").size(12))
+                                .style(button::text)
+                                .on_press(Message::Navigate(Route::Search))
+                                .padding(4),
+                        ]
+                        .spacing(4)
+                        .into()
+                    };
                 let home_search_results: iced::Element<'_, Message> = home_hits;
                 let weekly_n = self.weekly_mix_tracks().len();
                 let forgotten_n = self.forgotten_tracks().len();
                 column![
                     text("Good evening").size(24),
-                    row![
-                        text_input("Search YouTube Music…", &self.search_query)
-                            .on_input(Message::HomeSearchChanged)
-                            .on_submit(Message::SearchStay)
-                            .width(Fill),
-                        button(text("🔍 Search").size(14))
-                            .style(green_play)
-                            .on_press(Message::SearchStay)
-                            .padding(8),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
                     home_search_results,
                     text("Jump back in").size(19),
                     grid,
@@ -2599,10 +3178,7 @@ impl AppState {
                     text("").size(1).into()
                 };
                 column![
-                    text_input("What do you want to play?", &self.search_query)
-                        .on_input(Message::SearchChanged)
-                        .on_submit(Message::Search)
-                        .width(Fill),
+                    text(format!("Results for “{}”", self.search_query)).size(22),
                     search_note,
                     Self::section("Tracks", rows),
                     Self::section("Albums", albums),
@@ -2871,6 +3447,8 @@ impl AppState {
                     text_input("Last.fm session key…", &self.scrobble_fm_sk)
                         .on_input(Message::ScrobbleFmSkChanged)
                         .secure(true),
+                    text("Google account (import your library)").size(17),
+                    self.google_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
                         .color(MUTED),
@@ -3063,25 +3641,64 @@ impl AppState {
         };
         let can_back = !self.nav_back.is_empty();
         let can_forward = !self.nav_forward.is_empty();
-        let mut nav_row = row![];
-        nav_row = nav_row.push(if can_back {
+        // Global header, Spotify-style: browser nav + always-visible
+        // search (as-you-type, stays on page) + clear + shortcuts.
+        let back_btn: iced::Element<'_, Message> = if can_back {
             button(text("‹").size(16))
                 .style(button::text)
                 .on_press(Message::NavBack)
                 .padding(6)
+                .into()
         } else {
-            button(text("‹").size(16)).padding(6)
-        });
-        nav_row = nav_row.push(if can_forward {
+            button(text("‹").size(16)).padding(6).into()
+        };
+        let fwd_btn: iced::Element<'_, Message> = if can_forward {
             button(text("›").size(16))
                 .style(button::text)
                 .on_press(Message::NavForward)
                 .padding(6)
+                .into()
         } else {
-            button(text("›").size(16)).padding(6)
-        });
+            button(text("›").size(16)).padding(6).into()
+        };
+        let clear_btn: iced::Element<'_, Message> = if self.search_query.is_empty() {
+            text("").size(1).into()
+        } else {
+            button(text("✕").size(13))
+                .style(button::text)
+                .on_press(Message::HomeSearchChanged(String::new()))
+                .padding(6)
+                .into()
+        };
+        let search_state: iced::Element<'_, Message> = if self.searching {
+            text("…").size(14).color(MUTED).into()
+        } else {
+            text("").size(1).into()
+        };
+        let header: iced::Element<'_, Message> = row![
+            back_btn,
+            fwd_btn,
+            text("🔍").size(14).color(MUTED),
+            text_input("Search YouTube Music…", &self.search_query)
+                .on_input(Message::HomeSearchChanged)
+                .on_submit(Message::SearchStay)
+                .width(Fill),
+            clear_btn,
+            search_state,
+            button(text("☰").size(14))
+                .style(button::text)
+                .on_press(Message::Navigate(Route::Queue))
+                .padding(6),
+            button(text("⚙").size(14))
+                .style(button::text)
+                .on_press(Message::Navigate(Route::Settings))
+                .padding(6),
+        ]
+        .spacing(4)
+        .align_y(iced::alignment::Vertical::Center)
+        .into();
         column![
-            nav_row.spacing(2),
+            header,
             scrollable(container(body).padding(20).width(Fill)).height(Fill),
         ]
         .spacing(4)
@@ -3759,6 +4376,60 @@ mod tests {
         });
         assert_eq!(s.results.tracks.len(), 1);
         assert_eq!(s.results.tracks[0].id, "new");
+    }
+
+    #[test]
+    fn sidebar_and_right_tabs_switch() {
+        let mut s = test_state();
+        assert_eq!(s.lib_filter, LibFilter::Playlists);
+        let _ = s.update(Message::SetLibFilter(LibFilter::Artists));
+        assert_eq!(s.lib_filter, LibFilter::Artists);
+        assert_eq!(s.right_tab, RightTab::Queue);
+        let _ = s.update(Message::SetRightTab(RightTab::Recent));
+        assert_eq!(s.right_tab, RightTab::Recent);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn google_login_flow_reports_honestly() {
+        let mut s = test_state();
+        assert!(!s.logged_in);
+        // No flow yet: polling says so.
+        let _ = s.update(Message::GoogleLoginPoll);
+        assert!(s.status.contains("Sign in"));
+        // Start marks busy (network runs on the runtime).
+        let _ = s.update(Message::GoogleLoginStart);
+        assert!(s.login_busy);
+        // Begin failure (no client id in test env) clears busy + reports.
+        let _ = s.update(Message::GoogleLoginBegan {
+            result: Err("no client".into()),
+        });
+        assert!(!s.login_busy);
+        assert!(s.status.contains("Sign-in failed"));
+        // Still-pending poll keeps the flow alive.
+        let _ = s.update(Message::GoogleLoginPoll);
+        assert!(s.status.contains("Sign in"));
+        // Import without sign-in refuses; logout resets.
+        let _ = s.update(Message::LibraryImport);
+        assert!(s.status.contains("Sign in"));
+        let _ = s.update(Message::GoogleLogout);
+        assert!(!s.logged_in);
+        assert!(s.status.contains("Signed out"));
+        // Imported payload merges catalog + likes.
+        let _ = s.update(Message::LibraryImported {
+            result: Ok((
+                vec![mk_track("lib1", "Lied", "Someone")],
+                vec!["lib1".into()],
+            )),
+        });
+        assert!(!s.login_busy);
+        assert!(s.find_track("lib1").is_some());
+        assert!(s.liked.contains("lib1"));
+        assert!(s.status.contains("Imported 1"));
+        let _ = s.update(Message::LibraryImported {
+            result: Err("403".into()),
+        });
+        assert!(s.status.contains("failed: 403"));
     }
 
     #[test]
