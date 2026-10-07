@@ -1,0 +1,10 @@
+[package]
+name = "yutu-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Iced app shell (yutu-mux) — views land in Phase 3"
+license = "MIT"
+
+[dependencies]
+yutu-core = { path = "../yutu-core" }
+yutu-player = { path = "../yutu-player" }
