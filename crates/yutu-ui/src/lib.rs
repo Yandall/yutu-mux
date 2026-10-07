@@ -161,6 +161,8 @@ pub enum Message {
     Pause,
     TogglePause,
     EnqueueTrack(String),
+    /// Append to the end of the queue without touching playback.
+    QueueTrack(String),
     NewPlaylistNameChanged(String),
     Stop,
     Next,
@@ -1086,6 +1088,11 @@ impl AppState {
         let Some(t) = self.queue.current().cloned() else {
             return iced::Task::none();
         };
+        // Immediate feedback: silence the old song the instant a new load
+        // starts (resolving takes ~1s; the old track must not play over it).
+        if let Some(audio) = &self.audio {
+            audio.stop();
+        }
         if self.prefetched.as_ref().is_some_and(|(id, _)| id != &t.id) {
             self.prefetched = None;
         }
@@ -1172,6 +1179,10 @@ impl AppState {
         match self.queue.current().cloned() {
             None => iced::Task::none(),
             Some(t) => {
+                // Same cut-the-old-song feedback as the streaming path.
+                if let Some(audio) = &self.audio {
+                    audio.stop();
+                }
                 self.loading_track = Some(t.id.clone());
                 self.end_advanced = false;
                 self.paused = false;
@@ -1754,7 +1765,7 @@ impl AppState {
     fn update_sync(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::PlayTrack(_) | Message::EnqueueTrack(_) => {
-                unreachable!("async play actions are dispatched in update()")
+                unreachable!("play actions are dispatched in update()")
             }
             Message::ScrobbleSubmitted { .. } => {
                 unreachable!("scrobble results are dispatched in update()")
@@ -2072,6 +2083,27 @@ impl AppState {
                     self.status = format!("Radio failed: {e}");
                 }
             },
+            Message::QueueTrack(id) => {
+                self.show_suggest = false;
+                self.close_menu();
+                match self.find_track(&id) {
+                    None => {
+                        self.status = format!("Track not found: {id}.");
+                    }
+                    Some(t) => {
+                        let was_empty = self.queue.is_empty();
+                        self.queue.push(t.clone());
+                        self.status = if was_empty {
+                            format!(
+                                "Added to queue: {} — {} (press ▶ to play).",
+                                t.title, t.artist
+                            )
+                        } else {
+                            format!("Added to queue: {} — {}.", t.title, t.artist)
+                        };
+                    }
+                }
+            }
             Message::QueueJump(i) => {
                 if self.queue.jump_to(i) {
                     self.apply_volume();
@@ -3213,7 +3245,7 @@ impl AppState {
                                             text(format!("{} — {}", t.title, t.artist)).size(12)
                                         )
                                         .style(button::text)
-                                        .on_press(Message::EnqueueTrack(t.id.clone()))
+                                        .on_press(Message::PlayNow(t.id.clone()))
                                         .padding(3)
                                         .width(Fill),
                                         text(fmt_time(t.duration_secs as f64))
@@ -4025,7 +4057,7 @@ impl AppState {
                     row![
                         button(text("▶ Play").size(13))
                             .style(green_play)
-                            .on_press(Message::EnqueueTrack(id.clone()))
+                            .on_press(Message::PlayNow(id.clone()))
                             .padding(7),
                         button(text("Radio").size(13))
                             .style(button::text)
@@ -4312,7 +4344,7 @@ impl AppState {
                 .into(),
             button(text("➕  Add to queue").size(14))
                 .style(button::text)
-                .on_press(Message::EnqueueTrack(t.id.clone()))
+                .on_press(Message::QueueTrack(t.id.clone()))
                 .padding(8)
                 .width(Fill)
                 .into(),
@@ -5167,6 +5199,38 @@ mod tests {
             result: Err("offline".into()),
         });
         assert_eq!(s.queue.len(), 2);
+    }
+
+    #[test]
+    fn queue_track_appends_without_playing() {
+        let mut s = test_state();
+        // Empty queue: appends, nothing loads or plays.
+        let _ = s.update(Message::QueueTrack("m1".into()));
+        assert_eq!(s.queue.len(), 1);
+        assert!(s.loading_track.is_none());
+        assert!(s.status.contains("Added to queue"));
+        // Playing something: appends to the end, current untouched.
+        let _ = s.update(Message::PlayNow("m2".into()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        let _ = s.update(Message::QueueTrack("m3".into()));
+        assert_eq!(s.queue.len(), 2);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        assert_eq!(s.queue.items()[1].id, "m3");
+        assert_eq!(s.loading_track.as_deref(), Some("m2"));
+        assert!(s.status.contains("Added to queue"));
+        // Unknown id: honest error, queue untouched.
+        let _ = s.update(Message::QueueTrack("ghost".into()));
+        assert!(s.status.contains("not found"));
+        assert_eq!(s.queue.len(), 2);
+    }
+
+    #[test]
+    fn new_load_resets_position_and_marks_loading() {
+        let mut s = test_state();
+        let _ = s.update(Message::PlayNow("m1".into()));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        assert_eq!(s.position_secs, 0.0);
+        assert!(s.status.contains("Loading"));
     }
 
     #[test]
