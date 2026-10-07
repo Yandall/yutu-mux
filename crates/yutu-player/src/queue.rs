@@ -119,6 +119,32 @@ impl Queue {
         self.index = Some(prev);
         self.current()
     }
+
+    /// Current position in the queue (index of [`Queue::current`]).
+    #[must_use]
+    pub fn position(&self) -> Option<usize> {
+        self.index
+    }
+
+    /// Jump playback to item `i`. Returns false (no move) when out of range.
+    pub fn jump_to(&mut self, i: usize) -> bool {
+        if i < self.items.len() {
+            self.index = Some(i);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Cycle repeat mode Off → All → One → Off (player-controls button).
+    pub fn cycle_repeat(&mut self) -> RepeatMode {
+        self.repeat = match self.repeat {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Off,
+        };
+        self.repeat
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +158,29 @@ mod tests {
             q.push(t);
         }
         q
+    }
+
+    #[test]
+    fn jump_to_moves_within_range_only() {
+        let mut q = queue_of(3);
+        assert_eq!(q.position(), Some(0));
+        assert!(q.jump_to(2));
+        assert_eq!(q.position(), Some(2));
+        assert_eq!(q.current().unwrap().id, "m3");
+        assert!(!q.jump_to(3));
+        assert!(!q.jump_to(99));
+        assert_eq!(q.position(), Some(2));
+        assert!(Queue::default().position().is_none());
+        assert!(!Queue::default().jump_to(0));
+    }
+
+    #[test]
+    fn repeat_cycles_off_all_one_off() {
+        let mut q = Queue::default();
+        assert_eq!(q.repeat, RepeatMode::Off);
+        assert_eq!(q.cycle_repeat(), RepeatMode::All);
+        assert_eq!(q.cycle_repeat(), RepeatMode::One);
+        assert_eq!(q.cycle_repeat(), RepeatMode::Off);
     }
 
     #[test]

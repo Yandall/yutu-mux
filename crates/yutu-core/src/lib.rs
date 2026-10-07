@@ -6,6 +6,7 @@ pub mod discovery;
 #[cfg(feature = "innertube")]
 pub mod innertube;
 pub mod library;
+pub mod lyrics_providers;
 pub mod models;
 pub mod pot;
 pub mod scrobble;
@@ -20,6 +21,9 @@ pub use innertube::InnertubeBackend;
 #[cfg(feature = "innertube")]
 pub use innertube::ResolvedStream;
 pub use library::LibraryStore;
+#[cfg(feature = "lyrics")]
+pub use lyrics_providers::fetch_lrclib;
+pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};
 pub use models::{Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults, Track};
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 pub use scrobble::{

@@ -203,6 +203,30 @@ impl MpvBackend {
             .map_err(|e| mpv_op_err("apply EQ", e))
     }
 
+    /// Current playback position in seconds (`time-pos` property).
+    /// Returns `0.0` when mpv reports an error (idle, no file loaded),
+    /// a negative value, or a non-finite value.
+    #[must_use]
+    pub fn position_secs(&self) -> f64 {
+        self.mpv
+            .get_property::<f64>("time-pos")
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(0.0)
+    }
+
+    /// Current track duration in seconds (`duration` property).
+    /// Returns `0.0` when mpv reports an error (idle, no file loaded),
+    /// a negative value, or a non-finite value.
+    #[must_use]
+    pub fn duration_secs(&self) -> f64 {
+        self.mpv
+            .get_property::<f64>("duration")
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(0.0)
+    }
+
     /// `true` when audio is currently playing (not paused and not idle).
     /// Property read failures conservatively report `false`.
     #[must_use]
@@ -234,6 +258,10 @@ impl AudioBackend for MpvBackend {
     fn is_ok(&self) -> bool {
         // The mpv handle is owned by `self`; it is alive until `Drop`.
         true
+    }
+
+    fn position_secs(&self) -> f64 {
+        MpvBackend::position_secs(self)
     }
 }
 
@@ -366,5 +394,37 @@ mod tests {
         };
         assert!(backend.seek_secs(f64::NAN).is_err());
         assert!(backend.seek_secs(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    #[ignore = "needs real libmpv; run manually with --features mpv"]
+    fn live_mpv_position_and_duration() {
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        // Idle (nothing loaded): both fall back to 0.0, never negative/NaN.
+        assert_eq!(backend.position_secs(), 0.0);
+        assert_eq!(backend.duration_secs(), 0.0);
+        // Trait view agrees with the inherent method.
+        let via_trait: &dyn AudioBackend = &backend;
+        assert_eq!(via_trait.position_secs(), backend.position_secs());
+        if let Err(e) = backend.load_bytes(&wav_bytes()) {
+            eprintln!("SKIP: mpv load failed headless: {e}");
+            return;
+        }
+        if let Err(e) = backend.play() {
+            eprintln!("SKIP: mpv play failed headless: {e}");
+            return;
+        }
+        // Position is a real `time-pos` read: finite and non-negative.
+        let pos = backend.position_secs();
+        assert!(pos.is_finite() && pos >= 0.0, "got {pos}");
+        let dur = backend.duration_secs();
+        assert!(dur.is_finite() && dur >= 0.0, "got {dur}");
+        let _ = backend.stop();
     }
 }
