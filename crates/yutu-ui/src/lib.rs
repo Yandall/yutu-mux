@@ -119,10 +119,11 @@ pub fn default_library_path() -> String {
     format!("{base}/yutu-mux/library.db")
 }
 
-fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>) {
+fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>, Vec<Playlist>, u64) {
+    let empty = (HashSet::new(), Vec::new(), Vec::new(), 0);
     let store = match LibraryStore::open(path) {
         Ok(s) => s,
-        Err(_) => return (HashSet::new(), Vec::new()),
+        Err(_) => return empty,
     };
     // Likes: probe fixture ids (mock phase); real phase lists all.
     let mut liked = HashSet::new();
@@ -137,11 +138,21 @@ fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>) {
         .into_iter()
         .map(|e| e.track_id)
         .collect();
-    (liked, history)
+    let user_playlists = store.user_playlists().unwrap_or_default();
+    let seq = user_playlists
+        .iter()
+        .filter_map(|p| p.id.strip_prefix('u')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    (liked, history, user_playlists, seq)
 }
 
 impl AppState {
     pub fn new() -> (Self, iced::Task<Message>) {
+        Self::with_library_path(default_library_path())
+    }
+
+    pub fn with_library_path(library_path: String) -> (Self, iced::Task<Message>) {
         let backend = MockBackend::new();
         let results = backend.search("");
         let audio = match RodioBackend::try_new() {
@@ -151,11 +162,10 @@ impl AppState {
                 None
             }
         };
-        let library_path = default_library_path();
         if let Some(parent) = std::path::Path::new(&library_path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let (liked, history) = load_persisted(&library_path);
+        let (liked, history, user_playlists, playlist_seq) = load_persisted(&library_path);
         (
             Self {
                 route: Route::Home,
@@ -166,9 +176,9 @@ impl AppState {
                 history,
                 volume: 0.8,
                 status: "Ready — mock library, no network yet.".into(),
-                user_playlists: Vec::new(),
+                user_playlists,
                 new_playlist_name: String::new(),
-                playlist_seq: 0,
+                playlist_seq,
                 paused: false,
                 backend,
                 audio,
@@ -218,6 +228,34 @@ impl AppState {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         let _ = store.record_play(id, now);
+    }
+
+    fn persist_playlist_created(&self, id: &str, title: &str) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.create_playlist(id, title);
+    }
+
+    fn persist_playlist_deleted(&self, id: &str) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.delete_playlist(id);
+    }
+
+    fn persist_playlist_added(&self, playlist_id: &str, track: &Track) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.add_to_playlist(playlist_id, track);
+    }
+
+    fn persist_playlist_removed(&self, playlist_id: &str, track_id: &str) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.remove_from_playlist(playlist_id, track_id);
     }
 
     fn enqueue(&mut self, track: Track) {
@@ -482,6 +520,7 @@ impl AppState {
                         title: title.clone(),
                         tracks: Vec::new(),
                     });
+                    self.persist_playlist_created(&id, &title);
                     self.new_playlist_name.clear();
                     self.status = format!("Created playlist {title} ({id}).");
                 }
@@ -491,17 +530,26 @@ impl AppState {
                 track_id,
             } => match find_track(&track_id) {
                 None => self.status = format!("Track not found: {track_id}."),
-                Some(track) => match self.user_playlists.iter_mut().find(|p| p.id == playlist_id) {
+                Some(track) => match self.user_playlists.iter().position(|p| p.id == playlist_id) {
                     None => {
                         self.status =
                             format!("Playlist {playlist_id} is built-in (read-only) or missing.");
                     }
-                    Some(p) => {
-                        if p.tracks.iter().any(|t| t.id == track.id) {
-                            self.status = format!("Already in {}: {}.", p.title, track.title);
+                    Some(i) => {
+                        if self.user_playlists[i]
+                            .tracks
+                            .iter()
+                            .any(|t| t.id == track.id)
+                        {
+                            self.status = format!(
+                                "Already in {}: {}.",
+                                self.user_playlists[i].title, track.title
+                            );
                         } else {
-                            p.tracks.push(track.clone());
-                            self.status = format!("Added {} to {}.", track.title, p.title);
+                            let title = self.user_playlists[i].title.clone();
+                            self.user_playlists[i].tracks.push(track.clone());
+                            self.persist_playlist_added(&playlist_id, &track);
+                            self.status = format!("Added {} to {}.", track.title, title);
                         }
                     }
                 },
@@ -509,20 +557,23 @@ impl AppState {
             Message::RemoveFromPlaylist {
                 playlist_id,
                 track_id,
-            } => match self.user_playlists.iter_mut().find(|p| p.id == playlist_id) {
+            } => match self.user_playlists.iter().position(|p| p.id == playlist_id) {
                 None => {
                     self.status =
                         format!("Playlist {playlist_id} is built-in (read-only) or missing.");
                 }
-                Some(p) => {
-                    p.tracks.retain(|t| t.id != track_id);
-                    self.status = format!("Removed {track_id} from {}.", p.title);
+                Some(i) => {
+                    let title = self.user_playlists[i].title.clone();
+                    self.user_playlists[i].tracks.retain(|t| t.id != track_id);
+                    self.persist_playlist_removed(&playlist_id, &track_id);
+                    self.status = format!("Removed {track_id} from {title}.");
                 }
             },
             Message::DeletePlaylist(id) => {
                 let before = self.user_playlists.len();
                 self.user_playlists.retain(|p| p.id != id);
                 if self.user_playlists.len() < before {
+                    self.persist_playlist_deleted(&id);
                     if self.route == Route::PlaylistDetail(id.clone()) {
                         self.route = Route::Library;
                     }
@@ -1002,24 +1053,35 @@ pub fn run() -> iced::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Isolated state per test — never touches the real library.db.
+    fn test_state() -> AppState {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("yutu-test-{}-{}.db", std::process::id(), n));
+        let (s, _) = AppState::with_library_path(path.to_string_lossy().into_owned());
+        s
+    }
 
     #[test]
     fn navigate() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         s.navigate(Route::Search);
         assert_eq!(s.route, Route::Search);
     }
 
     #[test]
     fn search_updates_results() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         let _ = s.update(Message::SearchChanged("yesterday".into()));
         assert_eq!(s.results.tracks.len(), 1);
     }
 
     #[test]
     fn like_toggles() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         let _ = s.update(Message::Like("m1".into()));
         assert!(s.liked.contains("m1"));
         let _ = s.update(Message::Like("m1".into()));
@@ -1028,7 +1090,7 @@ mod tests {
 
     #[test]
     fn playlist_crud() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         let _ = s.update(Message::CreatePlaylist("Gym".into()));
         assert_eq!(s.user_playlists.len(), 1);
         let pid = s.user_playlists[0].id.clone();
@@ -1090,7 +1152,7 @@ mod tests {
 
     #[test]
     fn route_navigation() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         let _ = s.update(Message::OpenArtist("ar1".into()));
         assert_eq!(s.route, Route::Artist("ar1".into()));
         let _ = s.update(Message::OpenAlbum("a1".into()));
@@ -1106,7 +1168,7 @@ mod tests {
 
     #[test]
     fn play_all_queues_current_detail_view() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         let _ = s.update(Message::OpenAlbum("a1".into()));
         let _ = s.update(Message::PlayAll);
         assert_eq!(s.queue.len(), 3); // Abbey Road: m1, m2, m3.
@@ -1117,7 +1179,7 @@ mod tests {
 
     #[test]
     fn enqueue_track_and_toggle_pause() {
-        let (mut s, _) = AppState::new();
+        let mut s = test_state();
         let _ = s.update(Message::EnqueueTrack("m2".into()));
         assert_eq!(s.queue.len(), 1);
         assert!(s.history.contains(&"m2".to_string()));
@@ -1127,5 +1189,28 @@ mod tests {
         assert!(s.paused);
         let _ = s.update(Message::TogglePause);
         assert!(!s.paused);
+    }
+
+    #[test]
+    fn user_playlists_survive_restart() {
+        let path =
+            std::env::temp_dir().join(format!("yutu-test-restart-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_string_lossy().into_owned();
+        let (mut s, _) = AppState::with_library_path(p.clone());
+        let _ = s.update(Message::CreatePlaylist("Gym".into()));
+        let pid = s.user_playlists[0].id.clone();
+        let _ = s.update(Message::AddToPlaylist {
+            playlist_id: pid.clone(),
+            track_id: "m1".into(),
+        });
+        drop(s);
+        let (s2, _) = AppState::with_library_path(p);
+        assert_eq!(s2.user_playlists.len(), 1);
+        assert_eq!(s2.user_playlists[0].title, "Gym");
+        assert_eq!(s2.user_playlists[0].tracks.len(), 1);
+        assert_eq!(s2.user_playlists[0].tracks[0].id, "m1");
+        // Loaded ids reserve the sequence: next create must not collide.
+        // (seq resumes from max uN.)
     }
 }

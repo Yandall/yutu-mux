@@ -139,12 +139,13 @@ Done: user can plausibly replace Spotify for daily listening.
 
 ## 10. Execution order (this session → onwards)
 
-1. Phase 0 scaffold + green check (this session, commit `chore: scaffold workspace`)
-2. Phase 1 models + mock + cache (this session if time, else next)
-3. Phase 2 audible playback
-4. Phase 3 views one-by-one (each own commit)
-5. Phase 4 innertube feature
-6. Phase 5 differentiators
-7. Phase 6 packaging
+1. Phase 0 scaffold + green check (done, `2c2b3e0`)
+2. Phase 1 models + mock + cache (done, `749b701`)
+3. Phase 2 audible playback (done, `746443f`)
+4. Phase 3 views: shell + queue editor (done, `99cbdaf` + `b04fa8e`); detail views/radio/lyrics/playlists/shortcuts (in progress, parallel track)
+5. Phase 4 innertube: policy + reports (done, `843639b`); live `ytmapi-rs` wiring (in progress, parallel track)
+6. Phase 5 audio adv: EQ presets + offline cache + local scan + controller (in progress, parallel track)
+7. Phase 5 desktop: MPRIS/tray, scrobble, discovery mix, command palette (queued)
+8. Phase 6 packaging (queued)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
