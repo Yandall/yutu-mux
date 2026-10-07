@@ -16,8 +16,10 @@ tokio = { version = "1", features = ["rt", "macros"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
     "default-tls",
     "json",
+    "form",
 ], optional = true }
 
 [features]
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest"]
+submit = ["dep:reqwest", "dep:tokio"]
 

@@ -6,6 +6,8 @@ pub mod cache;
 pub mod controller;
 pub mod eq;
 pub mod local;
+#[cfg(feature = "mpv")]
+pub mod mpv;
 pub mod queue;
 
 pub use backend::{
@@ -15,4 +17,6 @@ pub use cache::{CacheEntry, OfflineCache};
 pub use controller::{PlaybackState, Player};
 pub use eq::{EqBand, EqError, EqPreset, BAND_COUNT, EQ_FREQUENCIES, MAX_GAIN_DB, MIN_GAIN_DB};
 pub use local::{scan_folder, AUDIO_EXTENSIONS};
+#[cfg(feature = "mpv")]
+pub use mpv::MpvBackend;
 pub use queue::{Queue, RepeatMode};

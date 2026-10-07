@@ -12,6 +12,10 @@ serde = { version = "1", features = ["derive"] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
 reqwest = { version = "0.13", default-features = false, features = ["default-tls"] }
 tokio = { version = "1", features = ["rt", "macros"] }
+libmpv2 = { version = "6", optional = true, default-features = false }
+
+[features]
+mpv = ["dep:libmpv2"]
 
 [dev-dependencies]
 serde_json = "1"

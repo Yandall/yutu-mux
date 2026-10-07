@@ -146,5 +146,7 @@ Done: user can plausibly replace Spotify for daily listening.
 5. Phase 4 innertube: policy + reports (done, `843639b`); live `ytmapi-rs` wiring (done, `ae7418d`, live-verified)
 6. Phase 5 audio adv: EQ presets + offline cache + local scan + controller (done, `b1951ed`); scrobble + discovery core (done, `692b51c`); MPRIS/tray (done, `e762ae9`)
 7. Phase 6 packaging: flatpak draft + troubleshooting (done, `15ddf69`); artifacts + 0.1.0 tag (queued)
+8. yt-dlp resolution path: sidecar resolve + range-chunked fetch + e2e proof (done, `b73d84b`); Spotify-style UI redress (done, `e940063`)
+9. Phase 5/6 parallel push: scrobble submit + MPRIS live + mpv backend + disk cache + release pipeline (this session); Innertube real search backend (done, pending UI wiring)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

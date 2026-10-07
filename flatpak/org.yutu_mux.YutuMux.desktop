@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=YutuMux
+GenericName=Music Player
+Comment=Native YouTube Music desktop client
+Exec=yutu-mux
+Icon=org.yutu_mux.YutuMux
+Terminal=false
+Categories=AudioVideo;Audio;Music;Player;
+StartupWMClass=yutu-mux

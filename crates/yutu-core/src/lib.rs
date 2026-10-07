@@ -25,5 +25,7 @@ pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 pub use scrobble::{
     api_sig, build_listen_payload, build_scrobble_params, should_scrobble, Scrobble,
 };
+#[cfg(feature = "submit")]
+pub use scrobble::{submit_lastfm_scrobble, submit_listenbrainz_listen};
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
 pub use ytdlp::{find_yt_dlp, resolve_audio_url};

@@ -5,6 +5,9 @@
 //!
 //! What is live vs stubbed (see `docs/INNERTUBE.md` for the full picture):
 //! - LIVE: anonymous + cookie-file connection, `search_suggestions`,
+//!   filtered `search` queries ([`InnertubeBackend::search_tracks`],
+//!   [`InnertubeBackend::search_albums`], [`InnertubeBackend::search_artists`]
+//!   via `YtMusic::search_songs` / `search_albums` / `search_artists`),
 //!   per-video `player`-endpoint probes (the same endpoint real stream
 //!   resolution uses) via [`InnertubeBackend::resolve_stream`].
 //! - STUBBED: direct audio-stream URL extraction. `ytmapi-rs` 0.3 exposes no
@@ -25,10 +28,12 @@ use std::path::Path;
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{VideoID, YoutubeID};
+use ytmapi_rs::parse::{SearchResultAlbum, SearchResultArtist, SearchResultSong};
 use ytmapi_rs::query::GetSongTrackingUrlQuery;
 use ytmapi_rs::YtMusic;
 
 use crate::auth::CookieAuth;
+use crate::models::{Album, Artist, Track};
 use crate::stream::{StreamClient, StreamError, StreamRequest};
 
 /// Live YouTube Music handle.
@@ -92,6 +97,58 @@ impl InnertubeBackend {
                 .map_err(|e| format!("search suggestions failed: {e}"))?,
         };
         Ok(suggestions.iter().map(|s| s.get_text()).collect())
+    }
+
+    /// Live song search: filtered `search` endpoint returning song hits mapped
+    /// to [`Track`] (`id` = `videoId`, `artist` = the API's joined artist
+    /// string, `album` = song album name or `None`, unparseable duration → 0).
+    ///
+    /// Works on both variants: filtered search is `impl<A: AuthToken>` in
+    /// `ytmapi-rs` 0.3 (unlike login-gated library queries), so anonymous
+    /// clients get full results, not just suggestions.
+    pub async fn search_tracks(&self, query: &str) -> Result<Vec<Track>, String> {
+        let songs = match &self.inner {
+            Inner::Anonymous(client) => client
+                .search_songs(query)
+                .await
+                .map_err(|e| format!("search songs failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .search_songs(query)
+                .await
+                .map_err(|e| format!("search songs failed: {e}"))?,
+        };
+        Ok(songs.iter().map(song_to_track).collect())
+    }
+
+    /// Live album search, same endpoint family as [`Self::search_tracks`].
+    /// `year` is parsed from the API's year string; garbage → `None`.
+    pub async fn search_albums(&self, query: &str) -> Result<Vec<Album>, String> {
+        let albums = match &self.inner {
+            Inner::Anonymous(client) => client
+                .search_albums(query)
+                .await
+                .map_err(|e| format!("search albums failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .search_albums(query)
+                .await
+                .map_err(|e| format!("search albums failed: {e}"))?,
+        };
+        Ok(albums.iter().map(album_to_album).collect())
+    }
+
+    /// Live artist search, same endpoint family as [`Self::search_tracks`].
+    pub async fn search_artists(&self, query: &str) -> Result<Vec<Artist>, String> {
+        let artists = match &self.inner {
+            Inner::Anonymous(client) => client
+                .search_artists(query)
+                .await
+                .map_err(|e| format!("search artists failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .search_artists(query)
+                .await
+                .map_err(|e| format!("search artists failed: {e}"))?,
+        };
+        Ok(artists.iter().map(artist_to_artist).collect())
     }
 
     /// Resolve `req.video_id` to a playable URL, walking the
@@ -394,6 +451,68 @@ fn first_audio_url(formats: Option<&serde_json::Value>) -> Option<String> {
     })
 }
 
+/// Map one `search_songs` hit to our [`Track`].
+///
+/// The API gives a single joined `artist` string, an optional album (some
+/// songs have none — see youtui#174), and a `"m:ss"`/`"h:mm:ss"` duration
+/// string; unparseable durations become `0`.
+fn song_to_track(song: &SearchResultSong) -> Track {
+    Track {
+        id: song.video_id.get_raw().to_string(),
+        title: song.title.clone(),
+        artist: song.artist.clone(),
+        album: song.album.as_ref().map(|a| a.name.clone()),
+        duration_secs: parse_duration_secs(&song.duration),
+    }
+}
+
+/// Map one `search_albums` hit to our [`Album`]. The API year is a plain
+/// string (`"1969"`); anything that is not a bare `u16` becomes `None`.
+fn album_to_album(album: &SearchResultAlbum) -> Album {
+    Album {
+        id: album.album_id.get_raw().to_string(),
+        title: album.title.clone(),
+        artist: album.artist.clone(),
+        year: album.year.trim().parse().ok(),
+    }
+}
+
+/// Map one `search_artists` hit to our [`Artist`] (`id` = channel `browseId`).
+fn artist_to_artist(artist: &SearchResultArtist) -> Artist {
+    Artist {
+        id: artist.browse_id.get_raw().to_string(),
+        name: artist.artist.clone(),
+    }
+}
+
+/// Parse `"m:ss"` / `"h:mm:ss"` (also bare seconds) to seconds.
+/// Empty or malformed input → `0` (never fails: it feeds `duration_secs`).
+fn parse_duration_secs(raw: &str) -> u32 {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return 0;
+    }
+    let mut total: u64 = 0;
+    for part in raw.split(':') {
+        let n: u64 = match part.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return 0,
+        };
+        total = total.saturating_mul(60).saturating_add(n);
+    }
+    total.min(u64::from(u32::MAX)) as u32
+}
+
+/// Fixture/test helper: parse a saved `search_songs` response (a JSON array
+/// of `SearchResultSong`, see `fixtures/search_tracks.json`) into our
+/// [`Track`]s using the same [`song_to_track`] mapping as the live
+/// [`InnertubeBackend::search_tracks`] path. Unparseable JSON → empty vec.
+pub fn parse_search_tracks_fixture(json: &str) -> Vec<Track> {
+    serde_json::from_str::<Vec<SearchResultSong>>(json)
+        .map(|songs| songs.iter().map(song_to_track).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +642,130 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live network: anonymous song search"]
+    async fn live_search_tracks() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let tracks = backend
+            .search_tracks("Beatles")
+            .await
+            .expect("search tracks");
+        assert!(
+            !tracks.is_empty(),
+            "expected non-empty track results for 'Beatles', got none"
+        );
+        assert!(
+            tracks
+                .iter()
+                .all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry id and title: {tracks:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: anonymous album search"]
+    async fn live_search_albums() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let albums = backend
+            .search_albums("Beatles")
+            .await
+            .expect("search albums");
+        assert!(
+            !albums.is_empty(),
+            "expected non-empty album results for 'Beatles', got none"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: anonymous artist search"]
+    async fn live_search_artists() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let artists = backend
+            .search_artists("Beatles")
+            .await
+            .expect("search artists");
+        assert!(
+            !artists.is_empty(),
+            "expected non-empty artist results for 'Beatles', got none"
+        );
+    }
+
+    #[test]
+    fn search_tracks_fixture_parses_to_tracks() {
+        let tracks = parse_search_tracks_fixture(include_str!("../fixtures/search_tracks.json"));
+        assert!(!tracks.is_empty(), "fixture should hold at least one track");
+        for track in &tracks {
+            assert!(!track.id.is_empty(), "track id empty: {track:?}");
+            assert!(!track.title.is_empty(), "track title empty: {track:?}");
+            assert!(!track.artist.is_empty(), "track artist empty: {track:?}");
+        }
+    }
+
+    #[test]
+    fn search_track_mapping_handles_missing_album_and_bad_duration() {
+        // `SearchResultSong` is `#[non_exhaustive]`, so build it via serde
+        // rather than a struct literal.
+        let song: SearchResultSong = serde_json::from_value(serde_json::json!({
+            "title": "Song",
+            "artist": "Someone",
+            "album": null,
+            "duration": "not a time",
+            "plays": "0",
+            "explicit": "NotExplicit",
+            "video_id": "vid123",
+            "thumbnails": []
+        }))
+        .unwrap();
+        let track = song_to_track(&song);
+        assert_eq!(
+            track,
+            Track {
+                id: "vid123".into(),
+                title: "Song".into(),
+                artist: "Someone".into(),
+                album: None,
+                duration_secs: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn duration_parsing_covers_shapes() {
+        assert_eq!(parse_duration_secs("3:45"), 225);
+        assert_eq!(parse_duration_secs("1:02:03"), 3723);
+        assert_eq!(parse_duration_secs("45"), 45);
+        assert_eq!(parse_duration_secs(""), 0);
+        assert_eq!(parse_duration_secs("3:xx"), 0);
+    }
+
+    #[test]
+    fn album_year_parsing_rejects_garbage() {
+        // `SearchResultAlbum` is `#[non_exhaustive]`; build via serde.
+        let album: SearchResultAlbum = serde_json::from_value(serde_json::json!({
+            "title": "Abbey Road",
+            "artist": "The Beatles",
+            "year": "1969",
+            "explicit": "NotExplicit",
+            "album_id": "MPREabc",
+            "album_type": "Album",
+            "thumbnails": []
+        }))
+        .unwrap();
+        let mapped = album_to_album(&album);
+        assert_eq!(mapped.year, Some(1969));
+        assert_eq!(mapped.id, "MPREabc");
+        let mut bad = serde_json::to_value(&album).unwrap();
+        bad["year"] = serde_json::json!("unknown");
+        let bad: SearchResultAlbum = serde_json::from_value(bad).unwrap();
+        assert_eq!(album_to_album(&bad).year, None);
+    }
+
+    #[tokio::test]
     #[ignore = "live network: player probe fallback chain"]
     async fn live_resolve_stream_records_fallback() {
         let backend = InnertubeBackend::connect_anonymous()
@@ -536,22 +779,24 @@ mod tests {
         assert!(!req.tried.is_empty());
     }
 
+    // NOTE (Oct 2026): the raw sidecar chain below cannot resolve ciphered
+    // formats without a deobfuscator, so no live test asserts full resolution
+    // here. Real end-to-end proof lives in
+    // `crates/yutu-player/tests/e2e_audio.rs` (yt-dlp resolve -> fetch ->
+    // decode, ignored without binary+network).
     #[tokio::test]
-    #[ignore = "live network + installed rustypipe-botguard: full token chain"]
-    async fn live_sidecar_chain_resolves_url() {
+    #[ignore = "live network: sidecar mint still yields tokens (resolution itself is yt-dlp's job now)"]
+    async fn live_sidecar_still_mints_tokens() {
         let Some(bin) = crate::pot::find_botguard_bin() else {
             eprintln!("SKIP: rustypipe-botguard not installed");
             return;
         };
-        let backend = InnertubeBackend::connect_anonymous()
-            .await
-            .expect("anonymous connect");
         let video = std::env::var("YUTU_TEST_VIDEO_ID").unwrap_or_else(|_| "dQw4w9WgXcQ".into());
-        let mut req = StreamRequest::new(&video);
-        let resolved = backend
-            .resolve_stream_with_sidecar(&mut req, &bin)
-            .await
-            .expect("sidecar chain resolves");
-        assert!(resolved.url.starts_with("https://"));
+        let minted =
+            crate::pot::fetch_po_token(&bin, &video).expect("sidecar mints without crashing");
+        assert!(
+            !minted.tokens.is_empty(),
+            "sidecar returned zero tokens for {video}"
+        );
     }
 }

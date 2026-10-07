@@ -4,14 +4,11 @@ use yutu_desktop::NowPlaying;
 
 /// Best-effort MPRIS advertisement on a helper thread. Any failure
 /// (headless, no bus) is a logged no-op — the GUI runs regardless.
-/// Live track/status propagation from the UI is the documented follow-up;
-// the service advertises identity + initial Stopped state today.
-fn spawn_mpris() {
-    let state: SharedPlayer = Arc::new(Mutex::new(MprisPlayer::new(
-        NowPlaying::default(),
-        PlaybackStatus::Stopped,
-        0.8,
-    )));
+/// The shared handle is also handed to the UI, which publishes the current
+/// track/status/volume on every state change, so external clients
+/// (`playerctl`, desktop widgets) observe live updates on property read.
+/// `PropertiesChanged` signals on mutation are the remaining follow-up.
+fn spawn_mpris(state: SharedPlayer) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -39,6 +36,11 @@ fn spawn_mpris() {
 }
 
 fn main() -> iced::Result {
-    spawn_mpris();
-    yutu_ui::run()
+    let state: SharedPlayer = Arc::new(Mutex::new(MprisPlayer::new(
+        NowPlaying::default(),
+        PlaybackStatus::Stopped,
+        0.8,
+    )));
+    spawn_mpris(Arc::clone(&state));
+    yutu_ui::run(Some(state))
 }

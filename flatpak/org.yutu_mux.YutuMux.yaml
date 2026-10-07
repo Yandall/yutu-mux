@@ -1,14 +1,9 @@
-# Linux Flatpak (draft — finishes in Phase 6)
-
-Runtime: `org.freedesktop.Platform//24.08`, SDK likewise. ALSA/PipeWire via
-PulseAudio socket; Wayland + X11 fallback; D-Bus session for MPRIS
-(`--own-name=org.mpris.MediaPlayer2.yutu_mux`).
-
-Build yutu-mux with the `cargo` buildsystem once `cargo` sources are
-vendored (`cargo vendor` output committed under `vendor/` — not yet done).
-Until then this manifest is a placeholder for the exact flags.
-
-```yaml
+# yutu-mux Flatpak manifest.
+# Full build/test/install instructions: docs/PACKAGING.md.
+# NOTE: flatpak-builder requires the offline-vendor step first
+# (generates flatpak/vendor-config.toml + flatpak/vendor/, neither
+# committed). Without it, the `cp flatpak/vendor-config.toml` build
+# command below fails loudly — that is intentional.
 app-id: org.yutu_mux.YutuMux
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
@@ -16,17 +11,33 @@ sdk: org.freedesktop.Sdk
 command: yutu-mux
 finish-args:
   - --share=ipc
+  - --share=network # streaming audio + Innertube API
   - --socket=wayland
   - --socket=fallback-x11
+  # ALSA + PipeWire/Pulse: rodio/cpal route via the PulseAudio socket
+  # (the runtime ships alsa-plugins-pulse); there is no separate ALSA socket.
   - --socket=pulseaudio
-  - --share=network
+  - --device=dri # wgpu/iced hardware acceleration
   - --own-name=org.mpris.MediaPlayer2.yutu_mux
 modules:
   - name: yutu-mux
     buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/yutu-mux/cargo-home
+        CARGO_NET_OFFLINE: 'true'
     sources:
+      # Local builds: the whole repo tree. Release/Flathub builds: swap for
+      # a `type: git` source pinned to the release tag (see docs/PACKAGING.md).
       - type: dir
         path: ../..
-```
+    build-commands:
+      - mkdir -p .cargo && cp flatpak/vendor-config.toml .cargo/config.toml
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/yutu-mux /app/bin/yutu-mux
+      - install -Dm644 flatpak/org.yutu_mux.YutuMux.desktop /app/share/applications/org.yutu_mux.YutuMux.desktop
+      # App icon: expected at flatpak/org.yutu_mux.YutuMux.svg (see docs/PACKAGING.md).
+      # Skipped until real artwork lands; the desktop file already references
+      # Icon=org.yutu_mux.YutuMux so no change is needed once it exists.
+      - if test -f flatpak/org.yutu_mux.YutuMux.svg; then install -Dm644 flatpak/org.yutu_mux.YutuMux.svg /app/share/icons/hicolor/scalable/apps/org.yutu_mux.YutuMux.svg; fi
 
-macOS: `cargo bundle` dmg (Phase 6) + ad-hoc sign; notarization notes TBD.
