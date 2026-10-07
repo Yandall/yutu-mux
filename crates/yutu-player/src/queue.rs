@@ -107,6 +107,25 @@ impl Queue {
         true
     }
 
+    /// Reorder items so that the item at old position `order[new]` moves
+    /// to `new` (shuffle/restore). `order` must be a permutation of
+    /// `0..len`; anything else is rejected. The current index tracks its
+    /// item by identity.
+    pub fn reorder(&mut self, order: &[usize]) -> bool {
+        if order.len() != self.items.len() || {
+            let mut sorted = order.to_vec();
+            sorted.sort_unstable();
+            sorted.into_iter().enumerate().any(|(i, x)| i != x)
+        } {
+            return false;
+        }
+        let current_id = self.current().map(|t| t.id.clone());
+        let old: Vec<Track> = std::mem::take(&mut self.items);
+        self.items = order.iter().map(|&i| old[i].clone()).collect();
+        self.index = current_id.and_then(|id| self.items.iter().position(|t| t.id == id));
+        true
+    }
+
     /// Move item `from` to position `to` (drag reorder). Out of range
     /// or no-op moves return false without touching anything. The current
     /// index tracks its item across the move.
@@ -260,6 +279,19 @@ mod tests {
         assert_eq!(q.position(), Some(0));
         assert!(q.jump_to(1));
         assert_eq!(q.next_track().unwrap().id, "m2");
+    }
+
+    #[test]
+    fn reorder_applies_permutation_and_tracks_current() {
+        let mut q = queue_of(4);
+        assert!(q.jump_to(2)); // current m3
+        assert!(q.reorder(&[2, 0, 1, 3]));
+        let ids: Vec<&str> = q.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m3", "m1", "m2", "m4"]);
+        assert_eq!(q.position(), Some(0));
+        assert!(!q.reorder(&[0, 1])); // wrong length
+        assert!(!q.reorder(&[0, 0, 1, 2])); // not a permutation
+        assert_eq!(q.items().len(), 4);
     }
 
     #[test]
