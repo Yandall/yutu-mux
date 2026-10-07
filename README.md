@@ -14,8 +14,8 @@ cookie, suggestions + stream fallback, PO-token aware).
 
 ```sh
 cargo run            # native Iced GUI (needs display + audio)
-cargo run --features innertube  # NOT YET: binary wiring for the feature
 cargo test           # headless-safe (audio/D-Bus/network tests skip)
+cargo check -p yutu-core --features innertube  # live Innertube API
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
