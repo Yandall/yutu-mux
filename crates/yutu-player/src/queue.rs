@@ -38,6 +38,60 @@ impl Queue {
         self.index.and_then(|i| self.items.get(i))
     }
 
+    pub fn items(&self) -> &[Track] {
+        &self.items
+    }
+
+    pub fn remove_at(&mut self, i: usize) -> bool {
+        if i >= self.items.len() {
+            return false;
+        }
+        self.items.remove(i);
+        self.index = match self.index {
+            None => None,
+            Some(_) if self.items.is_empty() => None,
+            Some(cur) if i < cur => Some(cur - 1),
+            Some(cur) if i == cur => Some(cur.min(self.items.len().saturating_sub(1))),
+            Some(cur) => Some(cur),
+        };
+        true
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.index = None;
+    }
+
+    pub fn move_up(&mut self, i: usize) -> bool {
+        if i == 0 || i >= self.items.len() {
+            return false;
+        }
+        self.items.swap(i - 1, i);
+        self.fix_index_after_swap(i - 1, i);
+        true
+    }
+
+    pub fn move_down(&mut self, i: usize) -> bool {
+        if i + 1 >= self.items.len() {
+            return false;
+        }
+        self.items.swap(i, i + 1);
+        self.fix_index_after_swap(i, i + 1);
+        true
+    }
+
+    fn fix_index_after_swap(&mut self, a: usize, b: usize) {
+        self.index = self.index.map(|cur| {
+            if cur == a {
+                b
+            } else if cur == b {
+                a
+            } else {
+                cur
+            }
+        });
+    }
+
     pub fn next_track(&mut self) -> Option<&Track> {
         if self.items.is_empty() {
             return None;
@@ -97,5 +151,20 @@ mod tests {
         q.next_track();
         q.next_track();
         assert_eq!(q.current().unwrap().id, "m1");
+    }
+
+    #[test]
+    fn queue_remove_and_reorder() {
+        let mut q = queue_of(3);
+        assert!(q.move_down(0));
+        assert_eq!(q.items()[0].id, "m2");
+        assert!(q.move_up(1));
+        assert_eq!(q.items()[0].id, "m1");
+        assert!(q.remove_at(0));
+        assert_eq!(q.len(), 2);
+        assert!(!q.remove_at(9));
+        q.clear();
+        assert!(q.is_empty());
+        assert!(q.current().is_none());
     }
 }
