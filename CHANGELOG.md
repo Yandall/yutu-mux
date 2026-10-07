@@ -34,6 +34,14 @@
   (60px YTM art, async cached); durations on rows
 - Browser nav (back/forward + history), Home search bar with inline
   results, truly centered player bar, honest empty states
+- As-you-type search (global header bar, ~450ms debounce, stale-safe),
+  results stay on the current page; synced lyrics click-to-seek +
+  auto-follow on track change
+- Spotify-style refresh: 2-across quick picks with artwork, sidebar
+  Playlists/Albums/Artists chips + recently played, Queue/Recent tabs
+  with Playing-from, global search header
+- Google sign-in (device flow, Settings): library + liked import into
+  catalog, token at 0600, sign-out clears
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

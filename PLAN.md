@@ -151,5 +151,6 @@ Done: user can plausibly replace Spotify for daily listening.
 10. MVP push: no-mock UI (live search/radio default, catalog, queue/player controls) + playback clock + LRCLIB lyrics + OAuth login/library/YTM lyrics (this session; UI wiring for lyrics/login next)
 11. Real playback: click-to-play real audio (mpv default, rodio fallback), progress + draggable seek, auto-advance, video-ID paste removed, tone retired
 12. Instant round: progressive streaming, URL cache + prefetch, synced-lyrics view, thumbnails everywhere, browser nav, Home search, centered bar (drag-drop queue deferred: no Iced primitive)
+13. Round 2: as-you-type debounced search (stays on page, stale-safe), clickable + following lyrics, Spotify-style refresh (quick-pick grid, library chips, Queue/Recent tabs, global header), Google device-flow login + library/liked import
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

@@ -13,6 +13,8 @@ pub mod scrobble;
 pub mod stream;
 pub mod ytdlp;
 
+#[cfg(feature = "innertube")]
+pub use auth::{begin_google_login, poll_google_login, GoogleLogin, OAuthPersist};
 pub use auth::{AuthState, CookieAuth};
 pub use backend::{MockBackend, MusicBackend};
 pub use discovery::{forgotten_favorites, weekly_mix};
