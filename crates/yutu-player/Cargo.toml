@@ -8,3 +8,4 @@ license = "MIT"
 [dependencies]
 yutu-core = { path = "../yutu-core" }
 thiserror = "1"
+rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
