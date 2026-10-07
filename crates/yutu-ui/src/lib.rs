@@ -10,13 +10,13 @@ use yutu_player::MpvBackend;
 use yutu_player::{EqPreset, Queue, RodioBackend};
 
 // ---------------------------------------------------------------------------
-// Spotify-style theme (dark, green accent). Keeps every view on one visual
-// language: near-black app, slightly lighter sidebar/cards, single green
+// YouTube-red theme (dark, red accent). Keeps every view on one visual
+// language: near-black app, slightly lighter sidebar/cards, single red
 // primary action, muted secondary text, text-buttons for row actions.
 // ---------------------------------------------------------------------------
 
-const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0x1D, 0xB9, 0x54);
-const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0x1F, 0xDF, 0x64);
+const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x00);
+const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x4D, 0x4D);
 const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
 const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
 const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
@@ -34,7 +34,7 @@ fn app_bg(_: &iced::Theme) -> iced::widget::container::Style {
 fn sidebar_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(SIDEBAR_BG)),
-        border: iced::Border::default().rounded(8),
+        border: iced::Border::default().rounded(12),
         ..Default::default()
     }
 }
@@ -94,7 +94,7 @@ fn nav_style(
         iced::widget::button::Style {
             background,
             text_color,
-            border: iced::Border::default().rounded(6),
+            border: iced::Border::default().rounded(10),
             ..Default::default()
         }
     }
@@ -139,6 +139,8 @@ fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'sta
         "folder" => include_bytes!("../assets/icons/folder.svg"),
         "list-plus" => include_bytes!("../assets/icons/list-plus.svg"),
         "sparkles" => include_bytes!("../assets/icons/sparkles.svg"),
+        "panel-left" => include_bytes!("../assets/icons/panel-left.svg"),
+        "panel-right" => include_bytes!("../assets/icons/panel-right.svg"),
         _ => include_bytes!("../assets/icons/music.svg"),
     };
     svg(svg::Handle::from_memory(bytes))
@@ -146,6 +148,41 @@ fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'sta
         .height(size)
         .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
         .into()
+}
+
+/// Rounded text input (search bar pill, filter fields): dark fill, soft
+/// border, comfortable radius. One style for every input in the app.
+fn rounded_input(
+    _: &iced::Theme,
+    _: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
+    iced::widget::text_input::Style {
+        background: iced::Background::Color(iced::Color::from_rgb8(0x1E, 0x1E, 0x1E)),
+        border: iced::Border {
+            color: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        icon: MUTED,
+        placeholder: MUTED,
+        value: iced::Color::WHITE,
+        selection: SPOT_GREEN,
+    }
+}
+
+/// Row action button: transparent at rest, soft card hover with rounded
+/// corners (every clickable row/item gets hover feedback).
+fn hover_row(_: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let hovered = matches!(
+        status,
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+    );
+    iced::widget::button::Style {
+        background: hovered.then_some(iced::Background::Color(CARD_BG_HOVER)),
+        text_color: iced::Color::WHITE,
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
 }
 
 /// Card-as-button (playlist / mix tiles).
@@ -285,6 +322,8 @@ pub enum Message {
     RemoveAutoplay(usize),
     /// Queue-page hover tracking (reveals the row remove).
     QueueHover(Option<usize>),
+    /// Autoplay hover tracking (reveals the row remove).
+    AutoHover(Option<usize>),
     /// Right-panel drag reorder (grip press, row hover, release anywhere).
     DragStart(usize),
     DragOver(usize),
@@ -306,7 +345,8 @@ pub enum Message {
         track_id: String,
         result: Result<(), String>,
     },
-    ToggleSidebar,
+    ToggleSidebarPin,
+    ToggleRightPin,
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -535,6 +575,19 @@ fn menu_pos(cursor: Option<iced::Point>, window: Option<iced::Size>) -> (f32, f3
     )
 }
 
+/// Preview order while dragging: the dragged item relocated to the
+/// hovered target (pure helper — the drop commits the same transform).
+fn drag_preview(len: usize, from: usize, over: Option<usize>) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    if let Some(to) = over {
+        if from < len && to < len && from != to {
+            let item = order.remove(from);
+            order.insert(to.min(order.len()), item);
+        }
+    }
+    order
+}
+
 /// Format seconds as `m:ss` for the player bar.
 fn fmt_time(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
@@ -584,10 +637,10 @@ pub struct AppState {
     nav_forward: Vec<Route>,
     /// Right-panel tab (view-only state).
     right_tab: RightTab,
-    /// Fisher-Yates play order (track ids) when shuffle is on: current
-    /// first at build time, walked straight through with no repeats to a
-    /// real end, then autoplay. Rebuilt on toggle + every queue mutation.
-    shuffle_order: Vec<String>,
+    /// Queue id order before shuffle was turned on. Toggling off restores
+    /// it (ids added while shuffled append at the end); the playing song
+    /// never skips — [`Queue::reorder`] retargets its index by identity.
+    pre_shuffle: Option<Vec<String>>,
     /// Suggestion popup: texts + generation + visibility.
     suggest: Vec<String>,
     suggest_gen: u64,
@@ -601,8 +654,9 @@ pub struct AppState {
     cursor: Option<iced::Point>,
     /// Last window size (clamps the context menu on screen).
     window: Option<iced::Size>,
-    /// Sidebar expanded (false = icon rail).
-    sidebar_expanded: bool,
+    /// Pinned sidebars stay open; unpinned ones reveal on edge hover.
+    sidebar_pinned: bool,
+    right_pinned: bool,
     /// Playlist filter text in the sidebar.
     sidebar_filter: String,
     /// Autoplay tail belongs to this seed (stale arrivals drop).
@@ -612,6 +666,8 @@ pub struct AppState {
     autoplay: Vec<Track>,
     /// Queue-page row under the cursor (hover reveals its remove).
     hovered_queue: Option<usize>,
+    /// Autoplay row under the cursor (same reveal, separate index space).
+    hovered_auto: Option<usize>,
     /// Right-panel drag in progress (grip press → row hover → release).
     drag: Option<DragState>,
     /// Recent playback/fetch failures (capped, surfaced in Settings).
@@ -685,41 +741,6 @@ fn order_radio_impl(seed_id: &str, tracks: &[Track]) -> Vec<Track> {
         }
     }
     seq
-}
-
-/// Rebuild the shuffle order: current track first, the rest Fisher-Yates
-/// shuffled with a time-seeded xorshift (no extra deps). Cleared when
-/// shuffle is off or the queue is empty.
-fn rebuild_shuffle_order(queue: &Queue, shuffle: bool) -> Vec<String> {
-    if !shuffle || queue.is_empty() {
-        return Vec::new();
-    }
-    let items = queue.items();
-    let cur = queue.position().unwrap_or(0).min(items.len() - 1);
-    let mut rest: Vec<String> = items
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != cur)
-        .map(|(_, t)| t.id.clone())
-        .collect();
-    let mut seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0x2545F491)
-        ^ 0x9E3779B97F4A7C15;
-    if seed == 0 {
-        seed = 0x2545F491;
-    }
-    for i in (1..rest.len()).rev() {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        rest.swap(i, (seed as usize) % (i + 1));
-    }
-    let mut order = Vec::with_capacity(items.len());
-    order.push(items[cur].id.clone());
-    order.extend(rest);
-    order
 }
 
 /// Fixture-backed radio for unit tests (never user-visible).
@@ -1043,7 +1064,7 @@ impl AppState {
                 nav_back: Vec::new(),
                 nav_forward: Vec::new(),
                 right_tab: RightTab::Queue,
-                shuffle_order: Vec::new(),
+                pre_shuffle: None,
                 suggest: Vec::new(),
                 suggest_gen: 0,
                 show_suggest: false,
@@ -1051,11 +1072,13 @@ impl AppState {
                 menu_at: None,
                 cursor: None,
                 window: None,
-                sidebar_expanded: true,
+                sidebar_pinned: true,
+                right_pinned: true,
                 sidebar_filter: String::new(),
                 autoplay_for: None,
                 autoplay: Vec::new(),
                 hovered_queue: None,
+                hovered_auto: None,
                 drag: None,
                 error_log: Vec::new(),
                 seek_hold_until: None,
@@ -1203,7 +1226,6 @@ impl AppState {
         self.persist_play(&track.id);
         self.queue.push(track);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
-        self.rebuild_shuffle();
         self.apply_volume();
         let play = self.play_current_task();
         let just_queued = self.queue.current().cloned();
@@ -1297,85 +1319,65 @@ impl AppState {
         }
     }
 
-    /// Refresh the shuffle order from the live queue (no-op when off).
-    fn rebuild_shuffle(&mut self) {
-        self.shuffle_order = rebuild_shuffle_order(&self.queue, self.queue.shuffle);
+    /// Flip shuffle. Turning on snapshots the order and physically
+    /// shuffles the upcoming tail (played history + current stay put, so
+    /// the new order is visible and draggable); turning off restores the
+    /// snapshot. Playback never skips: reorder tracks the current id.
+    fn set_shuffle(&mut self, on: bool) {
+        if self.queue.shuffle == on {
+            return;
+        }
+        self.queue.shuffle = on;
+        if !on {
+            self.restore_shuffle();
+            return;
+        }
+        self.pre_shuffle = Some(self.queue.items().iter().map(|t| t.id.clone()).collect());
+        let cur = self.queue.position().unwrap_or(0);
+        let len = self.queue.len();
+        // Fisher-Yates the tail after current (xorshift, nanos seed).
+        let mut seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0x2545F491)
+            ^ 0x9E3779B97F4A7C15;
+        if seed == 0 {
+            seed = 0x2545F491;
+        }
+        let mut tail: Vec<usize> = (cur + 1..len).collect();
+        for i in (1..tail.len()).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            tail.swap(i, (seed as usize) % (i + 1));
+        }
+        let mut order: Vec<usize> = (0..=cur.min(len.saturating_sub(1))).collect();
+        order.extend(tail);
+        let _ = self.queue.reorder(&order);
     }
 
-    /// True when the built order is exactly the queue's ids (and holds the
-    /// current track). A *valid* order at its end means playback ends;
-    /// only an *invalid* one may be rebuilt.
-    fn shuffle_order_valid(&self) -> bool {
-        let items = self.queue.items();
-        if items.is_empty() {
-            return self.shuffle_order.is_empty();
-        }
-        if self.shuffle_order.len() != items.len() {
-            return false;
-        }
-        let current = match self.queue.current() {
-            Some(t) => t.id.clone(),
-            None => return false,
+    /// Restore the pre-shuffle order. Ids added while shuffled keep their
+    /// relative order at the end; removed ids vanish with their rows.
+    fn restore_shuffle(&mut self) {
+        let Some(snap) = self.pre_shuffle.take() else {
+            return;
         };
-        if !self.shuffle_order.contains(&current) {
-            return false;
-        }
-        let mut a: Vec<&str> = items.iter().map(|t| t.id.as_str()).collect();
-        let mut b: Vec<&str> = self.shuffle_order.iter().map(|id| id.as_str()).collect();
-        a.sort_unstable();
-        b.sort_unstable();
-        a == b
-    }
-
-    /// Next queue index under shuffle, walking the built order. `None` at
-    /// the order's end (repeat All loops it, One replays current — the
-    /// caller decides) or when the order is stale (caller rebuilds).
-    fn shuffle_next_index(&self) -> Option<usize> {
-        let current = self.queue.current()?.id.clone();
-        if self.shuffle_order.len() != self.queue.len() {
-            return None;
-        }
-        let mut queue_ids: Vec<&str> = self.queue.items().iter().map(|t| t.id.as_str()).collect();
-        queue_ids.sort_unstable();
-        let mut order_ids: Vec<&str> = self.shuffle_order.iter().map(|id| id.as_str()).collect();
-        order_ids.sort_unstable();
-        if queue_ids != order_ids {
-            return None;
-        }
-        let pos = self.shuffle_order.iter().position(|id| *id == current)?;
-        if pos + 1 < self.shuffle_order.len() {
-            let next_id = &self.shuffle_order[pos + 1];
-            self.queue.items().iter().position(|t| &t.id == next_id)
-        } else {
-            match self.queue.repeat {
-                yutu_player::RepeatMode::All => self
-                    .queue
-                    .items()
-                    .iter()
-                    .position(|t| t.id == self.shuffle_order[0]),
-                yutu_player::RepeatMode::One => self.queue.position(),
-                yutu_player::RepeatMode::Off => None,
+        let mut order: Vec<usize> = snap
+            .iter()
+            .filter_map(|id| self.queue.items().iter().position(|t| &t.id == id))
+            .collect();
+        for (i, t) in self.queue.items().iter().enumerate() {
+            if !snap.iter().any(|s| s == &t.id) {
+                order.push(i);
             }
         }
+        let _ = self.queue.reorder(&order);
     }
 
     /// Id of the likely next track (repeat-all wraps), for prefetching.
     fn peek_next_id(&self) -> Option<String> {
         let items = self.queue.items();
         if items.is_empty() {
-            return self.autoplay.first().map(|t| t.id.clone());
-        }
-        if self.queue.shuffle {
-            if let Some(ix) = self.shuffle_next_index() {
-                // A shuffle step that stays put (repeat One) needs no fetch.
-                if Some(ix) != self.queue.position() {
-                    return items.get(ix).map(|t| t.id.clone());
-                }
-                return None;
-            }
-            if self.queue.repeat == yutu_player::RepeatMode::All {
-                return None;
-            }
             return self.autoplay.first().map(|t| t.id.clone());
         }
         let pos = self.queue.position().unwrap_or(0);
@@ -1411,32 +1413,15 @@ impl AppState {
     /// single current-pointer (progress/lyrics/MPRIS) keeps working.
     /// True when current changed.
     fn advance_queue(&mut self) -> bool {
-        if self.queue.shuffle && self.queue.len() > 1 {
-            // Rebuild only STALE orders. A valid order at its end means the
-            // queue genuinely ends (rebuilds here looped forever).
-            if !self.shuffle_order_valid() {
-                self.rebuild_shuffle();
-            }
-            match self.shuffle_next_index() {
-                // Repeat-One replay still counts as an advance (restarts).
-                Some(i) => return self.queue.jump_to(i),
-                None => {
-                    // Ended (All loops the order above, One replays above):
-                    // repeat Off continues to autoplay, else stop.
-                    if self.queue.repeat != yutu_player::RepeatMode::Off {
-                        return false;
-                    }
-                }
-            }
-        } else {
-            if self.queue.next_track().is_some() {
-                return true;
-            }
-            // Repeat All/One loop the manual queue by design (like
-            // Spotify's repeat); only Off reaches autoplay.
-            if self.queue.repeat != yutu_player::RepeatMode::Off {
-                return false;
-            }
+        // Shuffle is a physical order (see set_shuffle), so the walk is
+        // always linear: no repeats, a real end, then autoplay.
+        if self.queue.next_track().is_some() {
+            return true;
+        }
+        // Repeat All/One loop the manual queue by design (like
+        // Spotify's repeat); only Off reaches autoplay.
+        if self.queue.repeat != yutu_player::RepeatMode::Off {
+            return false;
         }
         if self.autoplay.is_empty() {
             return false;
@@ -1446,7 +1431,6 @@ impl AppState {
         self.persist_play(&t.id);
         self.queue.push(t);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
-        self.rebuild_shuffle();
         true
     }
 
@@ -1589,11 +1573,11 @@ impl AppState {
                 .width(Fill),
                 text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
                 button(icon("heart", 15.0, heart_color))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::Like(t.id.clone()))
                     .padding(6),
                 button(icon("ellipsis", 15.0, MUTED))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::OpenContext(t.id.clone()))
                     .padding(6),
             ]
@@ -1695,7 +1679,6 @@ impl AppState {
             self.queue.push(t);
         }
         self.queue.jump_to(first_new);
-        self.rebuild_shuffle();
         self.playing_from = label.to_string();
         self.status = format!("{label}: queued {n} track(s).");
         self.apply_volume();
@@ -1727,12 +1710,10 @@ impl AppState {
             self.status = format!("{label}: nothing to queue.");
             return iced::Task::none();
         }
-        if shuffle && !self.queue.shuffle {
-            self.queue.shuffle = true;
-        }
         let task = self.queue_many(tracks, &label);
         if shuffle {
-            self.rebuild_shuffle();
+            // Fresh queue: shuffle the tail so playback starts shuffled.
+            self.set_shuffle(true);
         }
         self.publish_mpris();
         task
@@ -1829,7 +1810,7 @@ impl AppState {
                 .on_press(Message::LibraryImport)
                 .padding(7),
                 button(text("Sign out").size(12))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::GoogleLogout)
                     .padding(7),
             ]
@@ -1857,7 +1838,7 @@ impl AppState {
                     .on_press(Message::GoogleLoginPoll)
                     .padding(8),
                     button(text("Cancel").size(12))
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::GoogleLogout)
                         .padding(7),
                 ]
@@ -1901,6 +1882,7 @@ impl AppState {
                 .color(MUTED),
             row![
                 text_input("/path/to/cookies.txt", &self.cookie_path)
+                .style(rounded_input)
                     .on_input(Message::CookiePathChanged)
                     .width(Fill),
                 button(
@@ -1964,6 +1946,17 @@ impl AppState {
     fn open_menu(&mut self, id: String) {
         self.menu_at = self.cursor;
         self.context_menu = Some(id);
+    }
+
+    /// Sidebar visibility: pinned, or the cursor is near the left edge.
+    fn sidebar_open(&self) -> bool {
+        self.sidebar_pinned || self.cursor.map(|p| p.x).unwrap_or(9999.0) < 248.0
+    }
+
+    /// Right panel visibility: pinned, or the cursor is near the right edge.
+    fn right_open(&self) -> bool {
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        self.right_pinned || self.cursor.map(|p| p.x).unwrap_or(0.0) > ww - 300.0
     }
 
     /// Close the context menu and drop its anchor.
@@ -2093,8 +2086,7 @@ impl AppState {
             }
             C::SetShuffle(shuffle) => {
                 if self.queue.shuffle != shuffle {
-                    self.queue.shuffle = shuffle;
-                    self.rebuild_shuffle();
+                    self.set_shuffle(shuffle);
                     self.status = if shuffle {
                         "Shuffle on (desktop).".into()
                     } else {
@@ -2611,19 +2603,15 @@ impl AppState {
             }
             Message::QueueRemove(i) => {
                 self.queue.remove_at(i);
-                self.rebuild_shuffle();
             }
             Message::QueueUp(i) => {
                 self.queue.move_up(i);
-                self.rebuild_shuffle();
             }
             Message::QueueDown(i) => {
                 self.queue.move_down(i);
-                self.rebuild_shuffle();
             }
             Message::QueueClear => {
                 self.queue.clear();
-                self.rebuild_shuffle();
                 self.status = if self.autoplay.is_empty() {
                     "Queue cleared.".into()
                 } else {
@@ -2727,7 +2715,6 @@ impl AppState {
                     Some(t) => {
                         let was_empty = self.queue.is_empty();
                         self.queue.push(t.clone());
-                        self.rebuild_shuffle();
                         self.status = if was_empty {
                             format!("Added to queue: {} — {} (press play).", t.title, t.artist)
                         } else {
@@ -2744,12 +2731,12 @@ impl AppState {
                 }
             }
             Message::ToggleShuffle => {
-                self.queue.shuffle = !self.queue.shuffle;
-                self.rebuild_shuffle();
-                self.status = if self.queue.shuffle {
-                    "Shuffle on.".into()
+                let on = !self.queue.shuffle;
+                self.set_shuffle(on);
+                self.status = if on {
+                    "Shuffle on — queue reordered.".into()
                 } else {
-                    "Shuffle off.".into()
+                    "Shuffle off — original order back.".into()
                 };
             }
             Message::CycleRepeat => {
@@ -2888,7 +2875,6 @@ impl AppState {
                         self.queue.clear();
                         self.queue.push(t);
                         self.queue.jump_to(0);
-                        self.rebuild_shuffle();
                         self.playing_from = "Single + autoplay".into();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
@@ -2955,13 +2941,11 @@ impl AppState {
                         if self.queue.is_empty() {
                             self.queue.push(t);
                             self.queue.jump_to(0);
-                            self.rebuild_shuffle();
                             self.apply_volume();
                             self.publish_mpris();
                             return self.play_current_task();
                         }
                         let at = self.queue.insert_next(t.clone());
-                        self.rebuild_shuffle();
                         self.status = format!("Queued next: {} — {}.", t.title, t.artist);
                         let _ = at;
                     }
@@ -2977,7 +2961,6 @@ impl AppState {
                         self.autoplay.remove(i);
                         self.queue.push(t);
                         self.queue.jump_to(self.queue.len().saturating_sub(1));
-                        self.rebuild_shuffle();
                         self.apply_volume();
                         self.publish_mpris();
                         return self.play_current_task();
@@ -2988,7 +2971,6 @@ impl AppState {
                 self.close_menu();
                 let was_current = self.queue.current().is_some_and(|t| t.id == id);
                 if self.queue.remove_id(&id) {
-                    self.rebuild_shuffle();
                     self.status = format!("Removed {id} from the queue.");
                     if was_current {
                         // The ghost must not keep playing: move on, or stop.
@@ -3019,6 +3001,9 @@ impl AppState {
             Message::QueueHover(h) => {
                 self.hovered_queue = h;
             }
+            Message::AutoHover(h) => {
+                self.hovered_auto = h;
+            }
             Message::PanelHover(i) => {
                 self.hovered_queue = Some(i);
                 if let Some(drag) = self.drag.as_mut() {
@@ -3044,7 +3029,6 @@ impl AppState {
                 if let Some(drag) = self.drag.take() {
                     if let Some(to) = drag.over {
                         if to != drag.from && self.queue.move_to(drag.from, to) {
-                            self.rebuild_shuffle();
                             self.status = "Queue reordered.".into();
                         }
                     }
@@ -3110,8 +3094,11 @@ impl AppState {
                     self.status = msg;
                 }
             },
-            Message::ToggleSidebar => {
-                self.sidebar_expanded = !self.sidebar_expanded;
+            Message::ToggleSidebarPin => {
+                self.sidebar_pinned = !self.sidebar_pinned;
+            }
+            Message::ToggleRightPin => {
+                self.right_pinned = !self.right_pinned;
             }
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
@@ -3660,11 +3647,11 @@ impl AppState {
                 .width(Fill),
                 text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
                 button(icon("heart", 15.0, heart_color))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::Like(t.id.clone()))
                     .padding(6),
                 button(icon("ellipsis", 15.0, MUTED))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::OpenContext(t.id.clone()))
                     .padding(6),
             ]
@@ -3696,20 +3683,20 @@ impl AppState {
     fn sidebar_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, row, text, text_input};
         use iced::Fill;
-        let expand_btn: iced::Element<'_, Message> = button(icon(
-            if self.sidebar_expanded {
-                "chevron-left"
-            } else {
-                "chevron-right"
-            },
+        let pin_btn: iced::Element<'_, Message> = button(icon(
+            "panel-left",
             14.0,
-            MUTED,
+            if self.sidebar_pinned {
+                SPOT_GREEN
+            } else {
+                MUTED
+            },
         ))
-        .style(button::text)
-        .on_press(Message::ToggleSidebar)
+        .style(hover_row)
+        .on_press(Message::ToggleSidebarPin)
         .padding(8)
         .into();
-        if !self.sidebar_expanded {
+        if !self.sidebar_open() {
             return container(
                 column![
                     button(icon("house", 18.0, iced::Color::WHITE))
@@ -3724,7 +3711,6 @@ impl AppState {
                         .style(nav_style(self.is_nav(&Route::Library)))
                         .on_press(Message::Navigate(Route::Library))
                         .padding(10),
-                    expand_btn,
                 ]
                 .spacing(2),
             )
@@ -3768,7 +3754,7 @@ impl AppState {
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::OpenPlaylist(pl.id.clone()))
                 .padding(4)
                 .width(Fill)
@@ -3794,7 +3780,7 @@ impl AppState {
                         .size(22)
                         .color(iced::Color::WHITE)
                         .width(Fill),
-                    expand_btn,
+                    pin_btn,
                 ]
                 .align_y(iced::alignment::Vertical::Center),
                 column![
@@ -3837,11 +3823,13 @@ impl AppState {
                 .padding(4)
                 .width(Fill),],
                 text_input("Filter playlists…", &self.sidebar_filter)
+                    .style(rounded_input)
                     .on_input(Message::SidebarFilterChanged)
                     .width(Fill),
                 list,
                 row![
                     text_input("New playlist…", &self.new_playlist_name)
+                        .style(rounded_input)
                         .on_input(Message::NewPlaylistNameChanged)
                         .width(Fill),
                     button(icon("plus", 14.0, iced::Color::BLACK))
@@ -3882,11 +3870,11 @@ impl AppState {
                 .align_y(iced::alignment::Vertical::Center),
                 row![
                     button(text("Lyrics").size(12))
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::OpenLyrics(t.id.clone()))
                         .padding(4),
                     button(text("Radio").size(12))
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::StartRadio(t.id.clone()))
                         .padding(4),
                 ]
@@ -3901,12 +3889,14 @@ impl AppState {
             .spacing(4)
             .into(),
         };
-        let upcoming: Vec<iced::Element<'_, Message>> = self
-            .queue
-            .items()
+        let preview: Vec<usize> = match self.drag {
+            Some(drag) => drag_preview(self.queue.len(), drag.from, drag.over),
+            None => (0..self.queue.len()).collect(),
+        };
+        let upcoming: Vec<iced::Element<'_, Message>> = preview
             .iter()
-            .enumerate()
-            .map(|(i, t)| {
+            .map(|&i| {
+                let t = &self.queue.items()[i];
                 let is_current = Some(i) == pos;
                 let menu_id = t.id.clone();
                 let remove_id = t.id.clone();
@@ -3914,7 +3904,7 @@ impl AppState {
                 let dragging_from = self.drag.is_some_and(|d| d.from == i);
                 let remove_btn: iced::Element<'_, Message> = if hovered {
                     button(icon("x", 11.0, MUTED))
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::RemoveFromQueue(remove_id))
                         .padding(3)
                         .into()
@@ -3923,39 +3913,52 @@ impl AppState {
                         .width(iced::Length::Fixed(20.0))
                         .into()
                 };
-                mouse_area(
-                    row![
-                        mouse_area(icon(
-                            "grip",
-                            12.0,
-                            if hovered { iced::Color::WHITE } else { MUTED }
-                        ))
-                        .on_press(Message::DragStart(i)),
-                        self.thumb(t),
-                        button(text(format!("{} — {}", t.title, t.artist)).size(12).color(
-                            if is_current {
-                                SPOT_GREEN
-                            } else if dragging_from {
-                                MUTED
-                            } else {
-                                iced::Color::WHITE
-                            }
-                        ))
-                        .style(button::text)
+                let ghost = self.drag.is_some_and(|d| d.from == i);
+                let row_content = row![
+                    mouse_area(icon(
+                        "grip",
+                        12.0,
+                        if hovered { iced::Color::WHITE } else { MUTED }
+                    ))
+                    .on_press(Message::DragStart(i)),
+                    button(self.thumb(t))
+                        .style(hover_row)
                         .on_press(Message::QueueJump(i))
-                        .padding(3)
-                        .width(Fill),
-                        text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                        remove_btn,
-                    ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .padding(2),
-                )
-                .on_right_press(Message::OpenContext(menu_id))
-                .on_enter(Message::PanelHover(i))
-                .on_exit(Message::QueueHover(None))
-                .into()
+                        .padding(2),
+                    button(text(format!("{} — {}", t.title, t.artist)).size(12).color(
+                        if is_current {
+                            SPOT_GREEN
+                        } else if dragging_from {
+                            MUTED
+                        } else {
+                            iced::Color::WHITE
+                        }
+                    ))
+                    .style(hover_row)
+                    .on_press(Message::QueueJump(i))
+                    .padding(3)
+                    .width(Fill),
+                    button(text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),)
+                        .style(hover_row)
+                        .on_press(Message::QueueJump(i))
+                        .padding(3),
+                    remove_btn,
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(2);
+                // Ghost pickup: the dragged row lifts onto a bright card
+                // while the rest of the list shows the live preview order.
+                let lifted: iced::Element<'_, Message> = if ghost {
+                    container(row_content).style(card_bg).padding(2).into()
+                } else {
+                    row_content.into()
+                };
+                mouse_area(lifted)
+                    .on_right_press(Message::OpenContext(menu_id))
+                    .on_enter(Message::PanelHover(i))
+                    .on_exit(Message::QueueHover(None))
+                    .into()
             })
             .collect();
         let tab_queue = button(text("Queue").size(12))
@@ -3980,6 +3983,17 @@ impl AppState {
             .enumerate()
             .map(|(i, t)| {
                 let menu_id = t.id.clone();
+                let remove_btn: iced::Element<'_, Message> = if self.hovered_auto == Some(i) {
+                    button(icon("x", 11.0, MUTED))
+                        .style(hover_row)
+                        .on_press(Message::RemoveAutoplay(i))
+                        .padding(3)
+                        .into()
+                } else {
+                    iced::widget::Space::new()
+                        .width(iced::Length::Fixed(20.0))
+                        .into()
+                };
                 mouse_area(
                     row![
                         self.thumb(t),
@@ -3988,17 +4002,20 @@ impl AppState {
                                 .size(12)
                                 .color(MUTED)
                         )
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::PlayAutoplay(i))
                         .padding(3)
                         .width(Fill),
                         text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                        remove_btn,
                     ]
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center)
                     .padding(2),
                 )
                 .on_right_press(Message::OpenContext(menu_id))
+                .on_enter(Message::AutoHover(Some(i)))
+                .on_exit(Message::AutoHover(None))
                 .into()
             })
             .collect();
@@ -4016,7 +4033,7 @@ impl AppState {
             RightTab::Queue => column![
                 text("Up next").size(13).color(MUTED),
                 button(text(format!("Clear queue ({})", self.queue.len())).size(12))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::QueueClear)
                     .padding(4),
                 scrollable(
@@ -4058,7 +4075,7 @@ impl AppState {
                                         button(
                                             text(format!("{} — {}", t.title, t.artist)).size(12)
                                         )
-                                        .style(button::text)
+                                        .style(hover_row)
                                         .on_press(Message::PlayNow(t.id.clone()))
                                         .padding(3)
                                         .width(Fill),
@@ -4080,16 +4097,38 @@ impl AppState {
                 }
             }
         };
-        container(column![row![tab_queue, tab_recent].spacing(4), from_line, now, list,].spacing(8))
-            .style(sidebar_bg)
-            .padding(12)
-            .width(285)
-            .height(Fill)
-            .into()
+        let pin_btn: iced::Element<'_, Message> = button(icon(
+            "panel-right",
+            12.0,
+            if self.right_pinned { SPOT_GREEN } else { MUTED },
+        ))
+        .style(hover_row)
+        .on_press(Message::ToggleRightPin)
+        .padding(6)
+        .into();
+        if !self.right_open() {
+            return iced::widget::Space::new()
+                .width(iced::Length::Fixed(0.0))
+                .into();
+        }
+        container(
+            column![
+                row![tab_queue, tab_recent, pin_btn].spacing(4),
+                from_line,
+                now,
+                list,
+            ]
+            .spacing(8),
+        )
+        .style(sidebar_bg)
+        .padding(12)
+        .width(285)
+        .height(Fill)
+        .into()
     }
 
     fn player_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, slider, text};
+        use iced::widget::{button, column, container, row, slider, text, tooltip};
         use iced::Fill;
         let current = self.queue.current().cloned();
         let loading = self.loading_track.is_some();
@@ -4117,7 +4156,7 @@ impl AppState {
                     MUTED
                 };
                 button(icon("heart", 15.0, heart_color))
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::Like(t.id.clone()))
                     .padding(6)
                     .into()
@@ -4132,7 +4171,7 @@ impl AppState {
                 .into()
         } else {
             button(icon("shuffle", 14.0, MUTED))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::ToggleShuffle)
                 .padding(7)
                 .into()
@@ -4164,16 +4203,16 @@ impl AppState {
                     column![
                         row![
                             shuffle_button,
-                            button(icon("skip-back", 16.0, iced::Color::WHITE))
-                                .style(button::text)
+                            button(icon("skip-back", 18.0, iced::Color::WHITE))
+                                .style(hover_row)
                                 .on_press(Message::Prev)
                                 .padding(8),
-                            button(icon(play_icon, 17.0, iced::Color::BLACK))
+                            button(icon(play_icon, 18.0, iced::Color::BLACK))
                                 .style(green_play)
                                 .on_press(Message::TogglePause)
                                 .padding(10),
-                            button(icon("skip-forward", 16.0, iced::Color::WHITE))
-                                .style(button::text)
+                            button(icon("skip-forward", 18.0, iced::Color::WHITE))
+                                .style(hover_row)
                                 .on_press(Message::Next)
                                 .padding(8),
                             button(
@@ -4184,7 +4223,7 @@ impl AppState {
                                 .spacing(3)
                                 .align_y(iced::alignment::Vertical::Center),
                             )
-                            .style(button::text)
+                            .style(hover_row)
                             .on_press(Message::CycleRepeat)
                             .padding(8),
                         ]
@@ -4205,18 +4244,16 @@ impl AppState {
                     .width(Fill),
                     row![
                         iced::widget::Space::new().width(Fill),
-                        text(format!(
-                            "Q:{}  V:{:.0}%",
-                            self.queue.len(),
-                            self.volume * 100.0
-                        ))
-                        .size(12)
-                        .color(MUTED),
-                        slider(0.0..=1.0, self.volume, Message::SetVolume)
-                            .step(0.01_f32)
-                            .width(120),
-                        button(text("▲").size(14))
-                            .style(button::text)
+                        tooltip(
+                            slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                .step(0.01_f32)
+                                .width(120),
+                            text(format!("Volume {:.0}%", self.volume * 100.0)).size(12),
+                            tooltip::Position::Top,
+                        )
+                        .gap(8),
+                        button(icon("chevron-down", 14.0, iced::Color::WHITE))
+                            .style(hover_row)
                             .on_press(Message::Navigate(Route::NowPlaying))
                             .padding(7),
                     ]
@@ -4332,7 +4369,7 @@ impl AppState {
                             text("Top results").size(17),
                             column(top).spacing(2),
                             button(text("See all results →").size(12))
-                                .style(button::text)
+                                .style(hover_row)
                                 .on_press(Message::Navigate(Route::Search))
                                 .padding(4),
                         ]
@@ -4350,7 +4387,7 @@ impl AppState {
                     row![
                         text("Made for you").size(19).width(Fill),
                         button(text("Discovery →").size(12))
-                            .style(button::text)
+                            .style(hover_row)
                             .on_press(Message::Navigate(Route::Discovery))
                             .padding(4),
                     ]
@@ -4442,11 +4479,11 @@ impl AppState {
                                         .on_press(Message::PlayNow(t.id.clone()))
                                         .padding(8),
                                         button(icon("heart", 15.0, heart_color))
-                                            .style(button::text)
+                                            .style(hover_row)
                                             .on_press(Message::Like(t.id.clone()))
                                             .padding(8),
                                         button(icon("ellipsis", 15.0, MUTED))
-                                            .style(button::text)
+                                            .style(hover_row)
                                             .on_press(Message::OpenContext(t.id.clone()))
                                             .padding(8),
                                     ]
@@ -4538,7 +4575,7 @@ impl AppState {
                         let remove_btn: iced::Element<'_, Message> =
                             if self.hovered_queue == Some(i) {
                                 button(icon("x", 12.0, MUTED))
-                                    .style(button::text)
+                                    .style(hover_row)
                                     .on_press(Message::RemoveFromQueue(remove_id))
                                     .padding(5)
                                     .into()
@@ -4549,6 +4586,10 @@ impl AppState {
                             };
                         mouse_area(
                             row![
+                                button(self.thumb(t))
+                                    .style(hover_row)
+                                    .on_press(Message::QueueJump(i))
+                                    .padding(2),
                                 button(
                                     text(format!("{marker}{}. {} — {}", i + 1, t.title, t.artist))
                                         .size(14)
@@ -4558,18 +4599,24 @@ impl AppState {
                                             iced::Color::WHITE
                                         })
                                 )
-                                .style(button::text)
+                                .style(hover_row)
                                 .on_press(Message::QueueJump(i))
                                 .padding(4)
                                 .width(Fill),
                                 button(icon("arrow-up", 12.0, MUTED))
-                                    .style(button::text)
+                                    .style(hover_row)
                                     .on_press(Message::QueueUp(i))
                                     .padding(5),
                                 button(icon("arrow-down", 12.0, MUTED))
-                                    .style(button::text)
+                                    .style(hover_row)
                                     .on_press(Message::QueueDown(i))
                                     .padding(5),
+                                button(
+                                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                                )
+                                .style(hover_row)
+                                .on_press(Message::QueueJump(i))
+                                .padding(5),
                                 remove_btn,
                             ]
                             .spacing(4)
@@ -4597,13 +4644,13 @@ impl AppState {
                                         .size(13)
                                         .color(MUTED),
                                 )
-                                .style(button::text)
+                                .style(hover_row)
                                 .on_press(Message::PlayAutoplay(i))
                                 .padding(4)
                                 .width(Fill),
                                 text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
                                 button(icon("x", 12.0, MUTED))
-                                    .style(button::text)
+                                    .style(hover_row)
                                     .on_press(Message::RemoveAutoplay(i))
                                     .padding(5),
                             ]
@@ -4638,7 +4685,7 @@ impl AppState {
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
                         )
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::ToggleShuffle)
                         .padding(6),
                         button(
@@ -4649,11 +4696,11 @@ impl AppState {
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
                         )
-                        .style(button::text)
+                        .style(hover_row)
                         .on_press(Message::CycleRepeat)
                         .padding(6),
                         button(text("Clear").size(12))
-                            .style(button::text)
+                            .style(hover_row)
                             .on_press(Message::QueueClear)
                             .padding(6),
                     ]
@@ -4702,7 +4749,7 @@ impl AppState {
                             .spacing(2)
                             .width(Fill),
                             button(text("Open").size(12))
-                                .style(button::text)
+                                .style(hover_row)
                                 .on_press(Message::OpenPlaylist(p.id.clone()))
                                 .padding(6),
                         ]
@@ -4721,6 +4768,7 @@ impl AppState {
                     Self::section("Playlists", playlists),
                     row![
                         text_input("New playlist name…", &self.new_playlist_name)
+                            .style(rounded_input)
                             .on_input(Message::NewPlaylistNameChanged)
                             .width(Fill),
                         button(text("Create").size(13))
@@ -4806,7 +4854,7 @@ impl AppState {
                             n.clone()
                         };
                         button(text(label).size(12))
-                            .style(button::text)
+                            .style(hover_row)
                             .on_press(Message::SelectEqPreset(n))
                             .padding(5)
                             .into()
@@ -4833,16 +4881,21 @@ impl AppState {
                         .label("Enable scrobbling")
                         .on_toggle(Message::ScrobbleToggled),
                     text_input("Display name (informational)…", &self.scrobble_user)
+                        .style(rounded_input)
                         .on_input(Message::ScrobbleUserChanged),
                     text_input("ListenBrainz token…", &self.scrobble_lb_token)
+                        .style(rounded_input)
                         .on_input(Message::ScrobbleLbTokenChanged)
                         .secure(true),
                     text_input("Last.fm API key…", &self.scrobble_fm_key)
+                        .style(rounded_input)
                         .on_input(Message::ScrobbleFmKeyChanged),
                     text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
+                        .style(rounded_input)
                         .on_input(Message::ScrobbleFmSecretChanged)
                         .secure(true),
                     text_input("Last.fm session key…", &self.scrobble_fm_sk)
+                        .style(rounded_input)
                         .on_input(Message::ScrobbleFmSkChanged)
                         .secure(true),
                     text("Google account (import your library)").size(17),
@@ -4881,7 +4934,7 @@ impl AppState {
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::StartRadio(seed.id.clone()))
                     .padding(8)
                     .into(),
@@ -5042,30 +5095,47 @@ impl AppState {
                                 .map(|(i, l)| {
                                     let is_current = Some(i) == at;
                                     let secs = l.start_ms as f32 / 1000.0;
-                                    button(
-                                        text(format!(
-                                            "{} {}",
-                                            if is_current { "●" } else { " " },
-                                            l.text
-                                        ))
-                                        .size(if is_current { 16 } else { 14 })
-                                        .color(
-                                            if is_current {
-                                                SPOT_GREEN
-                                            } else {
-                                                iced::Color::WHITE
-                                            },
-                                        ),
-                                    )
-                                    .style(button::text)
-                                    .on_press(Message::SeekTo(secs))
-                                    .padding(2)
-                                    .width(iced::Fill)
-                                    .into()
+                                    let line: iced::Element<'_, Message> = if is_current {
+                                        row![
+                                            icon("music", 15.0, SPOT_GREEN),
+                                            text(l.text.clone())
+                                                .size(19)
+                                                .line_height(
+                                                    iced::widget::text::LineHeight::Relative(1.4),
+                                                )
+                                                .font(iced::Font {
+                                                    weight: iced::font::Weight::Bold,
+                                                    ..iced::Font::default()
+                                                })
+                                                .color(SPOT_GREEN),
+                                        ]
+                                        .spacing(10)
+                                        .align_y(iced::alignment::Vertical::Center)
+                                        .into()
+                                    } else {
+                                        row![
+                                            iced::widget::Space::new()
+                                                .width(iced::Length::Fixed(25.0)),
+                                            text(l.text.clone())
+                                                .size(15)
+                                                .line_height(
+                                                    iced::widget::text::LineHeight::Relative(1.5),
+                                                )
+                                                .color(iced::Color::from_rgb8(0xD6, 0xD6, 0xD6)),
+                                        ]
+                                        .align_y(iced::alignment::Vertical::Center)
+                                        .into()
+                                    };
+                                    button(line)
+                                        .style(hover_row)
+                                        .on_press(Message::SeekTo(secs))
+                                        .padding(4)
+                                        .width(iced::Fill)
+                                        .into()
                                 })
                                 .collect::<Vec<_>>(),
                         )
-                        .spacing(3)
+                        .spacing(6)
                         .into()
                     }
                     Some(cached) => column(
@@ -5073,10 +5143,15 @@ impl AppState {
                             .plain
                             .lines()
                             .filter(|l| !l.trim().is_empty())
-                            .map(|l| text(l.to_string()).size(14).into())
+                            .map(|l| {
+                                text(l.to_string())
+                                    .size(15)
+                                    .line_height(iced::widget::text::LineHeight::Relative(1.6))
+                                    .into()
+                            })
                             .collect::<Vec<_>>(),
                     )
-                    .spacing(4)
+                    .spacing(6)
                     .into(),
                     None if self.lyrics_loading.as_deref() == Some(id.as_str()) => {
                         text("Fetching lyrics (LRCLIB, no login)…")
@@ -5099,7 +5174,7 @@ impl AppState {
                         .on_press(Message::PlayNow(id.clone()))
                         .padding(7),
                         button(text("Radio").size(13))
-                            .style(button::text)
+                            .style(hover_row)
                             .on_press(Message::StartRadio(id.clone()))
                             .padding(7),
                     ]
@@ -5134,7 +5209,7 @@ impl AppState {
                                         iced::Color::WHITE
                                     }
                                 ),)
-                                .style(button::text)
+                                .style(hover_row)
                                 .on_press(Message::QueueJump(i))
                                 .padding(4)
                                 .width(Fill),
@@ -5153,8 +5228,8 @@ impl AppState {
                     };
                     column![
                         row![
-                            button(text("▼ Close").size(13))
-                                .style(button::text)
+                            button(icon("chevron-down", 13.0, iced::Color::WHITE))
+                                .style(hover_row)
                                 .on_press(Message::NavBack)
                                 .padding(7),
                             text("Now playing").size(13).color(MUTED).width(Fill),
@@ -5177,15 +5252,15 @@ impl AppState {
                                 .color(MUTED),
                                 row![
                                     button(text("Lyrics").size(13))
-                                        .style(button::text)
+                                        .style(hover_row)
                                         .on_press(Message::OpenLyrics(t.id.clone()))
                                         .padding(7),
                                     button(text("Radio").size(13))
-                                        .style(button::text)
+                                        .style(hover_row)
                                         .on_press(Message::StartRadio(t.id.clone()))
                                         .padding(7),
                                     button(icon("heart", 16.0, heart_color))
-                                        .style(button::text)
+                                        .style(hover_row)
                                         .on_press(Message::Like(t.id.clone()))
                                         .padding(7),
                                 ]
@@ -5204,6 +5279,18 @@ impl AppState {
                                         .take(8)
                                         .map(|(i, q)| {
                                             let menu_id = q.id.clone();
+                                            let np_remove: iced::Element<'_, Message> =
+                                                if self.hovered_auto == Some(i) {
+                                                    button(icon("x", 11.0, MUTED))
+                                                        .style(hover_row)
+                                                        .on_press(Message::RemoveAutoplay(i))
+                                                        .padding(3)
+                                                        .into()
+                                                } else {
+                                                    iced::widget::Space::new()
+                                                        .width(iced::Length::Fixed(20.0))
+                                                        .into()
+                                                };
                                             mouse_area(
                                                 row![
                                                     self.thumb(q),
@@ -5212,19 +5299,22 @@ impl AppState {
                                                             .size(12)
                                                             .color(MUTED),
                                                     )
-                                                    .style(button::text)
+                                                    .style(hover_row)
                                                     .on_press(Message::PlayAutoplay(i))
                                                     .padding(4)
                                                     .width(Fill),
                                                     text(fmt_time(q.duration_secs as f64))
                                                         .size(11)
                                                         .color(MUTED),
+                                                    np_remove,
                                                 ]
                                                 .spacing(8)
                                                 .align_y(iced::alignment::Vertical::Center)
                                                 .padding(2),
                                             )
                                             .on_right_press(Message::OpenContext(menu_id))
+                                            .on_enter(Message::AutoHover(Some(i)))
+                                            .on_exit(Message::AutoHover(None))
                                             .into()
                                         })
                                         .collect::<Vec<_>>(),
@@ -5275,7 +5365,7 @@ impl AppState {
         // search (as-you-type, stays on page) + clear + shortcuts.
         let back_btn: iced::Element<'_, Message> = if can_back {
             button(icon("chevron-left", 22.0, iced::Color::WHITE))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::NavBack)
                 .padding(10)
                 .into()
@@ -5286,7 +5376,7 @@ impl AppState {
         };
         let fwd_btn: iced::Element<'_, Message> = if can_forward {
             button(icon("chevron-right", 22.0, iced::Color::WHITE))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::NavForward)
                 .padding(10)
                 .into()
@@ -5299,7 +5389,7 @@ impl AppState {
             text("").size(1).into()
         } else {
             button(icon("x", 13.0, MUTED))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::HomeSearchChanged(String::new()))
                 .padding(6)
                 .into()
@@ -5314,17 +5404,26 @@ impl AppState {
             fwd_btn,
             icon("search", 14.0, MUTED),
             text_input("Search YouTube Music…", &self.search_query)
+                .style(rounded_input)
                 .on_input(Message::HomeSearchChanged)
                 .on_submit(Message::SearchStay)
                 .width(Fill),
             clear_btn,
             search_state,
             button(icon("queue", 14.0, iced::Color::WHITE))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::Navigate(Route::Queue))
                 .padding(6),
+            button(icon(
+                "panel-right",
+                14.0,
+                if self.right_pinned { SPOT_GREEN } else { MUTED },
+            ))
+            .style(hover_row)
+            .on_press(Message::ToggleRightPin)
+            .padding(6),
             button(icon("settings", 14.0, iced::Color::WHITE))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::Navigate(Route::Settings))
                 .padding(6),
         ]
@@ -5350,7 +5449,7 @@ impl AppState {
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .style(button::text)
+                    .style(hover_row)
                     .on_press(Message::HomeSearchChanged(sug.clone()))
                     .padding(5)
                     .width(Fill)
@@ -5427,9 +5526,10 @@ impl AppState {
                     icon("play", 14.0, iced::Color::WHITE),
                     text("Play now").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::PlayNow(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5439,9 +5539,10 @@ impl AppState {
                     icon("skip-forward", 14.0, iced::Color::WHITE),
                     text("Play next").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::PlayNext(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5451,9 +5552,10 @@ impl AppState {
                     icon("plus", 14.0, iced::Color::WHITE),
                     text("Add to queue").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::QueueTrack(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5463,9 +5565,10 @@ impl AppState {
                     icon("radio", 14.0, iced::Color::WHITE),
                     text("Start mix").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::StartRadio(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5475,15 +5578,16 @@ impl AppState {
                     icon("mic", 14.0, iced::Color::WHITE),
                     text("Lyrics").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::OpenLyrics(t.id.clone()))
             .padding(8)
             .width(Fill)
             .into(),
             button(row![icon("heart", 14.0, heart_color), text(heart).size(14)].spacing(8))
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::Like(t.id.clone()))
                 .padding(8)
                 .width(Fill)
@@ -5493,9 +5597,10 @@ impl AppState {
                     icon("download", 14.0, iced::Color::WHITE),
                     text("Download for offline").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::DownloadTrack(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5505,9 +5610,10 @@ impl AppState {
                     icon("disc", 14.0, iced::Color::WHITE),
                     text("Go to album").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::OpenTrackAlbum(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5517,9 +5623,10 @@ impl AppState {
                     icon("mic", 14.0, iced::Color::WHITE),
                     text("Go to artist").size(14)
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
             )
-            .style(button::text)
+            .style(hover_row)
             .on_press(Message::OpenTrackArtist(t.id.clone()))
             .padding(8)
             .width(Fill)
@@ -5532,9 +5639,10 @@ impl AppState {
                         icon("trash", 14.0, iced::Color::WHITE),
                         text("Remove from queue").size(14)
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::RemoveFromQueue(t.id.clone()))
                 .padding(8)
                 .width(Fill)
@@ -5548,9 +5656,10 @@ impl AppState {
                         icon("trash", 14.0, iced::Color::WHITE),
                         text("Remove from autoplay").size(14)
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::RemoveAutoplay(ai))
                 .padding(8)
                 .width(Fill)
@@ -5566,7 +5675,7 @@ impl AppState {
                     ]
                     .spacing(8),
                 )
-                .style(button::text)
+                .style(hover_row)
                 .on_press(Message::AddToPlaylist {
                     playlist_id: pl.id.clone(),
                     track_id: t.id.clone(),
@@ -5874,7 +5983,6 @@ mod tests {
         let _ = s.update(Message::PlayAllShuffled);
         assert!(s.queue.shuffle);
         assert_eq!(s.queue.len(), 2);
-        assert_eq!(s.shuffle_order.len(), 2);
     }
 
     #[test]
@@ -6348,9 +6456,12 @@ mod tests {
     #[test]
     fn sidebar_and_right_tabs_switch() {
         let mut s = test_state();
-        assert!(s.sidebar_expanded);
-        let _ = s.update(Message::ToggleSidebar);
-        assert!(!s.sidebar_expanded);
+        assert!(s.sidebar_pinned);
+        let _ = s.update(Message::ToggleSidebarPin);
+        assert!(!s.sidebar_pinned);
+        assert!(s.right_pinned);
+        let _ = s.update(Message::ToggleRightPin);
+        assert!(!s.right_pinned);
         let _ = s.update(Message::SidebarFilterChanged("gym".into()));
         assert_eq!(s.sidebar_filter, "gym");
         assert_eq!(s.right_tab, RightTab::Queue);
@@ -6448,44 +6559,44 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_builds_current_first_and_walks_once() {
+    fn shuffle_reorders_visibly_and_restores_on_off() {
         let mut s = test_state();
         let _ = s.update(Message::EnqueueTrack("m1".into()));
         let _ = s.update(Message::EnqueueTrack("m2".into()));
         let _ = s.update(Message::EnqueueTrack("m3".into()));
-        let _ = s.update(Message::QueueJump(1));
-        assert!(!s.queue.shuffle);
+        let _ = s.update(Message::EnqueueTrack("m4".into()));
+        let _ = s.update(Message::QueueJump(1)); // current m2
         let _ = s.update(Message::ToggleShuffle);
         assert!(s.queue.shuffle);
-        // Permutation of the queue, current first.
-        let mut ids = s.shuffle_order.clone();
-        assert_eq!(ids.remove(0), "m2");
-        ids.sort_unstable();
-        assert_eq!(ids, vec!["m1", "m3"]);
-        // Walk visits each exactly once, then ends (repeat Off, no tail).
+        // History + current stay put; the tail is a permutation.
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(&ids[..2], ["m1", "m2"]);
+        let mut tail = ids[2..].to_vec();
+        tail.sort_unstable();
+        assert_eq!(tail, vec!["m3", "m4"]);
+        assert!(s.pre_shuffle.is_some());
+        // The walk visits each tail song once, then ends (Off, no tail).
         let mut seen = vec![s.queue.current().unwrap().id.clone()];
         while s.advance_queue() {
             seen.push(s.queue.current().unwrap().id.clone());
         }
-        let mut seen_sorted = seen.clone();
-        seen_sorted.sort_unstable();
-        assert_eq!(seen_sorted, vec!["m1", "m2", "m3"]);
+        assert_eq!(seen.len(), 3);
         assert!(!s.advance_queue());
-        // Mutations rebuild (new id present, still a permutation).
-        let _ = s.update(Message::ToggleShuffle);
-        let _ = s.update(Message::ToggleShuffle);
-        let _ = s.update(Message::QueueTrack("m4".into()));
-        assert!(s.shuffle_order.contains(&"m4".to_string()));
-        assert_eq!(s.shuffle_order.len(), s.queue.len());
-        // Peek follows the built order, not the linear list.
-        let _ = s.update(Message::QueueJump(0));
-        s.rebuild_shuffle();
-        let next = s.peek_next_id().expect("shuffle peek");
-        assert_eq!(next, s.shuffle_order[1]);
-        // Toggle off clears the order.
+        // Toggle off: the exact original order returns, same song playing.
+        let playing = s.queue.current().unwrap().id.clone();
         let _ = s.update(Message::ToggleShuffle);
         assert!(!s.queue.shuffle);
-        assert!(s.shuffle_order.is_empty());
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3", "m4"]);
+        assert_eq!(s.queue.current().unwrap().id, playing);
+        assert!(s.pre_shuffle.is_none());
+        // Edits while shuffled survive the restore (appended at the end).
+        let _ = s.update(Message::ToggleShuffle);
+        let _ = s.update(Message::QueueTrack("m5".into()));
+        let _ = s.update(Message::ToggleShuffle);
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids[..4], ["m1", "m2", "m3", "m4"]);
+        assert_eq!(ids[4], "m5");
     }
 
     #[test]
@@ -6730,6 +6841,34 @@ mod tests {
     }
 
     #[test]
+    fn drag_preview_relocates_without_committing() {
+        assert_eq!(drag_preview(5, 0, None), vec![0, 1, 2, 3, 4]);
+        assert_eq!(drag_preview(5, 0, Some(2)), vec![1, 2, 0, 3, 4]);
+        assert_eq!(drag_preview(5, 4, Some(0)), vec![4, 0, 1, 2, 3]);
+        assert_eq!(drag_preview(5, 2, Some(2)), vec![0, 1, 2, 3, 4]);
+        assert_eq!(drag_preview(5, 9, Some(1)), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn sidebars_pin_and_reveal() {
+        let mut s = test_state();
+        assert!(s.sidebar_open());
+        assert!(s.right_open());
+        // Unpinned + cursor far away: both collapse.
+        let _ = s.update(Message::ToggleSidebarPin);
+        let _ = s.update(Message::ToggleRightPin);
+        let _ = s.update(Message::CursorMoved(iced::Point::new(640.0, 400.0)));
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        assert!(!s.sidebar_open());
+        assert!(!s.right_open());
+        // Hover the edges: both reveal.
+        let _ = s.update(Message::CursorMoved(iced::Point::new(10.0, 400.0)));
+        assert!(s.sidebar_open());
+        let _ = s.update(Message::CursorMoved(iced::Point::new(1270.0, 400.0)));
+        assert!(s.right_open());
+    }
+
+    #[test]
     fn panel_drag_reorders_then_releases() {
         let mut s = test_state();
         let _ = s.update(Message::EnqueueTrack("m1".into()));
@@ -6786,7 +6925,7 @@ mod tests {
             .push_command(yutu_desktop::PlayerCommand::SetShuffle(true));
         let _ = s.update(Message::Tick(std::time::Instant::now()));
         assert!(s.queue.shuffle);
-        assert_eq!(s.shuffle_order.len(), 1);
+        assert!(s.pre_shuffle.is_some());
         assert!(handle.lock().unwrap().shuffle());
         // Widget loop lands on the repeat mode + publishes back.
         handle
