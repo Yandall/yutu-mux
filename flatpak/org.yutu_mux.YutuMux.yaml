@@ -1,0 +1,32 @@
+# Linux Flatpak (draft — finishes in Phase 6)
+
+Runtime: `org.freedesktop.Platform//24.08`, SDK likewise. ALSA/PipeWire via
+PulseAudio socket; Wayland + X11 fallback; D-Bus session for MPRIS
+(`--own-name=org.mpris.MediaPlayer2.yutu_mux`).
+
+Build yutu-mux with the `cargo` buildsystem once `cargo` sources are
+vendored (`cargo vendor` output committed under `vendor/` — not yet done).
+Until then this manifest is a placeholder for the exact flags.
+
+```yaml
+app-id: org.yutu_mux.YutuMux
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: yutu-mux
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --share=network
+  - --own-name=org.mpris.MediaPlayer2.yutu_mux
+modules:
+  - name: yutu-mux
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ../..
+```
+
+macOS: `cargo bundle` dmg (Phase 6) + ad-hoc sign; notarization notes TBD.

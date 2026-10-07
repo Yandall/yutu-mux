@@ -4,7 +4,20 @@ Native Rust YouTube Music desktop app. Iced UI. Linux + macOS. See `PLAN.md`.
 
 ## Status
 
-Phase 0 scaffold. `MockBackend` only — no network, no audio yet.
+Working native app on `MockBackend`: Home/Search/Queue/Library/Settings +
+Artist/Album/Playlist/Lyrics/Radio views, Up Next editor, user playlists
+(persisted), audible test-tone playback, EQ presets, offline-cache tracker,
+local scan. Live Innertube behind the `innertube` feature (anonymous +
+cookie, suggestions + stream fallback, PO-token aware).
+
+## Run
+
+```sh
+cargo run            # native Iced GUI (needs display + audio)
+cargo run --features innertube  # NOT YET: binary wiring for the feature
+cargo test           # headless-safe (audio/D-Bus/network tests skip)
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
 ## Run
 
