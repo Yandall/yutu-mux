@@ -16,6 +16,7 @@ cookie, suggestions + stream fallback, PO-token aware).
 cargo run            # native Iced GUI (needs display + audio)
 cargo test           # headless-safe (audio/D-Bus/network tests skip)
 cargo check -p yutu-core --features innertube  # live Innertube API
+cargo run --features yutu-ui/rp  # full resolution (decipher + PO tokens; GPL, see docs/INNERTUBE.md)
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
