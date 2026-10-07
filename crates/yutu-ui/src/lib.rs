@@ -1095,7 +1095,7 @@ impl AppState {
                 column![
                     text("Settings").size(20),
                     text(format!("Volume: {:.0}%", self.volume * 100.0)),
-                    slider(0.0..=1.0, self.volume, Message::SetVolume),
+                    slider(0.0..=1.0, self.volume, Message::SetVolume).step(0.01_f32),
                     text("Auth: anonymous (cookie import: Phase 4)."),
                     text("Backend: MockBackend — Innertube behind `innertube` feature (Phase 4)."),
                     text("Keys: Space play/pause, n next, p prev, / search."),
