@@ -35,7 +35,7 @@
 //!
 //! For the macOS equivalent, see [`crate::macos_notes`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -85,6 +85,26 @@ impl fmt::Display for PlaybackStatus {
     }
 }
 
+/// Transport command from a desktop client (widget, media keys) to the app.
+///
+/// The D-Bus handlers only enqueue; the UI drains the inbox on its Tick and
+/// applies each command to the real playback controller. Positions are in
+/// seconds (converted from MPRIS microseconds at the boundary).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlayerCommand {
+    Play,
+    Pause,
+    PlayPause,
+    Stop,
+    Next,
+    Previous,
+    /// Relative seek in seconds (MPRIS `Seek`).
+    Seek(f64),
+    /// Absolute seek in seconds (MPRIS `SetPosition`).
+    SetPosition(f64),
+    SetVolume(f64),
+}
+
 /// Plain playback state mirrored onto D-Bus.
 ///
 /// Synchronous and unit-testable; shared with the D-Bus service through
@@ -95,6 +115,7 @@ pub struct MprisPlayer {
     status: PlaybackStatus,
     volume: f64,
     position_secs: f64,
+    pending: VecDeque<PlayerCommand>,
 }
 
 impl MprisPlayer {
@@ -105,6 +126,7 @@ impl MprisPlayer {
             status,
             volume: 1.0,
             position_secs: 0.0,
+            pending: VecDeque::new(),
         };
         player.set_volume(volume);
         player
@@ -147,6 +169,21 @@ impl MprisPlayer {
     /// Replace the playback status. Called by the UI layer on play/pause/stop.
     pub fn set_status(&mut self, status: PlaybackStatus) {
         self.status = status;
+    }
+
+    /// Enqueue a desktop transport command for the UI tick to apply.
+    pub fn push_command(&mut self, cmd: PlayerCommand) {
+        // The inbox is a hint channel, not a journal: cap it so a stuck UI
+        // cannot grow it without bound; newest wins on overflow.
+        if self.pending.len() >= 16 {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(cmd);
+    }
+
+    /// Drain all pending desktop commands (UI tick consumes them).
+    pub fn drain_commands(&mut self) -> Vec<PlayerCommand> {
+        self.pending.drain(..).collect()
     }
 
     /// Set the volume, clamped to `0.0..=1.0` (non-finite input becomes `0.0`).
@@ -198,6 +235,7 @@ impl Default for MprisPlayer {
             status: PlaybackStatus::default(),
             volume: 1.0,
             position_secs: 0.0,
+            pending: VecDeque::new(),
         }
     }
 }
@@ -395,7 +433,9 @@ impl MprisService {
 
     #[zbus(property)]
     fn set_volume(&self, volume: f64) {
-        self.lock().set_volume(volume);
+        // Inbox, not direct apply: the UI owns volume and would overwrite a
+        // direct write on its next publish. Applied within one tick.
+        self.lock().push_command(PlayerCommand::SetVolume(volume));
     }
 
     #[zbus(property)]
@@ -436,7 +476,7 @@ impl MprisService {
 
     #[zbus(property)]
     fn can_seek(&self) -> bool {
-        false
+        true
     }
 
     #[zbus(property)]
@@ -444,37 +484,48 @@ impl MprisService {
         true
     }
 
-    /// Skeleton transport control: flips local status only. Routing these
-    /// calls into the real playback controller is follow-up work (see the
-    /// module docs).
+    /// Transport control: enqueued, applied by the UI tick (≤ one tick late).
     fn play(&self) {
-        self.lock().set_status(PlaybackStatus::Playing);
+        self.lock().push_command(PlayerCommand::Play);
     }
 
-    /// Skeleton transport control: flips local status only.
+    /// Transport control: enqueued, applied by the UI tick (≤ one tick late).
     fn pause(&self) {
-        self.lock().set_status(PlaybackStatus::Paused);
+        self.lock().push_command(PlayerCommand::Pause);
     }
 
-    /// Skeleton transport control: flips local status only.
+    /// Transport control: enqueued, applied by the UI tick (≤ one tick late).
     fn play_pause(&self) {
-        let next = match self.lock().status() {
-            PlaybackStatus::Playing => PlaybackStatus::Paused,
-            PlaybackStatus::Paused | PlaybackStatus::Stopped => PlaybackStatus::Playing,
-        };
-        self.lock().set_status(next);
+        self.lock().push_command(PlayerCommand::PlayPause);
     }
 
-    /// Skeleton transport control: flips local status only.
+    /// Transport control: enqueued, applied by the UI tick (≤ one tick late).
     fn stop(&self) {
-        self.lock().set_status(PlaybackStatus::Stopped);
+        self.lock().push_command(PlayerCommand::Stop);
     }
 
-    /// Skeleton: queue navigation lives in the UI layer and is not wired yet.
-    fn next(&self) {}
+    /// Transport control: enqueued, applied by the UI tick (≤ one tick late).
+    fn next(&self) {
+        self.lock().push_command(PlayerCommand::Next);
+    }
 
-    /// Skeleton: queue navigation lives in the UI layer and is not wired yet.
-    fn previous(&self) {}
+    /// Transport control: enqueued, applied by the UI tick (≤ one tick late).
+    fn previous(&self) {
+        self.lock().push_command(PlayerCommand::Previous);
+    }
+
+    /// Relative seek in microseconds (negative allowed).
+    fn seek(&self, offset: i64) {
+        self.lock()
+            .push_command(PlayerCommand::Seek(offset as f64 / 1_000_000.0));
+    }
+
+    /// Absolute seek in microseconds (track id is informational here: the UI
+    /// seeks whatever is current, matching single-track-player behavior).
+    fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
+        self.lock()
+            .push_command(PlayerCommand::SetPosition(position as f64 / 1_000_000.0));
+    }
 }
 
 /// Publish the player on the session bus as [`SERVICE_NAME`].
@@ -532,6 +583,25 @@ mod tests {
             i64::try_from(map[KEY_LENGTH].clone()).expect("length decodes"),
             185_000_000
         );
+    }
+
+    #[test]
+    fn command_inbox_queues_and_drains_in_order() {
+        let mut player = MprisPlayer::new(sample_track(), PlaybackStatus::Playing, 1.0);
+        assert!(player.drain_commands().is_empty());
+        player.push_command(PlayerCommand::PlayPause);
+        player.push_command(PlayerCommand::Seek(5.0));
+        let drained = player.drain_commands();
+        assert_eq!(
+            drained,
+            vec![PlayerCommand::PlayPause, PlayerCommand::Seek(5.0)]
+        );
+        assert!(player.drain_commands().is_empty());
+        // Overflow caps the inbox instead of growing it.
+        for _ in 0..20 {
+            player.push_command(PlayerCommand::Next);
+        }
+        assert!(player.drain_commands().len() <= 16);
     }
 
     #[test]

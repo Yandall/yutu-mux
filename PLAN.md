@@ -153,5 +153,6 @@ Done: user can plausibly replace Spotify for daily listening.
 12. Instant round: progressive streaming, URL cache + prefetch, synced-lyrics view, thumbnails everywhere, browser nav, Home search, centered bar (drag-drop queue deferred: no Iced primitive)
 13. Round 2: as-you-type debounced search (stays on page, stale-safe), clickable + following lyrics, Spotify-style refresh (quick-pick grid, library chips, Queue/Recent tabs, global header), Google device-flow login + library/liked import
 14. Round 3: suggestion popup + Enter-to-Search, play-now queue replace + autoplay tail, play-next insert, context menu (… button), offline download, NowPlaying drawer, YTM slim sidebar + collapse, honest EQ, cookie import (no OAuth client), bigger nav
+15. Round 4: queue/autoplay split views, hover ✕ + menu remove, undimmed frozen menu, MPRIS command inbox (play/pause/next/prev/seek/volume), seek-hold anti-flicker, in-app error log
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
