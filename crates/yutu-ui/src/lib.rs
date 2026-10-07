@@ -198,6 +198,10 @@ pub enum Message {
     NavForward,
     HomeSearchChanged(String),
     SearchStay,
+    SearchDebounced {
+        gen: u64,
+        query: String,
+    },
     UrlResolved {
         track_id: String,
         result: Result<String, String>,
@@ -429,6 +433,9 @@ pub struct AppState {
     search_base: SearchResults,
     /// A real search is in flight (loading indicator).
     searching: bool,
+    /// Keystroke generation: each input bumps it; only the latest
+    /// debounced task may fire (no search spam while typing).
+    search_gen: u64,
     /// Current radio sequence (filled by `RadioReady`).
     radio_tracks: Vec<Track>,
     /// MPRIS handle for live desktop propagation (`None` in tests/headless).
@@ -741,6 +748,7 @@ impl AppState {
                 catalog: HashMap::new(),
                 search_base: SearchResults::default(),
                 searching: false,
+                search_gen: 0,
                 radio_tracks: Vec::new(),
                 mpris: None,
             },
@@ -882,23 +890,40 @@ impl AppState {
         self.end_advanced = false;
         self.paused = false;
         self.position_secs = 0.0;
+        // Lyrics page follows playback: swap the id in place (no back-stack
+        // spam) and fetch the new song's lyrics unless cached.
+        let mut follow_tasks: Vec<iced::Task<Message>> = Vec::new();
+        if matches!(self.route, Route::Lyrics(_)) && self.route != Route::Lyrics(t.id.clone()) {
+            self.route = Route::Lyrics(t.id.clone());
+            #[cfg(feature = "lyrics")]
+            {
+                if !self.lyrics_cache.contains_key(&t.id)
+                    && self.lyrics_loading.as_deref() != Some(t.id.as_str())
+                {
+                    self.lyrics_loading = Some(t.id.clone());
+                    follow_tasks.push(Self::lyrics_task(t.clone()));
+                }
+            }
+        }
         // Prefetched URL: instant.
         if let Some((_, url)) = self.prefetched.take() {
             if self.try_play_url(&url, &t) {
-                return iced::Task::none();
+                return iced::Task::batch(follow_tasks);
             }
         }
         // Fresh cached URL: instant (back/prev/replay never re-resolve).
         if let Some((url, expires)) = self.url_cache.get(&t.id).cloned() {
             if expires > now_unix() as u64 + 60 && self.try_play_url(&url, &t) {
-                return iced::Task::none();
+                return iced::Task::batch(follow_tasks);
             }
         }
         self.status = format!("Loading {} — {}…", t.title, t.artist);
-        match &self.audio {
+        let audio_task = match &self.audio {
             Some(a) if a.wants_stream() => Self::resolve_url_task(t.id),
             _ => Self::resolve_task(t.id),
-        }
+        };
+        follow_tasks.push(audio_task);
+        iced::Task::batch(follow_tasks)
     }
 
     /// Best-effort instant play of a stream URL. True on success.
@@ -1358,7 +1383,48 @@ impl AppState {
             Message::NavBack => self.go_back(),
             Message::NavForward => self.go_forward(),
             Message::HomeSearchChanged(q) => {
-                self.search_query = q;
+                self.search_query = q.clone();
+                let trimmed = q.trim().to_string();
+                self.search_gen = self.search_gen.wrapping_add(1);
+                if trimmed.is_empty() {
+                    self.results = SearchResults::default();
+                    self.searching = false;
+                } else if trimmed.len() >= 2 {
+                    #[cfg(feature = "innertube")]
+                    {
+                        let gen = self.search_gen;
+                        self.searching = true;
+                        self.publish_mpris();
+                        return Self::search_debounce_task(gen, trimmed);
+                    }
+                }
+            }
+            Message::SearchDebounced { gen, query } => {
+                // Stale keystroke (user kept typing): drop silently.
+                if gen != self.search_gen {
+                    return iced::Task::none();
+                }
+                let q = query.trim().to_string();
+                if q.is_empty() || q.len() < 2 {
+                    return iced::Task::none();
+                }
+                // Query changed while debouncing (Enter fired first): skip.
+                if q != self.search_query.trim() {
+                    return iced::Task::none();
+                }
+                #[cfg(feature = "innertube")]
+                {
+                    self.status = format!("Searching YouTube Music for “{q}”…");
+                    self.searching = true;
+                    self.publish_mpris();
+                    return Self::search_task(q);
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = q;
+                    self.status =
+                        "Real search needs `--features innertube` (offline build).".into();
+                }
             }
             Message::SearchStay => {
                 let q = self.search_query.trim().to_string();
@@ -1383,7 +1449,6 @@ impl AppState {
             Message::SearchChanged(q) => {
                 self.search_query = q.clone();
                 self.results = filter_results(&self.search_base, &q);
-                self.go(Route::Search);
             }
             Message::Search => {
                 let q = self.search_query.trim().to_string();
@@ -1391,11 +1456,9 @@ impl AppState {
                 {
                     if q.is_empty() {
                         self.status = "Type something to search YouTube Music.".into();
-                        self.go(Route::Search);
                     } else {
                         self.status = format!("Searching YouTube Music for “{q}”…");
                         self.searching = true;
-                        self.go(Route::Search);
                         self.publish_mpris();
                         return Self::search_task(q);
                     }
@@ -1415,20 +1478,27 @@ impl AppState {
                         let n = search.tracks.len();
                         let tracks = self.register_tracks(search.tracks);
                         let search = SearchResults { tracks, ..search };
-                        self.search_base = search.clone();
                         let tasks = self.artwork_tasks(&search.tracks);
-                        self.results = filter_results(&search, &self.search_query);
-                        // Empty filter (e.g. capped query) still shows everything.
-                        if self.results.tracks.is_empty() && !search.tracks.is_empty() {
-                            self.results = search;
+                        // Out-of-order arrival (user typed on): keep the
+                        // tracks in the catalog, but never overwrite the
+                        // newer query's results.
+                        if query.trim() == self.search_query.trim() {
+                            self.search_base = search.clone();
+                            self.results = filter_results(&search, &self.search_query);
+                            // Empty filter (e.g. capped query) shows all.
+                            if self.results.tracks.is_empty() && !search.tracks.is_empty() {
+                                self.results = search;
+                            }
+                            self.status = format!("{n} songs for “{query}”.");
                         }
-                        self.go(Route::Search);
-                        self.status = format!("{n} songs for “{query}”.");
                         self.publish_mpris();
                         return iced::Task::batch(tasks);
                     }
                     Err(e) => {
-                        self.status = format!("Search failed: {e}");
+                        // Stale-query errors stay silent; current ones report.
+                        if query.trim() == self.search_query.trim() {
+                            self.status = format!("Search failed: {e}");
+                        }
                     }
                 }
             }
@@ -1891,6 +1961,19 @@ impl AppState {
                 (video_id, result)
             },
             |(video_id, result)| Message::StreamResolved { video_id, result },
+        )
+    }
+
+    /// Debounced keystroke: wait ~450ms for the user to keep typing, then
+    /// report back — only the latest generation fires a real search.
+    #[cfg(feature = "innertube")]
+    fn search_debounce_task(gen: u64, query: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+                (gen, query)
+            },
+            |(gen, query)| Message::SearchDebounced { gen, query },
         )
     }
 
@@ -2893,22 +2976,31 @@ impl AppState {
                                 .enumerate()
                                 .map(|(i, l)| {
                                     let is_current = Some(i) == at;
-                                    text(format!(
-                                        "{} {}",
-                                        if is_current { "●" } else { " " },
-                                        l.text
-                                    ))
-                                    .size(if is_current { 16 } else { 14 })
-                                    .color(if is_current {
-                                        SPOT_GREEN
-                                    } else {
-                                        iced::Color::WHITE
-                                    })
+                                    let secs = l.start_ms as f32 / 1000.0;
+                                    button(
+                                        text(format!(
+                                            "{} {}",
+                                            if is_current { "●" } else { " " },
+                                            l.text
+                                        ))
+                                        .size(if is_current { 16 } else { 14 })
+                                        .color(
+                                            if is_current {
+                                                SPOT_GREEN
+                                            } else {
+                                                iced::Color::WHITE
+                                            },
+                                        ),
+                                    )
+                                    .style(button::text)
+                                    .on_press(Message::SeekTo(secs))
+                                    .padding(2)
+                                    .width(iced::Fill)
                                     .into()
                                 })
                                 .collect::<Vec<_>>(),
                         )
-                        .spacing(5)
+                        .spacing(3)
                         .into()
                     }
                     Some(cached) => column(
@@ -3072,6 +3164,8 @@ mod tests {
     #[test]
     fn search_updates_results() {
         let mut s = test_state();
+        // Real flow: keystrokes set the query before the payload lands.
+        let _ = s.update(Message::HomeSearchChanged("beatles".into()));
         // A completed real search lands in results + catalog.
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
@@ -3091,13 +3185,20 @@ mod tests {
         let _ = s.update(Message::SearchChanged("yesterday".into()));
         assert_eq!(s.results.tracks.len(), 1);
         assert_eq!(s.results.tracks[0].id, "v1");
-        // Failures report without clobbering landed results.
+        // Failures for the current query report without clobbering.
+        let _ = s.update(Message::HomeSearchChanged("yesterday".into()));
         let _ = s.update(Message::SearchCompleted {
-            query: "x".into(),
+            query: "yesterday".into(),
             result: Err("offline".into()),
         });
         assert!(s.status.contains("offline"));
         assert_eq!(s.results.tracks.len(), 1);
+        // Stale-query failures stay silent.
+        let _ = s.update(Message::SearchCompleted {
+            query: "ancient".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("offline"));
     }
 
     #[test]
@@ -3239,6 +3340,7 @@ mod tests {
     #[test]
     fn play_all_queues_current_detail_view() {
         let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("beatles".into()));
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
             result: Ok(SearchResults {
@@ -3611,6 +3713,65 @@ mod tests {
         let _ = s.update(Message::HomeSearchChanged("beatles".into()));
         assert_eq!(s.search_query, "beatles");
         assert_eq!(s.route, Route::Home);
+        // Completion never kicks the user to another page.
+        let _ = s.update(Message::SearchCompleted {
+            query: "beatles".into(),
+            result: Ok(SearchResults {
+                tracks: vec![mk_track("v1", "Yesterday", "The Beatles")],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
+        assert_eq!(s.route, Route::Home);
+        assert_eq!(s.results.tracks.len(), 1);
+    }
+
+    #[test]
+    fn stale_search_completion_never_clobbers_newer_query() {
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("bonobo".into()));
+        let gen = s.search_gen;
+        // User kept typing: newer generation wins, stale debounce drops.
+        let _ = s.update(Message::SearchDebounced {
+            gen: gen.wrapping_sub(1),
+            query: "bon".into(),
+        });
+        assert!(!s.status.contains("Searching"));
+        // Out-of-order payload registers tracks but keeps newer results.
+        let _ = s.update(Message::SearchCompleted {
+            query: "bon".into(),
+            result: Ok(SearchResults {
+                tracks: vec![mk_track("old", "Old Song", "Someone")],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
+        assert!(s.find_track("old").is_some());
+        assert!(s.results.tracks.is_empty());
+        // Current payload lands normally.
+        let _ = s.update(Message::SearchCompleted {
+            query: "bonobo".into(),
+            result: Ok(SearchResults {
+                tracks: vec![mk_track("new", "Rosewood", "Bonobo")],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
+        assert_eq!(s.results.tracks.len(), 1);
+        assert_eq!(s.results.tracks[0].id, "new");
+    }
+
+    #[test]
+    fn lyrics_page_follows_track_changes() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::OpenLyrics("m1".into()));
+        assert_eq!(s.route, Route::Lyrics("m1".into()));
+        // Advancing while on the lyrics page swaps the id in place.
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        assert_eq!(s.route, Route::Lyrics("m2".into()));
+        // No back-stack spam from the follow.
+        assert!(!s.nav_back.iter().any(|r| *r == Route::Lyrics("m1".into())));
     }
 
     #[test]
