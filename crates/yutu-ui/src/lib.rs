@@ -133,32 +133,40 @@ fn find_track(id: &str) -> Option<Track> {
         .find(|t| t.id == id)
 }
 
-/// rustypipe resolution (decipher + PO tokens internal). Errors fall through
-/// to the raw probes in `resolve_and_fetch` — this only reports them.
-#[cfg(all(feature = "innertube", feature = "rp"))]
-async fn resolve_via_rustypipe(video_id: &str) -> Result<String, String> {
-    let dir = format!("{}/rustypipe", data_dir());
-    let _ = std::fs::create_dir_all(&dir);
-    let bin = yutu_core::find_botguard_bin();
-    let resolved = yutu_core::resolve_audio_url(video_id, &dir, bin.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(resolved.url)
+/// Offline builds: only the yt-dlp path exists; without the binary installed
+/// there is nothing else to try.
+#[cfg(not(feature = "innertube"))]
+async fn resolve_via_raw(video_id: &str) -> Result<Vec<u8>, String> {
+    Err(format!(
+        "yt-dlp not found and this is an offline build ({video_id}). Install yt-dlp or rebuild with `--features innertube`."
+    ))
 }
 
-/// Resolve a video ID to bytes. With the `rp` feature, rustypipe's deciphering
-/// player goes first (signatureCipher + sidecar PO tokens); otherwise the raw
-/// WEB_REMIX probes run, with sidecar mint + retry on PO-gating. A bare-URL
-/// 403 retries once with the session token as `&pot=`.
-#[cfg(feature = "innertube")]
+/// Resolve a video ID to bytes. yt-dlp goes first (maintained decipher, no
+/// feature gate, license-clean); then the raw WEB_REMIX probes with sidecar
+/// mint + retry on PO-gating. A bare-URL 403 retries once with the session
+/// token as `&pot=`. The yt-dlp leg needs no feature; the raw probes do.
 async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
-    use yutu_core::{InnertubeBackend, StreamError, StreamRequest};
-    #[cfg(feature = "rp")]
-    if let Ok(url) = resolve_via_rustypipe(video_id).await {
-        return yutu_player::fetch_bytes(&url)
-            .await
-            .map_err(|e| e.to_string());
+    if let Some(bin) = yutu_core::find_yt_dlp() {
+        match yutu_core::resolve_audio_url(&bin, video_id) {
+            Ok(url) => {
+                return yutu_player::fetch_bytes(&url)
+                    .await
+                    .map_err(|e| e.to_string());
+            }
+            Err(e) => {
+                eprintln!("[yutu-stream] yt-dlp path failed ({e}); trying raw probes");
+            }
+        }
     }
+    resolve_via_raw(video_id).await
+}
+
+/// Raw-probe path (needs the `innertube` feature): anonymous connect,
+/// fallback chain, sidecar mint + `poToken` retry on PO-gating.
+#[cfg(feature = "innertube")]
+async fn resolve_via_raw(video_id: &str) -> Result<Vec<u8>, String> {
+    use yutu_core::{InnertubeBackend, StreamError, StreamRequest};
     let backend = InnertubeBackend::connect_anonymous().await?;
     let mut req = StreamRequest::new(video_id);
     match backend.resolve_stream(&mut req).await {
@@ -774,13 +782,7 @@ impl AppState {
                 } else {
                     self.status = format!("Resolving stream {id}…");
                     self.history.push(format!("stream:{id}"));
-                    #[cfg(feature = "innertube")]
                     return Self::resolve_task(id);
-                    #[cfg(not(feature = "innertube"))]
-                    {
-                        self.status =
-                            "Real streams need `--features innertube` (offline build).".into();
-                    }
                 }
             }
             Message::StreamResolved { video_id, result } => match result {
@@ -806,9 +808,7 @@ impl AppState {
         iced::Task::none()
     }
 
-    /// Resolve + download task for a video ID (only built with `innertube`).
-    /// Without the feature, the `PlayStreamId` arm above degrades gracefully.
-    #[cfg(feature = "innertube")]
+    /// Resolve + download task for a video ID. Runs on iced's tokio executor.
     fn resolve_task(video_id: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
@@ -1162,7 +1162,7 @@ impl AppState {
                             &self.scrobble_user
                         }
                     )),
-                    text("Real stream (needs `--features innertube`)").size(18),
+                    text("Real stream (needs yt-dlp installed)").size(18),
                     text_input("YouTube video ID…", &self.stream_id_input)
                         .on_input(Message::StreamIdChanged)
                         .on_submit(Message::PlayStreamId),
@@ -1606,13 +1606,10 @@ mod tests {
         s.stream_id_input.clear();
         let _ = s.update(Message::PlayStreamId);
         assert!(s.status.contains("video ID"));
-        // Without the `innertube` feature this degrades gracefully.
-        #[cfg(not(feature = "innertube"))]
-        {
-            s.stream_id_input = "dQw4w9WgXcQ".into();
-            let _ = s.update(Message::PlayStreamId);
-            assert!(s.status.contains("innertube"));
-        }
+        // The resolve task runs async; synchronously we only see Resolving.
+        s.stream_id_input = "dQw4w9WgXcQ".into();
+        let _ = s.update(Message::PlayStreamId);
+        assert!(s.status.contains("Resolving"));
     }
 
     #[test]

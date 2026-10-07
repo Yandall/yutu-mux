@@ -76,6 +76,17 @@ impl StreamError {
     }
 }
 
+/// Shared PO-gating detector over lowercased error text (GVS 403s, BotGuard
+/// wording). Used by every resolver so classification never drifts.
+pub fn looks_po_gated(lowered_message: &str) -> bool {
+    lowered_message.contains("403")
+        || lowered_message.contains("po token")
+        || lowered_message.contains("potoken")
+        || lowered_message.contains("botguard")
+        || lowered_message.contains("status_failed")
+        || lowered_message.contains("status failed")
+}
+
 /// Save a failing Innertube payload for the breakage harness (like rustypipe
 /// `reports/`). Never include cookies — callers must redact first.
 pub fn save_report(dir: &Path, name: &str, redacted_payload: &str) -> Result<String, String> {

@@ -91,16 +91,21 @@ actionable error. Premium accounts are exempt from PO-token gating.
   `cargo test -p yutu-core --features innertube -- --ignored` on a networked
   machine.
 
-## Full resolution via `rp` (rustypipe) + licensing
+## Stream resolution: yt-dlp first (current)
 
-`crates/yutu-core/src/rplayer.rs` (feature `rp`) delegates stream-URL
-resolution to the `rustypipe` crate: signature-cipher decipher (player-JS
-deobfuscator), client fallback, and sidecar PO tokens (auto-detected in
-`PATH`, overridable). The UI tries it first when built with
-`--features yutu-ui/rp` (implies `innertube`), falling back to the raw
-probes above.
+`crates/yutu-core/src/ytdlp.rs` (no feature gate, std-only, license-clean)
+resolves video IDs via the `yt-dlp` sidecar (`--get-url`, format
+`bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio` — AAC preferred
+because symphonia cannot decode Opus-in-WebM). The UI tries it before the
+raw probes below. Requires `yt-dlp` in `PATH` (`YUTU_YTDLP_BIN` override);
+missing binary degrades to the raw path with a clear status.
 
-**License:** `rustypipe` is GPL-3.0. Building with `rp` links GPL code into
-the binary — binary releases with `rp` must comply with GPL-3.0 (source
-offer, license text). Default builds (no `rp`) link only MIT/Apache-2.0
-crates and stay MIT-pure. Keep the feature opt-in for exactly this reason.
+Two hard-won transport facts (verified Oct 2026, permanent e2e test in
+`crates/yutu-player/tests/e2e_audio.rs`, ignored without binary+network):
+- GVS throttles full-body GETs to a trickle; 1 MiB `Range` chunks download
+  a 4 MB song in ~2 s (`fetch_bytes` chunks unconditionally).
+- `signatureCipher` URLs need a deobfuscator. `rustypipe` 0.11.4's can no
+  longer parse current player JS (`could not extract sig fn name`, Oct
+  2026), so the `rp` feature/module was removed rather than kept as a
+  19-second dead end (history preserves it; revisit if upstream revives).
+  yt-dlp's extractor is current and maintained within hours.

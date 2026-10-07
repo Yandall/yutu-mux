@@ -333,13 +333,7 @@ fn signature_timestamp_days() -> u64 {
 /// everything else becomes [`StreamError::Network`].
 pub fn classify_player_error(message: &str, client: StreamClient, video_id: &str) -> StreamError {
     let lowered = message.to_lowercase();
-    let po_token = lowered.contains("403")
-        || lowered.contains("po token")
-        || lowered.contains("potoken")
-        || lowered.contains("botguard")
-        || lowered.contains("status_failed")
-        || lowered.contains("status failed");
-    if po_token {
+    if crate::stream::looks_po_gated(&lowered) {
         StreamError::PoTokenRequired {
             client: client.as_str(),
         }

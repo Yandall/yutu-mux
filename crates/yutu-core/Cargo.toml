@@ -13,9 +13,6 @@ rusqlite = "0.32"
 md5 = "0.8"
 ytmapi-rs = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
-# NOTE: rustypipe is GPL-3.0. Enabling `rp` links GPL code into the binary
-# (see docs/INNERTUBE.md). Default builds stay MIT-pure without it.
-rustypipe = { version = "0.11", optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
     "default-tls",
     "json",
@@ -23,6 +20,4 @@ reqwest = { version = "0.13", default-features = false, features = [
 
 [features]
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest"]
-# Full stream resolution: signature-cipher decipher + sidecar PO tokens.
-# Implies `innertube` (shared stream types live there).
-rp = ["dep:rustypipe", "dep:tokio", "innertube"]
+
