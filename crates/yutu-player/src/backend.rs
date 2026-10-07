@@ -94,21 +94,71 @@ impl AudioBackend for RodioBackend {
     }
 }
 
-/// Download a URL into memory. HTTP errors (notably GVS 403s) surface as
+/// Download a URL into memory. GoogleVideo throttles full-body GETs to a
+/// trickle, but answers `Range` requests at full speed — so songs are pulled
+/// in 1 MiB chunks and concatenated. Servers without range support (plain
+/// 200 + full body) are returned as-is. HTTP errors surface as
 /// `PlayerError::Stream` with the status preserved for PO-token hints.
 pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
-    let response = reqwest::get(url)
-        .await
-        .map_err(|e| PlayerError::Stream(format!("GET {url}: {e}")))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(PlayerError::Stream(format!("GET {url}: HTTP {status}")));
+    const CHUNK: u64 = 1024 * 1024;
+    const MAX_BYTES: u64 = 100 * 1024 * 1024;
+    let client = reqwest::Client::new();
+    let mut start: u64 = 0;
+    let mut out = Vec::new();
+    loop {
+        let end = start + CHUNK - 1;
+        let response = client
+            .get(url)
+            .header("Range", format!("bytes={start}-{end}"))
+            .send()
+            .await
+            .map_err(|e| PlayerError::Stream(format!("GET {url}: {e}")))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::OK {
+            // No range support: whole body at once.
+            let body = response
+                .bytes()
+                .await
+                .map_err(|e| PlayerError::Stream(format!("read {url}: {e}")))?;
+            out.extend_from_slice(&body);
+            return Ok(out);
+        }
+        if !status.is_success() {
+            return Err(PlayerError::Stream(format!("GET {url}: HTTP {status}")));
+        }
+        let total = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range_total);
+        let chunk = response
+            .bytes()
+            .await
+            .map_err(|e| PlayerError::Stream(format!("read {url}: {e}")))?;
+        if chunk.is_empty() {
+            return Err(PlayerError::Stream(format!("empty chunk from {url}")));
+        }
+        out.extend_from_slice(&chunk);
+        start += chunk.len() as u64;
+        if out.len() as u64 > MAX_BYTES {
+            return Err(PlayerError::Stream(format!("{url}: over size cap")));
+        }
+        match total {
+            Some(total) if start >= total => return Ok(out),
+            Some(_) => {}
+            None => {
+                // No total advertised but chunked 206: stop on short chunk.
+                if (chunk.len() as u64) < CHUNK {
+                    return Ok(out);
+                }
+            }
+        }
     }
-    response
-        .bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| PlayerError::Stream(format!("read {url}: {e}")))
+}
+
+/// Parse `bytes 0-1048575/4172542` into the total length.
+fn parse_content_range_total(header: &str) -> Option<u64> {
+    header.rsplit('/').next()?.trim().parse().ok()
 }
 
 /// Decode in-memory audio without touching hardware (headless-testable).
@@ -173,6 +223,16 @@ mod tests {
     #[test]
     fn garbage_is_a_decode_error_not_a_panic() {
         assert!(decode_bytes(b"not audio at all".to_vec()).is_err());
+    }
+
+    #[test]
+    fn content_range_total_parses() {
+        assert_eq!(
+            parse_content_range_total("bytes 0-1048575/4172542"),
+            Some(4172542)
+        );
+        assert_eq!(parse_content_range_total("bytes */4172542"), Some(4172542));
+        assert_eq!(parse_content_range_total("garbage"), None);
     }
 
     #[tokio::test]

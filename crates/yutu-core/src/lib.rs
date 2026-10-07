@@ -8,10 +8,9 @@ pub mod innertube;
 pub mod library;
 pub mod models;
 pub mod pot;
-#[cfg(feature = "rp")]
-pub mod rplayer;
 pub mod scrobble;
 pub mod stream;
+pub mod ytdlp;
 
 pub use auth::{AuthState, CookieAuth};
 pub use backend::{MockBackend, MusicBackend};
@@ -23,9 +22,8 @@ pub use innertube::ResolvedStream;
 pub use library::LibraryStore;
 pub use models::{Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults, Track};
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
-#[cfg(feature = "rp")]
-pub use rplayer::{record_rustypipe_attempt, resolve_audio_url};
 pub use scrobble::{
     api_sig, build_listen_payload, build_scrobble_params, should_scrobble, Scrobble,
 };
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
+pub use ytdlp::{find_yt_dlp, resolve_audio_url};
