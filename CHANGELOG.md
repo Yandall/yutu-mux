@@ -20,6 +20,11 @@
 - Spotify-style dark UI: sidebar / center / Now-playing panel / player bar
 - No-mock UI: live search/radio by default, real-track catalog, Jump Back
   In home, queue click-to-jump + shuffle/repeat controls
+- Real click-to-play: search result click resolves + streams real audio
+  (mpv default with seek/position/clock, rodio fallback); video-ID paste
+  UI removed; test tone retired
+- Player bar: elapsed/total times, draggable progress, auto-advance at
+  track end, artwork placeholder + like, live MPRIS position
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

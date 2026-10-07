@@ -149,5 +149,6 @@ Done: user can plausibly replace Spotify for daily listening.
 8. yt-dlp resolution path: sidecar resolve + range-chunked fetch + e2e proof (done, `b73d84b`); Spotify-style UI redress (done, `e940063`)
 9. Phase 5/6 parallel push: scrobble submit + MPRIS live + mpv backend + disk cache + release pipeline (this session); Innertube real search backend (done, pending UI wiring)
 10. MVP push: no-mock UI (live search/radio default, catalog, queue/player controls) + playback clock + LRCLIB lyrics + OAuth login/library/YTM lyrics (this session; UI wiring for lyrics/login next)
+11. Real playback: click-to-play real audio (mpv default, rodio fallback), progress + draggable seek, auto-advance, video-ID paste removed, tone retired
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

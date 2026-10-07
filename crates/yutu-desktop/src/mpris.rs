@@ -94,6 +94,7 @@ pub struct MprisPlayer {
     now_playing: NowPlaying,
     status: PlaybackStatus,
     volume: f64,
+    position_secs: f64,
 }
 
 impl MprisPlayer {
@@ -103,6 +104,7 @@ impl MprisPlayer {
             now_playing,
             status,
             volume: 1.0,
+            position_secs: 0.0,
         };
         player.set_volume(volume);
         player
@@ -121,6 +123,20 @@ impl MprisPlayer {
     /// Current volume (`0.0..=1.0`).
     pub fn volume(&self) -> f64 {
         self.volume
+    }
+
+    /// Current position in seconds (published by the UI tick).
+    pub fn position_secs(&self) -> f64 {
+        self.position_secs
+    }
+
+    /// Set the position, clamped to `>= 0.0` (non-finite becomes `0.0`).
+    pub fn set_position(&mut self, position_secs: f64) {
+        self.position_secs = if position_secs.is_finite() {
+            position_secs.max(0.0)
+        } else {
+            0.0
+        };
     }
 
     /// Replace the current track. Called by the UI layer on track change.
@@ -181,6 +197,7 @@ impl Default for MprisPlayer {
             now_playing: NowPlaying::default(),
             status: PlaybackStatus::default(),
             volume: 1.0,
+            position_secs: 0.0,
         }
     }
 }
@@ -383,8 +400,8 @@ impl MprisService {
 
     #[zbus(property)]
     fn position(&self) -> i64 {
-        // Skeleton: position reporting needs the player clock; report 0.
-        0
+        // Microseconds, from the UI-published clock (Tick, 2x/sec).
+        (self.lock().position_secs() * 1_000_000.0) as i64
     }
 
     #[zbus(property)]
