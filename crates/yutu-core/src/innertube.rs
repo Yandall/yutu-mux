@@ -167,6 +167,131 @@ impl InnertubeBackend {
             }
         }
     }
+
+    /// Resolve with automatic PO-token sidecar fallback.
+    ///
+    /// First tries token-free [`resolve_stream`](Self::resolve_stream) (cheap,
+    /// no sidecar latency). On [`StreamError::PoTokenRequired`] it mints tokens
+    /// via the sidecar at `botguard_bin` (blocking `Command`, run in
+    /// `spawn_blocking`), retries the `player` endpoint as a raw POST carrying
+    /// `serviceIntegrityDimensions.poToken`, and returns the audio URL plus a
+    /// session token the caller should append as `&pot=` if the bare URL 403s.
+    pub async fn resolve_stream_with_sidecar(
+        &self,
+        req: &mut StreamRequest,
+        botguard_bin: &str,
+    ) -> Result<ResolvedStream, StreamError> {
+        match self.resolve_stream(req).await {
+            Ok(url) => Ok(ResolvedStream {
+                url,
+                pot_token: None,
+            }),
+            Err(other @ StreamError::NotFound { .. }) | Err(other @ StreamError::Network(_)) => {
+                Err(other)
+            }
+            Err(StreamError::PoTokenRequired { .. }) => {
+                let bin = botguard_bin.to_string();
+                let video_id = req.video_id.clone();
+                let minted = tokio::task::spawn_blocking({
+                    let video_id = video_id.clone();
+                    move || crate::pot::fetch_po_token(&bin, &video_id)
+                })
+                .await
+                .map_err(|e| StreamError::Network(format!("sidecar task: {e}")))?
+                .map_err(StreamError::Network)?;
+                let content_token = minted
+                    .tokens
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| StreamError::Network("sidecar returned no tokens".into()))?;
+                let session_token = minted.tokens.get(1).cloned();
+                let raw = raw_player_with_token(&video_id, &content_token).await?;
+                let value: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|e| StreamError::Network(format!("token player JSON: {e}")))?;
+                let url = extract_audio_url(&value)
+                    .ok_or_else(|| classify_no_url(&value, StreamClient::WebMusic, &video_id))?;
+                Ok(ResolvedStream {
+                    url,
+                    pot_token: session_token,
+                })
+            }
+        }
+    }
+}
+
+/// Resolved audio URL plus an optional session token for `&pot=` retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedStream {
+    pub url: String,
+    pub pot_token: Option<String>,
+}
+
+/// Raw Innertube `player` POST mirroring `ytmapi-rs` (WEB_REMIX context, same
+/// API key and signature-timestamp scheme) plus `serviceIntegrityDimensions`,
+/// which upstream 0.3 cannot express — hence this bypass exists.
+async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String, StreamError> {
+    let body = player_request_body(video_id, Some(po_token));
+    let response = reqwest::Client::new()
+        .post(PLAYER_URL)
+        .header("User-Agent", USER_AGENT)
+        .header("X-Origin", "https://music.youtube.com")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| StreamError::Network(format!("token player request: {e}")))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| StreamError::Network(format!("token player body: {e}")))?;
+    if !status.is_success() {
+        return Err(classify_player_error(
+            &format!("{status} {text}"),
+            StreamClient::WebMusic,
+            video_id,
+        ));
+    }
+    Ok(text)
+}
+
+const PLAYER_URL: &str =
+    "https://music.youtube.com/youtubei/v1/player?alt=json&prettyPrint=false&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
+const USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0";
+/// Dummy WEB_REMIX version, same date-based spirit as upstream's fallback.
+const WEB_REMIX_VERSION: &str = "1.20261007.00.00";
+
+/// Build the raw `player` body. `po_token = None` reproduces the plain probe;
+/// `Some` attaches `serviceIntegrityDimensions` per the BotGuard contract.
+fn player_request_body(video_id: &str, po_token: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": "WEB_REMIX",
+                "clientVersion": WEB_REMIX_VERSION,
+                "user": {},
+            },
+        },
+        "videoId": video_id,
+        "playbackContext": {
+            "contentPlaybackContext": {
+                "signatureTimestamp": signature_timestamp_days(),
+            },
+        },
+    });
+    if let Some(token) = po_token {
+        body["serviceIntegrityDimensions"] = serde_json::json!({ "poToken": token });
+    }
+    body
+}
+
+/// Days since epoch — mirrors upstream's `get_signature_timestamp`.
+fn signature_timestamp_days() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0)
 }
 
 /// Map a `player`-endpoint failure to our error policy: 403-flavoured errors
@@ -329,6 +454,22 @@ mod tests {
     }
 
     #[test]
+    fn token_request_body_carries_pot_and_context() {
+        let body = player_request_body("vid123", Some("TOKEN"));
+        assert_eq!(body["videoId"], "vid123");
+        assert_eq!(body["serviceIntegrityDimensions"]["poToken"], "TOKEN");
+        assert_eq!(body["context"]["client"]["clientName"], "WEB_REMIX");
+        let plain = player_request_body("vid123", None);
+        assert!(plain.get("serviceIntegrityDimensions").is_none());
+    }
+
+    #[test]
+    fn signature_timestamp_is_plausible_days() {
+        let days = signature_timestamp_days();
+        assert!(days > 20_000 && days < 100_000);
+    }
+
+    #[test]
     fn cookie_file_validation_rejects_empty_without_network() {
         let dir = std::env::temp_dir();
         let path = dir.join("yutu-innertube-empty-cookie.txt");
@@ -365,5 +506,24 @@ mod tests {
         let _ = backend.resolve_stream(&mut req).await;
         assert_eq!(req.tried.first(), Some(&StreamClient::AndroidVr));
         assert!(!req.tried.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "live network + installed rustypipe-botguard: full token chain"]
+    async fn live_sidecar_chain_resolves_url() {
+        let Some(bin) = crate::pot::find_botguard_bin() else {
+            eprintln!("SKIP: rustypipe-botguard not installed");
+            return;
+        };
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let video = std::env::var("YUTU_TEST_VIDEO_ID").unwrap_or_else(|_| "dQw4w9WgXcQ".into());
+        let mut req = StreamRequest::new(&video);
+        let resolved = backend
+            .resolve_stream_with_sidecar(&mut req, &bin)
+            .await
+            .expect("sidecar chain resolves");
+        assert!(resolved.url.starts_with("https://"));
     }
 }

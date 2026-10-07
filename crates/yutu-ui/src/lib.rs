@@ -134,20 +134,43 @@ fn find_track(id: &str) -> Option<Track> {
 }
 
 /// Resolve a video ID to bytes: anonymous Innertube connect, fallback-chain
-/// stream resolution, then download. PO-token gating surfaces as an
-/// actionable error (install the sidecar / use token-free clients).
+/// stream resolution, then download. On PO-token gating with an installed
+/// sidecar, mints tokens and retries with `poToken`; a bare-URL 403 retries
+/// once with the session token as `&pot=`.
 #[cfg(feature = "innertube")]
 async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
-    use yutu_core::{InnertubeBackend, StreamRequest};
+    use yutu_core::{InnertubeBackend, StreamError, StreamRequest};
     let backend = InnertubeBackend::connect_anonymous().await?;
     let mut req = StreamRequest::new(video_id);
-    let url = backend
-        .resolve_stream(&mut req)
-        .await
-        .map_err(|e| format!("{e} — {}", e.hint()))?;
-    yutu_player::fetch_bytes(&url)
-        .await
-        .map_err(|e| e.to_string())
+    match backend.resolve_stream(&mut req).await {
+        Ok(url) => yutu_player::fetch_bytes(&url)
+            .await
+            .map_err(|e| e.to_string()),
+        Err(StreamError::PoTokenRequired { .. }) => {
+            let Some(bin) = yutu_core::find_botguard_bin() else {
+                return Err("PO token required and rustypipe-botguard is not installed.".into());
+            };
+            let mut retry = StreamRequest::new(video_id);
+            let resolved = backend
+                .resolve_stream_with_sidecar(&mut retry, &bin)
+                .await
+                .map_err(|e| format!("{e} — {}", e.hint()))?;
+            match yutu_player::fetch_bytes(&resolved.url).await {
+                Ok(bytes) => Ok(bytes),
+                Err(first) => match resolved.pot_token {
+                    Some(pot) => {
+                        let sep = if resolved.url.contains('?') { '&' } else { '?' };
+                        let url = format!("{}{}pot={}", resolved.url, sep, pot);
+                        yutu_player::fetch_bytes(&url)
+                            .await
+                            .map_err(|e| e.to_string())
+                    }
+                    None => Err(first.to_string()),
+                },
+            }
+        }
+        Err(e) => Err(format!("{e} — {}", e.hint())),
+    }
 }
 
 fn now_unix() -> i64 {

@@ -16,6 +16,8 @@ pub use backend::{MockBackend, MusicBackend};
 pub use discovery::{forgotten_favorites, weekly_mix};
 #[cfg(feature = "innertube")]
 pub use innertube::InnertubeBackend;
+#[cfg(feature = "innertube")]
+pub use innertube::ResolvedStream;
 pub use library::LibraryStore;
 pub use models::{Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults, Track};
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
