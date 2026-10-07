@@ -69,6 +69,41 @@ pub struct PlayerSnapshot {
     track_id: String,
     status: PlaybackStatus,
     volume: f64,
+    shuffle: bool,
+    loop_status: LoopStatus,
+}
+
+/// MPRIS loop status (`LoopStatus` property).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LoopStatus {
+    /// No looping.
+    #[default]
+    None,
+    /// Repeat the current track.
+    Track,
+    /// Repeat the whole queue.
+    Playlist,
+}
+
+impl LoopStatus {
+    /// Wire value for the `LoopStatus` property.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoopStatus::None => "None",
+            LoopStatus::Track => "Track",
+            LoopStatus::Playlist => "Playlist",
+        }
+    }
+
+    /// Parse a widget-sent value; unknown strings are rejected.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "None" => Some(LoopStatus::None),
+            "Track" => Some(LoopStatus::Track),
+            "Playlist" => Some(LoopStatus::Playlist),
+            _ => None,
+        }
+    }
 }
 
 /// MPRIS playback status.
@@ -115,6 +150,10 @@ pub enum PlayerCommand {
     /// Absolute seek in seconds (MPRIS `SetPosition`).
     SetPosition(f64),
     SetVolume(f64),
+    /// Absolute shuffle state (MPRIS `Shuffle` property set).
+    SetShuffle(bool),
+    /// Absolute loop state (MPRIS `LoopStatus` property set).
+    SetLoop(LoopStatus),
 }
 
 /// Plain playback state mirrored onto D-Bus.
@@ -127,6 +166,8 @@ pub struct MprisPlayer {
     status: PlaybackStatus,
     volume: f64,
     position_secs: f64,
+    shuffle: bool,
+    loop_status: LoopStatus,
     pending: VecDeque<PlayerCommand>,
 }
 
@@ -138,6 +179,8 @@ impl MprisPlayer {
             status,
             volume: 1.0,
             position_secs: 0.0,
+            shuffle: false,
+            loop_status: LoopStatus::None,
             pending: VecDeque::new(),
         };
         player.set_volume(volume);
@@ -193,7 +236,29 @@ impl MprisPlayer {
             track_id: self.now_playing.track_id.clone(),
             status: self.status,
             volume: self.volume,
+            shuffle: self.shuffle,
+            loop_status: self.loop_status,
         }
+    }
+
+    /// Current shuffle state (mirrored from the UI queue).
+    pub fn shuffle(&self) -> bool {
+        self.shuffle
+    }
+
+    /// Set the shuffle state (UI publish path).
+    pub fn set_shuffle(&mut self, shuffle: bool) {
+        self.shuffle = shuffle;
+    }
+
+    /// Current loop status (mirrored from the UI repeat mode).
+    pub fn loop_status(&self) -> LoopStatus {
+        self.loop_status
+    }
+
+    /// Set the loop status (UI publish path).
+    pub fn set_loop_status(&mut self, loop_status: LoopStatus) {
+        self.loop_status = loop_status;
     }
 
     /// Enqueue a desktop transport command for the UI tick to apply.
@@ -260,6 +325,8 @@ impl Default for MprisPlayer {
             status: PlaybackStatus::default(),
             volume: 1.0,
             position_secs: 0.0,
+            shuffle: false,
+            loop_status: LoopStatus::None,
             pending: VecDeque::new(),
         }
     }
@@ -438,12 +505,26 @@ impl MprisService {
 
     #[zbus(property)]
     fn loop_status(&self) -> String {
-        "None".to_owned()
+        self.lock().loop_status().as_str().to_owned()
+    }
+
+    #[zbus(property)]
+    fn set_loop_status(&self, status: &str) {
+        // Unknown strings are ignored (spec: invalid values are no-ops).
+        if let Some(loop_status) = LoopStatus::parse(status) {
+            self.lock()
+                .push_command(PlayerCommand::SetLoop(loop_status));
+        }
     }
 
     #[zbus(property)]
     fn shuffle(&self) -> bool {
-        false
+        self.lock().shuffle()
+    }
+
+    #[zbus(property)]
+    fn set_shuffle(&self, shuffle: bool) {
+        self.lock().push_command(PlayerCommand::SetShuffle(shuffle));
     }
 
     #[zbus(property)]
@@ -608,6 +689,15 @@ pub async fn watch_and_signal(conn: zbus::Connection, state: SharedPlayer) {
             let mut changed: HashMap<&str, Value<'_>> = HashMap::new();
             let is_new = last.as_ref() != Some(&snap);
             if is_new {
+                if last.as_ref().map(|p| p.shuffle) != Some(snap.shuffle) {
+                    changed.insert("Shuffle", Value::from(snap.shuffle));
+                }
+                if last.as_ref().map(|p| p.loop_status) != Some(snap.loop_status) {
+                    changed.insert(
+                        "LoopStatus",
+                        Value::from(snap.loop_status.as_str().to_owned()),
+                    );
+                }
                 if last.as_ref().map(|p| p.track_id.as_str()) != Some(snap.track_id.as_str()) {
                     let dict: HashMap<String, Value<'_>> = player
                         .metadata_map()
@@ -692,6 +782,15 @@ mod tests {
             player.push_command(PlayerCommand::Next);
         }
         assert!(player.drain_commands().len() <= 16);
+    }
+
+    #[test]
+    fn loop_status_parses_wire_values() {
+        assert_eq!(LoopStatus::parse("None"), Some(LoopStatus::None));
+        assert_eq!(LoopStatus::parse("Track"), Some(LoopStatus::Track));
+        assert_eq!(LoopStatus::parse("Playlist"), Some(LoopStatus::Playlist));
+        assert_eq!(LoopStatus::parse("bogus"), None);
+        assert_eq!(LoopStatus::Track.as_str(), "Track");
     }
 
     #[test]

@@ -107,6 +107,29 @@ impl Queue {
         true
     }
 
+    /// Move item `from` to position `to` (drag reorder). Out of range
+    /// or no-op moves return false without touching anything. The current
+    /// index tracks its item across the move.
+    pub fn move_to(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.items.len() || to >= self.items.len() || from == to {
+            return from != to && (from < self.items.len() && to < self.items.len());
+        }
+        let track = self.items.remove(from);
+        self.items.insert(to, track);
+        self.index = self.index.map(|cur| {
+            if cur == from {
+                to
+            } else if from < cur && cur <= to {
+                cur - 1
+            } else if to <= cur && cur < from {
+                cur + 1
+            } else {
+                cur
+            }
+        });
+        true
+    }
+
     pub fn move_down(&mut self, i: usize) -> bool {
         if i + 1 >= self.items.len() {
             return false;
@@ -132,11 +155,13 @@ impl Queue {
         if self.items.is_empty() {
             return None;
         }
+        // Repeat-One replays the current song wherever it sits; it must
+        // win over the plain advance below it.
         let next = match self.index {
             None => 0,
+            Some(i) if self.repeat == RepeatMode::One => i,
             Some(i) if i + 1 < self.items.len() => i + 1,
             Some(_) if self.repeat == RepeatMode::All => 0,
-            Some(i) if self.repeat == RepeatMode::One => i,
             _ => return None,
         };
         self.index = Some(next);
@@ -223,6 +248,33 @@ mod tests {
         assert!(q.jump_to(2));
         assert!(q.remove_id(q.current().unwrap().id.clone().as_str()));
         assert!(q.position().unwrap() < q.len());
+    }
+
+    #[test]
+    fn repeat_one_replays_mid_queue() {
+        let mut q = queue_of(3);
+        q.repeat = RepeatMode::One;
+        assert!(q.jump_to(0));
+        // Mid-queue: One replays the same song (used to skip ahead).
+        assert_eq!(q.next_track().unwrap().id, "m1");
+        assert_eq!(q.position(), Some(0));
+        assert!(q.jump_to(1));
+        assert_eq!(q.next_track().unwrap().id, "m2");
+    }
+
+    #[test]
+    fn move_to_reorders_and_tracks_current() {
+        let mut q = queue_of(4); // m1 m2 m3 m4, current m1
+        assert!(q.move_to(0, 2)); // m2 m3 m1 m4
+        assert_eq!(q.items()[2].id, "m1");
+        assert_eq!(q.position(), Some(2));
+        assert!(q.move_to(3, 0)); // m4 m2 m3 m1
+        assert_eq!(q.items()[0].id, "m4");
+        assert_eq!(q.position(), Some(3));
+        assert!(!q.move_to(1, 1));
+        assert!(!q.move_to(0, 9));
+        assert!(!q.move_to(9, 0));
+        assert_eq!(q.items().len(), 4);
     }
 
     #[test]

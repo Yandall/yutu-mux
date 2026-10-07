@@ -683,6 +683,7 @@ fn album_to_album(album: &SearchResultAlbum) -> Album {
         title: album.title.clone(),
         artist: album.artist.clone(),
         year: album.year.trim().parse().ok(),
+        thumbnail_url: pick_thumb_url(&album.thumbnails),
     }
 }
 
@@ -691,6 +692,7 @@ fn artist_to_artist(artist: &SearchResultArtist) -> Artist {
     Artist {
         id: artist.browse_id.get_raw().to_string(),
         name: artist.artist.clone(),
+        thumbnail_url: pick_thumb_url(&artist.thumbnails),
     }
 }
 

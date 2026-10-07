@@ -21,12 +21,18 @@ pub struct Album {
     pub title: String,
     pub artist: String,
     pub year: Option<u16>,
+    /// Cover art URL when the source provided one.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artist {
     pub id: String,
     pub name: String,
+    /// Artist photo URL when the source provided one.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

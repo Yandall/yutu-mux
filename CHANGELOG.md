@@ -68,6 +68,15 @@
   right-click everywhere; right panel scrolls the full queue + tail
 - Widget timeline fixed: PropertiesChanged signals on track/status/
   volume change + Rate property (1Hz watch loop next to the bus)
+- Zero emoji: 33 Lucide SVGs (ISC, tinted) for every button/placeholder
+- True shuffle: current-first Fisher-Yates order, walked once to a real
+  end, then autoplay; repeat-one replays mid-queue; widget shuffle/loop
+  buttons work end to end (LoopStatus/Shuffle properties + setters)
+- Snappier search: 300/150ms debounce, instant catalog pre-results,
+  live progress row; right-panel drag reorder via grip handles
+- Spotify-style search/artist/album: top-result hero, numbered popular
+  tracks, cover-art album cards, photo artist cards, PLAY/SHUFFLE
+  hero pills, scrollbar clears the durations
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

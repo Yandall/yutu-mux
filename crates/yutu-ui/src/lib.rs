@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
-    forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore,
+    forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
     LyricsResult, Playlist, SearchResults, Track,
 };
 #[cfg(feature = "mpv")]
@@ -100,6 +100,54 @@ fn nav_style(
     }
 }
 
+/// Lucide icon (ISC, pinned 0.469.0, `assets/icons/*.svg`), tinted to
+/// `color`. Lucide strokes use `currentColor`, so single-color tinting
+/// reproduces the design palette at any size.
+fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'static, Message> {
+    use iced::widget::svg;
+    let bytes: &'static [u8] = match name {
+        "play" => include_bytes!("../assets/icons/play.svg"),
+        "pause" => include_bytes!("../assets/icons/pause.svg"),
+        "skip-back" => include_bytes!("../assets/icons/skip-back.svg"),
+        "skip-forward" => include_bytes!("../assets/icons/skip-forward.svg"),
+        "shuffle" => include_bytes!("../assets/icons/shuffle.svg"),
+        "repeat" => include_bytes!("../assets/icons/repeat.svg"),
+        "repeat-1" => include_bytes!("../assets/icons/repeat-1.svg"),
+        "heart" => include_bytes!("../assets/icons/heart.svg"),
+        "search" => include_bytes!("../assets/icons/search.svg"),
+        "house" => include_bytes!("../assets/icons/house.svg"),
+        "library" => include_bytes!("../assets/icons/library.svg"),
+        "plus" => include_bytes!("../assets/icons/plus.svg"),
+        "x" => include_bytes!("../assets/icons/x.svg"),
+        "volume" => include_bytes!("../assets/icons/volume-2.svg"),
+        "mic" => include_bytes!("../assets/icons/mic.svg"),
+        "radio" => include_bytes!("../assets/icons/radio.svg"),
+        "settings" => include_bytes!("../assets/icons/settings.svg"),
+        "queue" => include_bytes!("../assets/icons/list-music.svg"),
+        "chevron-up" => include_bytes!("../assets/icons/chevron-up.svg"),
+        "chevron-down" => include_bytes!("../assets/icons/chevron-down.svg"),
+        "chevron-left" => include_bytes!("../assets/icons/chevron-left.svg"),
+        "chevron-right" => include_bytes!("../assets/icons/chevron-right.svg"),
+        "arrow-up" => include_bytes!("../assets/icons/arrow-up.svg"),
+        "arrow-down" => include_bytes!("../assets/icons/arrow-down.svg"),
+        "download" => include_bytes!("../assets/icons/download.svg"),
+        "trash" => include_bytes!("../assets/icons/trash-2.svg"),
+        "ellipsis" => include_bytes!("../assets/icons/ellipsis.svg"),
+        "grip" => include_bytes!("../assets/icons/grip-vertical.svg"),
+        "music" => include_bytes!("../assets/icons/music.svg"),
+        "disc" => include_bytes!("../assets/icons/disc.svg"),
+        "folder" => include_bytes!("../assets/icons/folder.svg"),
+        "list-plus" => include_bytes!("../assets/icons/list-plus.svg"),
+        "sparkles" => include_bytes!("../assets/icons/sparkles.svg"),
+        _ => include_bytes!("../assets/icons/music.svg"),
+    };
+    svg(svg::Handle::from_memory(bytes))
+        .width(size)
+        .height(size)
+        .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
+        .into()
+}
+
 /// Card-as-button (playlist / mix tiles).
 fn card_button(
     _: &iced::Theme,
@@ -132,6 +180,13 @@ pub enum Route {
     Lyrics(String),
     Radio(String),
     NowPlaying,
+}
+
+/// In-progress right-panel drag: source index + hovered target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DragState {
+    from: usize,
+    over: Option<usize>,
 }
 
 /// Right-panel tab: queue or recently played.
@@ -222,12 +277,20 @@ pub enum Message {
     PlayNext(String),
     /// Play an autoplay-tail item now (it joins the manual queue).
     PlayAutoplay(usize),
-    /// Remove one occurrence from the manual queue (menu / hover ✕).
+    /// Play-all with shuffle turned on first (hero shuffle buttons).
+    PlayAllShuffled,
+    /// Remove one occurrence from the manual queue (menu / hover remove).
     RemoveFromQueue(String),
     /// Drop an autoplay-tail item by index.
     RemoveAutoplay(usize),
-    /// Queue-page hover tracking (reveals the row ✕).
+    /// Queue-page hover tracking (reveals the row remove).
     QueueHover(Option<usize>),
+    /// Right-panel drag reorder (grip press, row hover, release anywhere).
+    DragStart(usize),
+    DragOver(usize),
+    DragEnd,
+    /// Right-panel row hover: highlight + drag-target tracking.
+    PanelHover(usize),
     /// Context menu open/close: right-click (per-row `mouse_area`) or the
     /// per-row `…` button opens it at the last cursor position.
     OpenContext(String),
@@ -521,6 +584,10 @@ pub struct AppState {
     nav_forward: Vec<Route>,
     /// Right-panel tab (view-only state).
     right_tab: RightTab,
+    /// Fisher-Yates play order (track ids) when shuffle is on: current
+    /// first at build time, walked straight through with no repeats to a
+    /// real end, then autoplay. Rebuilt on toggle + every queue mutation.
+    shuffle_order: Vec<String>,
     /// Suggestion popup: texts + generation + visibility.
     suggest: Vec<String>,
     suggest_gen: u64,
@@ -543,8 +610,10 @@ pub struct AppState {
     /// Spotify-style split: manual queue (user picks) plays first, then
     /// this radio-picked tail ("Next up"). Never persisted.
     autoplay: Vec<Track>,
-    /// Queue-page row under the cursor (hover reveals its ✕).
+    /// Queue-page row under the cursor (hover reveals its remove).
     hovered_queue: Option<usize>,
+    /// Right-panel drag in progress (grip press → row hover → release).
+    drag: Option<DragState>,
     /// Recent playback/fetch failures (capped, surfaced in Settings).
     error_log: Vec<String>,
     /// Manual position clock deadline after a user seek (anti-flicker).
@@ -618,6 +687,41 @@ fn order_radio_impl(seed_id: &str, tracks: &[Track]) -> Vec<Track> {
     seq
 }
 
+/// Rebuild the shuffle order: current track first, the rest Fisher-Yates
+/// shuffled with a time-seeded xorshift (no extra deps). Cleared when
+/// shuffle is off or the queue is empty.
+fn rebuild_shuffle_order(queue: &Queue, shuffle: bool) -> Vec<String> {
+    if !shuffle || queue.is_empty() {
+        return Vec::new();
+    }
+    let items = queue.items();
+    let cur = queue.position().unwrap_or(0).min(items.len() - 1);
+    let mut rest: Vec<String> = items
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != cur)
+        .map(|(_, t)| t.id.clone())
+        .collect();
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0x2545F491)
+        ^ 0x9E3779B97F4A7C15;
+    if seed == 0 {
+        seed = 0x2545F491;
+    }
+    for i in (1..rest.len()).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        rest.swap(i, (seed as usize) % (i + 1));
+    }
+    let mut order = Vec::with_capacity(items.len());
+    order.push(items[cur].id.clone());
+    order.extend(rest);
+    order
+}
+
 /// Fixture-backed radio for unit tests (never user-visible).
 #[cfg(test)]
 fn radio_for(seed_id: &str) -> Vec<Track> {
@@ -628,6 +732,21 @@ impl AppState {
     /// Resolve a track id from the real catalog (search/radio/playlist data).
     fn find_track(&self, id: &str) -> Option<Track> {
         self.catalog.get(id).cloned()
+    }
+
+    /// Instant local matches from the known catalog: paints in the popup
+    /// on the same keystroke, then the live payload replaces it.
+    fn catalog_hits(&self, query: &str) -> Vec<Track> {
+        let q = query.to_lowercase();
+        let mut v: Vec<Track> = self
+            .catalog
+            .values()
+            .filter(|t| t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q))
+            .take(12)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| a.title.cmp(&b.title));
+        v
     }
 
     /// Register freshly fetched tracks; returns them for chaining.
@@ -924,6 +1043,7 @@ impl AppState {
                 nav_back: Vec::new(),
                 nav_forward: Vec::new(),
                 right_tab: RightTab::Queue,
+                shuffle_order: Vec::new(),
                 suggest: Vec::new(),
                 suggest_gen: 0,
                 show_suggest: false,
@@ -936,6 +1056,7 @@ impl AppState {
                 autoplay_for: None,
                 autoplay: Vec::new(),
                 hovered_queue: None,
+                drag: None,
                 error_log: Vec::new(),
                 seek_hold_until: None,
                 last_tick: None,
@@ -1018,6 +1139,7 @@ impl AppState {
             iced::Event::Window(iced::window::Event::Resized(size)) => {
                 Some(Message::WindowResized(size))
             }
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::DragEnd),
             _ => None,
         });
         iced::Subscription::batch([keys, tick, events])
@@ -1081,6 +1203,7 @@ impl AppState {
         self.persist_play(&track.id);
         self.queue.push(track);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
+        self.rebuild_shuffle();
         self.apply_volume();
         let play = self.play_current_task();
         let just_queued = self.queue.current().cloned();
@@ -1157,7 +1280,7 @@ impl AppState {
             Some(audio) => match audio.play_stream_url(url) {
                 Ok(()) => {
                     self.loading_track = None;
-                    self.status = format!("♪ {} — {}.", t.title, t.artist);
+                    self.status = format!("Playing: {} — {}.", t.title, t.artist);
                     true
                 }
                 Err(e) => {
@@ -1174,11 +1297,86 @@ impl AppState {
         }
     }
 
+    /// Refresh the shuffle order from the live queue (no-op when off).
+    fn rebuild_shuffle(&mut self) {
+        self.shuffle_order = rebuild_shuffle_order(&self.queue, self.queue.shuffle);
+    }
+
+    /// True when the built order is exactly the queue's ids (and holds the
+    /// current track). A *valid* order at its end means playback ends;
+    /// only an *invalid* one may be rebuilt.
+    fn shuffle_order_valid(&self) -> bool {
+        let items = self.queue.items();
+        if items.is_empty() {
+            return self.shuffle_order.is_empty();
+        }
+        if self.shuffle_order.len() != items.len() {
+            return false;
+        }
+        let current = match self.queue.current() {
+            Some(t) => t.id.clone(),
+            None => return false,
+        };
+        if !self.shuffle_order.contains(&current) {
+            return false;
+        }
+        let mut a: Vec<&str> = items.iter().map(|t| t.id.as_str()).collect();
+        let mut b: Vec<&str> = self.shuffle_order.iter().map(|id| id.as_str()).collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        a == b
+    }
+
+    /// Next queue index under shuffle, walking the built order. `None` at
+    /// the order's end (repeat All loops it, One replays current — the
+    /// caller decides) or when the order is stale (caller rebuilds).
+    fn shuffle_next_index(&self) -> Option<usize> {
+        let current = self.queue.current()?.id.clone();
+        if self.shuffle_order.len() != self.queue.len() {
+            return None;
+        }
+        let mut queue_ids: Vec<&str> = self.queue.items().iter().map(|t| t.id.as_str()).collect();
+        queue_ids.sort_unstable();
+        let mut order_ids: Vec<&str> = self.shuffle_order.iter().map(|id| id.as_str()).collect();
+        order_ids.sort_unstable();
+        if queue_ids != order_ids {
+            return None;
+        }
+        let pos = self.shuffle_order.iter().position(|id| *id == current)?;
+        if pos + 1 < self.shuffle_order.len() {
+            let next_id = &self.shuffle_order[pos + 1];
+            self.queue.items().iter().position(|t| &t.id == next_id)
+        } else {
+            match self.queue.repeat {
+                yutu_player::RepeatMode::All => self
+                    .queue
+                    .items()
+                    .iter()
+                    .position(|t| t.id == self.shuffle_order[0]),
+                yutu_player::RepeatMode::One => self.queue.position(),
+                yutu_player::RepeatMode::Off => None,
+            }
+        }
+    }
+
     /// Id of the likely next track (repeat-all wraps), for prefetching.
     fn peek_next_id(&self) -> Option<String> {
         let items = self.queue.items();
         if items.is_empty() {
-            return None;
+            return self.autoplay.first().map(|t| t.id.clone());
+        }
+        if self.queue.shuffle {
+            if let Some(ix) = self.shuffle_next_index() {
+                // A shuffle step that stays put (repeat One) needs no fetch.
+                if Some(ix) != self.queue.position() {
+                    return items.get(ix).map(|t| t.id.clone());
+                }
+                return None;
+            }
+            if self.queue.repeat == yutu_player::RepeatMode::All {
+                return None;
+            }
+            return self.autoplay.first().map(|t| t.id.clone());
         }
         let pos = self.queue.position().unwrap_or(0);
         if pos + 1 < items.len() {
@@ -1214,30 +1412,42 @@ impl AppState {
     /// True when current changed.
     fn advance_queue(&mut self) -> bool {
         if self.queue.shuffle && self.queue.len() > 1 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos() as usize)
-                .unwrap_or(0);
-            let mut i = now % self.queue.len();
-            if Some(i) == self.queue.position() {
-                i = (i + 1) % self.queue.len();
+            // Rebuild only STALE orders. A valid order at its end means the
+            // queue genuinely ends (rebuilds here looped forever).
+            if !self.shuffle_order_valid() {
+                self.rebuild_shuffle();
             }
-            return self.queue.jump_to(i);
+            match self.shuffle_next_index() {
+                // Repeat-One replay still counts as an advance (restarts).
+                Some(i) => return self.queue.jump_to(i),
+                None => {
+                    // Ended (All loops the order above, One replays above):
+                    // repeat Off continues to autoplay, else stop.
+                    if self.queue.repeat != yutu_player::RepeatMode::Off {
+                        return false;
+                    }
+                }
+            }
+        } else {
+            if self.queue.next_track().is_some() {
+                return true;
+            }
+            // Repeat All/One loop the manual queue by design (like
+            // Spotify's repeat); only Off reaches autoplay.
+            if self.queue.repeat != yutu_player::RepeatMode::Off {
+                return false;
+            }
         }
-        if self.queue.next_track().is_some() {
-            return true;
+        if self.autoplay.is_empty() {
+            return false;
         }
-        // Manual queue truly ended: autoplay tail (repeat All/One loop the
-        // manual queue by design, like Spotify's repeat).
-        if self.queue.repeat == yutu_player::RepeatMode::Off && !self.autoplay.is_empty() {
-            let t = self.autoplay.remove(0);
-            self.history.push(t.id.clone());
-            self.persist_play(&t.id);
-            self.queue.push(t);
-            self.queue.jump_to(self.queue.len().saturating_sub(1));
-            return true;
-        }
-        false
+        let t = self.autoplay.remove(0);
+        self.history.push(t.id.clone());
+        self.persist_play(&t.id);
+        self.queue.push(t);
+        self.queue.jump_to(self.queue.len().saturating_sub(1));
+        self.rebuild_shuffle();
+        true
     }
 
     fn apply_volume(&self) {
@@ -1340,6 +1550,133 @@ impl AppState {
             .push_str(" | Scrobble-ready (rebuild with `--features submit`)");
     }
 
+    /// Big green PLAY pill for hero headers (Spotify-style).
+    fn play_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
+        use iced::widget::{button, row, text};
+        button(
+            row![icon("play", 14.0, iced::Color::BLACK), text(label).size(13),]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(green_play)
+        .on_press(msg)
+        .padding(9)
+        .into()
+    }
+
+    /// Spotify-style numbered row: rank + art + play + title + time + actions.
+    fn numbered_track_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, mouse_area, row, text};
+        use iced::Fill;
+        let heart_color = if self.liked.contains(&t.id) {
+            SPOT_GREEN
+        } else {
+            MUTED
+        };
+        mouse_area(
+            row![
+                text(format!("{n}")).size(13).color(MUTED).width(28),
+                self.thumb(t),
+                button(icon("play", 13.0, iced::Color::BLACK))
+                    .style(green_play)
+                    .on_press(Message::PlayNow(t.id.clone()))
+                    .padding(6),
+                column![
+                    text(t.title.clone()).size(14),
+                    text(t.artist.clone()).size(12).color(MUTED),
+                ]
+                .spacing(2)
+                .width(Fill),
+                text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                button(icon("heart", 15.0, heart_color))
+                    .style(button::text)
+                    .on_press(Message::Like(t.id.clone()))
+                    .padding(6),
+                button(icon("ellipsis", 15.0, MUTED))
+                    .style(button::text)
+                    .on_press(Message::OpenContext(t.id.clone()))
+                    .padding(6),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .padding(4),
+        )
+        .on_right_press(Message::OpenContext(t.id.clone()))
+        .into()
+    }
+
+    /// Album card with cover art (search grids, artist pages).
+    fn album_card(&self, a: &Album) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, text};
+        use iced::Fill;
+        let cover = self.album_cover(a);
+        let sub = match a.year {
+            Some(y) => format!("{} · {}", a.artist, y),
+            None => a.artist.clone(),
+        };
+        button(
+            column![
+                self.art_thumb(cover.as_deref(), 140.0),
+                text(a.title.clone()).size(14).width(Fill),
+                text(sub).size(12).color(MUTED).width(Fill),
+            ]
+            .spacing(4)
+            .padding(8)
+            .width(Fill),
+        )
+        .style(card_button)
+        .on_press(Message::OpenAlbum(a.id.clone()))
+        .padding(0)
+        .width(156)
+        .into()
+    }
+
+    /// Artist card with photo (search grids).
+    fn artist_card(&self, a: &Artist) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, text};
+        use iced::Fill;
+        button(
+            column![
+                self.art_thumb(a.thumbnail_url.as_deref(), 140.0),
+                text(a.name.clone()).size(14).width(Fill),
+                text("Artist").size(12).color(MUTED).width(Fill),
+            ]
+            .spacing(4)
+            .padding(8)
+            .width(Fill),
+        )
+        .style(card_button)
+        .on_press(Message::OpenArtist(a.id.clone()))
+        .padding(0)
+        .width(156)
+        .into()
+    }
+
+    /// Cover for an album: API art first, else the first known track's.
+    fn album_cover(&self, album: &Album) -> Option<String> {
+        album.thumbnail_url.clone().or_else(|| {
+            self.catalog
+                .values()
+                .find(|t| t.album.as_deref() == Some(album.title.as_str()))
+                .and_then(|t| t.thumbnail_url.clone())
+        })
+    }
+
+    /// Photo for an artist: last search payload first, else catalog.
+    fn artist_photo(&self, name: &str) -> Option<String> {
+        self.results
+            .artists
+            .iter()
+            .find(|a| a.name == name)
+            .and_then(|a| a.thumbnail_url.clone())
+            .or_else(|| {
+                self.catalog
+                    .values()
+                    .find(|t| t.artist == name)
+                    .and_then(|t| t.thumbnail_url.clone())
+            })
+    }
+
     /// Bulk-append without spamming history (one entry-free push per track),
     /// then play the first new track for real.
     fn queue_many(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
@@ -1358,10 +1695,47 @@ impl AppState {
             self.queue.push(t);
         }
         self.queue.jump_to(first_new);
+        self.rebuild_shuffle();
         self.playing_from = label.to_string();
         self.status = format!("{label}: queued {n} track(s).");
         self.apply_volume();
         self.fetch_current_task()
+    }
+
+    /// Play-all for the current detail view (artist/album/playlist/
+    /// radio/discovery/search). With `shuffle`, shuffle turns on first and
+    /// the fresh queue plays in shuffled order.
+    fn play_all_tracks(&mut self, shuffle: bool) -> iced::Task<Message> {
+        let (tracks, label) = match &self.route {
+            Route::Artist(id) => {
+                let name = self.resolve_artist_name(id);
+                (self.artist_tracks(&name), format!("Artist {name}"))
+            }
+            Route::Album(id) => {
+                let title = self.resolve_album_title(id);
+                (self.album_tracks(id), format!("Album {title}"))
+            }
+            Route::PlaylistDetail(id) => match self.find_playlist(id) {
+                Some(p) => (p.tracks.clone(), format!("Playlist {}", p.title)),
+                None => (Vec::new(), "Playlist not found".into()),
+            },
+            Route::Radio(_) => (self.radio_tracks.clone(), "Radio".to_string()),
+            Route::Discovery => (self.weekly_mix_tracks(), "Weekly Mix".to_string()),
+            _ => (self.results.tracks.clone(), "Search results".to_string()),
+        };
+        if tracks.is_empty() {
+            self.status = format!("{label}: nothing to queue.");
+            return iced::Task::none();
+        }
+        if shuffle && !self.queue.shuffle {
+            self.queue.shuffle = true;
+        }
+        let task = self.queue_many(tracks, &label);
+        if shuffle {
+            self.rebuild_shuffle();
+        }
+        self.publish_mpris();
+        task
     }
 
     fn play_index(&mut self, i: usize) -> iced::Task<Message> {
@@ -1387,30 +1761,49 @@ impl AppState {
     /// Fetch missing artwork for freshly seen tracks (cap: 12 per payload,
     /// deduped by URL, never refetched once attempted).
     fn artwork_tasks(&mut self, tracks: &[Track]) -> Vec<iced::Task<Message>> {
+        let urls: Vec<String> = tracks
+            .iter()
+            .filter_map(|t| t.thumbnail_url.clone())
+            .collect();
+        self.artwork_tasks_for_urls(&urls)
+    }
+
+    /// Same fetch for any URL list (album covers, artist photos).
+    fn artwork_tasks_for_urls(&mut self, urls: &[String]) -> Vec<iced::Task<Message>> {
         let mut tasks = Vec::new();
-        for t in tracks {
-            if let Some(url) = t.thumbnail_url.as_deref() {
-                if !self.artwork.contains_key(url)
-                    && !self.artwork_loading.contains(url)
-                    && tasks.len() < 12
-                {
-                    self.artwork_loading.insert(url.to_string());
-                    let url_owned = url.to_string();
-                    let url_for_msg = url_owned.clone();
-                    tasks.push(iced::Task::perform(
-                        async move { yutu_player::fetch_bytes(&url_owned).await },
-                        move |result| Message::ArtworkReady {
-                            url: url_for_msg.clone(),
-                            result: result.map_err(|e| e.to_string()),
-                        },
-                    ));
-                }
+        for url in urls {
+            if !self.artwork.contains_key(url)
+                && !self.artwork_loading.contains(url)
+                && tasks.len() < 12
+            {
+                self.artwork_loading.insert(url.clone());
+                let url_owned = url.clone();
+                let url_for_msg = url_owned.clone();
+                tasks.push(iced::Task::perform(
+                    async move { yutu_player::fetch_bytes(&url_owned).await },
+                    move |result| Message::ArtworkReady {
+                        url: url_for_msg.clone(),
+                        result: result.map_err(|e| e.to_string()),
+                    },
+                ));
             }
         }
         tasks
     }
 
-    /// 40px artwork for rows/panel, ♪ placeholder until loaded.
+    /// Cover/photo art by URL at any size (albums, artists).
+    fn art_thumb(&self, url: Option<&str>, size: f32) -> iced::Element<'_, Message> {
+        use iced::widget::{container, image};
+        match url.and_then(|u| self.artwork.get(u)) {
+            Some(handle) => image(handle.clone()).width(size).height(size).into(),
+            None => container(icon("music", size * 0.4, MUTED))
+                .style(card_bg)
+                .padding(8)
+                .into(),
+        }
+    }
+
+    /// 40px artwork for rows/panel, music-note placeholder until loaded.
     fn thumb(&self, track: &Track) -> iced::Element<'_, Message> {
         self.thumb_sized(track, 40.0)
     }
@@ -1581,14 +1974,14 @@ impl AppState {
 
     /// Artwork at any square size (home cards use 52, rows use 40).
     fn thumb_sized(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
-        use iced::widget::{container, image, text};
+        use iced::widget::{container, image};
         match track
             .thumbnail_url
             .as_deref()
             .and_then(|u| self.artwork.get(u))
         {
             Some(handle) => image(handle.clone()).width(size).height(size).into(),
-            None => container(text("♪").size(16).color(MUTED))
+            None => container(icon("music", 16.0, MUTED))
                 .style(card_bg)
                 .padding(8)
                 .into(),
@@ -1698,6 +2091,26 @@ impl AppState {
                     a.set_volume(self.volume);
                 }
             }
+            C::SetShuffle(shuffle) => {
+                if self.queue.shuffle != shuffle {
+                    self.queue.shuffle = shuffle;
+                    self.rebuild_shuffle();
+                    self.status = if shuffle {
+                        "Shuffle on (desktop).".into()
+                    } else {
+                        "Shuffle off (desktop).".into()
+                    };
+                }
+            }
+            C::SetLoop(loop_status) => {
+                let mode = match loop_status {
+                    yutu_desktop::LoopStatus::None => yutu_player::RepeatMode::Off,
+                    yutu_desktop::LoopStatus::Track => yutu_player::RepeatMode::One,
+                    yutu_desktop::LoopStatus::Playlist => yutu_player::RepeatMode::All,
+                };
+                self.queue.repeat = mode;
+                self.status = format!("Repeat: {mode:?} (desktop).");
+            }
         }
         iced::Task::none()
     }
@@ -1740,6 +2153,12 @@ impl AppState {
                 length_secs: t.duration_secs,
             });
         }
+        player.set_shuffle(self.queue.shuffle);
+        player.set_loop_status(match self.queue.repeat {
+            yutu_player::RepeatMode::Off => yutu_desktop::LoopStatus::None,
+            yutu_player::RepeatMode::One => yutu_desktop::LoopStatus::Track,
+            yutu_player::RepeatMode::All => yutu_desktop::LoopStatus::Playlist,
+        });
         player.set_status(if self.queue.current().is_none() {
             yutu_desktop::PlaybackStatus::Stopped
         } else if self.paused {
@@ -1879,6 +2298,7 @@ impl AppState {
                         title,
                         artist: artist.into(),
                         year: None,
+                        thumbnail_url: t.thumbnail_url.clone(),
                     });
                 }
             }
@@ -1970,6 +2390,12 @@ impl AppState {
                     self.searching = false;
                 } else if trimmed.len() >= 2 {
                     self.show_suggest = true;
+                    // Premature results: known tracks paint instantly.
+                    self.results = SearchResults {
+                        tracks: self.catalog_hits(&trimmed),
+                        albums: Vec::new(),
+                        artists: Vec::new(),
+                    };
                     #[cfg(feature = "innertube")]
                     {
                         let gen = self.search_gen;
@@ -1982,6 +2408,11 @@ impl AppState {
                             Self::suggest_debounce_task(sgen, q2),
                         ]);
                     }
+                } else {
+                    // Single character: no stale results, no network yet.
+                    self.results = SearchResults::default();
+                    self.suggest.clear();
+                    self.searching = false;
                 }
             }
             Message::SuggestCompleted { gen, result } => {
@@ -2078,7 +2509,20 @@ impl AppState {
                         let n = search.tracks.len();
                         let tracks = self.register_tracks(search.tracks);
                         let search = SearchResults { tracks, ..search };
-                        let tasks = self.artwork_tasks(&search.tracks);
+                        let art_urls: Vec<String> = search
+                            .albums
+                            .iter()
+                            .filter_map(|a| a.thumbnail_url.clone())
+                            .chain(
+                                search
+                                    .artists
+                                    .iter()
+                                    .filter_map(|a| a.thumbnail_url.clone()),
+                            )
+                            .collect();
+                        let mut tasks = self.artwork_tasks(&search.tracks);
+                        // Album covers + artist photos ride along (same cap).
+                        tasks.extend(self.artwork_tasks_for_urls(&art_urls));
                         // Out-of-order arrival (user typed on): keep the
                         // tracks in the catalog, but never overwrite the
                         // newer query's results.
@@ -2167,15 +2611,19 @@ impl AppState {
             }
             Message::QueueRemove(i) => {
                 self.queue.remove_at(i);
+                self.rebuild_shuffle();
             }
             Message::QueueUp(i) => {
                 self.queue.move_up(i);
+                self.rebuild_shuffle();
             }
             Message::QueueDown(i) => {
                 self.queue.move_down(i);
+                self.rebuild_shuffle();
             }
             Message::QueueClear => {
                 self.queue.clear();
+                self.rebuild_shuffle();
                 self.status = if self.autoplay.is_empty() {
                     "Queue cleared.".into()
                 } else {
@@ -2279,11 +2727,9 @@ impl AppState {
                     Some(t) => {
                         let was_empty = self.queue.is_empty();
                         self.queue.push(t.clone());
+                        self.rebuild_shuffle();
                         self.status = if was_empty {
-                            format!(
-                                "Added to queue: {} — {} (press ▶ to play).",
-                                t.title, t.artist
-                            )
+                            format!("Added to queue: {} — {} (press play).", t.title, t.artist)
                         } else {
                             format!("Added to queue: {} — {}.", t.title, t.artist)
                         };
@@ -2299,6 +2745,7 @@ impl AppState {
             }
             Message::ToggleShuffle => {
                 self.queue.shuffle = !self.queue.shuffle;
+                self.rebuild_shuffle();
                 self.status = if self.queue.shuffle {
                     "Shuffle on.".into()
                 } else {
@@ -2309,32 +2756,8 @@ impl AppState {
                 let mode = self.queue.cycle_repeat();
                 self.status = format!("Repeat: {mode:?}.");
             }
-            Message::PlayAll => {
-                let (tracks, label) = match &self.route {
-                    Route::Artist(id) => {
-                        let name = self.resolve_artist_name(id);
-                        (self.artist_tracks(&name), format!("Artist {name}"))
-                    }
-                    Route::Album(id) => {
-                        let title = self.resolve_album_title(id);
-                        (self.album_tracks(id), format!("Album {title}"))
-                    }
-                    Route::PlaylistDetail(id) => match self.find_playlist(id) {
-                        Some(p) => (p.tracks.clone(), format!("Playlist {}", p.title)),
-                        None => (Vec::new(), "Playlist not found".into()),
-                    },
-                    Route::Radio(_) => (self.radio_tracks.clone(), "Radio".to_string()),
-                    Route::Discovery => (self.weekly_mix_tracks(), "Weekly Mix".to_string()),
-                    _ => (self.results.tracks.clone(), "Search results".to_string()),
-                };
-                if tracks.is_empty() {
-                    self.status = format!("{label}: nothing to queue.");
-                } else {
-                    let task = self.queue_many(tracks, &label);
-                    self.publish_mpris();
-                    return task;
-                }
-            }
+            Message::PlayAll => return self.play_all_tracks(false),
+            Message::PlayAllShuffled => return self.play_all_tracks(true),
             Message::CreatePlaylist(title) => {
                 let title = title.trim().to_string();
                 if title.is_empty() {
@@ -2465,6 +2888,7 @@ impl AppState {
                         self.queue.clear();
                         self.queue.push(t);
                         self.queue.jump_to(0);
+                        self.rebuild_shuffle();
                         self.playing_from = "Single + autoplay".into();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
@@ -2531,11 +2955,13 @@ impl AppState {
                         if self.queue.is_empty() {
                             self.queue.push(t);
                             self.queue.jump_to(0);
+                            self.rebuild_shuffle();
                             self.apply_volume();
                             self.publish_mpris();
                             return self.play_current_task();
                         }
                         let at = self.queue.insert_next(t.clone());
+                        self.rebuild_shuffle();
                         self.status = format!("Queued next: {} — {}.", t.title, t.artist);
                         let _ = at;
                     }
@@ -2551,6 +2977,7 @@ impl AppState {
                         self.autoplay.remove(i);
                         self.queue.push(t);
                         self.queue.jump_to(self.queue.len().saturating_sub(1));
+                        self.rebuild_shuffle();
                         self.apply_volume();
                         self.publish_mpris();
                         return self.play_current_task();
@@ -2561,6 +2988,7 @@ impl AppState {
                 self.close_menu();
                 let was_current = self.queue.current().is_some_and(|t| t.id == id);
                 if self.queue.remove_id(&id) {
+                    self.rebuild_shuffle();
                     self.status = format!("Removed {id} from the queue.");
                     if was_current {
                         // The ghost must not keep playing: move on, or stop.
@@ -2590,6 +3018,37 @@ impl AppState {
             }
             Message::QueueHover(h) => {
                 self.hovered_queue = h;
+            }
+            Message::PanelHover(i) => {
+                self.hovered_queue = Some(i);
+                if let Some(drag) = self.drag.as_mut() {
+                    if i < self.queue.len() {
+                        drag.over = Some(i);
+                    }
+                }
+            }
+            Message::DragStart(from) => {
+                if from < self.queue.len() {
+                    self.drag = Some(DragState { from, over: None });
+                }
+            }
+            Message::DragOver(i) => {
+                // Hover without a pressed grip is just hover (no-op).
+                if let Some(drag) = self.drag.as_mut() {
+                    if i < self.queue.len() {
+                        drag.over = Some(i);
+                    }
+                }
+            }
+            Message::DragEnd => {
+                if let Some(drag) = self.drag.take() {
+                    if let Some(to) = drag.over {
+                        if to != drag.from && self.queue.move_to(drag.from, to) {
+                            self.rebuild_shuffle();
+                            self.status = "Queue reordered.".into();
+                        }
+                    }
+                }
             }
             Message::OpenContext(id) => {
                 self.open_menu(id);
@@ -2930,7 +3389,8 @@ impl AppState {
                                     self.end_advanced = false;
                                     self.position_secs = 0.0;
                                     if let Some(t) = self.queue.current() {
-                                        self.status = format!("♪ {} — {}.", t.title, t.artist);
+                                        self.status =
+                                            format!("Playing: {} — {}.", t.title, t.artist);
                                     }
                                 }
                                 Err(e) => {
@@ -2965,7 +3425,7 @@ impl AppState {
     fn search_debounce_task(gen: u64, query: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 (gen, query)
             },
             |(gen, query)| Message::SearchDebounced { gen, query },
@@ -3085,7 +3545,7 @@ impl AppState {
     fn suggest_debounce_task(gen: u64, query: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 let result = Self::live_suggest(&query).await;
                 (gen, result)
             },
@@ -3180,15 +3640,15 @@ impl AppState {
     fn track_row(&self, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, mouse_area, row, text};
         use iced::Fill;
-        let heart = if self.liked.contains(&t.id) {
-            "♥"
+        let heart_color = if self.liked.contains(&t.id) {
+            SPOT_GREEN
         } else {
-            "♡"
+            MUTED
         };
         mouse_area(
             row![
                 self.thumb(t),
-                button(text("▶").size(13))
+                button(icon("play", 13.0, iced::Color::BLACK))
                     .style(green_play)
                     .on_press(Message::PlayNow(t.id.clone()))
                     .padding(6),
@@ -3199,11 +3659,11 @@ impl AppState {
                 .spacing(2)
                 .width(Fill),
                 text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
-                button(text(heart).size(15))
+                button(icon("heart", 15.0, heart_color))
                     .style(button::text)
                     .on_press(Message::Like(t.id.clone()))
                     .padding(6),
-                button(text("…").size(15))
+                button(icon("ellipsis", 15.0, MUTED))
                     .style(button::text)
                     .on_press(Message::OpenContext(t.id.clone()))
                     .padding(6),
@@ -3236,24 +3696,31 @@ impl AppState {
     fn sidebar_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, row, text, text_input};
         use iced::Fill;
-        let expand_btn: iced::Element<'_, Message> =
-            button(text(if self.sidebar_expanded { "⏴" } else { "⏵" }).size(14))
-                .style(button::text)
-                .on_press(Message::ToggleSidebar)
-                .padding(8)
-                .into();
+        let expand_btn: iced::Element<'_, Message> = button(icon(
+            if self.sidebar_expanded {
+                "chevron-left"
+            } else {
+                "chevron-right"
+            },
+            14.0,
+            MUTED,
+        ))
+        .style(button::text)
+        .on_press(Message::ToggleSidebar)
+        .padding(8)
+        .into();
         if !self.sidebar_expanded {
             return container(
                 column![
-                    button(text("⌂").size(18))
+                    button(icon("house", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Home)))
                         .on_press(Message::Navigate(Route::Home))
                         .padding(10),
-                    button(text("🔍").size(18))
+                    button(icon("search", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Search)))
                         .on_press(Message::Navigate(Route::Search))
                         .padding(10),
-                    button(text("📚").size(18))
+                    button(icon("library", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Library)))
                         .on_press(Message::Navigate(Route::Library))
                         .padding(10),
@@ -3281,7 +3748,7 @@ impl AppState {
                     .and_then(|t| self.find_track(&t.id))
                     .map(|t| self.thumb(&t))
                     .unwrap_or_else(|| {
-                        container(text("♪").size(14).color(MUTED))
+                        container(icon("music", 14.0, MUTED))
                             .style(card_bg)
                             .padding(8)
                             .into()
@@ -3331,23 +3798,44 @@ impl AppState {
                 ]
                 .align_y(iced::alignment::Vertical::Center),
                 column![
-                    button(text("⌂  Home").size(14))
-                        .style(nav_style(self.is_nav(&Route::Home)))
-                        .on_press(Message::Navigate(Route::Home))
-                        .padding(8)
-                        .width(Fill),
-                    button(text("🔍  Search").size(14))
-                        .style(nav_style(self.is_nav(&Route::Search)))
-                        .on_press(Message::Navigate(Route::Search))
-                        .padding(8)
-                        .width(Fill),
+                    button(
+                        row![
+                            icon("house", 14.0, iced::Color::WHITE),
+                            text("Home").size(14),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .style(nav_style(self.is_nav(&Route::Home)))
+                    .on_press(Message::Navigate(Route::Home))
+                    .padding(8)
+                    .width(Fill),
+                    button(
+                        row![
+                            icon("search", 14.0, iced::Color::WHITE),
+                            text("Search").size(14),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .style(nav_style(self.is_nav(&Route::Search)))
+                    .on_press(Message::Navigate(Route::Search))
+                    .padding(8)
+                    .width(Fill),
                 ]
                 .spacing(2),
-                row![button(text("📚  Library").size(14))
-                    .style(nav_style(self.is_nav(&Route::Library)))
-                    .on_press(Message::Navigate(Route::Library))
-                    .padding(4)
-                    .width(Fill),],
+                row![button(
+                    row![
+                        icon("library", 14.0, iced::Color::WHITE),
+                        text("Library").size(14),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .style(nav_style(self.is_nav(&Route::Library)))
+                .on_press(Message::Navigate(Route::Library))
+                .padding(4)
+                .width(Fill),],
                 text_input("Filter playlists…", &self.sidebar_filter)
                     .on_input(Message::SidebarFilterChanged)
                     .width(Fill),
@@ -3356,7 +3844,7 @@ impl AppState {
                     text_input("New playlist…", &self.new_playlist_name)
                         .on_input(Message::NewPlaylistNameChanged)
                         .width(Fill),
-                    button(text("＋").size(14))
+                    button(icon("plus", 14.0, iced::Color::BLACK))
                         .style(green_play)
                         .on_press(Message::CreatePlaylist(new_name))
                         .padding(7),
@@ -3421,12 +3909,34 @@ impl AppState {
             .map(|(i, t)| {
                 let is_current = Some(i) == pos;
                 let menu_id = t.id.clone();
+                let remove_id = t.id.clone();
+                let hovered = self.hovered_queue == Some(i);
+                let dragging_from = self.drag.is_some_and(|d| d.from == i);
+                let remove_btn: iced::Element<'_, Message> = if hovered {
+                    button(icon("x", 11.0, MUTED))
+                        .style(button::text)
+                        .on_press(Message::RemoveFromQueue(remove_id))
+                        .padding(3)
+                        .into()
+                } else {
+                    iced::widget::Space::new()
+                        .width(iced::Length::Fixed(20.0))
+                        .into()
+                };
                 mouse_area(
                     row![
+                        mouse_area(icon(
+                            "grip",
+                            12.0,
+                            if hovered { iced::Color::WHITE } else { MUTED }
+                        ))
+                        .on_press(Message::DragStart(i)),
                         self.thumb(t),
                         button(text(format!("{} — {}", t.title, t.artist)).size(12).color(
                             if is_current {
                                 SPOT_GREEN
+                            } else if dragging_from {
+                                MUTED
                             } else {
                                 iced::Color::WHITE
                             }
@@ -3436,12 +3946,15 @@ impl AppState {
                         .padding(3)
                         .width(Fill),
                         text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                        remove_btn,
                     ]
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center)
                     .padding(2),
                 )
                 .on_right_press(Message::OpenContext(menu_id))
+                .on_enter(Message::PanelHover(i))
+                .on_exit(Message::QueueHover(None))
                 .into()
             })
             .collect();
@@ -3506,8 +4019,15 @@ impl AppState {
                     .style(button::text)
                     .on_press(Message::QueueClear)
                     .padding(4),
-                scrollable(column![column(upcoming).spacing(0), auto_block,].spacing(2))
-                    .height(Fill),
+                scrollable(
+                    column![column(upcoming).spacing(0), auto_block,]
+                        .spacing(2)
+                        .padding(iced::Padding {
+                            right: 14.0,
+                            ..iced::Padding::ZERO
+                        })
+                )
+                .height(Fill),
             ]
             .spacing(4)
             .into(),
@@ -3585,18 +4105,18 @@ impl AppState {
             .as_ref()
             .map(|t| t.artist.clone())
             .unwrap_or_else(|| "Search for music, then click a song".into());
-        let play_symbol = if self.paused { "▶" } else { "⏸" };
+        let play_icon = if self.paused { "play" } else { "pause" };
         let duration = self.audio_duration();
         let slider_max = duration.max(1.0);
         let shown_pos = self.position_secs.clamp(0.0, slider_max);
         let like_button: iced::Element<'_, Message> = match &current {
             Some(t) => {
-                let heart = if self.liked.contains(&t.id) {
-                    "♥"
+                let heart_color = if self.liked.contains(&t.id) {
+                    SPOT_GREEN
                 } else {
-                    "♡"
+                    MUTED
                 };
-                button(text(heart).size(15).color(SPOT_GREEN))
+                button(icon("heart", 15.0, heart_color))
                     .style(button::text)
                     .on_press(Message::Like(t.id.clone()))
                     .padding(6)
@@ -3605,22 +4125,22 @@ impl AppState {
             None => text("").size(1).into(),
         };
         let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
-            button(text("🔀").size(14))
+            button(icon("shuffle", 14.0, iced::Color::BLACK))
                 .style(green_play)
                 .on_press(Message::ToggleShuffle)
                 .padding(7)
                 .into()
         } else {
-            button(text("🔀").size(14))
+            button(icon("shuffle", 14.0, MUTED))
                 .style(button::text)
                 .on_press(Message::ToggleShuffle)
                 .padding(7)
                 .into()
         };
-        let repeat_label: String = match self.queue.repeat {
-            yutu_player::RepeatMode::Off => "⟳".into(),
-            yutu_player::RepeatMode::All => "⟳ All".into(),
-            yutu_player::RepeatMode::One => "⟳ 1".into(),
+        let (repeat_icon, repeat_badge): (&str, &str) = match self.queue.repeat {
+            yutu_player::RepeatMode::Off => ("repeat", ""),
+            yutu_player::RepeatMode::All => ("repeat", "All"),
+            yutu_player::RepeatMode::One => ("repeat-1", "1"),
         };
         container(
             column![
@@ -3629,7 +4149,7 @@ impl AppState {
                     row![
                         match &current {
                             Some(t) => self.thumb(t),
-                            None => container(text("♪").size(20).color(MUTED))
+                            None => container(icon("music", 20.0, MUTED))
                                 .style(card_bg)
                                 .padding(10)
                                 .into(),
@@ -3644,22 +4164,29 @@ impl AppState {
                     column![
                         row![
                             shuffle_button,
-                            button(text("⏮").size(16))
+                            button(icon("skip-back", 16.0, iced::Color::WHITE))
                                 .style(button::text)
                                 .on_press(Message::Prev)
                                 .padding(8),
-                            button(text(play_symbol).size(17))
+                            button(icon(play_icon, 17.0, iced::Color::BLACK))
                                 .style(green_play)
                                 .on_press(Message::TogglePause)
                                 .padding(10),
-                            button(text("⏭").size(16))
+                            button(icon("skip-forward", 16.0, iced::Color::WHITE))
                                 .style(button::text)
                                 .on_press(Message::Next)
                                 .padding(8),
-                            button(text(repeat_label).size(13))
-                                .style(button::text)
-                                .on_press(Message::CycleRepeat)
-                                .padding(8),
+                            button(
+                                row![
+                                    icon(repeat_icon, 14.0, iced::Color::WHITE),
+                                    text(repeat_badge).size(11),
+                                ]
+                                .spacing(3)
+                                .align_y(iced::alignment::Vertical::Center),
+                            )
+                            .style(button::text)
+                            .on_press(Message::CycleRepeat)
+                            .padding(8),
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
@@ -3860,58 +4387,87 @@ impl AppState {
                 .into()
             }
             Route::Search => {
-                let rows: Vec<iced::Element<'_, Message>> = self
+                let songs: Vec<iced::Element<'_, Message>> = self
                     .results
                     .tracks
                     .iter()
-                    .map(|t| self.track_row(t))
+                    .enumerate()
+                    .map(|(i, t)| self.numbered_track_row(t, i + 1))
                     .collect();
-                let albums: Vec<iced::Element<'_, Message>> = self
+                let album_cards: Vec<iced::Element<'_, Message>> = self
                     .results
                     .albums
                     .iter()
-                    .map(|a| {
-                        use iced::widget::{button, row, text};
-                        use iced::Fill;
-                        row![
-                            text(format!("{} — {}", a.title, a.artist))
-                                .size(14)
-                                .width(Fill),
-                            button(text("Open").size(12))
-                                .style(button::text)
-                                .on_press(Message::OpenAlbum(a.id.clone()))
-                                .padding(6),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .padding(4)
-                        .into()
-                    })
+                    .take(5)
+                    .map(|a| self.album_card(a))
                     .collect();
-                let artists: Vec<iced::Element<'_, Message>> = self
+                let artist_cards: Vec<iced::Element<'_, Message>> = self
                     .results
                     .artists
                     .iter()
-                    .map(|a| {
-                        use iced::widget::{button, row, text};
-                        use iced::Fill;
-                        row![
-                            text(a.name.clone()).size(14).width(Fill),
-                            button(text("Open").size(12))
-                                .style(button::text)
-                                .on_press(Message::OpenArtist(a.id.clone()))
-                                .padding(6),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .padding(4)
-                        .into()
-                    })
+                    .take(5)
+                    .map(|a| self.artist_card(a))
                     .collect();
+                // Top-result hero: the first track, Spotify-style.
+                let hero: iced::Element<'_, Message> = match self.results.tracks.first() {
+                    None => text("").size(1).into(),
+                    Some(t) => {
+                        let heart_color = if self.liked.contains(&t.id) {
+                            SPOT_GREEN
+                        } else {
+                            MUTED
+                        };
+                        container(
+                            row![
+                                self.thumb_sized(t, 96.0),
+                                column![
+                                    text("Top result").size(12).color(MUTED),
+                                    text(t.title.clone()).size(20),
+                                    text(format!(
+                                        "{} · {}",
+                                        t.artist,
+                                        t.album.clone().unwrap_or_default()
+                                    ))
+                                    .size(13)
+                                    .color(MUTED),
+                                    row![
+                                        button(
+                                            row![
+                                                icon("play", 13.0, iced::Color::BLACK),
+                                                text("Play").size(13),
+                                            ]
+                                            .spacing(6)
+                                        )
+                                        .style(green_play)
+                                        .on_press(Message::PlayNow(t.id.clone()))
+                                        .padding(8),
+                                        button(icon("heart", 15.0, heart_color))
+                                            .style(button::text)
+                                            .on_press(Message::Like(t.id.clone()))
+                                            .padding(8),
+                                        button(icon("ellipsis", 15.0, MUTED))
+                                            .style(button::text)
+                                            .on_press(Message::OpenContext(t.id.clone()))
+                                            .padding(8),
+                                    ]
+                                    .spacing(4)
+                                    .align_y(iced::alignment::Vertical::Center),
+                                ]
+                                .spacing(4)
+                                .width(Fill),
+                            ]
+                            .spacing(14)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(card_bg)
+                        .padding(14)
+                        .into()
+                    }
+                };
                 let search_note: iced::Element<'_, Message> = if self.searching {
                     text("Searching YouTube Music…").color(MUTED).into()
-                } else if rows.is_empty() && albums.is_empty() && artists.is_empty() {
-                    text("Results land here — type above and hit Enter (live search).")
+                } else if songs.is_empty() && album_cards.is_empty() && artist_cards.is_empty() {
+                    text("Results land here — type above, they arrive as you type.")
                         .color(MUTED)
                         .into()
                 } else {
@@ -3920,9 +4476,24 @@ impl AppState {
                 column![
                     text(format!("Results for “{}”", self.search_query)).size(22),
                     search_note,
-                    Self::section("Tracks", rows),
-                    Self::section("Albums", albums),
-                    Self::section("Artists", artists),
+                    hero,
+                    Self::section("Songs", songs),
+                    Self::section(
+                        "Albums",
+                        if album_cards.is_empty() {
+                            vec![]
+                        } else {
+                            vec![row(album_cards).spacing(10).into()]
+                        }
+                    ),
+                    Self::section(
+                        "Artists",
+                        if artist_cards.is_empty() {
+                            vec![]
+                        } else {
+                            vec![row(artist_cards).spacing(10).into()]
+                        }
+                    ),
                 ]
                 .spacing(10)
                 .into()
@@ -3962,11 +4533,11 @@ impl AppState {
                         let marker = if is_current { "● " } else { "" };
                         let jump = t.id.clone();
                         let remove_id = t.id.clone();
-                        // The ✕ only exists on hover (placeholder holds
+                        // The remove button only exists on hover (placeholder holds
                         // the layout so rows never jump).
                         let remove_btn: iced::Element<'_, Message> =
                             if self.hovered_queue == Some(i) {
-                                button(text("✕").size(12))
+                                button(icon("x", 12.0, MUTED))
                                     .style(button::text)
                                     .on_press(Message::RemoveFromQueue(remove_id))
                                     .padding(5)
@@ -3991,11 +4562,11 @@ impl AppState {
                                 .on_press(Message::QueueJump(i))
                                 .padding(4)
                                 .width(Fill),
-                                button(text("↑").size(12))
+                                button(icon("arrow-up", 12.0, MUTED))
                                     .style(button::text)
                                     .on_press(Message::QueueUp(i))
                                     .padding(5),
-                                button(text("↓").size(12))
+                                button(icon("arrow-down", 12.0, MUTED))
                                     .style(button::text)
                                     .on_press(Message::QueueDown(i))
                                     .padding(5),
@@ -4031,7 +4602,7 @@ impl AppState {
                                 .padding(4)
                                 .width(Fill),
                                 text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                                button(text("✕").size(12))
+                                button(icon("x", 12.0, MUTED))
                                     .style(button::text)
                                     .on_press(Message::RemoveAutoplay(i))
                                     .padding(5),
@@ -4060,20 +4631,27 @@ impl AppState {
                     row![
                         text("Up Next").size(22).width(Fill),
                         button(
-                            text(if self.queue.shuffle {
-                                "🔀 On"
-                            } else {
-                                "🔀 Off"
-                            })
-                            .size(12)
+                            row![
+                                icon("shuffle", 12.0, iced::Color::WHITE),
+                                text(if self.queue.shuffle { "On" } else { "Off" }).size(12),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::alignment::Vertical::Center),
                         )
                         .style(button::text)
                         .on_press(Message::ToggleShuffle)
                         .padding(6),
-                        button(text(format!("⟳ {:?}", self.queue.repeat)).size(12))
-                            .style(button::text)
-                            .on_press(Message::CycleRepeat)
-                            .padding(6),
+                        button(
+                            row![
+                                icon("repeat", 12.0, iced::Color::WHITE),
+                                text(format!("{:?}", self.queue.repeat)).size(12),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(button::text)
+                        .on_press(Message::CycleRepeat)
+                        .padding(6),
                         button(text("Clear").size(12))
                             .style(button::text)
                             .on_press(Message::QueueClear)
@@ -4181,19 +4759,31 @@ impl AppState {
                     text("Made for you").size(22),
                     row![
                         text("Weekly Mix").size(17).width(Fill),
-                        button(text("▶ Play all").size(13))
-                            .style(green_play)
-                            .on_press(Message::PlayWeeklyMix)
-                            .padding(7),
+                        button(
+                            row![
+                                icon("play", 13.0, iced::Color::BLACK),
+                                text("Play all").size(13)
+                            ]
+                            .spacing(6)
+                        )
+                        .style(green_play)
+                        .on_press(Message::PlayWeeklyMix)
+                        .padding(7),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     weekly_section,
                     row![
                         text("Forgotten Favorites").size(17).width(Fill),
-                        button(text("▶ Play all").size(13))
-                            .style(green_play)
-                            .on_press(Message::PlayForgotten)
-                            .padding(7),
+                        button(
+                            row![
+                                icon("play", 13.0, iced::Color::BLACK),
+                                text("Play all").size(13)
+                            ]
+                            .spacing(6)
+                        )
+                        .style(green_play)
+                        .on_press(Message::PlayForgotten)
+                        .padding(7),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     forgotten_section,
@@ -4270,59 +4860,138 @@ impl AppState {
             }
             Route::Artist(id) => {
                 let name = self.resolve_artist_name(id);
-                let rows: Vec<iced::Element<'_, Message>> = self
-                    .artist_tracks(&name)
+                let tracks = self.artist_tracks(&name);
+                let albums = self.artist_albums(&name);
+                let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
+                let popular: Vec<iced::Element<'_, Message>> = tracks
                     .iter()
-                    .map(|t| self.track_row(t))
+                    .take(10)
+                    .enumerate()
+                    .map(|(i, t)| self.numbered_track_row(t, i + 1))
                     .collect();
-                let albums: Vec<iced::Element<'_, Message>> = self
-                    .artist_albums(&name)
-                    .into_iter()
-                    .map(|a| {
-                        use iced::widget::{button, row, text};
-                        use iced::Fill;
+                let cards: Vec<iced::Element<'_, Message>> =
+                    albums.iter().take(5).map(|a| self.album_card(a)).collect();
+                let radio_btn: iced::Element<'_, Message> = match tracks.first() {
+                    None => text("").size(1).into(),
+                    Some(seed) => button(
                         row![
-                            text(a.title.clone()).size(14).width(Fill),
-                            button(text("Open").size(12))
-                                .style(button::text)
-                                .on_press(Message::OpenAlbum(a.id.clone()))
-                                .padding(6),
+                            icon("radio", 13.0, iced::Color::WHITE),
+                            text("Radio").size(13),
                         ]
-                        .spacing(8)
-                        .padding(4)
-                        .into()
-                    })
-                    .collect();
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .style(button::text)
+                    .on_press(Message::StartRadio(seed.id.clone()))
+                    .padding(8)
+                    .into(),
+                };
                 column![
-                    text(name.clone()).size(24),
-                    text("Artist").size(12).color(MUTED),
-                    button(text("▶ Play all").size(13))
-                        .style(green_play)
-                        .on_press(Message::PlayAll)
-                        .padding(8),
-                    Self::section("Top tracks", rows),
-                    Self::section("Albums", albums),
+                    row![
+                        self.art_thumb(self.artist_photo(&name).as_deref(), 160.0),
+                        column![
+                            text("Artist").size(12).color(MUTED),
+                            text(name.clone()).size(30),
+                            text(format!(
+                                "{} songs · {} albums · {}",
+                                tracks.len(),
+                                albums.len(),
+                                fmt_time(total as f64)
+                            ))
+                            .size(12)
+                            .color(MUTED),
+                            row![
+                                Self::play_pill("PLAY".into(), Message::PlayAll),
+                                Self::play_pill("SHUFFLE".into(), Message::PlayAllShuffled),
+                                radio_btn,
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center),
+                        ]
+                        .spacing(6)
+                        .width(Fill),
+                    ]
+                    .spacing(16)
+                    .align_y(iced::alignment::Vertical::Center),
+                    Self::section("Popular", popular),
+                    Self::section(
+                        "Albums",
+                        if cards.is_empty() {
+                            vec![]
+                        } else {
+                            vec![row(cards).spacing(10).into()]
+                        }
+                    ),
                 ]
-                .spacing(10)
+                .spacing(12)
                 .into()
             }
             Route::Album(id) => {
                 let title = self.resolve_album_title(id);
-                let rows: Vec<iced::Element<'_, Message>> = self
-                    .album_tracks(id)
+                let tracks = self.album_tracks(id);
+                let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
+                let artist = tracks.first().map(|t| t.artist.clone()).unwrap_or_default();
+                let year = self
+                    .results
+                    .albums
                     .iter()
-                    .map(|t| self.track_row(t))
+                    .find(|a| a.title == title)
+                    .and_then(|a| a.year)
+                    .map(|y| y.to_string())
+                    .unwrap_or_default();
+                let cover = tracks
+                    .first()
+                    .and_then(|t| t.thumbnail_url.clone())
+                    .or_else(|| {
+                        self.results
+                            .albums
+                            .iter()
+                            .find(|a| a.title == title)
+                            .and_then(|a| a.thumbnail_url.clone())
+                    });
+                let rows: Vec<iced::Element<'_, Message>> = tracks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| self.numbered_track_row(t, i + 1))
                     .collect();
+                let meta = if year.is_empty() {
+                    format!(
+                        "{} · {} songs · {}",
+                        artist,
+                        tracks.len(),
+                        fmt_time(total as f64)
+                    )
+                } else {
+                    format!(
+                        "{} · {} · {} songs · {}",
+                        artist,
+                        year,
+                        tracks.len(),
+                        fmt_time(total as f64)
+                    )
+                };
                 column![
-                    text(title).size(24),
-                    text("Album").size(12).color(MUTED),
-                    button(text("▶ Play all").size(13))
-                        .style(green_play)
-                        .on_press(Message::PlayAll)
-                        .padding(8),
+                    row![
+                        self.art_thumb(cover.as_deref(), 180.0),
+                        column![
+                            text("Album").size(12).color(MUTED),
+                            text(title.clone()).size(28),
+                            text(meta).size(12).color(MUTED),
+                            row![
+                                Self::play_pill("PLAY".into(), Message::PlayAll),
+                                Self::play_pill("SHUFFLE".into(), Message::PlayAllShuffled),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center),
+                        ]
+                        .spacing(6)
+                        .width(Fill),
+                    ]
+                    .spacing(16)
+                    .align_y(iced::alignment::Vertical::Center),
                     column(rows).spacing(2),
                 ]
-                .spacing(10)
+                .spacing(12)
                 .into()
             }
             Route::PlaylistDetail(id) => match self.find_playlist(id) {
@@ -4337,10 +5006,16 @@ impl AppState {
                         text(format!("Playlist · {} tracks", p.tracks.len()))
                             .size(12)
                             .color(MUTED),
-                        button(text("▶ Play all").size(13))
-                            .style(green_play)
-                            .on_press(Message::PlayAll)
-                            .padding(8),
+                        button(
+                            row![
+                                icon("play", 13.0, iced::Color::BLACK),
+                                text("Play all").size(13)
+                            ]
+                            .spacing(6)
+                        )
+                        .style(green_play)
+                        .on_press(Message::PlayAll)
+                        .padding(8),
                         column(rows).spacing(2),
                     ]
                     .spacing(10)
@@ -4413,10 +5088,16 @@ impl AppState {
                 column![
                     text(title).size(22),
                     row![
-                        button(text("▶ Play").size(13))
-                            .style(green_play)
-                            .on_press(Message::PlayNow(id.clone()))
-                            .padding(7),
+                        button(
+                            row![
+                                icon("play", 13.0, iced::Color::BLACK),
+                                text("Play").size(13)
+                            ]
+                            .spacing(6)
+                        )
+                        .style(green_play)
+                        .on_press(Message::PlayNow(id.clone()))
+                        .padding(7),
                         button(text("Radio").size(13))
                             .style(button::text)
                             .on_press(Message::StartRadio(id.clone()))
@@ -4465,10 +5146,10 @@ impl AppState {
                             .into()
                         })
                         .collect();
-                    let heart = if self.liked.contains(&t.id) {
-                        "♥"
+                    let heart_color = if self.liked.contains(&t.id) {
+                        SPOT_GREEN
                     } else {
-                        "♡"
+                        MUTED
                     };
                     column![
                         row![
@@ -4503,7 +5184,7 @@ impl AppState {
                                         .style(button::text)
                                         .on_press(Message::StartRadio(t.id.clone()))
                                         .padding(7),
-                                    button(text(heart).size(16).color(SPOT_GREEN))
+                                    button(icon("heart", 16.0, heart_color))
                                         .style(button::text)
                                         .on_press(Message::Like(t.id.clone()))
                                         .padding(7),
@@ -4572,10 +5253,16 @@ impl AppState {
                 column![
                     text(seed_label).size(24),
                     text("Radio").size(12).color(MUTED),
-                    button(text("▶ Start radio").size(13))
-                        .style(green_play)
-                        .on_press(Message::StartRadio(seed.clone()))
-                        .padding(8),
+                    button(
+                        row![
+                            icon("play", 13.0, iced::Color::BLACK),
+                            text("Start radio").size(13)
+                        ]
+                        .spacing(6)
+                    )
+                    .style(green_play)
+                    .on_press(Message::StartRadio(seed.clone()))
+                    .padding(8),
                     column(rows).spacing(2),
                 ]
                 .spacing(10)
@@ -4587,27 +5274,31 @@ impl AppState {
         // Global header, Spotify-style: browser nav + always-visible
         // search (as-you-type, stays on page) + clear + shortcuts.
         let back_btn: iced::Element<'_, Message> = if can_back {
-            button(text("‹").size(24))
+            button(icon("chevron-left", 22.0, iced::Color::WHITE))
                 .style(button::text)
                 .on_press(Message::NavBack)
                 .padding(10)
                 .into()
         } else {
-            button(text("‹").size(24)).padding(10).into()
+            button(icon("chevron-left", 22.0, iced::Color::WHITE))
+                .padding(10)
+                .into()
         };
         let fwd_btn: iced::Element<'_, Message> = if can_forward {
-            button(text("›").size(24))
+            button(icon("chevron-right", 22.0, iced::Color::WHITE))
                 .style(button::text)
                 .on_press(Message::NavForward)
                 .padding(10)
                 .into()
         } else {
-            button(text("›").size(24)).padding(10).into()
+            button(icon("chevron-right", 22.0, iced::Color::WHITE))
+                .padding(10)
+                .into()
         };
         let clear_btn: iced::Element<'_, Message> = if self.search_query.is_empty() {
             text("").size(1).into()
         } else {
-            button(text("✕").size(13))
+            button(icon("x", 13.0, MUTED))
                 .style(button::text)
                 .on_press(Message::HomeSearchChanged(String::new()))
                 .padding(6)
@@ -4621,18 +5312,18 @@ impl AppState {
         let header: iced::Element<'_, Message> = row![
             back_btn,
             fwd_btn,
-            text("🔍").size(14).color(MUTED),
+            icon("search", 14.0, MUTED),
             text_input("Search YouTube Music…", &self.search_query)
                 .on_input(Message::HomeSearchChanged)
                 .on_submit(Message::SearchStay)
                 .width(Fill),
             clear_btn,
             search_state,
-            button(text("☰").size(14))
+            button(icon("queue", 14.0, iced::Color::WHITE))
                 .style(button::text)
                 .on_press(Message::Navigate(Route::Queue))
                 .padding(6),
-            button(text("⚙").size(14))
+            button(icon("settings", 14.0, iced::Color::WHITE))
                 .style(button::text)
                 .on_press(Message::Navigate(Route::Settings))
                 .padding(6),
@@ -4653,7 +5344,7 @@ impl AppState {
                 .map(|sug| {
                     button(
                         row![
-                            text("🔍").size(13).color(MUTED),
+                            icon("search", 13.0, MUTED),
                             text(sug.clone()).size(13).width(Fill),
                         ]
                         .spacing(8)
@@ -4673,12 +5364,18 @@ impl AppState {
                 .take(5)
                 .map(|t| self.track_row(t))
                 .collect();
+            let progress: iced::Element<'_, Message> = if self.searching {
+                text("Searching live…").size(11).color(SPOT_GREEN).into()
+            } else {
+                text("Top tracks — Enter for all results")
+                    .size(11)
+                    .color(MUTED)
+                    .into()
+            };
             container(
                 column![
                     column(sug_rows).spacing(0),
-                    text("Top tracks — Enter for all results")
-                        .size(11)
-                        .color(MUTED),
+                    progress,
                     column(top).spacing(2),
                 ]
                 .spacing(6),
@@ -4719,98 +5416,164 @@ impl AppState {
         let Some(t) = self.find_track(&menu_id) else {
             return base;
         };
-        let heart = if self.liked.contains(&t.id) {
-            "♥ Liked — unlike"
+        let (heart_color, heart) = if self.liked.contains(&t.id) {
+            (SPOT_GREEN, "Liked — unlike")
         } else {
-            "♡ Like"
+            (MUTED, "Like")
         };
         let mut items: Vec<iced::Element<'_, Message>> = vec![
-            button(text("▶  Play now").size(14))
-                .style(button::text)
-                .on_press(Message::PlayNow(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text("⏭  Play next").size(14))
-                .style(button::text)
-                .on_press(Message::PlayNext(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text("➕  Add to queue").size(14))
-                .style(button::text)
-                .on_press(Message::QueueTrack(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text("📻  Start mix").size(14))
-                .style(button::text)
-                .on_press(Message::StartRadio(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text("📝  Lyrics").size(14))
-                .style(button::text)
-                .on_press(Message::OpenLyrics(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text(heart).size(14))
+            button(
+                row![
+                    icon("play", 14.0, iced::Color::WHITE),
+                    text("Play now").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::PlayNow(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(
+                row![
+                    icon("skip-forward", 14.0, iced::Color::WHITE),
+                    text("Play next").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::PlayNext(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(
+                row![
+                    icon("plus", 14.0, iced::Color::WHITE),
+                    text("Add to queue").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::QueueTrack(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(
+                row![
+                    icon("radio", 14.0, iced::Color::WHITE),
+                    text("Start mix").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::StartRadio(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(
+                row![
+                    icon("mic", 14.0, iced::Color::WHITE),
+                    text("Lyrics").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::OpenLyrics(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(row![icon("heart", 14.0, heart_color), text(heart).size(14)].spacing(8))
                 .style(button::text)
                 .on_press(Message::Like(t.id.clone()))
                 .padding(8)
                 .width(Fill)
                 .into(),
-            button(text("⬇  Download for offline").size(14))
-                .style(button::text)
-                .on_press(Message::DownloadTrack(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text("💿  Go to album").size(14))
-                .style(button::text)
-                .on_press(Message::OpenTrackAlbum(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(text("🧑  Go to artist").size(14))
-                .style(button::text)
-                .on_press(Message::OpenTrackArtist(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
+            button(
+                row![
+                    icon("download", 14.0, iced::Color::WHITE),
+                    text("Download for offline").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::DownloadTrack(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(
+                row![
+                    icon("disc", 14.0, iced::Color::WHITE),
+                    text("Go to album").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::OpenTrackAlbum(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
+            button(
+                row![
+                    icon("mic", 14.0, iced::Color::WHITE),
+                    text("Go to artist").size(14)
+                ]
+                .spacing(8),
+            )
+            .style(button::text)
+            .on_press(Message::OpenTrackArtist(t.id.clone()))
+            .padding(8)
+            .width(Fill)
+            .into(),
         ];
         if self.queue.items().iter().any(|q| q.id == t.id) {
             items.push(
-                button(text("🗑  Remove from queue").size(14))
-                    .style(button::text)
-                    .on_press(Message::RemoveFromQueue(t.id.clone()))
-                    .padding(8)
-                    .width(Fill)
-                    .into(),
+                button(
+                    row![
+                        icon("trash", 14.0, iced::Color::WHITE),
+                        text("Remove from queue").size(14)
+                    ]
+                    .spacing(8),
+                )
+                .style(button::text)
+                .on_press(Message::RemoveFromQueue(t.id.clone()))
+                .padding(8)
+                .width(Fill)
+                .into(),
             );
         }
         if let Some(ai) = self.autoplay.iter().position(|q| q.id == t.id) {
             items.push(
-                button(text("🗑  Remove from autoplay").size(14))
-                    .style(button::text)
-                    .on_press(Message::RemoveAutoplay(ai))
-                    .padding(8)
-                    .width(Fill)
-                    .into(),
+                button(
+                    row![
+                        icon("trash", 14.0, iced::Color::WHITE),
+                        text("Remove from autoplay").size(14)
+                    ]
+                    .spacing(8),
+                )
+                .style(button::text)
+                .on_press(Message::RemoveAutoplay(ai))
+                .padding(8)
+                .width(Fill)
+                .into(),
             );
         }
         for pl in self.user_playlists.iter().take(5) {
             items.push(
-                button(text(format!("📁  Add to {}", pl.title)).size(14))
-                    .style(button::text)
-                    .on_press(Message::AddToPlaylist {
-                        playlist_id: pl.id.clone(),
-                        track_id: t.id.clone(),
-                    })
-                    .padding(8)
-                    .width(Fill)
-                    .into(),
+                button(
+                    row![
+                        icon("folder", 14.0, iced::Color::WHITE),
+                        text(format!("Add to {}", pl.title)).size(14)
+                    ]
+                    .spacing(8),
+                )
+                .style(button::text)
+                .on_press(Message::AddToPlaylist {
+                    playlist_id: pl.id.clone(),
+                    track_id: t.id.clone(),
+                })
+                .padding(8)
+                .width(Fill)
+                .into(),
             );
         }
         // Playlist adds leave the menu open (multi-add); everything else
@@ -4938,14 +5701,16 @@ mod tests {
         let _ = s.update(Message::SearchChanged("yesterday".into()));
         assert_eq!(s.results.tracks.len(), 1);
         assert_eq!(s.results.tracks[0].id, "v1");
+        // New keystrokes paint premature catalog hits instantly.
+        let _ = s.update(Message::HomeSearchChanged("come".into()));
+        assert!(s.results.tracks.iter().any(|t| t.id == "m1"));
         // Failures for the current query report without clobbering.
-        let _ = s.update(Message::HomeSearchChanged("yesterday".into()));
         let _ = s.update(Message::SearchCompleted {
-            query: "yesterday".into(),
+            query: "come".into(),
             result: Err("offline".into()),
         });
         assert!(s.status.contains("offline"));
-        assert_eq!(s.results.tracks.len(), 1);
+        assert!(s.results.tracks.iter().any(|t| t.id == "m1"));
         // Stale-query failures stay silent.
         let _ = s.update(Message::SearchCompleted {
             query: "ancient".into(),
@@ -5088,6 +5853,72 @@ mod tests {
             result: Ok(vec![mk_track("v1", "Yesterday", "The Beatles")]),
         });
         assert_eq!(s.queue.len(), 1);
+    }
+
+    #[test]
+    fn play_all_shuffled_turns_on_shuffle_first() {
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("beatles".into()));
+        let _ = s.update(Message::SearchCompleted {
+            query: "beatles".into(),
+            result: Ok(SearchResults {
+                tracks: vec![
+                    mk_track("v1", "Yesterday", "The Beatles"),
+                    mk_track("v2", "Hey Jude", "The Beatles"),
+                ],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
+        assert!(!s.queue.shuffle);
+        let _ = s.update(Message::PlayAllShuffled);
+        assert!(s.queue.shuffle);
+        assert_eq!(s.queue.len(), 2);
+        assert_eq!(s.shuffle_order.len(), 2);
+    }
+
+    #[test]
+    fn album_cover_prefers_api_art_then_track() {
+        use yutu_core::Album;
+        let mut s = test_state();
+        // API art wins when present.
+        let api = Album {
+            id: "a1".into(),
+            title: "Abbey Road".into(),
+            artist: "The Beatles".into(),
+            year: Some(1969),
+            thumbnail_url: Some("https://example.invalid/cover.jpg".into()),
+        };
+        assert_eq!(
+            s.album_cover(&api).as_deref(),
+            Some("https://example.invalid/cover.jpg")
+        );
+        // Otherwise the first known track's art fills in.
+        let mut t = mk_track("v9", "Come Together", "The Beatles");
+        t.album = Some("Past Masters".into());
+        t.thumbnail_url = Some("https://example.invalid/track.jpg".into());
+        s.catalog.insert(t.id.clone(), t);
+        let derived = Album {
+            id: "ax".into(),
+            title: "Past Masters".into(),
+            artist: "The Beatles".into(),
+            year: None,
+            thumbnail_url: None,
+        };
+        assert_eq!(
+            s.album_cover(&derived).as_deref(),
+            Some("https://example.invalid/track.jpg")
+        );
+        // Unknown album: no cover, honest None.
+        let ghost = Album {
+            id: "ax".into(),
+            title: "Nope".into(),
+            artist: "Nobody".into(),
+            year: None,
+            thumbnail_url: None,
+        };
+        assert!(s.album_cover(&ghost).is_none());
+        assert!(s.artist_photo("Nobody").is_none());
     }
 
     #[test]
@@ -5306,7 +6137,7 @@ mod tests {
         });
         assert_eq!(s.loading_track, None);
         assert!(
-            s.status.contains('\u{266a}')
+            s.status.contains("Playing:")
                 || s.status.contains("no audio device")
                 || s.status.contains("failed"),
             "unexpected status: {}",
@@ -5379,7 +6210,7 @@ mod tests {
         });
         assert_eq!(s.loading_track, None);
         assert!(
-            s.status.contains('\u{266a}'),
+            s.status.contains("Playing:"),
             "expected playing status, got: {}",
             s.status
         );
@@ -5617,6 +6448,62 @@ mod tests {
     }
 
     #[test]
+    fn shuffle_builds_current_first_and_walks_once() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        let _ = s.update(Message::QueueJump(1));
+        assert!(!s.queue.shuffle);
+        let _ = s.update(Message::ToggleShuffle);
+        assert!(s.queue.shuffle);
+        // Permutation of the queue, current first.
+        let mut ids = s.shuffle_order.clone();
+        assert_eq!(ids.remove(0), "m2");
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["m1", "m3"]);
+        // Walk visits each exactly once, then ends (repeat Off, no tail).
+        let mut seen = vec![s.queue.current().unwrap().id.clone()];
+        while s.advance_queue() {
+            seen.push(s.queue.current().unwrap().id.clone());
+        }
+        let mut seen_sorted = seen.clone();
+        seen_sorted.sort_unstable();
+        assert_eq!(seen_sorted, vec!["m1", "m2", "m3"]);
+        assert!(!s.advance_queue());
+        // Mutations rebuild (new id present, still a permutation).
+        let _ = s.update(Message::ToggleShuffle);
+        let _ = s.update(Message::ToggleShuffle);
+        let _ = s.update(Message::QueueTrack("m4".into()));
+        assert!(s.shuffle_order.contains(&"m4".to_string()));
+        assert_eq!(s.shuffle_order.len(), s.queue.len());
+        // Peek follows the built order, not the linear list.
+        let _ = s.update(Message::QueueJump(0));
+        s.rebuild_shuffle();
+        let next = s.peek_next_id().expect("shuffle peek");
+        assert_eq!(next, s.shuffle_order[1]);
+        // Toggle off clears the order.
+        let _ = s.update(Message::ToggleShuffle);
+        assert!(!s.queue.shuffle);
+        assert!(s.shuffle_order.is_empty());
+    }
+
+    #[test]
+    fn shuffle_end_continues_into_autoplay() {
+        let mut s = test_state();
+        let _ = s.update(Message::PlayNow("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m4", "Fresh", "Y")]),
+        });
+        let _ = s.update(Message::ToggleShuffle);
+        // Single-song order ends at once → autoplay head shifts in.
+        assert!(s.advance_queue());
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m4"));
+        assert!(s.autoplay.is_empty());
+    }
+
+    #[test]
     fn queue_track_appends_without_playing() {
         let mut s = test_state();
         // Empty queue: appends, nothing loads or plays.
@@ -5843,6 +6730,38 @@ mod tests {
     }
 
     #[test]
+    fn panel_drag_reorders_then_releases() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        assert!(s.drag.is_none());
+        // Release with no drag: no-op.
+        let _ = s.update(Message::DragEnd);
+        assert_eq!(s.queue.items()[0].id, "m1");
+        // Hover without drag: no target latched.
+        let _ = s.update(Message::DragOver(2));
+        assert!(s.drag.is_none());
+        // Grip press → hover target → release elsewhere reorders.
+        let _ = s.update(Message::DragStart(0));
+        assert!(s.drag.is_some());
+        let _ = s.update(Message::DragOver(2));
+        let _ = s.update(Message::DragEnd);
+        assert!(s.drag.is_none());
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m2", "m3", "m1"]);
+        assert!(s.status.contains("reordered"));
+        // Press + release on the same row: no move, no noise.
+        let _ = s.update(Message::DragStart(1));
+        let _ = s.update(Message::DragEnd);
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m2", "m3", "m1"]);
+        // Out-of-range press ignored.
+        let _ = s.update(Message::DragStart(99));
+        assert!(s.drag.is_none());
+    }
+
+    #[test]
     fn queue_hover_tracks_cursor() {
         let mut s = test_state();
         assert!(s.hovered_queue.is_none());
@@ -5850,6 +6769,38 @@ mod tests {
         assert_eq!(s.hovered_queue, Some(2));
         let _ = s.update(Message::QueueHover(None));
         assert!(s.hovered_queue.is_none());
+    }
+
+    #[test]
+    fn desktop_shuffle_and_loop_apply() {
+        use std::sync::{Arc, Mutex};
+        let mut s = test_state();
+        let handle: yutu_desktop::SharedPlayer =
+            Arc::new(Mutex::new(yutu_desktop::MprisPlayer::default()));
+        s.mpris = Some(handle.clone());
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        // Widget shuffle flips the app order + publishes it back.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::SetShuffle(true));
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        assert!(s.queue.shuffle);
+        assert_eq!(s.shuffle_order.len(), 1);
+        assert!(handle.lock().unwrap().shuffle());
+        // Widget loop lands on the repeat mode + publishes back.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::SetLoop(
+                yutu_desktop::LoopStatus::Track,
+            ));
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        assert_eq!(s.queue.repeat, yutu_player::RepeatMode::One);
+        assert_eq!(
+            handle.lock().unwrap().loop_status(),
+            yutu_desktop::LoopStatus::Track
+        );
     }
 
     #[test]
