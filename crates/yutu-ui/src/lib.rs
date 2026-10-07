@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
-    forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore, Playlist,
-    SearchResults, Track,
+    forgotten_favorites, should_scrobble, weekly_mix, Album, HistoryEntry, LibraryStore,
+    LyricsResult, Playlist, SearchResults, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -194,6 +194,26 @@ pub enum Message {
     CycleRepeat,
     Tick(std::time::Instant),
     SeekTo(f32),
+    NavBack,
+    NavForward,
+    HomeSearchChanged(String),
+    SearchStay,
+    UrlResolved {
+        track_id: String,
+        result: Result<String, String>,
+    },
+    UrlPrefetched {
+        track_id: String,
+        result: Result<String, String>,
+    },
+    LyricsReady {
+        track_id: String,
+        result: Result<LyricsResult, String>,
+    },
+    ArtworkReady {
+        url: String,
+        result: Result<Vec<u8>, String>,
+    },
     StreamResolved {
         video_id: String,
         result: Result<Vec<u8>, String>,
@@ -216,6 +236,29 @@ impl AudioOut {
             return Some(Self::Mpv(mpv));
         }
         RodioBackend::try_new().ok().map(Self::Rodio)
+    }
+
+    /// True when this backend plays a URL progressively (mpv). Rodio needs
+    /// full bytes, so the UI downloads first on that path.
+    fn wants_stream(&self) -> bool {
+        match self {
+            Self::Rodio(_) => false,
+            #[cfg(feature = "mpv")]
+            Self::Mpv(_) => true,
+        }
+    }
+
+    /// Hand mpv a stream URL (no download). Rodio cannot do this.
+    fn play_stream_url(&self, url: &str) -> Result<(), String> {
+        let _ = url;
+        match self {
+            Self::Rodio(_) => Err("progressive streaming needs the mpv backend".into()),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a
+                .load_url(url)
+                .and_then(|()| a.play())
+                .map_err(|e| e.to_string()),
+        }
     }
 
     fn backend_name(&self) -> &'static str {
@@ -317,6 +360,13 @@ impl AudioOut {
     }
 }
 
+/// Parse a googlevideo `expire` query param (`…&expire=1791411186&…`) into a
+/// unix timestamp. Unknown shapes → None (caller re-resolves every time).
+fn url_expiry(url: &str) -> Option<u64> {
+    url.split(['?', '&'])
+        .find_map(|p| p.strip_prefix("expire=").and_then(|v| v.parse().ok()))
+}
+
 /// Format seconds as `m:ss` for the player bar.
 fn fmt_time(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
@@ -353,6 +403,22 @@ pub struct AppState {
     position_secs: f64,
     /// Track id currently being fetched (stale arrivals are dropped).
     loading_track: Option<String>,
+    /// Resolved stream URLs by track id: (url, expire_unix). Fresh hits
+    /// play instantly — back/prev/replay never re-resolve.
+    url_cache: HashMap<String, (String, u64)>,
+    /// Next song's stream, resolved early (played instantly on advance).
+    prefetched: Option<(String, String)>,
+    /// Lyrics by track id (LRCLIB, no login) + in-flight fetch.
+    lyrics_cache: HashMap<String, LyricsResult>,
+    lyrics_loading: Option<String>,
+    /// Browser-style back/forward stacks (Route history, capped).
+    nav_back: Vec<Route>,
+    nav_forward: Vec<Route>,
+    /// Artwork by thumbnail URL (iced image handles) + in-flight set.
+    artwork: HashMap<String, iced::widget::image::Handle>,
+    artwork_loading: HashSet<String>,
+    /// Track id a prefetch was already attempted for (no Tick spam).
+    prefetch_attempted: Option<String>,
     /// End-of-track auto-advance already fired for the current song.
     end_advanced: bool,
     library_path: String,
@@ -462,6 +528,14 @@ async fn resolve_via_raw(video_id: &str) -> Result<Vec<u8>, String> {
     Err(format!(
         "yt-dlp not found and this is an offline build ({video_id}). Install yt-dlp or rebuild with `--features innertube`."
     ))
+}
+
+/// yt-dlp `--get-url` only (no download): the fast path behind instant
+/// playback. Failures name the track; the caller decides bytes-vs-stream.
+async fn resolve_stream_url(video_id: &str) -> Result<String, String> {
+    let bin = yutu_core::find_yt_dlp()
+        .ok_or_else(|| "yt-dlp not installed — install it to play music.".to_string())?;
+    yutu_core::resolve_audio_url(&bin, video_id).map_err(|e| e.to_string())
 }
 
 /// Real search over the live Innertube API: tracks, albums and artists.
@@ -638,7 +712,7 @@ impl AppState {
                 liked,
                 history,
                 volume: 0.8,
-                status: "Ready — mock library, no network yet.".into(),
+                status: "Ready — search for music.".into(),
                 user_playlists,
                 new_playlist_name: String::new(),
                 playlist_seq,
@@ -653,6 +727,15 @@ impl AppState {
                 audio,
                 position_secs: 0.0,
                 loading_track: None,
+                url_cache: HashMap::new(),
+                prefetched: None,
+                lyrics_cache: HashMap::new(),
+                lyrics_loading: None,
+                nav_back: Vec::new(),
+                nav_forward: Vec::new(),
+                artwork: HashMap::new(),
+                artwork_loading: HashSet::new(),
+                prefetch_attempted: None,
                 end_advanced: false,
                 library_path,
                 catalog: HashMap::new(),
@@ -665,8 +748,34 @@ impl AppState {
         )
     }
 
+    /// Browser-style navigation: records back history, clears forward.
     pub fn navigate(&mut self, route: Route) {
+        self.go(route);
+    }
+
+    fn go(&mut self, route: Route) {
+        if route != self.route {
+            self.nav_back.push(self.route.clone());
+            if self.nav_back.len() > 50 {
+                self.nav_back.remove(0);
+            }
+            self.nav_forward.clear();
+        }
         self.route = route;
+    }
+
+    fn go_back(&mut self) {
+        if let Some(prev) = self.nav_back.pop() {
+            self.nav_forward.push(self.route.clone());
+            self.route = prev;
+        }
+    }
+
+    fn go_forward(&mut self) {
+        if let Some(next) = self.nav_forward.pop() {
+            self.nav_back.push(self.route.clone());
+            self.route = next;
+        }
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
@@ -757,14 +866,76 @@ impl AppState {
         iced::Task::batch([scrobble, play])
     }
 
-    /// Fetch + play whatever is current (no-op on an empty queue).
-    /// Sets `loading_track` so the UI shows progress and stale arrivals drop.
+    /// Play whatever is current (no-op on an empty queue). Fast paths first:
+    /// a prefetched URL or a fresh cached URL plays instantly with no
+    /// download; otherwise a resolve task runs (mpv streams the URL, rodio
+    /// downloads the bytes). Sets `loading_track` so stale arrivals drop.
     fn play_current_task(&mut self) -> iced::Task<Message> {
-        let task = self.fetch_current_task();
-        if let Some(t) = self.queue.current() {
-            self.status = format!("Loading {} — {}…", t.title, t.artist);
+        let Some(t) = self.queue.current().cloned() else {
+            return iced::Task::none();
+        };
+        if self.prefetched.as_ref().is_some_and(|(id, _)| id != &t.id) {
+            self.prefetched = None;
         }
-        task
+        self.prefetch_attempted = None;
+        self.loading_track = Some(t.id.clone());
+        self.end_advanced = false;
+        self.paused = false;
+        self.position_secs = 0.0;
+        // Prefetched URL: instant.
+        if let Some((_, url)) = self.prefetched.take() {
+            if self.try_play_url(&url, &t) {
+                return iced::Task::none();
+            }
+        }
+        // Fresh cached URL: instant (back/prev/replay never re-resolve).
+        if let Some((url, expires)) = self.url_cache.get(&t.id).cloned() {
+            if expires > now_unix() as u64 + 60 && self.try_play_url(&url, &t) {
+                return iced::Task::none();
+            }
+        }
+        self.status = format!("Loading {} — {}…", t.title, t.artist);
+        match &self.audio {
+            Some(a) if a.wants_stream() => Self::resolve_url_task(t.id),
+            _ => Self::resolve_task(t.id),
+        }
+    }
+
+    /// Best-effort instant play of a stream URL. True on success.
+    fn try_play_url(&mut self, url: &str, t: &Track) -> bool {
+        match &self.audio {
+            Some(audio) => match audio.play_stream_url(url) {
+                Ok(()) => {
+                    self.loading_track = None;
+                    self.status = format!("♪ {} — {}.", t.title, t.artist);
+                    true
+                }
+                Err(e) => {
+                    self.status = format!("Playback failed for {}: {e}", t.id);
+                    false
+                }
+            },
+            None => {
+                self.status = "Stream ready, but no audio device.".into();
+                false
+            }
+        }
+    }
+
+    /// Id of the likely next track (repeat-all wraps), for prefetching.
+    fn peek_next_id(&self) -> Option<String> {
+        let items = self.queue.items();
+        if items.is_empty() {
+            return None;
+        }
+        let pos = self.queue.position().unwrap_or(0);
+        if pos + 1 < items.len() {
+            Some(items[pos + 1].id.clone())
+        } else if self.queue.repeat == yutu_player::RepeatMode::All {
+            items.first().map(|t| t.id.clone())
+        } else {
+            None
+        }
     }
 
     /// Same fetch without touching the status line (bulk actions keep theirs).
@@ -933,6 +1104,48 @@ impl AppState {
                 self.status = format!("Track not found: {id}.");
                 iced::Task::none()
             }
+        }
+    }
+
+    /// Fetch missing artwork for freshly seen tracks (cap: 12 per payload,
+    /// deduped by URL, never refetched once attempted).
+    fn artwork_tasks(&mut self, tracks: &[Track]) -> Vec<iced::Task<Message>> {
+        let mut tasks = Vec::new();
+        for t in tracks {
+            if let Some(url) = t.thumbnail_url.as_deref() {
+                if !self.artwork.contains_key(url)
+                    && !self.artwork_loading.contains(url)
+                    && tasks.len() < 12
+                {
+                    self.artwork_loading.insert(url.to_string());
+                    let url_owned = url.to_string();
+                    let url_for_msg = url_owned.clone();
+                    tasks.push(iced::Task::perform(
+                        async move { yutu_player::fetch_bytes(&url_owned).await },
+                        move |result| Message::ArtworkReady {
+                            url: url_for_msg.clone(),
+                            result: result.map_err(|e| e.to_string()),
+                        },
+                    ));
+                }
+            }
+        }
+        tasks
+    }
+
+    /// 40px artwork for rows/panel, ♪ placeholder until loaded.
+    fn thumb(&self, track: &Track) -> iced::Element<'_, Message> {
+        use iced::widget::{container, image, text};
+        match track
+            .thumbnail_url
+            .as_deref()
+            .and_then(|u| self.artwork.get(u))
+        {
+            Some(handle) => image(handle.clone()).width(40).height(40).into(),
+            None => container(text("♪").size(16).color(MUTED))
+                .style(card_bg)
+                .padding(8)
+                .into(),
         }
     }
 
@@ -1142,22 +1355,20 @@ impl AppState {
                 unreachable!("scrobble results are dispatched in update()")
             }
             Message::Navigate(r) => self.navigate(r),
-            Message::SearchChanged(q) => {
-                self.search_query = q.clone();
-                self.results = filter_results(&self.search_base, &q);
-                self.route = Route::Search;
+            Message::NavBack => self.go_back(),
+            Message::NavForward => self.go_forward(),
+            Message::HomeSearchChanged(q) => {
+                self.search_query = q;
             }
-            Message::Search => {
+            Message::SearchStay => {
                 let q = self.search_query.trim().to_string();
                 #[cfg(feature = "innertube")]
                 {
                     if q.is_empty() {
                         self.status = "Type something to search YouTube Music.".into();
-                        self.route = Route::Search;
                     } else {
                         self.status = format!("Searching YouTube Music for “{q}”…");
                         self.searching = true;
-                        self.route = Route::Search;
                         self.publish_mpris();
                         return Self::search_task(q);
                     }
@@ -1167,7 +1378,34 @@ impl AppState {
                     let _ = q;
                     self.status =
                         "Real search needs `--features innertube` (offline build).".into();
-                    self.route = Route::Search;
+                }
+            }
+            Message::SearchChanged(q) => {
+                self.search_query = q.clone();
+                self.results = filter_results(&self.search_base, &q);
+                self.go(Route::Search);
+            }
+            Message::Search => {
+                let q = self.search_query.trim().to_string();
+                #[cfg(feature = "innertube")]
+                {
+                    if q.is_empty() {
+                        self.status = "Type something to search YouTube Music.".into();
+                        self.go(Route::Search);
+                    } else {
+                        self.status = format!("Searching YouTube Music for “{q}”…");
+                        self.searching = true;
+                        self.go(Route::Search);
+                        self.publish_mpris();
+                        return Self::search_task(q);
+                    }
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = q;
+                    self.status =
+                        "Real search needs `--features innertube` (offline build).".into();
+                    self.go(Route::Search);
                 }
             }
             Message::SearchCompleted { query, result } => {
@@ -1178,13 +1416,16 @@ impl AppState {
                         let tracks = self.register_tracks(search.tracks);
                         let search = SearchResults { tracks, ..search };
                         self.search_base = search.clone();
+                        let tasks = self.artwork_tasks(&search.tracks);
                         self.results = filter_results(&search, &self.search_query);
                         // Empty filter (e.g. capped query) still shows everything.
                         if self.results.tracks.is_empty() && !search.tracks.is_empty() {
                             self.results = search;
                         }
-                        self.route = Route::Search;
+                        self.go(Route::Search);
                         self.status = format!("{n} songs for “{query}”.");
+                        self.publish_mpris();
+                        return iced::Task::batch(tasks);
                     }
                     Err(e) => {
                         self.status = format!("Search failed: {e}");
@@ -1267,10 +1508,50 @@ impl AppState {
                 self.queue.clear();
                 self.status = "Queue cleared.".into();
             }
-            Message::OpenArtist(id) => self.route = Route::Artist(id),
-            Message::OpenAlbum(id) => self.route = Route::Album(id),
-            Message::OpenPlaylist(id) => self.route = Route::PlaylistDetail(id),
-            Message::OpenLyrics(id) => self.route = Route::Lyrics(id),
+            Message::OpenArtist(id) => self.go(Route::Artist(id)),
+            Message::OpenAlbum(id) => self.go(Route::Album(id)),
+            Message::OpenPlaylist(id) => self.go(Route::PlaylistDetail(id)),
+            Message::OpenLyrics(id) => {
+                self.go(Route::Lyrics(id.clone()));
+                #[cfg(feature = "lyrics")]
+                {
+                    let needs = !self.lyrics_cache.contains_key(&id)
+                        && self.lyrics_loading.as_deref() != Some(id.as_str());
+                    if needs {
+                        match self.find_track(&id) {
+                            None => {
+                                self.status =
+                                    "Lyrics need a known track — search for it first.".to_string();
+                            }
+                            Some(t) => {
+                                self.lyrics_loading = Some(id);
+                                self.publish_mpris();
+                                return Self::lyrics_task(t);
+                            }
+                        }
+                    }
+                }
+            }
+            Message::LyricsReady { track_id, result } => {
+                self.lyrics_loading = None;
+                match result {
+                    Ok(lyrics) => {
+                        self.lyrics_cache.insert(track_id, lyrics);
+                    }
+                    Err(e) => {
+                        self.status = format!("Lyrics failed: {e}");
+                    }
+                }
+            }
+            Message::ArtworkReady { url, result } => {
+                self.artwork_loading.remove(&url);
+                if let Ok(bytes) = result {
+                    if bytes.len() > 512 {
+                        self.artwork
+                            .insert(url, iced::widget::image::Handle::from_bytes(bytes));
+                    }
+                }
+            }
             Message::StartRadio(seed) => match self.find_track(&seed) {
                 None => {
                     self.status =
@@ -1281,7 +1562,7 @@ impl AppState {
                     #[cfg(feature = "innertube")]
                     {
                         self.status = format!("Starting radio for {} — {}…", t.title, t.artist);
-                        self.route = Route::Radio(seed.clone());
+                        self.go(Route::Radio(seed.clone()));
                         self.publish_mpris();
                         return Self::radio_task(seed, artist);
                     }
@@ -1297,13 +1578,14 @@ impl AppState {
                     let n = tracks.len();
                     let tracks = self.register_tracks(tracks);
                     self.radio_tracks = tracks.clone();
-                    self.route = Route::Radio(seed.clone());
-                    let task = self.queue_many(tracks, &format!("Radio (seed {seed})"));
+                    self.go(Route::Radio(seed.clone()));
+                    let mut tasks = self.artwork_tasks(&tracks);
+                    tasks.push(self.queue_many(tracks, &format!("Radio (seed {seed})")));
                     if n == 0 {
                         self.status = format!("Radio (seed {seed}): nothing found.");
                     }
                     self.publish_mpris();
-                    return task;
+                    return iced::Task::batch(tasks);
                 }
                 Err(e) => {
                     self.status = format!("Radio failed: {e}");
@@ -1421,7 +1703,7 @@ impl AppState {
                 if self.user_playlists.len() < before {
                     self.persist_playlist_deleted(&id);
                     if self.route == Route::PlaylistDetail(id.clone()) {
-                        self.route = Route::Library;
+                        self.go(Route::Library);
                     }
                     self.status = format!("Deleted playlist {id}.");
                 } else {
@@ -1474,13 +1756,31 @@ impl AppState {
             }
             Message::Tick(_) => {
                 self.position_secs = self.audio_position();
-                // Auto-advance once per track end (mpv holds at duration,
-                // the rodio wall-clock keeps running — both cross it once).
                 let duration = self.audio_duration();
+                // Prefetch the next song while this one still plays (>75%).
+                // One attempt per track — failures stay silent until advance.
+                if !self.paused
+                    && duration > 30.0
+                    && self.prefetched.is_none()
+                    && self.loading_track.is_none()
+                    && self.position_secs > duration * 0.75
+                {
+                    if let Some(id) = self.peek_next_id() {
+                        if self.prefetch_attempted.as_deref() != Some(id.as_str()) {
+                            self.prefetch_attempted = Some(id.clone());
+                            self.publish_mpris();
+                            return Self::prefetch_task(id);
+                        }
+                    }
+                }
+                // Auto-advance once per track end. The threshold sits 1s
+                // before the reported duration: mpv's time-pos can hold just
+                // short of it, and the rodio wall-clock can overshoot —
+                // both cross (duration - 1) exactly once per song.
                 if !self.paused
                     && !self.end_advanced
-                    && duration > 1.0
-                    && self.position_secs >= duration
+                    && duration > 2.0
+                    && self.position_secs >= duration - 1.0
                     && self.advance_queue()
                 {
                     self.end_advanced = true;
@@ -1504,6 +1804,40 @@ impl AppState {
                             self.status = format!("Seek failed ({e}).");
                         }
                     },
+                }
+            }
+            Message::UrlResolved { track_id, result } => {
+                // Only the in-flight track may report; anything else is stale.
+                if self.loading_track.as_deref() != Some(track_id.as_str()) {
+                    return iced::Task::none();
+                }
+                self.loading_track = None;
+                match result {
+                    Err(e) => {
+                        self.status = format!("Playback failed for {track_id}: {e}");
+                    }
+                    Ok(url) => {
+                        if let Some(expires) = url_expiry(&url) {
+                            self.url_cache
+                                .insert(track_id.clone(), (url.clone(), expires));
+                        }
+                        if let Some(t) = self.queue.current().cloned() {
+                            if t.id == track_id && !self.try_play_url(&url, &t) {
+                                // Stream play failed: fall back to bytes.
+                                self.loading_track = Some(t.id.clone());
+                                self.publish_mpris();
+                                return Self::resolve_task(t.id);
+                            }
+                        }
+                    }
+                }
+            }
+            Message::UrlPrefetched { track_id, result } => {
+                // Keep it only if it is still the upcoming track.
+                if self.peek_next_id().as_deref() == Some(track_id.as_str()) {
+                    if let Ok(url) = result {
+                        self.prefetched = Some((track_id, url));
+                    }
                 }
             }
             Message::StreamResolved { video_id, result } => {
@@ -1574,6 +1908,48 @@ impl AppState {
         )
     }
 
+    /// Resolve a track to a stream URL fast (yt-dlp only, no download).
+    /// mpv plays the URL progressively; the rodio path uses `resolve_task`
+    /// (full bytes) instead.
+    fn resolve_url_task(track_id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = resolve_stream_url(&track_id).await;
+                (track_id, result)
+            },
+            |(track_id, result)| Message::UrlResolved { track_id, result },
+        )
+    }
+
+    /// Lyrics fetch for one catalog track (LRCLIB, no login needed).
+    #[cfg(feature = "lyrics")]
+    fn lyrics_task(track: Track) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = yutu_core::fetch_lrclib(
+                    &track.artist,
+                    &track.title,
+                    track.album.as_deref(),
+                    track.duration_secs,
+                )
+                .await;
+                (track.id, result)
+            },
+            |(track_id, result)| Message::LyricsReady { track_id, result },
+        )
+    }
+
+    /// Background prefetch of the next song's URL (never auto-plays).
+    fn prefetch_task(track_id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = resolve_stream_url(&track_id).await;
+                (track_id, result)
+            },
+            |(track_id, result)| Message::UrlPrefetched { track_id, result },
+        )
+    }
+
     /// Radio seed: same-artist tracks first, then the rest of the search.
     #[cfg(feature = "innertube")]
     fn radio_task(seed: String, artist: String) -> iced::Task<Message> {
@@ -1610,6 +1986,7 @@ impl AppState {
             "♡"
         };
         row![
+            self.thumb(t),
             button(text("▶").size(13))
                 .style(green_play)
                 .on_press(Message::EnqueueTrack(t.id.clone()))
@@ -1620,6 +1997,7 @@ impl AppState {
             ]
             .spacing(2)
             .width(Fill),
+            text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
             button(text(heart).size(15))
                 .style(button::text)
                 .on_press(Message::Like(t.id.clone()))
@@ -1726,11 +2104,21 @@ impl AppState {
         use iced::widget::{button, column, container, row, text};
         use iced::Fill;
         let current = self.queue.current().cloned();
+        let pos = self.queue.position();
         let now: iced::Element<'_, Message> = match &current {
             Some(t) => column![
                 text("Now playing").size(13).color(MUTED),
-                text(t.title.clone()).size(15),
-                text(t.artist.clone()).size(12).color(MUTED),
+                row![
+                    self.thumb(t),
+                    column![
+                        text(t.title.clone()).size(15),
+                        text(t.artist.clone()).size(12).color(MUTED),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
                 row![
                     button(text("Lyrics").size(12))
                         .style(button::text)
@@ -1759,15 +2147,25 @@ impl AppState {
             .take(9)
             .enumerate()
             .map(|(i, t)| {
-                let marker = if current.as_ref().map(|c| c.id == t.id).unwrap_or(false) && i == 0 {
-                    "● "
-                } else {
-                    ""
-                };
-                row![text(format!("{marker}{} — {}", t.title, t.artist))
-                    .size(12)
-                    .width(Fill),]
-                .padding(3)
+                let is_current = Some(i) == pos;
+                row![
+                    self.thumb(t),
+                    button(text(format!("{} — {}", t.title, t.artist)).size(12).color(
+                        if is_current {
+                            SPOT_GREEN
+                        } else {
+                            iced::Color::WHITE
+                        }
+                    ))
+                    .style(button::text)
+                    .on_press(Message::QueueJump(i))
+                    .padding(3)
+                    .width(Fill),
+                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(2)
                 .into()
             })
             .collect();
@@ -1849,9 +2247,13 @@ impl AppState {
                 text(self.status.clone()).size(12).color(MUTED),
                 row![
                     row![
-                        container(text("♪").size(20).color(MUTED))
-                            .style(card_bg)
-                            .padding(10),
+                        match &current {
+                            Some(t) => self.thumb(t),
+                            None => container(text("♪").size(20).color(MUTED))
+                                .style(card_bg)
+                                .padding(10)
+                                .into(),
+                        },
                         column![text(title).size(14), text(artist).size(12).color(MUTED),]
                             .spacing(1),
                         like_button,
@@ -1892,8 +2294,10 @@ impl AppState {
                         .align_y(iced::alignment::Vertical::Center),
                     ]
                     .spacing(2)
+                    .align_x(iced::alignment::Horizontal::Center)
                     .width(Fill),
                     row![
+                        iced::widget::Space::new().width(Fill),
                         text(format!(
                             "Q:{}  V:{:.0}%",
                             self.queue.len(),
@@ -1906,7 +2310,8 @@ impl AppState {
                             .width(120),
                     ]
                     .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
+                    .align_y(iced::alignment::Vertical::Center)
+                    .width(Fill),
                 ]
                 .spacing(12)
                 .align_y(iced::alignment::Vertical::Center),
@@ -1976,25 +2381,48 @@ impl AppState {
                     .spacing(8)
                     .into()
                 };
+                let home_hits: iced::Element<'_, Message> = if self.searching {
+                    text("Searching YouTube Music…").color(MUTED).into()
+                } else if self.search_query.trim().is_empty() {
+                    text("").size(1).into()
+                } else if self.results.tracks.is_empty() {
+                    text("No matches — try another search.").color(MUTED).into()
+                } else {
+                    let top: Vec<iced::Element<'_, Message>> = self
+                        .results
+                        .tracks
+                        .iter()
+                        .take(6)
+                        .map(|t| self.track_row(t))
+                        .collect();
+                    column![
+                        column(top).spacing(2),
+                        button(text("See all results →").size(12))
+                            .style(button::text)
+                            .on_press(Message::Navigate(Route::Search))
+                            .padding(4),
+                    ]
+                    .spacing(4)
+                    .into()
+                };
+                let home_search_results: iced::Element<'_, Message> = home_hits;
                 let weekly_n = self.weekly_mix_tracks().len();
                 let forgotten_n = self.forgotten_tracks().len();
                 column![
                     text("Good evening").size(24),
-                    container(
-                        row![
-                            text("Search YouTube Music, click a song, hear it.")
-                                .size(14)
-                                .width(Fill),
-                            button(text("🔍 Search").size(14))
-                                .style(green_play)
-                                .on_press(Message::Navigate(Route::Search))
-                                .padding(8),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center),
-                    )
-                    .style(card_bg)
-                    .padding(10),
+                    row![
+                        text_input("Search YouTube Music…", &self.search_query)
+                            .on_input(Message::HomeSearchChanged)
+                            .on_submit(Message::SearchStay)
+                            .width(Fill),
+                        button(text("🔍 Search").size(14))
+                            .style(green_play)
+                            .on_press(Message::SearchStay)
+                            .padding(8),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
+                    home_search_results,
                     text("Jump back in").size(19),
                     grid,
                     text("Made for you").size(19),
@@ -2451,10 +2879,55 @@ impl AppState {
                     .find_track(id)
                     .map(|t| format!("{} — {}", t.title, t.artist))
                     .unwrap_or_else(|| id.clone());
-                let content: iced::Element<'_, Message> =
-                    text("Lyrics providers are landing next — no login needed.")
-                        .color(MUTED)
-                        .into();
+                let content: iced::Element<'_, Message> = match self.lyrics_cache.get(id) {
+                    Some(cached) if cached.instrumental => {
+                        text("[Instrumental]").size(14).color(MUTED).into()
+                    }
+                    Some(cached) if !cached.synced.is_empty() => {
+                        let pos_ms = (self.position_secs * 1000.0) as u64;
+                        let at = yutu_core::line_at(&cached.synced, pos_ms);
+                        column(
+                            cached
+                                .synced
+                                .iter()
+                                .enumerate()
+                                .map(|(i, l)| {
+                                    let is_current = Some(i) == at;
+                                    text(format!(
+                                        "{} {}",
+                                        if is_current { "●" } else { " " },
+                                        l.text
+                                    ))
+                                    .size(if is_current { 16 } else { 14 })
+                                    .color(if is_current {
+                                        SPOT_GREEN
+                                    } else {
+                                        iced::Color::WHITE
+                                    })
+                                    .into()
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                        .spacing(5)
+                        .into()
+                    }
+                    Some(cached) => column(
+                        cached
+                            .plain
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|l| text(l.to_string()).size(14).into())
+                            .collect::<Vec<_>>(),
+                    )
+                    .spacing(4)
+                    .into(),
+                    None if self.lyrics_loading.as_deref() == Some(id.as_str()) => {
+                        text("Fetching lyrics (LRCLIB, no login)…")
+                            .color(MUTED)
+                            .into()
+                    }
+                    None => text("No lyrics for this track yet.").color(MUTED).into(),
+                };
                 column![
                     text(title).size(22),
                     row![
@@ -2496,9 +2969,31 @@ impl AppState {
                 .into()
             }
         };
-        scrollable(container(body).padding(20).width(Fill))
-            .height(Fill)
-            .into()
+        let can_back = !self.nav_back.is_empty();
+        let can_forward = !self.nav_forward.is_empty();
+        let mut nav_row = row![];
+        nav_row = nav_row.push(if can_back {
+            button(text("‹").size(16))
+                .style(button::text)
+                .on_press(Message::NavBack)
+                .padding(6)
+        } else {
+            button(text("‹").size(16)).padding(6)
+        });
+        nav_row = nav_row.push(if can_forward {
+            button(text("›").size(16))
+                .style(button::text)
+                .on_press(Message::NavForward)
+                .padding(6)
+        } else {
+            button(text("›").size(16)).padding(6)
+        });
+        column![
+            nav_row.spacing(2),
+            scrollable(container(body).padding(20).width(Fill)).height(Fill),
+        ]
+        .spacing(4)
+        .into()
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
@@ -2551,6 +3046,7 @@ mod tests {
             artist: artist.into(),
             album: None,
             duration_secs: 200,
+            thumbnail_url: None,
         }
     }
 
@@ -2728,7 +3224,10 @@ mod tests {
         let _ = s.update(Message::OpenLyrics("m4".into()));
         assert_eq!(s.route, Route::Lyrics("m4".into()));
         let _ = s.update(Message::StartRadio("m1".into()));
+        #[cfg(feature = "innertube")]
         assert_eq!(s.route, Route::Radio("m1".into()));
+        #[cfg(not(feature = "innertube"))]
+        assert_eq!(s.route, Route::Lyrics("m4".into()));
         assert!(s.queue.is_empty());
         let _ = s.update(Message::RadioReady {
             seed: "m1".into(),
@@ -3010,6 +3509,7 @@ mod tests {
                 artist: "yutu".into(),
                 album: None,
                 duration_secs: 200,
+                thumbnail_url: None,
             },
         );
         let _ = s.update(Message::EnqueueTrack(video.clone()));
@@ -3030,6 +3530,137 @@ mod tests {
         );
         assert!(s.audio_position() >= 0.0);
         assert!(s.audio_duration() > 0.0);
+    }
+
+    #[test]
+    fn lyrics_ready_caches_and_open_lyrics_fetches_once() {
+        use yutu_core::{LyricLine, LyricsResult};
+        let mut s = test_state();
+        // Unknown id: honest error, no fetch.
+        let _ = s.update(Message::OpenLyrics("ghost".into()));
+        assert_eq!(s.route, Route::Lyrics("ghost".into()));
+        assert!(s.lyrics_loading.is_none());
+        // Known track: fetch marked in flight (task runs on the runtime).
+        let _ = s.update(Message::OpenLyrics("m1".into()));
+        #[cfg(feature = "lyrics")]
+        assert_eq!(s.lyrics_loading.as_deref(), Some("m1"));
+        #[cfg(not(feature = "lyrics"))]
+        assert!(s.lyrics_loading.is_none());
+        // Second open while loading: no duplicate fetch.
+        let _ = s.update(Message::OpenLyrics("m1".into()));
+        #[cfg(feature = "lyrics")]
+        assert_eq!(s.lyrics_loading.as_deref(), Some("m1"));
+        // Arrival caches; failures report.
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m1".into(),
+            result: Ok(LyricsResult {
+                plain: "la\nla".into(),
+                synced: vec![LyricLine {
+                    start_ms: 0,
+                    text: "la".into(),
+                }],
+                instrumental: false,
+            }),
+        });
+        assert!(s.lyrics_loading.is_none());
+        assert_eq!(s.lyrics_cache["m1"].synced.len(), 1);
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m2".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("Lyrics failed"));
+    }
+
+    #[test]
+    fn url_expiry_parses_googlevideo_param() {
+        assert_eq!(
+            url_expiry("https://x.googlevideo.com/v?expire=1791411186&ei=abc"),
+            Some(1791411186)
+        );
+        assert_eq!(url_expiry("https://example.invalid/audio.webm"), None);
+        assert_eq!(url_expiry("https://x/?expire=notanumber"), None);
+    }
+
+    #[test]
+    fn browser_back_forward_walk_history() {
+        let mut s = test_state();
+        assert!(s.nav_back.is_empty());
+        let _ = s.update(Message::NavBack);
+        assert_eq!(s.route, Route::Home);
+        let _ = s.update(Message::Navigate(Route::Search));
+        let _ = s.update(Message::Navigate(Route::Queue));
+        assert_eq!(s.route, Route::Queue);
+        let _ = s.update(Message::NavBack);
+        assert_eq!(s.route, Route::Search);
+        let _ = s.update(Message::NavBack);
+        assert_eq!(s.route, Route::Home);
+        // Exhausted: stays put.
+        let _ = s.update(Message::NavBack);
+        assert_eq!(s.route, Route::Home);
+        let _ = s.update(Message::NavForward);
+        assert_eq!(s.route, Route::Search);
+        // New navigation clears the forward stack.
+        let _ = s.update(Message::Navigate(Route::Library));
+        let _ = s.update(Message::NavForward);
+        assert_eq!(s.route, Route::Library);
+    }
+
+    #[test]
+    fn home_search_stays_home_until_navigation() {
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("beatles".into()));
+        assert_eq!(s.search_query, "beatles");
+        assert_eq!(s.route, Route::Home);
+    }
+
+    #[test]
+    fn peek_next_id_walks_and_wraps_on_repeat_all() {
+        let mut s = test_state();
+        assert_eq!(s.peek_next_id(), None);
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        // Current is m2 (last enqueued); nothing after it, no repeat.
+        assert_eq!(s.peek_next_id(), None);
+        let _ = s.update(Message::QueueJump(0));
+        assert_eq!(s.peek_next_id().as_deref(), Some("m2"));
+        // Repeat-all wraps the tail back to the head.
+        let _ = s.update(Message::CycleRepeat);
+        let _ = s.update(Message::QueueJump(1));
+        assert_eq!(s.peek_next_id().as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn prefetch_is_kept_only_for_the_upcoming_track() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::QueueJump(0));
+        let _ = s.update(Message::UrlPrefetched {
+            track_id: "m2".into(),
+            result: Ok("https://example.invalid/m2".into()),
+        });
+        assert_eq!(
+            s.prefetched,
+            Some(("m2".into(), "https://example.invalid/m2".into()))
+        );
+        // A late arrival for any other track is dropped.
+        let _ = s.update(Message::UrlPrefetched {
+            track_id: "zzz".into(),
+            result: Ok("https://example.invalid/z".into()),
+        });
+        assert_eq!(
+            s.prefetched,
+            Some(("m2".into(), "https://example.invalid/m2".into()))
+        );
+        // Failures never poison the slot.
+        let _ = s.update(Message::UrlPrefetched {
+            track_id: "m2".into(),
+            result: Err("boom".into()),
+        });
+        assert_eq!(
+            s.prefetched,
+            Some(("m2".into(), "https://example.invalid/m2".into()))
+        );
     }
 
     /// Live composition check: the UI's `live_search` over the real API.

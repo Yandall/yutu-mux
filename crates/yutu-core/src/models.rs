@@ -9,6 +9,10 @@ pub struct Track {
     pub artist: String,
     pub album: Option<String>,
     pub duration_secs: u32,
+    /// Small artwork URL (YTM thumbnail) if the source provided one.
+    /// Missing on old rows — always `#[serde(default)]`.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

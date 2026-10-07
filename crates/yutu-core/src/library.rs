@@ -174,6 +174,7 @@ impl LibraryStore {
                     artist: r.get(2)?,
                     album: r.get(3)?,
                     duration_secs: r.get::<_, i64>(4)? as u32,
+                    thumbnail_url: None,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -292,6 +293,7 @@ mod tests {
             artist: "The Beatles".into(),
             album: Some("Abbey Road".into()),
             duration_secs: 259,
+            thumbnail_url: None,
         };
         s.add_to_playlist("u1", &t).unwrap();
         s.add_to_playlist("u1", &t).unwrap(); // deduped

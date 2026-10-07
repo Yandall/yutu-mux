@@ -139,6 +139,7 @@ mod tests {
             artist: artist.to_owned(),
             album: None,
             duration_secs: 200,
+            thumbnail_url: None,
         }
     }
 

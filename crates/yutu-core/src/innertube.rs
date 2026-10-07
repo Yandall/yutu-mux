@@ -35,7 +35,7 @@ use std::path::Path;
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::oauth::OAuthToken;
 use ytmapi_rs::auth::BrowserToken;
-use ytmapi_rs::common::{PlaylistID, VideoID, YoutubeID};
+use ytmapi_rs::common::{PlaylistID, Thumbnail, VideoID, YoutubeID};
 use ytmapi_rs::parse::{
     PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong, TableListSong,
     WatchPlaylistTrack,
@@ -655,6 +655,15 @@ fn first_audio_url(formats: Option<&serde_json::Value>) -> Option<String> {
 /// The API gives a single joined `artist` string, an optional album (some
 /// songs have none — see youtui#174), and a `"m:ss"`/`"h:mm:ss"` duration
 /// string; unparseable durations become `0`.
+/// Smallest artwork thumbnail (keeps row art light), if any.
+fn pick_thumb_url(thumbs: &[Thumbnail]) -> Option<String> {
+    thumbs
+        .iter()
+        .min_by_key(|t| t.width.max(1))
+        .map(|t| t.url.clone())
+        .filter(|u| !u.is_empty())
+}
+
 fn song_to_track(song: &SearchResultSong) -> Track {
     Track {
         id: song.video_id.get_raw().to_string(),
@@ -662,6 +671,7 @@ fn song_to_track(song: &SearchResultSong) -> Track {
         artist: song.artist.clone(),
         album: song.album.as_ref().map(|a| a.name.clone()),
         duration_secs: parse_duration_secs(&song.duration),
+        thumbnail_url: pick_thumb_url(&song.thumbnails),
     }
 }
 
@@ -694,6 +704,7 @@ fn table_song_to_track(song: &TableListSong) -> Track {
         artist: join_names(song.artists.iter().map(|a| a.name.as_str())),
         album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
         duration_secs: parse_duration_secs(&song.duration),
+        thumbnail_url: pick_thumb_url(&song.thumbnails),
     }
 }
 
@@ -708,6 +719,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             artist: join_names(song.artists.iter().map(|a| a.name.as_str())),
             album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
             duration_secs: parse_duration_secs(&song.duration),
+            thumbnail_url: pick_thumb_url(&song.thumbnails),
         }),
         PlaylistItem::Video(video) => Some(Track {
             id: video.video_id.get_raw().to_string(),
@@ -715,6 +727,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             artist: video.channel_name.clone(),
             album: None,
             duration_secs: parse_duration_secs(&video.duration),
+            thumbnail_url: pick_thumb_url(&video.thumbnails),
         }),
         PlaylistItem::UploadSong(song) => Some(Track {
             id: song.video_id.get_raw().to_string(),
@@ -726,6 +739,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
                 .map(|a| a.name.clone())
                 .filter(|name| !name.is_empty()),
             duration_secs: parse_duration_secs(&song.duration),
+            thumbnail_url: None,
         }),
         PlaylistItem::Episode(_) => None,
     }
@@ -740,6 +754,7 @@ fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
         artist: track.author.clone(),
         album: None,
         duration_secs: parse_duration_secs(&track.duration),
+        thumbnail_url: pick_thumb_url(&track.thumbnails),
     }
 }
 
@@ -924,6 +939,7 @@ mod tests {
                 artist: "The Beatles".into(),
                 album: Some("The Beatles 1967 - 1970 (Remastered 2009)".into()),
                 duration_secs: 308,
+                thumbnail_url: None,
             }
         );
         // Multiple artists join the way the search API pre-joins them.
@@ -948,6 +964,7 @@ mod tests {
                 artist: "The Beatles".into(),
                 album: None,
                 duration_secs: 260,
+                thumbnail_url: None,
             }
         );
         assert_eq!(tracks[1].duration_secs, 186);
@@ -1227,6 +1244,14 @@ mod tests {
             assert!(!track.title.is_empty(), "track title empty: {track:?}");
             assert!(!track.artist.is_empty(), "track artist empty: {track:?}");
         }
+        // The real fixture carries artwork — mapping must keep it.
+        assert!(
+            tracks.iter().any(|t| t
+                .thumbnail_url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("https://"))),
+            "expected at least one thumbnail url"
+        );
     }
 
     #[test]
@@ -1253,6 +1278,7 @@ mod tests {
                 artist: "Someone".into(),
                 album: None,
                 duration_secs: 0,
+                thumbnail_url: None,
             }
         );
     }
