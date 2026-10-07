@@ -9,7 +9,7 @@ license = "MIT"
 yutu-core = { path = "../yutu-core" }
 yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
-iced = { version = "0.14", features = ["tokio", "image"] }
+iced = { version = "0.14", features = ["tokio", "image", "svg"] }
 tokio = { version = "1", features = ["time"] }
 
 [features]

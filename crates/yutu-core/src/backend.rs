@@ -96,10 +96,12 @@ impl MusicBackend for MockBackend {
                 title: "Abbey Road".into(),
                 artist: "The Beatles".into(),
                 year: Some(1969),
+                thumbnail_url: None,
             }],
             artists: vec![Artist {
                 id: "ar1".into(),
                 name: "The Beatles".into(),
+                thumbnail_url: None,
             }],
         }
     }
