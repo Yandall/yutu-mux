@@ -130,6 +130,9 @@
   right-docked settings; responsive player (compact < 700, stacked
   minimal < 500, taller hover zone); mouse side-button back/forward
   with drag/menu/popup guards
+- Drag from anywhere: global left-press arms via hovered row (inner
+  buttons swallow area presses); origin keeps a full-size held chip so
+  the song never disappears and siblings never shift
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
