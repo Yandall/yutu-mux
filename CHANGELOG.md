@@ -88,6 +88,17 @@
 - Menu rows fill the hitbox; padded inputs; softer red; narrow sidebar
   hover zones; transparent nav arrows; placeholder art keeps dimensions;
   red sliders; wider timeline; dev-only status text
+- Shuffle-everything: current leads the shuffled order, exact restore
+  on toggle-off (duplicate-safe); slot-model drag-drop with every
+  between-position reachable, compact ghost chip, eased gap
+- Center-column Now Playing drawer (sidebars/player stay visible),
+  centered hi-res hero + narrow lyrics column, drawer-open art warm
+- Two-line track rows everywhere + full-row hover; loaded art shares
+  the placeholder card box; Play-next list-plus icon; playlist menu
+  shows all lists with live Add/Remove + scroll; Lyrics/Radio leave
+  the sidebar (menu + drawer own them); icon-inside search pill
+- Sidebar hover hysteresis (panels linger while inside), 56px right
+  thumbnail rail, smoother animation steps + Settings toggle/speed
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

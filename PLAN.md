@@ -157,5 +157,6 @@ Done: user can plausibly replace Spotify for daily listening.
 16. Round 5: Lucide icons (zero emoji), Fisher-Yates shuffle + repeat-one fix + widget shuffle/loop, snappier search (pre-results), panel drag reorder, scrollbar clearance, Spotify search/artist/album views
 17. Round 6: physical shuffle w/ restore, filled icons, red theme, rounded UI, hover states, icon alignment, drag ghost/preview, volume tooltip, whole-row clicks, autoplay hover remove, lyric styling, pin/unpin sidebars
 18. Round 7: drawer redesign (lyrics home, sticky header, slide), no-op replays, full-row menus, input padding, red tone, hover zones, nav arrows, stable placeholders, red sliders, wide timeline, dev status
+19. Round 8: shuffle-everything + restore, slot DnD, center drawer, two-line rows, playlist Add/Remove, right rail, hysteresis, animation prefs, search pill (4 spec agents + 2 adversarial reviewers)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
