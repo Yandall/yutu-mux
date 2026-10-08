@@ -107,6 +107,16 @@
   favorites labels; playlist side-flyout with covers; capped search
   bar; search query cache + 200ms debounce; stacked settings;
   animation speed in ms; full em-dash sweep
+- Drag ghost stays in place until a slot arms; whole-row drag with
+  reorder-click suppression; duration-based animation (1px floor,
+  20-400ms); airy dividers; transparent inner row buttons
+- Drawer replaces the center when open (nothing behind interacts);
+  navigation closes it; search popup floats above with autodismiss;
+  flyout aligns to its toggle row; playlist menus, play-all clears,
+  queue-append action, sidebar hover play
+- Startup catalog seeding plus art persistence migration; queue art
+  merge; lyrics on every track start; exact-ms lyric seeks with
+  marker-safe highlight; Favorites playlist leads everywhere
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

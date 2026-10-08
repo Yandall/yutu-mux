@@ -38,10 +38,36 @@ impl LibraryStore {
                      artist TEXT NOT NULL,
                      album TEXT,
                      duration_secs INTEGER NOT NULL,
+                     thumbnail_url TEXT,
+                     thumbnail_large_url TEXT,
                      PRIMARY KEY (playlist_id, position));
                  CREATE INDEX IF NOT EXISTS idx_ptracks_pid ON playlist_tracks(playlist_id);",
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // Additive migration for pre-art databases (no version table).
+        for col in ["thumbnail_url", "thumbnail_large_url"] {
+            let mut has = false;
+            let mut pragma = self
+                .conn
+                .prepare("PRAGMA table_info(playlist_tracks)")
+                .map_err(|e| e.to_string())?;
+            let names = pragma
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            for name in names.flatten() {
+                if name == col {
+                    has = true;
+                }
+            }
+            if !has {
+                self.conn
+                    .execute_batch(&format!(
+                        "ALTER TABLE playlist_tracks ADD COLUMN {col} TEXT"
+                    ))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn like(&self, track_id: &str) -> Result<(), String> {
@@ -162,7 +188,7 @@ impl LibraryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT track_id, title, artist, album, duration_secs
+                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url
                  FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position",
             )
             .map_err(|e| e.to_string())?;
@@ -174,8 +200,8 @@ impl LibraryStore {
                     artist: r.get(2)?,
                     album: r.get(3)?,
                     duration_secs: r.get::<_, i64>(4)? as u32,
-                    thumbnail_url: None,
-                    thumbnail_large_url: None,
+                    thumbnail_url: r.get(5).unwrap_or(None),
+                    thumbnail_large_url: r.get(6).unwrap_or(None),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -206,8 +232,8 @@ impl LibraryStore {
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO playlist_tracks
-                 (playlist_id, position, track_id, title, artist, album, duration_secs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     playlist_id,
                     pos,
@@ -215,7 +241,9 @@ impl LibraryStore {
                     track.title,
                     track.artist,
                     track.album,
-                    track.duration_secs as i64
+                    track.duration_secs as i64,
+                    track.thumbnail_url,
+                    track.thumbnail_large_url
                 ],
             )
             .map(|_| ())
@@ -307,5 +335,69 @@ mod tests {
         assert!(s.user_playlists().unwrap()[0].tracks.is_empty());
         s.delete_playlist("u1").unwrap();
         assert!(s.user_playlists().unwrap().is_empty());
+    }
+
+    #[test]
+    fn playlist_art_round_trips() {
+        use crate::models::Track;
+        let s = LibraryStore::in_memory().unwrap();
+        s.create_playlist("u1", "Gym").unwrap();
+        let t = Track {
+            id: "m1".into(),
+            title: "Come Together".into(),
+            artist: "The Beatles".into(),
+            album: Some("Abbey Road".into()),
+            duration_secs: 259,
+            thumbnail_url: Some("https://example.invalid/s".into()),
+            thumbnail_large_url: Some("https://example.invalid/l".into()),
+        };
+        s.add_to_playlist("u1", &t).unwrap();
+        let lists = s.user_playlists().unwrap();
+        assert_eq!(
+            lists[0].tracks[0].thumbnail_url.as_deref(),
+            Some("https://example.invalid/s")
+        );
+        assert_eq!(
+            lists[0].tracks[0].thumbnail_large_url.as_deref(),
+            Some("https://example.invalid/l")
+        );
+    }
+
+    #[test]
+    fn migration_adds_art_columns_to_old_db() {
+        let s = LibraryStore::in_memory().unwrap();
+        s.create_playlist("u1", "Gym").unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO playlist_tracks
+                 (playlist_id, position, track_id, title, artist, album, duration_secs)
+                 VALUES ('u1', 0, 'm1', 'Come Together', 'The Beatles', 'Abbey Road', 259)",
+                [],
+            )
+            .unwrap();
+        // Simulate a pre-art database: drop the new columns, remigrate.
+        s.conn
+            .execute_batch(
+                "CREATE TEMP TABLE backup AS SELECT playlist_id, position, track_id, title, artist, album, duration_secs FROM playlist_tracks;
+                 DROP TABLE playlist_tracks;
+                 CREATE TABLE playlist_tracks(
+                     playlist_id TEXT NOT NULL,
+                     position INTEGER NOT NULL,
+                     track_id TEXT NOT NULL,
+                     title TEXT NOT NULL,
+                     artist TEXT NOT NULL,
+                     album TEXT,
+                     duration_secs INTEGER NOT NULL,
+                     PRIMARY KEY (playlist_id, position));
+                 INSERT INTO playlist_tracks SELECT * FROM backup;
+                 DROP TABLE backup;",
+            )
+            .unwrap();
+        s.migrate().unwrap();
+        // Old rows survive with empty art; new writes carry art.
+        let lists = s.user_playlists().unwrap();
+        assert_eq!(lists[0].tracks.len(), 1);
+        assert_eq!(lists[0].tracks[0].id, "m1");
+        assert!(lists[0].tracks[0].thumbnail_url.is_none());
     }
 }
