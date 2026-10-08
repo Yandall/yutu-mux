@@ -82,6 +82,12 @@
   every clickable, centered icon rows, drag ghost + live preview,
   tooltip volume, whole-row clicks, autoplay hover remove, bold lyrics
   with note marker, pin/unpin sidebars with edge-hover reveal
+- Now Playing drawer: hi-res art, centered info, lyrics moved in with
+  sticky compact header, bottom-sheet slide, stateful caret, lyrics
+  strophe gaps, paused-seek flicker fix; same-song clicks are no-ops
+- Menu rows fill the hitbox; padded inputs; softer red; narrow sidebar
+  hover zones; transparent nav arrows; placeholder art keeps dimensions;
+  red sliders; wider timeline; dev-only status text
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

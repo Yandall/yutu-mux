@@ -15,8 +15,8 @@ use yutu_player::{EqPreset, Queue, RodioBackend};
 // primary action, muted secondary text, text-buttons for row actions.
 // ---------------------------------------------------------------------------
 
-const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x00);
-const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x4D, 0x4D);
+const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xE6, 0x21, 0x17);
+const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xF0, 0x44, 0x38);
 const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
 const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
 const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
@@ -170,8 +170,39 @@ fn rounded_input(
     }
 }
 
+/// Slider in theme red: red filled rail, pale track, white round handle.
+fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widget::slider::Style {
+    iced::widget::slider::Style {
+        rail: iced::widget::slider::Rail {
+            backgrounds: (
+                iced::Background::Color(SPOT_GREEN),
+                iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
+            ),
+            width: 4.0,
+            border: iced::Border::default().rounded(2),
+        },
+        handle: iced::widget::slider::Handle {
+            shape: iced::widget::slider::HandleShape::Circle { radius: 8.0 },
+            background: iced::Background::Color(iced::Color::WHITE),
+            border_width: 0.0,
+            border_color: iced::Color::TRANSPARENT,
+        },
+    }
+}
+
 /// Row action button: transparent at rest, soft card hover with rounded
 /// corners (every clickable row/item gets hover feedback).
+/// Browser arrows: always transparent, softly rounded; the icon (not a
+/// background) carries the enabled state.
+fn nav_arrow(_: &iced::Theme, _: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: None,
+        text_color: iced::Color::WHITE,
+        border: iced::Border::default().rounded(12),
+        ..Default::default()
+    }
+}
+
 fn hover_row(_: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
     let hovered = matches!(
         status,
@@ -326,6 +357,12 @@ pub enum Message {
     AutoHover(Option<usize>),
     /// Right-panel drag reorder (grip press, row hover, release anywhere).
     DragStart(usize),
+    /// Animation frame (sidebar widths + drawer slide converge).
+    Animate,
+    /// Bottom drawer open/close.
+    ToggleDrawer,
+    /// Drawer lyrics scroll offset (sticky header past 200px).
+    DrawerScrolled(f32),
     DragOver(usize),
     DragEnd,
     /// Right-panel row hover: highlight + drag-target tracking.
@@ -588,6 +625,16 @@ fn drag_preview(len: usize, from: usize, over: Option<usize>) -> Vec<usize> {
     order
 }
 
+/// Ease `current` toward `target` by `step` (frame tick for drawer and
+/// sidebar transitions). Snaps when closer than one step.
+fn ease_toward(current: f32, target: f32, step: f32) -> f32 {
+    if (target - current).abs() <= step {
+        target
+    } else {
+        current + (target - current).signum() * step
+    }
+}
+
 /// Format seconds as `m:ss` for the player bar.
 fn fmt_time(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
@@ -657,6 +704,14 @@ pub struct AppState {
     /// Pinned sidebars stay open; unpinned ones reveal on edge hover.
     sidebar_pinned: bool,
     right_pinned: bool,
+    /// Animated sidebar widths (ease toward the open/closed targets).
+    sidebar_w: f32,
+    right_w: f32,
+    /// Bottom drawer (Now Playing + lyrics): open flag + slide 0..1.
+    drawer_open: bool,
+    drawer_anim: f32,
+    /// Drawer lyrics scroll offset (sticky compact header past 200px).
+    drawer_scroll: f32,
     /// Playlist filter text in the sidebar.
     sidebar_filter: String,
     /// Autoplay tail belongs to this seed (stale arrivals drop).
@@ -674,6 +729,8 @@ pub struct AppState {
     error_log: Vec<String>,
     /// Manual position clock deadline after a user seek (anti-flicker).
     seek_hold_until: Option<std::time::Instant>,
+    /// A seek landed while paused (backend clock stays stale until resume).
+    paused_seek: bool,
     /// Last Tick instant (drives the manual clock during a seek hold).
     last_tick: Option<std::time::Instant>,
     /// Cookie-file path for import (Settings).
@@ -1074,6 +1131,11 @@ impl AppState {
                 window: None,
                 sidebar_pinned: true,
                 right_pinned: true,
+                sidebar_w: 235.0,
+                right_w: 285.0,
+                drawer_open: false,
+                drawer_anim: 0.0,
+                drawer_scroll: 0.0,
                 sidebar_filter: String::new(),
                 autoplay_for: None,
                 autoplay: Vec::new(),
@@ -1082,6 +1144,7 @@ impl AppState {
                 drag: None,
                 error_log: Vec::new(),
                 seek_hold_until: None,
+                paused_seek: false,
                 last_tick: None,
                 cookie_path: String::new(),
                 playing_from: String::new(),
@@ -1155,6 +1218,11 @@ impl AppState {
             _ => None,
         });
         let tick = iced::time::every(std::time::Duration::from_millis(500)).map(Message::Tick);
+        let anim = if self.animating() {
+            iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::Animate)
+        } else {
+            iced::Subscription::none()
+        };
         let events = iced::event::listen().filter_map(|event| match event {
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                 Some(Message::CursorMoved(position))
@@ -1165,7 +1233,7 @@ impl AppState {
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::DragEnd),
             _ => None,
         });
-        iced::Subscription::batch([keys, tick, events])
+        iced::Subscription::batch([keys, tick, events, anim])
     }
 
     fn persist_like(&self, id: &str, liked: bool) {
@@ -1239,6 +1307,23 @@ impl AppState {
         iced::Task::batch([scrobble, play])
     }
 
+    /// Fetch the large hero artwork unless cached/in-flight (drawer hero).
+    fn large_art_task(&mut self, t: &Track) -> Option<iced::Task<Message>> {
+        let url = t.thumbnail_large_url.clone()?;
+        if self.artwork.contains_key(&url) || self.artwork_loading.contains(&url) {
+            return None;
+        }
+        self.artwork_loading.insert(url.clone());
+        let url_for_msg = url.clone();
+        Some(iced::Task::perform(
+            async move { yutu_player::fetch_bytes(&url).await },
+            move |result| Message::ArtworkReady {
+                url: url_for_msg.clone(),
+                result: result.map_err(|e| e.to_string()),
+            },
+        ))
+    }
+
     /// Play whatever is current (no-op on an empty queue). Fast paths first:
     /// a prefetched URL or a fresh cached URL plays instantly with no
     /// download; otherwise a resolve task runs (mpv streams the URL, rodio
@@ -1259,6 +1344,8 @@ impl AppState {
         self.loading_track = Some(t.id.clone());
         self.end_advanced = false;
         self.paused = false;
+        self.paused_seek = false;
+        self.seek_hold_until = None;
         self.position_secs = 0.0;
         // Lyrics page follows playback: swap the id in place (no back-stack
         // spam) and fetch the new song's lyrics unless cached.
@@ -1288,6 +1375,9 @@ impl AppState {
             }
         }
         self.status = format!("Loading {} — {}…", t.title, t.artist);
+        if let Some(art) = self.large_art_task(&t) {
+            follow_tasks.push(art);
+        }
         let audio_task = match &self.audio {
             Some(a) if a.wants_stream() => Self::resolve_url_task(t.id),
             _ => Self::resolve_task(t.id),
@@ -1402,6 +1492,8 @@ impl AppState {
                 self.loading_track = Some(t.id.clone());
                 self.end_advanced = false;
                 self.paused = false;
+                self.paused_seek = false;
+                self.seek_hold_until = None;
                 self.position_secs = 0.0;
                 Self::resolve_task(t.id)
             }
@@ -1779,7 +1871,11 @@ impl AppState {
             Some(handle) => image(handle.clone()).width(size).height(size).into(),
             None => container(icon("music", size * 0.4, MUTED))
                 .style(card_bg)
-                .padding(8)
+                .padding(0)
+                .width(iced::Length::Fixed(size))
+                .height(iced::Length::Fixed(size))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
                 .into(),
         }
     }
@@ -1884,7 +1980,8 @@ impl AppState {
                 text_input("/path/to/cookies.txt", &self.cookie_path)
                 .style(rounded_input)
                     .on_input(Message::CookiePathChanged)
-                    .width(Fill),
+                    .width(Fill)
+                    .padding(10),
                 button(
                     text(if self.login_busy {
                         "…"
@@ -1905,21 +2002,33 @@ impl AppState {
     }
 
     /// In-app error log: the same lines that go to stderr (capped at 30).
+    /// Debug-only UI (release builds keep stderr, not the panel).
     fn error_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{column, text};
-        if self.error_log.is_empty() {
-            return text("No errors recorded.").size(12).color(MUTED).into();
+        #[cfg(not(debug_assertions))]
+        {
+            return iced::widget::text("").size(1).into();
         }
-        column(
-            self.error_log
-                .iter()
-                .rev()
-                .take(10)
-                .map(|e| text(e.clone()).size(11).color(MUTED).into())
-                .collect::<Vec<_>>(),
-        )
-        .spacing(2)
-        .into()
+        #[cfg(debug_assertions)]
+        {
+            use iced::widget::{column, text};
+            let body: iced::Element<'_, Message> = if self.error_log.is_empty() {
+                text("No errors recorded.").size(12).color(MUTED).into()
+            } else {
+                column(
+                    self.error_log
+                        .iter()
+                        .rev()
+                        .take(10)
+                        .map(|e| text(e.clone()).size(11).color(MUTED).into())
+                        .collect::<Vec<_>>(),
+                )
+                .spacing(2)
+                .into()
+            };
+            column![text("Recent playback errors").size(17), body,]
+                .spacing(4)
+                .into()
+        }
     }
 
     /// Offline builds: cookie import needs the innertube feature.
@@ -1950,13 +2059,38 @@ impl AppState {
 
     /// Sidebar visibility: pinned, or the cursor is near the left edge.
     fn sidebar_open(&self) -> bool {
-        self.sidebar_pinned || self.cursor.map(|p| p.x).unwrap_or(9999.0) < 248.0
+        self.sidebar_pinned || self.cursor.map(|p| p.x).unwrap_or(9999.0) < 72.0
     }
 
     /// Right panel visibility: pinned, or the cursor is near the right edge.
     fn right_open(&self) -> bool {
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-        self.right_pinned || self.cursor.map(|p| p.x).unwrap_or(0.0) > ww - 300.0
+        self.right_pinned || self.cursor.map(|p| p.x).unwrap_or(0.0) > ww - 16.0
+    }
+
+    /// Animated sidebar target widths from the open states above.
+    fn sidebar_target(&self) -> f32 {
+        if self.sidebar_open() {
+            235.0
+        } else {
+            56.0
+        }
+    }
+
+    /// Animated right-panel target width.
+    fn right_target(&self) -> f32 {
+        if self.right_open() {
+            285.0
+        } else {
+            0.0
+        }
+    }
+
+    /// True while any transition is still converging (drives the ticker).
+    fn animating(&self) -> bool {
+        self.sidebar_w != self.sidebar_target()
+            || self.right_w != self.right_target()
+            || self.drawer_anim != if self.drawer_open { 1.0 } else { 0.0 }
     }
 
     /// Close the context menu and drop its anchor.
@@ -1974,9 +2108,13 @@ impl AppState {
             .and_then(|u| self.artwork.get(u))
         {
             Some(handle) => image(handle.clone()).width(size).height(size).into(),
-            None => container(icon("music", 16.0, MUTED))
+            None => container(icon("music", size * 0.4, MUTED))
                 .style(card_bg)
-                .padding(8)
+                .padding(0)
+                .width(iced::Length::Fixed(size))
+                .height(iced::Length::Fixed(size))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
                 .into(),
         }
     }
@@ -2006,6 +2144,9 @@ impl AppState {
                     // reports the pre-seek position for a tick or two.
                     self.seek_hold_until =
                         Some(std::time::Instant::now() + std::time::Duration::from_millis(1200));
+                    // While paused the backend may never catch up, so the
+                    // hold lasts until resume (kills the paused flicker).
+                    self.paused_seek = self.paused;
                 }
                 Err(e) => {
                     let msg = format!("Seek failed ({e}).");
@@ -2028,6 +2169,7 @@ impl AppState {
                         a.resume();
                     }
                     self.paused = false;
+                    self.paused_seek = false;
                     self.status = "Resumed (desktop).".into();
                 }
             }
@@ -2044,6 +2186,7 @@ impl AppState {
                         a.resume();
                     }
                     self.paused = false;
+                    self.paused_seek = false;
                     self.status = "Resumed (desktop).".into();
                 } else {
                     if let Some(a) = &self.audio {
@@ -2126,6 +2269,23 @@ impl AppState {
             tasks.push(self.apply_player_command(cmd));
         }
         iced::Task::batch(tasks)
+    }
+
+    /// Player-bar status text: the full last-action log in debug builds;
+    /// release builds only surface failures (no action chatter).
+    fn status_text(&self) -> String {
+        #[cfg(debug_assertions)]
+        {
+            self.status.clone()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            if self.status.to_lowercase().contains("fail") {
+                self.status.clone()
+            } else {
+                String::new()
+            }
+        }
     }
 
     /// Publish current track/status/volume to the MPRIS handle (if any) so
@@ -2553,6 +2713,7 @@ impl AppState {
                     if self.paused {
                         a.resume();
                         self.paused = false;
+                        self.paused_seek = false;
                         self.status = "Resumed.".into();
                     } else {
                         a.pause();
@@ -2724,6 +2885,10 @@ impl AppState {
                 }
             }
             Message::QueueJump(i) => {
+                // Jumping to the live song is a no-op (never restarts it).
+                if self.queue.position() == Some(i) {
+                    return iced::Task::none();
+                }
                 if self.queue.jump_to(i) {
                     self.apply_volume();
                     self.publish_mpris();
@@ -2866,6 +3031,10 @@ impl AppState {
             Message::PlayNow(id) => {
                 self.close_menu();
                 self.show_suggest = false;
+                // Re-clicking the live song is a no-op (never restarts it).
+                if self.queue.current().is_some_and(|t| t.id == id) {
+                    return iced::Task::none();
+                }
                 match self.find_track(&id) {
                     None => {
                         self.status = format!("Track not found: {id}.");
@@ -3034,6 +3203,21 @@ impl AppState {
                     }
                 }
             }
+            Message::Animate => {
+                self.sidebar_w = ease_toward(self.sidebar_w, self.sidebar_target(), 30.0);
+                self.right_w = ease_toward(self.right_w, self.right_target(), 30.0);
+                let target = if self.drawer_open { 1.0 } else { 0.0 };
+                self.drawer_anim = ease_toward(self.drawer_anim, target, 0.18);
+            }
+            Message::ToggleDrawer => {
+                self.drawer_open = !self.drawer_open;
+                if self.drawer_open {
+                    self.drawer_scroll = 0.0;
+                }
+            }
+            Message::DrawerScrolled(y) => {
+                self.drawer_scroll = y.max(0.0);
+            }
             Message::OpenContext(id) => {
                 self.open_menu(id);
             }
@@ -3046,7 +3230,11 @@ impl AppState {
                 return iced::Task::none();
             }
             Message::CloseContext => {
-                self.close_menu();
+                if self.context_menu.is_some() {
+                    self.close_menu();
+                } else if self.drawer_open {
+                    self.drawer_open = false;
+                }
             }
             Message::OpenTrackAlbum(id) => {
                 self.close_menu();
@@ -3270,8 +3458,13 @@ impl AppState {
                     if !self.paused {
                         self.position_secs = (self.position_secs + dt).max(0.0);
                     }
+                    // Paused: freeze the user-set position either way.
+                } else if self.paused && self.paused_seek {
+                    // Seek landed while paused and the backend never caught
+                    // up: keep the manual position until resume.
                 } else {
                     self.seek_hold_until = None;
+                    self.paused_seek = false;
                     self.position_secs = self.audio_position();
                 }
                 let duration = self.audio_duration();
@@ -3696,7 +3889,7 @@ impl AppState {
         .on_press(Message::ToggleSidebarPin)
         .padding(8)
         .into();
-        if !self.sidebar_open() {
+        if self.sidebar_w < 150.0 {
             return container(
                 column![
                     button(icon("house", 18.0, iced::Color::WHITE))
@@ -3710,13 +3903,12 @@ impl AppState {
                     button(icon("library", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Library)))
                         .on_press(Message::Navigate(Route::Library))
-                        .padding(10),
                 ]
                 .spacing(2),
             )
             .style(sidebar_bg)
             .padding(8)
-            .width(56)
+            .width(iced::Length::Fixed(self.sidebar_w))
             .height(Fill)
             .into();
         }
@@ -3825,13 +4017,15 @@ impl AppState {
                 text_input("Filter playlists…", &self.sidebar_filter)
                     .style(rounded_input)
                     .on_input(Message::SidebarFilterChanged)
-                    .width(Fill),
+                    .width(Fill)
+                    .padding(10),
                 list,
                 row![
                     text_input("New playlist…", &self.new_playlist_name)
                         .style(rounded_input)
                         .on_input(Message::NewPlaylistNameChanged)
-                        .width(Fill),
+                        .width(Fill)
+                        .padding(10),
                     button(icon("plus", 14.0, iced::Color::BLACK))
                         .style(green_play)
                         .on_press(Message::CreatePlaylist(new_name))
@@ -3844,7 +4038,7 @@ impl AppState {
         )
         .style(sidebar_bg)
         .padding(12)
-        .width(235)
+        .width(iced::Length::Fixed(self.sidebar_w))
         .height(Fill)
         .into()
     }
@@ -4099,21 +4293,21 @@ impl AppState {
         };
         let pin_btn: iced::Element<'_, Message> = button(icon(
             "panel-right",
-            12.0,
+            14.0,
             if self.right_pinned { SPOT_GREEN } else { MUTED },
         ))
         .style(hover_row)
         .on_press(Message::ToggleRightPin)
         .padding(6)
         .into();
-        if !self.right_open() {
+        if self.right_w < 140.0 {
             return iced::widget::Space::new()
                 .width(iced::Length::Fixed(0.0))
                 .into();
         }
         container(
             column![
-                row![tab_queue, tab_recent, pin_btn].spacing(4),
+                row![pin_btn, tab_queue, tab_recent].spacing(4),
                 from_line,
                 now,
                 list,
@@ -4122,7 +4316,7 @@ impl AppState {
         )
         .style(sidebar_bg)
         .padding(12)
-        .width(285)
+        .width(iced::Length::Fixed(self.right_w))
         .height(Fill)
         .into()
     }
@@ -4183,7 +4377,7 @@ impl AppState {
         };
         container(
             column![
-                text(self.status.clone()).size(12).color(MUTED),
+                text(self.status_text()).size(12).color(MUTED),
                 row![
                     row![
                         match &current {
@@ -4199,7 +4393,7 @@ impl AppState {
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center)
-                    .width(Fill),
+                    .width(iced::Length::FillPortion(2)),
                     column![
                         row![
                             shuffle_button,
@@ -4233,6 +4427,7 @@ impl AppState {
                             text(fmt_time(shown_pos)).size(11).color(MUTED),
                             slider(0.0..=slider_max as f32, shown_pos as f32, Message::SeekTo)
                                 .step(1.0_f32)
+                                .style(themed_slider)
                                 .width(Fill),
                             text(fmt_time(duration)).size(11).color(MUTED),
                         ]
@@ -4241,25 +4436,34 @@ impl AppState {
                     ]
                     .spacing(2)
                     .align_x(iced::alignment::Horizontal::Center)
-                    .width(Fill),
+                    .width(iced::Length::FillPortion(3)),
                     row![
                         iced::widget::Space::new().width(Fill),
                         tooltip(
                             slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
+                                .style(themed_slider)
                                 .width(120),
                             text(format!("Volume {:.0}%", self.volume * 100.0)).size(12),
                             tooltip::Position::Top,
                         )
                         .gap(8),
-                        button(icon("chevron-down", 14.0, iced::Color::WHITE))
-                            .style(hover_row)
-                            .on_press(Message::Navigate(Route::NowPlaying))
-                            .padding(7),
+                        button(icon(
+                            if self.drawer_open {
+                                "chevron-down"
+                            } else {
+                                "chevron-up"
+                            },
+                            14.0,
+                            iced::Color::WHITE
+                        ))
+                        .style(hover_row)
+                        .on_press(Message::ToggleDrawer)
+                        .padding(7),
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center)
-                    .width(Fill),
+                    .width(iced::Length::FillPortion(2)),
                 ]
                 .spacing(12)
                 .align_y(iced::alignment::Vertical::Center),
@@ -4269,6 +4473,173 @@ impl AppState {
         .style(player_bg)
         .padding(10)
         .into()
+    }
+
+    /// Shared synced-lyrics body (lyrics page + Now Playing drawer):
+    /// loading / instrumental / empty / plain states included.
+    fn lyrics_content(&self, id: &str) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, row, text};
+        match self.lyrics_cache.get(id) {
+            Some(cached) if cached.instrumental => {
+                text("[Instrumental]").size(14).color(MUTED).into()
+            }
+            Some(cached) if !cached.synced.is_empty() => {
+                let pos_ms = (self.position_secs * 1000.0) as u64;
+                let at = yutu_core::line_at(&cached.synced, pos_ms);
+                column(
+                    cached
+                        .synced
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| {
+                            let is_current = Some(i) == at;
+                            let secs = l.start_ms as f32 / 1000.0;
+                            let line: iced::Element<'_, Message> = if is_current {
+                                row![
+                                    icon("music", 15.0, SPOT_GREEN),
+                                    text(l.text.clone())
+                                        .size(19)
+                                        .line_height(iced::widget::text::LineHeight::Relative(1.4),)
+                                        .font(iced::Font {
+                                            weight: iced::font::Weight::Bold,
+                                            ..iced::Font::default()
+                                        })
+                                        .color(SPOT_GREEN),
+                                ]
+                                .spacing(10)
+                                .align_y(iced::alignment::Vertical::Center)
+                                .into()
+                            } else {
+                                row![
+                                    iced::widget::Space::new().width(iced::Length::Fixed(25.0)),
+                                    text(l.text.clone())
+                                        .size(15)
+                                        .line_height(iced::widget::text::LineHeight::Relative(1.5),)
+                                        .color(iced::Color::from_rgb8(0xD6, 0xD6, 0xD6)),
+                                ]
+                                .align_y(iced::alignment::Vertical::Center)
+                                .into()
+                            };
+                            button(line)
+                                .style(hover_row)
+                                .on_press(Message::SeekTo(secs))
+                                .padding(4)
+                                .width(iced::Fill)
+                                .into()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .spacing(6)
+                .into()
+            }
+            Some(cached) => column(
+                cached
+                    .plain
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(|l| {
+                        text(l.to_string())
+                            .size(15)
+                            .line_height(iced::widget::text::LineHeight::Relative(1.6))
+                            .into()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .spacing(6)
+            .into(),
+            None if self.lyrics_loading.as_deref() == Some(id) => {
+                text("Fetching lyrics (LRCLIB, no login)…")
+                    .color(MUTED)
+                    .into()
+            }
+            None => text("No lyrics for this track yet.").color(MUTED).into(),
+        }
+    }
+
+    /// Now Playing drawer content (also the NowPlaying route): big art,
+    /// centered song info, then the synced lyrics home. No queue lists
+    /// (the sidebar owns those), no Lyrics/Radio buttons, no timings.
+    fn drawer_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
+        use iced::Fill;
+        let Some(t) = self.queue.current().cloned() else {
+            return container(
+                column![
+                    text("Nothing playing").size(22),
+                    text("Search above, click a song, hear it.").color(MUTED),
+                ]
+                .spacing(8),
+            )
+            .padding(24)
+            .into();
+        };
+        let art_url = t.thumbnail_large_url.clone().or(t.thumbnail_url.clone());
+        let hero: iced::Element<'_, Message> = column![
+            self.art_thumb(art_url.as_deref(), 300.0),
+            text(t.title.clone()).size(24),
+            text(t.artist.clone()).size(15).color(MUTED),
+            text(t.album.clone().unwrap_or_else(|| "Single".into()))
+                .size(12)
+                .color(MUTED),
+            row![button(icon(
+                "heart",
+                16.0,
+                if self.liked.contains(&t.id) {
+                    SPOT_GREEN
+                } else {
+                    MUTED
+                }
+            ))
+            .style(hover_row)
+            .on_press(Message::Like(t.id.clone()))
+            .padding(7),]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),
+        ]
+        .spacing(8)
+        .align_x(iced::alignment::Horizontal::Center)
+        .into();
+        // Sticky compact header once the lyrics scroll past 200px.
+        let sticky: iced::Element<'_, Message> = if self.drawer_scroll > 200.0 {
+            container(
+                row![
+                    self.art_thumb(art_url.as_deref(), 40.0),
+                    column![
+                        text(t.title.clone()).size(14),
+                        text(t.artist.clone()).size(12).color(MUTED),
+                    ]
+                    .spacing(1)
+                    .width(Fill),
+                ]
+                .spacing(10)
+                .align_y(iced::alignment::Vertical::Center),
+            )
+            .style(card_bg)
+            .padding(8)
+            .into()
+        } else {
+            text("").size(1).into()
+        };
+        let body: iced::Element<'_, Message> = column![
+            sticky,
+            scrollable(
+                column![hero, self.lyrics_content(&t.id),]
+                    .spacing(16)
+                    .padding(iced::Padding {
+                        bottom: 40.0,
+                        ..iced::Padding::ZERO
+                    })
+            )
+            .height(Fill)
+            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y)),
+        ]
+        .spacing(8)
+        .into();
+        // Right-click anywhere opens this song's menu.
+        let track_id = t.id.clone();
+        mouse_area(body)
+            .on_right_press(Message::OpenContext(track_id))
+            .into()
     }
 
     fn center_view(&self) -> iced::Element<'_, Message> {
@@ -4770,7 +5141,8 @@ impl AppState {
                         text_input("New playlist name…", &self.new_playlist_name)
                             .style(rounded_input)
                             .on_input(Message::NewPlaylistNameChanged)
-                            .width(Fill),
+                            .width(Fill)
+                            .padding(10),
                         button(text("Create").size(13))
                             .style(green_play)
                             .on_press(Message::CreatePlaylist(new_name))
@@ -4869,6 +5241,7 @@ impl AppState {
                             .width(Fill),
                         slider(0.0..=1.0, self.volume, Message::SetVolume)
                             .step(0.01_f32)
+                            .style(themed_slider)
                             .width(160),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
@@ -4882,27 +5255,31 @@ impl AppState {
                         .on_toggle(Message::ScrobbleToggled),
                     text_input("Display name (informational)…", &self.scrobble_user)
                         .style(rounded_input)
-                        .on_input(Message::ScrobbleUserChanged),
+                        .on_input(Message::ScrobbleUserChanged)
+                        .padding(10),
                     text_input("ListenBrainz token…", &self.scrobble_lb_token)
                         .style(rounded_input)
                         .on_input(Message::ScrobbleLbTokenChanged)
-                        .secure(true),
+                        .secure(true)
+                        .padding(10),
                     text_input("Last.fm API key…", &self.scrobble_fm_key)
                         .style(rounded_input)
-                        .on_input(Message::ScrobbleFmKeyChanged),
+                        .on_input(Message::ScrobbleFmKeyChanged)
+                        .padding(10),
                     text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
                         .style(rounded_input)
                         .on_input(Message::ScrobbleFmSecretChanged)
-                        .secure(true),
+                        .secure(true)
+                        .padding(10),
                     text_input("Last.fm session key…", &self.scrobble_fm_sk)
                         .style(rounded_input)
                         .on_input(Message::ScrobbleFmSkChanged)
-                        .secure(true),
+                        .secure(true)
+                        .padding(10),
                     text("Google account (import your library)").size(17),
                     self.google_section(),
                     text("Cookie import (no OAuth client needed)").size(17),
                     self.cookie_section(),
-                    text("Recent playback errors").size(17),
                     self.error_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
@@ -5080,86 +5457,7 @@ impl AppState {
                     .find_track(id)
                     .map(|t| format!("{} — {}", t.title, t.artist))
                     .unwrap_or_else(|| id.clone());
-                let content: iced::Element<'_, Message> = match self.lyrics_cache.get(id) {
-                    Some(cached) if cached.instrumental => {
-                        text("[Instrumental]").size(14).color(MUTED).into()
-                    }
-                    Some(cached) if !cached.synced.is_empty() => {
-                        let pos_ms = (self.position_secs * 1000.0) as u64;
-                        let at = yutu_core::line_at(&cached.synced, pos_ms);
-                        column(
-                            cached
-                                .synced
-                                .iter()
-                                .enumerate()
-                                .map(|(i, l)| {
-                                    let is_current = Some(i) == at;
-                                    let secs = l.start_ms as f32 / 1000.0;
-                                    let line: iced::Element<'_, Message> = if is_current {
-                                        row![
-                                            icon("music", 15.0, SPOT_GREEN),
-                                            text(l.text.clone())
-                                                .size(19)
-                                                .line_height(
-                                                    iced::widget::text::LineHeight::Relative(1.4),
-                                                )
-                                                .font(iced::Font {
-                                                    weight: iced::font::Weight::Bold,
-                                                    ..iced::Font::default()
-                                                })
-                                                .color(SPOT_GREEN),
-                                        ]
-                                        .spacing(10)
-                                        .align_y(iced::alignment::Vertical::Center)
-                                        .into()
-                                    } else {
-                                        row![
-                                            iced::widget::Space::new()
-                                                .width(iced::Length::Fixed(25.0)),
-                                            text(l.text.clone())
-                                                .size(15)
-                                                .line_height(
-                                                    iced::widget::text::LineHeight::Relative(1.5),
-                                                )
-                                                .color(iced::Color::from_rgb8(0xD6, 0xD6, 0xD6)),
-                                        ]
-                                        .align_y(iced::alignment::Vertical::Center)
-                                        .into()
-                                    };
-                                    button(line)
-                                        .style(hover_row)
-                                        .on_press(Message::SeekTo(secs))
-                                        .padding(4)
-                                        .width(iced::Fill)
-                                        .into()
-                                })
-                                .collect::<Vec<_>>(),
-                        )
-                        .spacing(6)
-                        .into()
-                    }
-                    Some(cached) => column(
-                        cached
-                            .plain
-                            .lines()
-                            .filter(|l| !l.trim().is_empty())
-                            .map(|l| {
-                                text(l.to_string())
-                                    .size(15)
-                                    .line_height(iced::widget::text::LineHeight::Relative(1.6))
-                                    .into()
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .spacing(6)
-                    .into(),
-                    None if self.lyrics_loading.as_deref() == Some(id.as_str()) => {
-                        text("Fetching lyrics (LRCLIB, no login)…")
-                            .color(MUTED)
-                            .into()
-                    }
-                    None => text("No lyrics for this track yet.").color(MUTED).into(),
-                };
+                let content = self.lyrics_content(id);
                 column![
                     text(title).size(22),
                     row![
@@ -5184,152 +5482,7 @@ impl AppState {
                 .spacing(10)
                 .into()
             }
-            Route::NowPlaying => match self.queue.current().cloned() {
-                None => column![
-                    text("Nothing playing").size(22),
-                    text("Search above, click a song, hear it.").color(MUTED),
-                ]
-                .spacing(8)
-                .into(),
-                Some(t) => {
-                    let pos = self.queue.position();
-                    let upcoming: Vec<iced::Element<'_, Message>> = self
-                        .queue
-                        .items()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, q)| {
-                            let is_current = Some(i) == pos;
-                            row![
-                                self.thumb(q),
-                                button(text(format!("{} — {}", q.title, q.artist)).size(13).color(
-                                    if is_current {
-                                        SPOT_GREEN
-                                    } else {
-                                        iced::Color::WHITE
-                                    }
-                                ),)
-                                .style(hover_row)
-                                .on_press(Message::QueueJump(i))
-                                .padding(4)
-                                .width(Fill),
-                                text(fmt_time(q.duration_secs as f64)).size(11).color(MUTED),
-                            ]
-                            .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center)
-                            .padding(2)
-                            .into()
-                        })
-                        .collect();
-                    let heart_color = if self.liked.contains(&t.id) {
-                        SPOT_GREEN
-                    } else {
-                        MUTED
-                    };
-                    column![
-                        row![
-                            button(icon("chevron-down", 13.0, iced::Color::WHITE))
-                                .style(hover_row)
-                                .on_press(Message::NavBack)
-                                .padding(7),
-                            text("Now playing").size(13).color(MUTED).width(Fill),
-                        ]
-                        .align_y(iced::alignment::Vertical::Center),
-                        row![
-                            column![
-                                self.thumb_sized(&t, 280.0),
-                                text(t.title.clone()).size(26),
-                                text(t.artist.clone()).size(16).color(MUTED),
-                                text(t.album.clone().unwrap_or_else(|| "Single".into()))
-                                    .size(12)
-                                    .color(MUTED),
-                                text(format!(
-                                    "{} / {}",
-                                    fmt_time(self.position_secs),
-                                    fmt_time(self.audio_duration())
-                                ))
-                                .size(12)
-                                .color(MUTED),
-                                row![
-                                    button(text("Lyrics").size(13))
-                                        .style(hover_row)
-                                        .on_press(Message::OpenLyrics(t.id.clone()))
-                                        .padding(7),
-                                    button(text("Radio").size(13))
-                                        .style(hover_row)
-                                        .on_press(Message::StartRadio(t.id.clone()))
-                                        .padding(7),
-                                    button(icon("heart", 16.0, heart_color))
-                                        .style(hover_row)
-                                        .on_press(Message::Like(t.id.clone()))
-                                        .padding(7),
-                                ]
-                                .spacing(8),
-                            ]
-                            .spacing(8)
-                            .width(Fill),
-                            column![
-                                text("Up next").size(17),
-                                column(upcoming).spacing(2),
-                                text("Autoplay").size(14).color(MUTED),
-                                column(
-                                    self.autoplay
-                                        .iter()
-                                        .enumerate()
-                                        .take(8)
-                                        .map(|(i, q)| {
-                                            let menu_id = q.id.clone();
-                                            let np_remove: iced::Element<'_, Message> =
-                                                if self.hovered_auto == Some(i) {
-                                                    button(icon("x", 11.0, MUTED))
-                                                        .style(hover_row)
-                                                        .on_press(Message::RemoveAutoplay(i))
-                                                        .padding(3)
-                                                        .into()
-                                                } else {
-                                                    iced::widget::Space::new()
-                                                        .width(iced::Length::Fixed(20.0))
-                                                        .into()
-                                                };
-                                            mouse_area(
-                                                row![
-                                                    self.thumb(q),
-                                                    button(
-                                                        text(format!("{} — {}", q.title, q.artist))
-                                                            .size(12)
-                                                            .color(MUTED),
-                                                    )
-                                                    .style(hover_row)
-                                                    .on_press(Message::PlayAutoplay(i))
-                                                    .padding(4)
-                                                    .width(Fill),
-                                                    text(fmt_time(q.duration_secs as f64))
-                                                        .size(11)
-                                                        .color(MUTED),
-                                                    np_remove,
-                                                ]
-                                                .spacing(8)
-                                                .align_y(iced::alignment::Vertical::Center)
-                                                .padding(2),
-                                            )
-                                            .on_right_press(Message::OpenContext(menu_id))
-                                            .on_enter(Message::AutoHover(Some(i)))
-                                            .on_exit(Message::AutoHover(None))
-                                            .into()
-                                        })
-                                        .collect::<Vec<_>>(),
-                                )
-                                .spacing(2),
-                            ]
-                            .spacing(6)
-                            .width(350),
-                        ]
-                        .spacing(20),
-                    ]
-                    .spacing(12)
-                    .into()
-                }
-            },
+            Route::NowPlaying => self.drawer_view(),
             Route::Radio(seed) => {
                 let rows: Vec<iced::Element<'_, Message>> = self
                     .radio_tracks
@@ -5365,23 +5518,25 @@ impl AppState {
         // search (as-you-type, stays on page) + clear + shortcuts.
         let back_btn: iced::Element<'_, Message> = if can_back {
             button(icon("chevron-left", 22.0, iced::Color::WHITE))
-                .style(hover_row)
+                .style(nav_arrow)
                 .on_press(Message::NavBack)
                 .padding(10)
                 .into()
         } else {
-            button(icon("chevron-left", 22.0, iced::Color::WHITE))
+            button(icon("chevron-left", 22.0, MUTED))
+                .style(nav_arrow)
                 .padding(10)
                 .into()
         };
         let fwd_btn: iced::Element<'_, Message> = if can_forward {
             button(icon("chevron-right", 22.0, iced::Color::WHITE))
-                .style(hover_row)
+                .style(nav_arrow)
                 .on_press(Message::NavForward)
                 .padding(10)
                 .into()
         } else {
-            button(icon("chevron-right", 22.0, iced::Color::WHITE))
+            button(icon("chevron-right", 22.0, MUTED))
+                .style(nav_arrow)
                 .padding(10)
                 .into()
         };
@@ -5407,7 +5562,8 @@ impl AppState {
                 .style(rounded_input)
                 .on_input(Message::HomeSearchChanged)
                 .on_submit(Message::SearchStay)
-                .width(Fill),
+                .width(Fill)
+                .padding(10),
             clear_btn,
             search_state,
             button(icon("queue", 14.0, iced::Color::WHITE))
@@ -5464,7 +5620,7 @@ impl AppState {
                 .map(|t| self.track_row(t))
                 .collect();
             let progress: iced::Element<'_, Message> = if self.searching {
-                text("Searching live…").size(11).color(SPOT_GREEN).into()
+                text("Searching…").size(11).color(SPOT_GREEN).into()
             } else {
                 text("Top tracks — Enter for all results")
                     .size(11)
@@ -5509,224 +5665,278 @@ impl AppState {
                 .style(app_bg)
                 .padding(8)
                 .into();
-        let Some(menu_id) = self.context_menu.clone() else {
-            return base;
-        };
-        let Some(t) = self.find_track(&menu_id) else {
-            return base;
-        };
-        let (heart_color, heart) = if self.liked.contains(&t.id) {
-            (SPOT_GREEN, "Liked — unlike")
-        } else {
-            (MUTED, "Like")
-        };
-        let mut items: Vec<iced::Element<'_, Message>> = vec![
-            button(
-                row![
-                    icon("play", 14.0, iced::Color::WHITE),
-                    text("Play now").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::PlayNow(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(
-                row![
-                    icon("skip-forward", 14.0, iced::Color::WHITE),
-                    text("Play next").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::PlayNext(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(
-                row![
-                    icon("plus", 14.0, iced::Color::WHITE),
-                    text("Add to queue").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::QueueTrack(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(
-                row![
-                    icon("radio", 14.0, iced::Color::WHITE),
-                    text("Start mix").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::StartRadio(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(
-                row![
-                    icon("mic", 14.0, iced::Color::WHITE),
-                    text("Lyrics").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::OpenLyrics(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(row![icon("heart", 14.0, heart_color), text(heart).size(14)].spacing(8))
-                .style(hover_row)
-                .on_press(Message::Like(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            button(
-                row![
-                    icon("download", 14.0, iced::Color::WHITE),
-                    text("Download for offline").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::DownloadTrack(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(
-                row![
-                    icon("disc", 14.0, iced::Color::WHITE),
-                    text("Go to album").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::OpenTrackAlbum(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-            button(
-                row![
-                    icon("mic", 14.0, iced::Color::WHITE),
-                    text("Go to artist").size(14)
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(hover_row)
-            .on_press(Message::OpenTrackArtist(t.id.clone()))
-            .padding(8)
-            .width(Fill)
-            .into(),
-        ];
-        if self.queue.items().iter().any(|q| q.id == t.id) {
-            items.push(
-                button(
-                    row![
-                        icon("trash", 14.0, iced::Color::WHITE),
-                        text("Remove from queue").size(14)
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
-                )
-                .style(hover_row)
-                .on_press(Message::RemoveFromQueue(t.id.clone()))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            );
-        }
-        if let Some(ai) = self.autoplay.iter().position(|q| q.id == t.id) {
-            items.push(
-                button(
-                    row![
-                        icon("trash", 14.0, iced::Color::WHITE),
-                        text("Remove from autoplay").size(14)
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
-                )
-                .style(hover_row)
-                .on_press(Message::RemoveAutoplay(ai))
-                .padding(8)
-                .width(Fill)
-                .into(),
-            );
-        }
-        for pl in self.user_playlists.iter().take(5) {
-            items.push(
-                button(
-                    row![
-                        icon("folder", 14.0, iced::Color::WHITE),
-                        text(format!("Add to {}", pl.title)).size(14)
+        let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
+        if let Some(menu_id) = self.context_menu.clone() {
+            if let Some(t) = self.find_track(&menu_id) {
+                let (heart_color, heart) = if self.liked.contains(&t.id) {
+                    (SPOT_GREEN, "Liked — unlike")
+                } else {
+                    (MUTED, "Like")
+                };
+                let mut items: Vec<iced::Element<'_, Message>> = vec![
+                    button(
+                        row![
+                            icon("play", 14.0, iced::Color::WHITE),
+                            text("Play now").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::PlayNow(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("skip-forward", 14.0, iced::Color::WHITE),
+                            text("Play next").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::PlayNext(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("plus", 14.0, iced::Color::WHITE),
+                            text("Add to queue").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::QueueTrack(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("radio", 14.0, iced::Color::WHITE),
+                            text("Start mix").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::StartRadio(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("mic", 14.0, iced::Color::WHITE),
+                            text("Lyrics").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::OpenLyrics(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![icon("heart", 14.0, heart_color), text(heart).size(14)]
+                            .spacing(8)
+                            .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::Like(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("download", 14.0, iced::Color::WHITE),
+                            text("Download for offline").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::DownloadTrack(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("disc", 14.0, iced::Color::WHITE),
+                            text("Go to album").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::OpenTrackAlbum(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("mic", 14.0, iced::Color::WHITE),
+                            text("Go to artist").size(14)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::OpenTrackArtist(t.id.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                ];
+                if self.queue.items().iter().any(|q| q.id == t.id) {
+                    items.push(
+                        button(
+                            row![
+                                icon("trash", 14.0, iced::Color::WHITE),
+                                text("Remove from queue").size(14)
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::RemoveFromQueue(t.id.clone()))
+                        .padding(8)
+                        .width(Fill)
+                        .into(),
+                    );
+                }
+                if let Some(ai) = self.autoplay.iter().position(|q| q.id == t.id) {
+                    items.push(
+                        button(
+                            row![
+                                icon("trash", 14.0, iced::Color::WHITE),
+                                text("Remove from autoplay").size(14)
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::RemoveAutoplay(ai))
+                        .padding(8)
+                        .width(Fill)
+                        .into(),
+                    );
+                }
+                for pl in self.user_playlists.iter().take(5) {
+                    items.push(
+                        button(
+                            row![
+                                icon("folder", 14.0, iced::Color::WHITE),
+                                text(format!("Add to {}", pl.title)).size(14)
+                            ]
+                            .spacing(8)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::AddToPlaylist {
+                            playlist_id: pl.id.clone(),
+                            track_id: t.id.clone(),
+                        })
+                        .padding(8)
+                        .width(Fill)
+                        .into(),
+                    );
+                }
+                // Playlist adds leave the menu open (multi-add); everything else
+                // closes it via its own handler.
+                let menu = container(
+                    column![
+                        row![
+                            self.thumb_sized(&t, 56.0),
+                            column![
+                                text(t.title.clone()).size(16),
+                                text(t.artist.clone()).size(12).color(MUTED),
+                            ]
+                            .spacing(2)
+                            .width(Fill),
+                        ]
+                        .spacing(10)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                        column(items).spacing(0),
                     ]
                     .spacing(8),
                 )
-                .style(hover_row)
-                .on_press(Message::AddToPlaylist {
-                    playlist_id: pl.id.clone(),
-                    track_id: t.id.clone(),
-                })
-                .padding(8)
+                .style(card_bg)
+                .padding(14)
+                .width(300);
+                // Dismiss layer: left-click outside closes. No right-press
+                // handler, so right-clicks pass through — right-clicking
+                // another song moves the menu in one step.
+                let scrim: iced::Element<'_, Message> =
+                    mouse_area(container(text("").size(1)).width(Fill).height(Fill))
+                        .on_press(Message::CloseContext)
+                        .into();
+                // Cursor-anchored placement (clamped on screen), YTM-style.
+                let (mx, my) = menu_pos(self.menu_at, self.window);
+                let placed: iced::Element<'_, Message> = container(column![
+                    iced::widget::Space::new().height(iced::Length::Fixed(my)),
+                    row![
+                        iced::widget::Space::new().width(iced::Length::Fixed(mx)),
+                        menu,
+                    ],
+                ])
                 .width(Fill)
-                .into(),
-            );
-        }
-        // Playlist adds leave the menu open (multi-add); everything else
-        // closes it via its own handler.
-        let menu = container(
-            column![
-                row![
-                    self.thumb_sized(&t, 56.0),
-                    column![
-                        text(t.title.clone()).size(16),
-                        text(t.artist.clone()).size(12).color(MUTED),
-                    ]
-                    .spacing(2)
-                    .width(Fill),
-                ]
-                .spacing(10)
-                .align_y(iced::alignment::Vertical::Center),
-                column(items).spacing(0),
-            ]
-            .spacing(8),
-        )
-        .style(card_bg)
-        .padding(14)
-        .width(300);
-        // Dismiss layer: left-click outside closes the menu. It sets no
-        // right-press handler, so right-clicks pass through to the rows
-        // below — right-clicking another song moves the menu in one step.
-        let scrim: iced::Element<'_, Message> =
-            mouse_area(container(text("").size(1)).width(Fill).height(Fill))
-                .on_press(Message::CloseContext)
+                .height(Fill)
                 .into();
-        // Cursor-anchored placement (clamped on screen), YTM-style.
-        let (mx, my) = menu_pos(self.menu_at, self.window);
-        let placed: iced::Element<'_, Message> = container(column![
-            iced::widget::Space::new().height(iced::Length::Fixed(my)),
-            row![
-                iced::widget::Space::new().width(iced::Length::Fixed(mx)),
-                menu,
-            ],
-        ])
-        .width(Fill)
-        .height(Fill)
-        .into();
-        Stack::with_children(vec![base, scrim, placed]).into()
+                layers.push(scrim);
+                layers.push(placed);
+            }
+        }
+        // Bottom drawer: slides up over the app while opening.
+        if self.drawer_anim > 0.02 {
+            let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
+            let sheet_h = (win_h * 0.82).max(420.0);
+            let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
+            let sheet: iced::Element<'_, Message> = container(
+                column![
+                    row![
+                        button(icon("chevron-down", 14.0, iced::Color::WHITE))
+                            .style(hover_row)
+                            .on_press(Message::ToggleDrawer)
+                            .padding(7),
+                        text("Now playing").size(13).color(MUTED).width(Fill),
+                    ]
+                    .align_y(iced::alignment::Vertical::Center),
+                    self.drawer_view(),
+                ]
+                .spacing(8),
+            )
+            .style(card_bg)
+            .padding(16)
+            .width(Fill)
+            .height(iced::Length::Fixed(sheet_h))
+            .into();
+            let layer: iced::Element<'_, Message> = container(column![
+                iced::widget::Space::new().height(iced::Length::Fixed(offset)),
+                sheet,
+            ])
+            .width(Fill)
+            .height(Fill)
+            .into();
+            layers.push(layer);
+        }
+        if layers.len() == 1 {
+            layers.pop().expect("base layer")
+        } else {
+            Stack::with_children(layers).into()
+        }
     }
 }
 
@@ -5764,6 +5974,7 @@ mod tests {
             album: None,
             duration_secs: 200,
             thumbnail_url: None,
+            thumbnail_large_url: None,
         }
     }
 
@@ -6304,6 +6515,7 @@ mod tests {
                 album: None,
                 duration_secs: 200,
                 thumbnail_url: None,
+                thumbnail_large_url: None,
             },
         );
         let _ = s.update(Message::EnqueueTrack(video.clone()));
@@ -6866,6 +7078,46 @@ mod tests {
         assert!(s.sidebar_open());
         let _ = s.update(Message::CursorMoved(iced::Point::new(1270.0, 400.0)));
         assert!(s.right_open());
+    }
+
+    #[test]
+    fn replaying_the_live_song_is_a_noop() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        // Same song again: no restart, loading untouched.
+        let _ = s.update(Message::PlayNow("m1".into()));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        assert_eq!(s.queue.len(), 1);
+        // Jumping to the live index is a no-op too.
+        let _ = s.update(Message::QueueJump(0));
+        assert_eq!(s.queue.position(), Some(0));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn drawer_toggles_and_eases() {
+        let mut s = test_state();
+        assert!(!s.drawer_open);
+        assert_eq!(s.drawer_anim, 0.0);
+        let _ = s.update(Message::ToggleDrawer);
+        assert!(s.drawer_open);
+        assert!(s.animating());
+        for _ in 0..10 {
+            let _ = s.update(Message::Animate);
+        }
+        assert!(!s.animating());
+        assert_eq!(s.drawer_anim, 1.0);
+        // Esc closes the drawer when no menu is open.
+        let _ = s.update(Message::CloseContext);
+        assert!(!s.drawer_open);
+    }
+
+    #[test]
+    fn status_text_is_full_log_in_debug() {
+        let mut s = test_state();
+        s.status = "Loading x".into();
+        assert_eq!(s.status_text(), "Loading x");
     }
 
     #[test]

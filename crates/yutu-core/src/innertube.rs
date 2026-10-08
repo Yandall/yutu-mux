@@ -664,6 +664,15 @@ fn pick_thumb_url(thumbs: &[Thumbnail]) -> Option<String> {
         .filter(|u| !u.is_empty())
 }
 
+/// Largest artwork thumbnail (hero views like the Now Playing drawer).
+fn pick_large_thumb_url(thumbs: &[Thumbnail]) -> Option<String> {
+    thumbs
+        .iter()
+        .max_by_key(|t| t.width)
+        .map(|t| t.url.clone())
+        .filter(|u| !u.is_empty())
+}
+
 fn song_to_track(song: &SearchResultSong) -> Track {
     Track {
         id: song.video_id.get_raw().to_string(),
@@ -672,6 +681,7 @@ fn song_to_track(song: &SearchResultSong) -> Track {
         album: song.album.as_ref().map(|a| a.name.clone()),
         duration_secs: parse_duration_secs(&song.duration),
         thumbnail_url: pick_thumb_url(&song.thumbnails),
+        thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
     }
 }
 
@@ -707,6 +717,7 @@ fn table_song_to_track(song: &TableListSong) -> Track {
         album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
         duration_secs: parse_duration_secs(&song.duration),
         thumbnail_url: pick_thumb_url(&song.thumbnails),
+        thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
     }
 }
 
@@ -722,6 +733,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
             duration_secs: parse_duration_secs(&song.duration),
             thumbnail_url: pick_thumb_url(&song.thumbnails),
+            thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
         }),
         PlaylistItem::Video(video) => Some(Track {
             id: video.video_id.get_raw().to_string(),
@@ -730,6 +742,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             album: None,
             duration_secs: parse_duration_secs(&video.duration),
             thumbnail_url: pick_thumb_url(&video.thumbnails),
+            thumbnail_large_url: pick_large_thumb_url(&video.thumbnails),
         }),
         PlaylistItem::UploadSong(song) => Some(Track {
             id: song.video_id.get_raw().to_string(),
@@ -742,6 +755,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
                 .filter(|name| !name.is_empty()),
             duration_secs: parse_duration_secs(&song.duration),
             thumbnail_url: None,
+            thumbnail_large_url: None,
         }),
         PlaylistItem::Episode(_) => None,
     }
@@ -757,6 +771,7 @@ fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
         album: None,
         duration_secs: parse_duration_secs(&track.duration),
         thumbnail_url: pick_thumb_url(&track.thumbnails),
+        thumbnail_large_url: pick_large_thumb_url(&track.thumbnails),
     }
 }
 
@@ -942,6 +957,7 @@ mod tests {
                 album: Some("The Beatles 1967 - 1970 (Remastered 2009)".into()),
                 duration_secs: 308,
                 thumbnail_url: None,
+                thumbnail_large_url: None,
             }
         );
         // Multiple artists join the way the search API pre-joins them.
@@ -967,6 +983,7 @@ mod tests {
                 album: None,
                 duration_secs: 260,
                 thumbnail_url: None,
+                thumbnail_large_url: None,
             }
         );
         assert_eq!(tracks[1].duration_secs, 186);
@@ -1257,6 +1274,34 @@ mod tests {
     }
 
     #[test]
+    fn thumb_picks_smallest_and_largest() {
+        use ytmapi_rs::common::Thumbnail;
+        let thumbs = vec![
+            Thumbnail {
+                height: 60,
+                width: 60,
+                url: "https://example.invalid/s".into(),
+            },
+            Thumbnail {
+                height: 544,
+                width: 544,
+                url: "https://example.invalid/l".into(),
+            },
+        ];
+        assert_eq!(
+            pick_thumb_url(&thumbs).as_deref(),
+            Some("https://example.invalid/s")
+        );
+        assert_eq!(
+            pick_large_thumb_url(&thumbs).as_deref(),
+            Some("https://example.invalid/l")
+        );
+        let empty: Vec<Thumbnail> = vec![];
+        assert!(pick_thumb_url(&empty).is_none());
+        assert!(pick_large_thumb_url(&empty).is_none());
+    }
+
+    #[test]
     fn search_track_mapping_handles_missing_album_and_bad_duration() {
         // `SearchResultSong` is `#[non_exhaustive]`, so build it via serde
         // rather than a struct literal.
@@ -1281,6 +1326,7 @@ mod tests {
                 album: None,
                 duration_secs: 0,
                 thumbnail_url: None,
+                thumbnail_large_url: None,
             }
         );
     }

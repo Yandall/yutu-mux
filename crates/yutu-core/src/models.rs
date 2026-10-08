@@ -13,6 +13,9 @@ pub struct Track {
     /// Missing on old rows — always `#[serde(default)]`.
     #[serde(default)]
     pub thumbnail_url: Option<String>,
+    /// Largest artwork URL (hero views); same default policy as above.
+    #[serde(default)]
+    pub thumbnail_large_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
