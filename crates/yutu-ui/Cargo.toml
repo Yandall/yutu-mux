@@ -11,6 +11,7 @@ yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
 iced = { version = "0.14", features = ["tokio", "image", "svg"] }
 tokio = { version = "1", features = ["time"] }
+serde_json = "1"
 
 [features]
 # Default is the real app: live search/radio + scrobble submission + mpv

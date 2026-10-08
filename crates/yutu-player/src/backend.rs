@@ -205,9 +205,14 @@ impl AudioBackend for RodioBackend {
 /// in 1 MiB chunks and concatenated. Servers without range support (plain
 /// 200 + full body) are returned as-is. HTTP errors surface as
 /// `PlayerError::Stream` with the status preserved for PO-token hints.
+///
+/// Browser-like headers go on every request: bare HTTP clients (default
+/// library user-agents, no referer) get transient 403s from some Google
+/// edges that a normal browser header set sails through.
 pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
     const CHUNK: u64 = 1024 * 1024;
     const MAX_BYTES: u64 = 100 * 1024 * 1024;
+    const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
     let client = reqwest::Client::new();
     let mut start: u64 = 0;
     let mut out = Vec::new();
@@ -216,6 +221,11 @@ pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
         let response = client
             .get(url)
             .header("Range", format!("bytes={start}-{end}"))
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Origin", "https://www.youtube.com")
+            .header("Referer", "https://www.youtube.com/")
             .send()
             .await
             .map_err(|e| PlayerError::Stream(format!("GET {url}: {e}")))?;

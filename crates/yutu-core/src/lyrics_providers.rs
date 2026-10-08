@@ -15,7 +15,7 @@ pub const LRCLIB_API_URL: &str = "https://lrclib.net/api/get";
 pub const LYRICS_USER_AGENT: &str = "yutu-mux/0.2.0 (https://github.com/Yandall/yutu-mux)";
 
 /// One synced lyric line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LyricLine {
     pub start_ms: u64,
     pub text: String,
@@ -25,7 +25,7 @@ pub struct LyricLine {
 ///
 /// `synced` is empty when the provider has no timing data (plain-only
 /// lyrics) or for instrumentals.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LyricsResult {
     pub plain: String,
     pub synced: Vec<LyricLine>,
