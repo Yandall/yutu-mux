@@ -117,6 +117,13 @@
 - Startup catalog seeding plus art persistence migration; queue art
   merge; lyrics on every track start; exact-ms lyric seeks with
   marker-safe highlight; Favorites playlist leads everywhere
+- 20-item hardening: autoplay absorb on queue ops; edge-slot DnD (middle
+  of 3 moves), no grip icon, true-margin dividers, bar-only slot;
+  "Loading lyrics"; drawer Fill + persistent header; Y-gated sidebar
+  expand; aligned/shrinking search; modal hovers; add-order Favorites
+  with liked_at; player-bar menu + artist link; MPRIS artUrl; #FF0033
+  with white glyphs; catalog hero fallback; album ax- resolution;
+  playlist shuffle play + trailing hover play
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

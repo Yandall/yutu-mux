@@ -44,9 +44,10 @@
 - Never write em dashes (neither in the UI nor in code comments/docs):
   use a hyphen, comma, colon, or the `·` separator instead.
 - Search-only UX: no video-ID paste field.
-- Theme: soft YouTube-red accent `SPOT_GREEN = #E62117`
-  (never pure `#FF0000`), hover `#F04438`. Dark Spotify-style surfaces,
-  rounded inputs/surfaces.
+- Theme: vivid red accent `SPOT_GREEN = #FF0033` (user override of the
+  former soft `#E62117`; pure-red family allowed from Round 11),
+  hover `#FF3366`. Dark Spotify-style surfaces,
+  rounded inputs/surfaces. Glyphs on red are always white for contrast.
 - Auth paths: Google OAuth **device flow requires a user-registered
   client** (unavoidable: ytmapi-rs embeds none); cookie-file import is
   the no-client login path. Never paste cookie contents; secrets only via

@@ -27,7 +27,7 @@ impl LibraryStore {
     fn migrate(&self) -> Result<(), String> {
         self.conn
             .execute_batch(
-                "CREATE TABLE IF NOT EXISTS likes(track_id TEXT PRIMARY KEY);
+                "CREATE TABLE IF NOT EXISTS likes(track_id TEXT PRIMARY KEY, liked_at INTEGER);
                  CREATE TABLE IF NOT EXISTS history(track_id TEXT NOT NULL, played_at_unix INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY, title TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS playlist_tracks(
@@ -67,14 +67,44 @@ impl LibraryStore {
                     .map_err(|e| e.to_string())?;
             }
         }
+        // Likes add-order migration: liked_at timestamps new likes; old
+        // rows backfill from rowid order so existing installs keep a
+        // stable order and new likes append after.
+        {
+            let mut has = false;
+            let mut pragma = self
+                .conn
+                .prepare("PRAGMA table_info(likes)")
+                .map_err(|e| e.to_string())?;
+            let names = pragma
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            for name in names.flatten() {
+                if name == "liked_at" {
+                    has = true;
+                }
+            }
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE likes ADD COLUMN liked_at INTEGER")
+                    .map_err(|e| e.to_string())?;
+            }
+            self.conn
+                .execute_batch("UPDATE likes SET liked_at = rowid WHERE liked_at IS NULL")
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
     pub fn like(&self, track_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO likes(track_id) VALUES (?1)",
-                params![track_id],
+                "INSERT OR IGNORE INTO likes(track_id, liked_at) VALUES (?1, ?2)",
+                params![track_id, now],
             )
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -99,11 +129,11 @@ impl LibraryStore {
         Ok(n > 0)
     }
 
-    /// Every liked track id (no catalog probe needed: no mock data).
+    /// Every liked track id in add order (no catalog probe needed).
     pub fn liked_ids(&self) -> Result<Vec<String>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT track_id FROM likes ORDER BY track_id")
+            .prepare("SELECT track_id FROM likes ORDER BY liked_at, rowid")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| r.get(0))
@@ -296,9 +326,22 @@ mod tests {
         s.like("vid-b").unwrap();
         s.like("vid-a").unwrap();
         s.like("vid-a").unwrap();
-        assert_eq!(s.liked_ids().unwrap(), vec!["vid-a", "vid-b"]);
+        // Add order, not alphabetical: b first, re-like is a no-op.
+        assert_eq!(s.liked_ids().unwrap(), vec!["vid-b", "vid-a"]);
         s.unlike("vid-a").unwrap();
         assert_eq!(s.liked_ids().unwrap(), vec!["vid-b"]);
+    }
+
+    #[test]
+    fn liked_ids_preserves_insertion_order() {
+        let s = LibraryStore::in_memory().unwrap();
+        s.like("b").unwrap();
+        s.like("a").unwrap();
+        s.like("c").unwrap();
+        assert_eq!(s.liked_ids().unwrap(), vec!["b", "a", "c"]);
+        s.unlike("a").unwrap();
+        s.like("a").unwrap();
+        assert_eq!(s.liked_ids().unwrap(), vec!["b", "c", "a"]);
     }
 
     #[test]

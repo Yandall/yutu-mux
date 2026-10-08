@@ -62,6 +62,7 @@ pub const KEY_TITLE: &str = "xesam:title";
 pub const KEY_ARTIST: &str = "xesam:artist";
 pub const KEY_ALBUM: &str = "xesam:album";
 pub const KEY_LENGTH: &str = "mpris:length";
+pub const KEY_ART_URL: &str = "mpris:artUrl";
 
 /// Signal-relevant player snapshot (track + status + volume).
 #[derive(Debug, Clone, PartialEq)]
@@ -289,10 +290,11 @@ impl MprisPlayer {
     ///
     /// Keys: `mpris:trackid` (object path), `xesam:title` (string),
     /// `xesam:artist` (string array), `xesam:album` (string),
-    /// `mpris:length` (int64, microseconds).
+    /// `mpris:length` (int64, microseconds), `mpris:artUrl` (string URI,
+    /// omitted when empty so widgets show no broken image).
     pub fn metadata_map(&self) -> HashMap<String, OwnedValue> {
         let track = &self.now_playing;
-        let mut map = HashMap::with_capacity(5);
+        let mut map = HashMap::with_capacity(6);
         map.insert(
             KEY_TRACK_ID.to_owned(),
             track_id_value(&track_object_path(&track.track_id)),
@@ -314,6 +316,9 @@ impl MprisPlayer {
             KEY_LENGTH.to_owned(),
             OwnedValue::from(track.length_secs as i64 * 1_000_000),
         );
+        if !track.art_url.is_empty() {
+            map.insert(KEY_ART_URL.to_owned(), owned_string(track.art_url.clone()));
+        }
         map
     }
 }
@@ -742,6 +747,7 @@ mod tests {
             album: "Hurry Up, We're Dreaming".to_owned(),
             track_id: "m1".to_owned(),
             length_secs: 185,
+            art_url: "https://example.invalid/hero".to_owned(),
         }
     }
 
@@ -750,7 +756,11 @@ mod tests {
         let player = MprisPlayer::new(sample_track(), PlaybackStatus::Playing, 0.8);
         let map = player.metadata_map();
 
-        assert_eq!(map.len(), 5);
+        assert_eq!(map.len(), 6);
+        assert_eq!(
+            String::try_from(map[KEY_ART_URL].clone()).expect("art decodes"),
+            "https://example.invalid/hero"
+        );
         assert_eq!(
             String::try_from(map[KEY_TITLE].clone()).expect("title decodes"),
             "Midnight City"

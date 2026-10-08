@@ -13,7 +13,8 @@ pub mod tray;
 
 pub use mpris::{
     LoopStatus, MprisPlayer, MprisRoot, MprisService, PlaybackStatus, PlayerCommand, SharedPlayer,
-    KEY_ALBUM, KEY_ARTIST, KEY_LENGTH, KEY_TITLE, KEY_TRACK_ID, OBJECT_PATH, SERVICE_NAME,
+    KEY_ALBUM, KEY_ARTIST, KEY_ART_URL, KEY_LENGTH, KEY_TITLE, KEY_TRACK_ID, OBJECT_PATH,
+    SERVICE_NAME,
 };
 pub use tray::TrayState;
 
@@ -25,6 +26,7 @@ pub struct NowPlaying {
     pub album: String,
     pub track_id: String,
     pub length_secs: u32,
+    pub art_url: String,
 }
 
 impl NowPlaying {
