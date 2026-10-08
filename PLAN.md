@@ -164,5 +164,6 @@ Done: user can plausibly replace Spotify for daily listening.
 23. Round 12: art resolution policy (hi-res everywhere but song rows), bolder icons/pills, wide center cap + right-docked settings, responsive player (wide/compact/minimal) + mouse back/forward, review G key-split fixes (3 spec agents + 1 adversarial reviewer)
 24. Round 13: drag from anywhere (global press arming over inner buttons) + stable origin chip while held (no collapse, bar-only slot)
 25. Round 14: whole-row press path (no inner buttons) + snapshot click + remove-hover guard + 2-line titles + queue art warming (head + ahead window) + review H fixes
+26. Round 15: search focus kept while typing (view root always a Stack; layer toggles no longer rebuild widget state)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
