@@ -166,6 +166,8 @@ Done: user can plausibly replace Spotify for daily listening.
 25. Round 14: whole-row press path (no inner buttons) + snapshot click + remove-hover guard + 2-line titles + queue art warming (head + ahead window) + review H fixes
 26. Round 15: search focus kept while typing (view root always a Stack; layer toggles no longer rebuild widget state)
 27. Round 16: library track cache + missing-metadata hydration (Favorites and covers survive restart with no search-first; bare liked/history ids hydrate in background via watch playlist, on-demand fetch on unknown ids, pre-art playlist rows healed)
+28. Round 17: lazy visible-screen fetching (instant open with zero startup network/writes; first Tick plus every navigation hydrates only the visible screenful capped at 8 with in-flight dedup; artwork disk-first with small-thumb lazy warm plus sidebar covers; hydrate probes exact-id only)
+29. Round 17 fix: Home covers read the 544px hero key so the lazy warmer now warms both URL keys (raw + hero) like every other path; ArtworkReady chains the capped remainder; 120s failure cooldowns for dead art/unresolvable ids stop refetch loops; hydrate probes run concurrently per id
 28. Round 17: Downloaded default playlist (built-in alongside Favorites; completed offline downloads join in add order, persisted in SQLite `downloads`, startup prune of missing files, remove deletes the cached audio, add triggers a download, undeletable)
 29. Round 18: offline playback (disk-first play on both backends; full download bundle of audio + lyrics + artwork + metadata; disk read-through for covers/lyrics; sidecar heal on online play; 403 retry + direct-download fallback)
 
