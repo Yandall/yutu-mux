@@ -850,7 +850,46 @@ const RIGHT_EXPAND_GRACE: f32 = 8.0;
 /// Bottom strip reserved for the player bar: sidebar hover expand never
 /// fires from inside this zone. Measured: status line (~16) + control
 /// row (~50) + player padding (2x10) + spacings (~16) with margin.
+/// The stacked minimal player is taller (see player_zone_h).
 const PLAYER_ZONE_H: f32 = 105.0;
+/// Minimal stacked player reserve (4 rows + status + padding).
+const PLAYER_ZONE_MINIMAL_H: f32 = 210.0;
+/// Player breakpoints on window width: single row down to 700,
+/// tight single row down to 500, stacked below that.
+const PLAYER_COMPACT_BELOW: f32 = 700.0;
+const PLAYER_MINIMAL_BELOW: f32 = 500.0;
+
+/// Player bar layout mode (responsive narrow/medium/wide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerLayout {
+    Wide,
+    Compact,
+    Minimal,
+}
+
+/// Window width to player layout (pure helper, unit-tested).
+fn player_layout_mode(window_width: f32) -> PlayerLayout {
+    if window_width < PLAYER_MINIMAL_BELOW {
+        PlayerLayout::Minimal
+    } else if window_width < PLAYER_COMPACT_BELOW {
+        PlayerLayout::Compact
+    } else {
+        PlayerLayout::Wide
+    }
+}
+
+/// Bottom-strip reserve for the current player height (the stacked
+/// minimal player is taller than the single row).
+impl AppState {
+    fn player_zone_h(&self) -> f32 {
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        if player_layout_mode(ww) == PlayerLayout::Minimal {
+            PLAYER_ZONE_MINIMAL_H
+        } else {
+            PLAYER_ZONE_H
+        }
+    }
+}
 /// Animation tick and duration slider bounds (Settings slider, ms).
 const ANIM_TICK_MS: u64 = 16;
 const ANIM_MIN_MS: u64 = 20;
@@ -877,6 +916,11 @@ fn anim_steps(anim_ms: u64) -> (f32, f32, f32) {
 /// Tied to the header control heights; the fully-open body layer drops
 /// it (real header above) so both states meet with no snap.
 const DRAWER_TOP_RESERVE: f32 = 46.0;
+/// Center content cap on very wide windows (body only, header stays
+/// full bleed so search math never drifts).
+const CENTER_MAX_W: f32 = 1150.0;
+/// Window width past which the center body centers with margins.
+const CENTER_MARGIN_BREAK: f32 = 1600.0;
 /// Top strip the search-popup scrim leaves clickable (header + input).
 const SUGGEST_SCRIM_TOP: f32 = 110.0;
 
@@ -1175,6 +1219,9 @@ impl AppState {
                     .iter()
                     .filter_map(|a| a.thumbnail_url.clone()),
             )
+            // Hi-res keys: display sites show the 544px rewrite and
+            // art_thumb is an exact-key lookup, so warm what is shown.
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
             .collect();
         let mut tasks = self.artwork_tasks(&search.tracks);
         tasks.extend(self.artwork_tasks_for_urls(&art_urls));
@@ -1666,7 +1713,19 @@ impl AppState {
             iced::Event::Window(iced::window::Event::Resized(size)) => {
                 Some(Message::WindowResized(size))
             }
-            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(Message::DragEnd),
+            // Mouse side buttons navigate like a browser (press, not
+            // release, for browser feel and no drag-commit collision).
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {
+                Some(Message::NavBack)
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Forward)) => {
+                Some(Message::NavForward)
+            }
+            // Left release only owns the drag: side/right releases must
+            // never commit or abort a reorder in progress.
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                Some(Message::DragEnd)
+            }
             _ => None,
         });
         iced::Subscription::batch([keys, tick, events, anim])
@@ -2193,9 +2252,15 @@ impl AppState {
     fn play_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
         use iced::widget::{button, row, text};
         button(
-            row![icon("play", 14.0, iced::Color::WHITE), text(label).size(13),]
-                .spacing(6)
-                .align_y(iced::alignment::Vertical::Center),
+            row![
+                icon("play", 16.0, iced::Color::WHITE),
+                text(label).size(13).font(iced::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..iced::Font::default()
+                }),
+            ]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center),
         )
         .style(green_play)
         .on_press(msg)
@@ -2277,9 +2342,14 @@ impl AppState {
     fn artist_card(&self, a: &Artist) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, text};
         use iced::Fill;
+        // Same hires key stage_search warms (raw would placeholder).
+        let photo = a
+            .thumbnail_url
+            .as_deref()
+            .map(|u| yutu_core::hires_thumb_url(u, 544));
         button(
             column![
-                self.art_thumb(a.thumbnail_url.as_deref(), 140.0),
+                self.art_thumb(photo.as_deref(), 140.0),
                 text(a.name.clone()).size(14).width(Fill),
                 text("Artist").size(12).color(MUTED).width(Fill),
             ]
@@ -2296,15 +2366,22 @@ impl AppState {
 
     /// Cover for an album: API art first, else the first known track's.
     fn album_cover(&self, album: &Album) -> Option<String> {
-        album.thumbnail_url.clone().or_else(|| {
-            self.catalog
-                .values()
-                .find(|t| t.album.as_deref() == Some(album.title.as_str()))
-                .and_then(|t| t.thumbnail_url.clone())
-        })
+        // Hi-res for 140px+ cards and detail headers (hires passes
+        // non-YTM hosts through unchanged, so tests stay green).
+        album
+            .thumbnail_url
+            .clone()
+            .or_else(|| {
+                self.catalog
+                    .values()
+                    .find(|t| t.album.as_deref() == Some(album.title.as_str()))
+                    .and_then(|t| t.thumbnail_url.clone())
+            })
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 
     /// Photo for an artist: last search payload first, else catalog.
+    /// Hi-res for 140px+ cards and the detail header.
     fn artist_photo(&self, name: &str) -> Option<String> {
         self.results
             .artists
@@ -2317,6 +2394,7 @@ impl AppState {
                     .find(|t| t.artist == name)
                     .and_then(|t| t.thumbnail_url.clone())
             })
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 
     /// Bulk-append without spamming history (one entry-free push per track),
@@ -2413,8 +2491,8 @@ impl AppState {
     /// Fetch missing artwork for freshly seen tracks (cap: 12 per payload,
     /// deduped by URL, never refetched once attempted).
     fn artwork_tasks(&mut self, tracks: &[Track]) -> Vec<iced::Task<Message>> {
-        // Both resolutions, deduped first so the 12-cap covers ~12 tracks
-        // instead of ~6 (same-URL dupes skip via the loading set anyway).
+        // Both resolutions, deduped first. Two keys per track means the
+        // 12-task cap covers about 6 fresh tracks per payload, not 12.
         // The large side uses the hero URL so rows share the drawer cache
         // key instead of downloading the same image twice.
         let mut seen = std::collections::HashSet::new();
@@ -2771,6 +2849,15 @@ impl AppState {
         self.show_suggest = false;
     }
 
+    /// Stored-row URL at a display size (shared threshold, one place).
+    fn cover_url_for(url: &str, size: f32) -> String {
+        if size >= Self::HIRES_MIN_PX {
+            yutu_core::hires_thumb_url(url, 544)
+        } else {
+            url.to_string()
+        }
+    }
+
     /// Playlist cover: first resolvable track art, else the stored
     /// row's own art, else a fixed music placeholder (same box either
     /// way, rows never shift).
@@ -2779,7 +2866,12 @@ impl AppState {
         if let Some(t) = pl.tracks.first().and_then(|t| self.find_track(&t.id)) {
             return self.thumb_sized(&t, size);
         }
-        if let Some(url) = pl.tracks.first().and_then(|t| t.thumbnail_url.clone()) {
+        if let Some(url) = pl
+            .tracks
+            .first()
+            .and_then(|t| t.thumbnail_url.clone())
+            .map(|u| Self::cover_url_for(&u, size))
+        {
             if let Some(handle) = self.artwork.get(&url) {
                 use iced::widget::image;
                 return container(image(handle.clone()).width(size).height(size))
@@ -2802,15 +2894,56 @@ impl AppState {
             .into()
     }
 
+    /// Display size at/above which track art uses the 544px hero key
+    /// instead of the raw small URL (song rows stay low-res). Focal
+    /// sub-64 headers (home picks 52, menu headers 56) deliberately
+    /// use thumb_hero anyway: they are card headers, not rows, and the
+    /// hero key is already warmed, so the extra fetch pays once.
+    const HIRES_MIN_PX: f32 = 64.0;
+
+    /// Art URL for a display size: catalog merged, hero at/above the
+    /// threshold, raw small below it.
+    fn art_url_for(&self, t: &Track, display_px: f32) -> Option<String> {
+        let merged = self.catalog.get(&t.id).unwrap_or(t);
+        if display_px >= Self::HIRES_MIN_PX {
+            Self::hero_art_url(merged)
+        } else {
+            merged.thumbnail_url.clone()
+        }
+    }
+
+    /// Hero art element for focal headers (context menu, playlist menu,
+    /// search hero): always the 544px key.
+    fn thumb_hero(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
+        use iced::widget::{container, image};
+        let url = self.hero_art_for(track);
+        match url.as_deref().and_then(|u| self.artwork.get(u)) {
+            Some(handle) => container(image(handle.clone()).width(size).height(size))
+                .style(card_bg)
+                .padding(0)
+                .width(iced::Length::Fixed(size))
+                .height(iced::Length::Fixed(size))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .into(),
+            None => container(icon("music", size * 0.4, MUTED))
+                .style(card_bg)
+                .padding(0)
+                .width(iced::Length::Fixed(size))
+                .height(iced::Length::Fixed(size))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .into(),
+        }
+    }
+
     /// Artwork at any square size (home cards use 52, rows use 40).
     fn thumb_sized(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
         use iced::widget::{container, image};
         // Catalog wins on art: queued/stored rows may predate the fetch.
-        let url = self
-            .catalog
-            .get(&track.id)
-            .and_then(|t| t.thumbnail_url.clone())
-            .or(track.thumbnail_url.clone());
+        // At/above HIRES_MIN_PX the hero key is used (same key the
+        // fetch warms), below it the raw small URL.
+        let url = self.art_url_for(track, size);
         match url.as_deref().and_then(|u| self.artwork.get(u)) {
             // Same card box as the placeholder (see art_thumb).
             Some(handle) => container(image(handle.clone()).width(size).height(size))
@@ -3299,8 +3432,38 @@ impl AppState {
                 unreachable!("scrobble results are dispatched in update()")
             }
             Message::Navigate(r) => self.navigate(r),
-            Message::NavBack => self.go_back(),
-            Message::NavForward => self.go_forward(),
+            Message::NavBack => {
+                // Side buttons never disturb a drag (Esc owns cancel);
+                // menus and the popup dismiss first, second press goes.
+                // Header buttons share this message, so they inherit the
+                // same dismiss-first order by design (one code path).
+                if self.drag.is_some() {
+                    return iced::Task::none();
+                }
+                if self.context_menu.is_some() || self.pl_menu.is_some() {
+                    self.close_menu();
+                    return iced::Task::none();
+                }
+                if self.show_suggest {
+                    self.show_suggest = false;
+                    return iced::Task::none();
+                }
+                self.go_back();
+            }
+            Message::NavForward => {
+                if self.drag.is_some() {
+                    return iced::Task::none();
+                }
+                if self.context_menu.is_some() || self.pl_menu.is_some() {
+                    self.close_menu();
+                    return iced::Task::none();
+                }
+                if self.show_suggest {
+                    self.show_suggest = false;
+                    return iced::Task::none();
+                }
+                self.go_forward();
+            }
             Message::SetRightTab(t) => {
                 self.right_tab = t;
             }
@@ -4207,7 +4370,7 @@ impl AppState {
                 // Y-gated above the player zone so the bottom strip never
                 // expands the rails.
                 let wh = self.window.map(|s| s.height).unwrap_or(800.0);
-                let above_player = p.y < wh - PLAYER_ZONE_H;
+                let above_player = p.y < wh - self.player_zone_h();
                 if !self.sidebar_pinned && !modal {
                     if p.x < 72.0 && above_player {
                         self.sidebar_latched = true;
@@ -4296,16 +4459,22 @@ impl AppState {
             Message::ToggleSidebarPin => {
                 self.sidebar_pinned = !self.sidebar_pinned;
                 // Recompute the latch from the current cursor so unpinning
-                // with the cursor far away collapses immediately.
-                self.sidebar_latched =
-                    self.sidebar_pinned || self.cursor.map(|p| p.x).unwrap_or(9999.0) < 72.0;
+                // with the cursor far away collapses immediately. Y-gated
+                // like CursorMoved so the player strip never expands.
+                let zone = self.player_zone_h();
+                let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+                self.sidebar_latched = self.sidebar_pinned
+                    || self.cursor.is_some_and(|p| p.x < 72.0 && p.y < wh - zone);
             }
             Message::ToggleRightPin => {
                 self.right_pinned = !self.right_pinned;
                 let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+                let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+                let zone = self.player_zone_h();
                 self.right_latched = self.right_pinned
-                    || self.cursor.map(|p| p.x).unwrap_or(0.0)
-                        > ww - RIGHT_RAIL_W - RIGHT_EXPAND_GRACE;
+                    || self.cursor.is_some_and(|p| {
+                        p.x > ww - RIGHT_RAIL_W - RIGHT_EXPAND_GRACE && p.y < wh - zone
+                    });
             }
             Message::AnimationsToggled(on) => {
                 self.animations_enabled = on;
@@ -4909,7 +5078,7 @@ impl AppState {
         use iced::Fill;
         let pin_btn: iced::Element<'_, Message> = button(icon(
             "panel-left",
-            14.0,
+            16.0,
             if self.sidebar_pinned {
                 SPOT_GREEN
             } else {
@@ -5085,7 +5254,7 @@ impl AppState {
                         .on_input(Message::NewPlaylistNameChanged)
                         .width(Fill)
                         .padding(10),
-                    button(icon("plus", 14.0, iced::Color::WHITE))
+                    button(icon("plus", 16.0, iced::Color::WHITE))
                         .style(green_play)
                         .on_press(Message::CreatePlaylist(new_name))
                         .padding(7),
@@ -5428,7 +5597,7 @@ impl AppState {
         };
         let pin_btn: iced::Element<'_, Message> = button(icon(
             "panel-right",
-            14.0,
+            16.0,
             if self.right_pinned { SPOT_GREEN } else { MUTED },
         ))
         .style(hover_row)
@@ -5501,6 +5670,8 @@ impl AppState {
     fn player_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, slider, text, tooltip};
         use iced::Fill;
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let mode = player_layout_mode(ww);
         let current = self.queue.current().cloned();
         let loading = self.loading_track.is_some();
         let title = if loading {
@@ -5519,6 +5690,17 @@ impl AppState {
         let duration = self.audio_duration();
         let slider_max = duration.max(1.0);
         let shown_pos = self.position_secs.clamp(0.0, slider_max);
+        // Compact mode tightens everything but keeps every control.
+        let tight = mode == PlayerLayout::Compact;
+        let art_size = if tight { 32.0 } else { 40.0 };
+        let title_size = if tight { 13 } else { 14 };
+        let (left_part, center_part) = if tight { (3, 4) } else { (2, 3) };
+        let transport_gap = if tight { 4.0 } else { 6.0 };
+        let pad_side = if tight { 6 } else { 8 };
+        let pad_play = if tight { 8 } else { 10 };
+        let pad_shuffle = if tight { 5 } else { 7 };
+        let volume_w = if tight { 80 } else { 120 };
+        let main_gap = if tight { 8.0 } else { 12.0 };
         let like_button: iced::Element<'_, Message> = match &current {
             Some(t) => {
                 let heart_color = if self.liked.contains(&t.id) {
@@ -5538,13 +5720,13 @@ impl AppState {
             button(icon("shuffle", 14.0, iced::Color::WHITE))
                 .style(green_play)
                 .on_press(Message::ToggleShuffle)
-                .padding(7)
+                .padding(pad_shuffle)
                 .into()
         } else {
             button(icon("shuffle", 14.0, MUTED))
                 .style(hover_row)
                 .on_press(Message::ToggleShuffle)
-                .padding(7)
+                .padding(pad_shuffle)
                 .into()
         };
         let (repeat_icon, repeat_badge): (&str, &str) = match self.queue.repeat {
@@ -5552,13 +5734,142 @@ impl AppState {
             yutu_player::RepeatMode::All => ("repeat", "All"),
             yutu_player::RepeatMode::One => ("repeat-1", "1"),
         };
+        // Stacked minimal player: every control survives, reflowed into
+        // rows so nothing clips below 500px.
+        if mode == PlayerLayout::Minimal {
+            let info_art: iced::Element<'_, Message> = match &current {
+                Some(t) => self.thumb_sized(t, 32.0),
+                None => container(icon("music", 20.0, MUTED))
+                    .style(card_bg)
+                    .padding(10)
+                    .into(),
+            };
+            let info_like: iced::Element<'_, Message> = match &current {
+                Some(t) => {
+                    let heart_color = if self.liked.contains(&t.id) {
+                        SPOT_GREEN
+                    } else {
+                        MUTED
+                    };
+                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
+                        .style(hover_row)
+                        .on_press(Message::Like(t.id.clone()))
+                        .padding(6)
+                        .into()
+                }
+                None => text("").size(1).into(),
+            };
+            let drawer_btn: iced::Element<'_, Message> = button(icon(
+                if self.drawer_open {
+                    "chevron-down"
+                } else {
+                    "chevron-up"
+                },
+                14.0,
+                iced::Color::WHITE,
+            ))
+            .style(hover_row)
+            .on_press(Message::ToggleDrawer)
+            .padding(7)
+            .into();
+            let info = row![
+                info_art,
+                column![
+                    text(title.clone()).size(13),
+                    text(artist.clone()).size(12).color(MUTED),
+                ]
+                .spacing(1)
+                .width(Fill),
+                info_like,
+                drawer_btn,
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center);
+            let transport = row![
+                {
+                    let shuffle_btn: iced::Element<'_, Message> = if self.queue.shuffle {
+                        button(icon("shuffle", 14.0, iced::Color::WHITE))
+                            .style(green_play)
+                            .on_press(Message::ToggleShuffle)
+                            .padding(5)
+                            .into()
+                    } else {
+                        button(icon("shuffle", 14.0, MUTED))
+                            .style(hover_row)
+                            .on_press(Message::ToggleShuffle)
+                            .padding(5)
+                            .into()
+                    };
+                    shuffle_btn
+                },
+                button(icon("skip-back", 18.0, iced::Color::WHITE))
+                    .style(hover_row)
+                    .on_press(Message::Prev)
+                    .padding(6),
+                button(icon(play_icon, 18.0, iced::Color::WHITE))
+                    .style(green_play)
+                    .on_press(Message::TogglePause)
+                    .padding(8),
+                button(icon("skip-forward", 18.0, iced::Color::WHITE))
+                    .style(hover_row)
+                    .on_press(Message::Next)
+                    .padding(6),
+                button(
+                    row![
+                        icon(repeat_icon, 14.0, iced::Color::WHITE),
+                        text(repeat_badge).size(11),
+                    ]
+                    .spacing(3)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .style(hover_row)
+                .on_press(Message::CycleRepeat)
+                .padding(6),
+            ]
+            .spacing(4)
+            .align_y(iced::alignment::Vertical::Center);
+            let transport_centered: iced::Element<'_, Message> = container(transport)
+                .width(Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .into();
+            return container(
+                column![
+                    text(self.status_text()).size(12).color(MUTED),
+                    info,
+                    transport_centered,
+                    row![
+                        text(fmt_time(shown_pos)).size(11).color(MUTED),
+                        slider(0.0..=slider_max as f32, shown_pos as f32, Message::SeekTo)
+                            .step(1.0_f32)
+                            .style(themed_slider)
+                            .width(Fill),
+                        text(fmt_time(duration)).size(11).color(MUTED),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                    row![
+                        icon("volume", 14.0, MUTED),
+                        slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            .step(0.01_f32)
+                            .style(themed_slider)
+                            .width(Fill),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                ]
+                .spacing(6),
+            )
+            .style(player_bg)
+            .padding(10)
+            .into();
+        }
         container(
             column![
                 text(self.status_text()).size(12).color(MUTED),
                 row![
                     {
                         let art: iced::Element<'_, Message> = match &current {
-                            Some(t) => self.thumb(t),
+                            Some(t) => self.thumb_sized(t, art_size),
                             None => container(icon("music", 20.0, MUTED))
                                 .style(card_bg)
                                 .padding(10)
@@ -5574,7 +5885,7 @@ impl AppState {
                         };
                         let left = row![
                             art,
-                            column![text(title).size(14), artist_el,].spacing(1),
+                            column![text(title).size(title_size), artist_el,].spacing(1),
                             like_button,
                         ]
                         .spacing(8)
@@ -5585,8 +5896,9 @@ impl AppState {
                                 .into(),
                             None => left.into(),
                         };
-                        let wrapped: iced::Element<'_, Message> =
-                            container(boxed).width(iced::Length::FillPortion(2)).into();
+                        let wrapped: iced::Element<'_, Message> = container(boxed)
+                            .width(iced::Length::FillPortion(left_part))
+                            .into();
                         wrapped
                     },
                     column![
@@ -5595,15 +5907,15 @@ impl AppState {
                             button(icon("skip-back", 18.0, iced::Color::WHITE))
                                 .style(hover_row)
                                 .on_press(Message::Prev)
-                                .padding(8),
+                                .padding(pad_side),
                             button(icon(play_icon, 18.0, iced::Color::WHITE))
                                 .style(green_play)
                                 .on_press(Message::TogglePause)
-                                .padding(10),
+                                .padding(pad_play),
                             button(icon("skip-forward", 18.0, iced::Color::WHITE))
                                 .style(hover_row)
                                 .on_press(Message::Next)
-                                .padding(8),
+                                .padding(pad_side),
                             button(
                                 row![
                                     icon(repeat_icon, 14.0, iced::Color::WHITE),
@@ -5614,9 +5926,9 @@ impl AppState {
                             )
                             .style(hover_row)
                             .on_press(Message::CycleRepeat)
-                            .padding(8),
+                            .padding(pad_side),
                         ]
-                        .spacing(6)
+                        .spacing(transport_gap)
                         .align_y(iced::alignment::Vertical::Center),
                         row![
                             text(fmt_time(shown_pos)).size(11).color(MUTED),
@@ -5631,14 +5943,14 @@ impl AppState {
                     ]
                     .spacing(2)
                     .align_x(iced::alignment::Horizontal::Center)
-                    .width(iced::Length::FillPortion(3)),
+                    .width(iced::Length::FillPortion(center_part)),
                     row![
                         iced::widget::Space::new().width(Fill),
                         tooltip(
                             slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
-                                .width(120),
+                                .width(volume_w),
                             text(format!("Volume {:.0}%", self.volume * 100.0)).size(12),
                             tooltip::Position::Top,
                         )
@@ -5660,7 +5972,7 @@ impl AppState {
                     .align_y(iced::alignment::Vertical::Center)
                     .width(iced::Length::FillPortion(2)),
                 ]
-                .spacing(12)
+                .spacing(main_gap)
                 .align_y(iced::alignment::Vertical::Center),
             ]
             .spacing(4),
@@ -5810,6 +6122,8 @@ impl AppState {
         .align_x(iced::alignment::Horizontal::Center)
         .into();
         // Sticky compact header once the lyrics scroll past 200px.
+        // Sticky reuses the already-fetched 300px hero key on purpose
+        // (zero marginal fetch), even though other 40px rows use raw.
         let sticky: iced::Element<'_, Message> = if self.drawer_scroll > 200.0 {
             container(
                 row![
@@ -5937,50 +6251,58 @@ impl AppState {
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
         // Main row gaps: sidebar|center plus center|right when visible.
+        // Plus the header inner spacing (4 gaps of 4 in fixed layout).
         let gaps = if self.right_target() != 0.0 {
             16.0
         } else {
             8.0
         };
-        let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome;
+        let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
         let pill_w = if center_avail < search_w {
             iced::Length::Fill
         } else {
             iced::Length::Fixed(search_w)
         };
-        row![
-            back_btn,
-            fwd_btn,
-            container(
-                row![
-                    icon("search", 14.0, MUTED),
-                    text_input("Search YouTube Music…", &self.search_query)
-                        .style(search_inner_input)
-                        .on_input(Message::HomeSearchChanged)
-                        .on_submit(Message::SearchStay)
-                        .width(Fill)
-                        .padding(10),
-                    clear_btn,
-                    search_state,
-                ]
-                .spacing(4)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(search_pill)
-            .padding(iced::Padding {
-                left: 8.0,
-                right: 4.0,
-                ..iced::Padding::ZERO
-            })
-            .width(pill_w),
-            button(icon("settings", 14.0, iced::Color::WHITE))
-                .style(hover_row)
-                .on_press(Message::Navigate(Route::Settings))
-                .padding(6),
-        ]
-        .spacing(4)
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
+        let fixed_pill = center_avail >= search_w;
+        let pill: iced::Element<'_, Message> = container(
+            row![
+                icon("search", 14.0, MUTED),
+                text_input("Search YouTube Music…", &self.search_query)
+                    .style(search_inner_input)
+                    .on_input(Message::HomeSearchChanged)
+                    .on_submit(Message::SearchStay)
+                    .width(Fill)
+                    .padding(10),
+                clear_btn,
+                search_state,
+            ]
+            .spacing(4)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(search_pill)
+        .padding(iced::Padding {
+            left: 8.0,
+            right: 4.0,
+            ..iced::Padding::ZERO
+        })
+        .width(pill_w)
+        .into();
+        let gear: iced::Element<'_, Message> = button(icon("settings", 14.0, iced::Color::WHITE))
+            .style(hover_row)
+            .on_press(Message::Navigate(Route::Settings))
+            .padding(6)
+            .into();
+        // Fixed pill: Fill space docks the gear to the header right edge.
+        // Fill pill: it already stretches, no space needed.
+        let mut h = iced::widget::Row::with_children(vec![back_btn, fwd_btn, pill]);
+        if fixed_pill {
+            let spacer: iced::Element<'_, Message> = iced::widget::Space::new().width(Fill).into();
+            h = h.push(spacer);
+        }
+        h = h.push(gear);
+        h.spacing(4)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
     }
 
     fn center_view(&self) -> iced::Element<'_, Message> {
@@ -6030,7 +6352,7 @@ impl AppState {
                                     mouse_area(
                                         button(
                                             row![
-                                                self.thumb_sized(t, 52.0),
+                                                self.thumb_hero(t, 52.0),
                                                 column![
                                                     text(t.title.clone()).size(14),
                                                     text(t.artist.clone()).size(12).color(MUTED),
@@ -6736,6 +7058,8 @@ impl AppState {
                     .and_then(|a| a.year)
                     .map(|y| y.to_string())
                     .unwrap_or_default();
+                // One policy: the same hires key album_cover returns and
+                // stage_search warms (raw would placeholder on some paths).
                 let cover = tracks
                     .first()
                     .and_then(|t| t.thumbnail_url.clone())
@@ -6745,7 +7069,8 @@ impl AppState {
                             .iter()
                             .find(|a| a.title == title)
                             .and_then(|a| a.thumbnail_url.clone())
-                    });
+                    })
+                    .map(|u| yutu_core::hires_thumb_url(&u, 544));
                 let rows: Vec<iced::Element<'_, Message>> = tracks
                     .iter()
                     .enumerate()
@@ -6893,12 +7218,28 @@ impl AppState {
         // Quick-results popup, YouTube-style: suggestions + top tracks.
         // Enter jumps to the full Search page; picking a track plays now.
         // Rendered at window level (above the drawer), not here.
-        column![
-            header,
-            scrollable(container(body).padding(20).width(Fill)).height(Fill),
-        ]
-        .spacing(4)
-        .into()
+        // Very wide windows center a capped body so rows stop gluing
+        // to the far edges; normal windows stay full bleed.
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let scrolled: iced::Element<'_, Message> = if ww > CENTER_MARGIN_BREAK {
+            scrollable(
+                container(
+                    container(body)
+                        .padding(20)
+                        .width(Fill)
+                        .max_width(CENTER_MAX_W),
+                )
+                .width(Fill)
+                .align_x(iced::alignment::Horizontal::Center),
+            )
+            .height(Fill)
+            .into()
+        } else {
+            scrollable(container(body).padding(20).width(Fill))
+                .height(Fill)
+                .into()
+        };
+        column![header, scrolled,].spacing(4).into()
     }
 
     /// Search popup content, if the gate holds (window-level layer above
@@ -7015,7 +7356,8 @@ impl AppState {
             } else {
                 8.0
             };
-            let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome;
+            let center_avail =
+                ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
             let pill_actual = if center_avail < search_w {
                 center_avail.max(140.0)
             } else {
@@ -7258,7 +7600,7 @@ impl AppState {
                 let menu = container(
                     column![
                         row![
-                            self.thumb_sized(&t, 56.0),
+                            self.thumb_hero(&t, 56.0),
                             column![
                                 text(t.title.clone()).size(16),
                                 text(t.artist.clone()).size(12).color(MUTED),
@@ -7475,10 +7817,16 @@ impl AppState {
                         .into(),
                     );
                 }
+                // Focal header: hero art when the first track resolves.
+                let pl_art: iced::Element<'_, Message> =
+                    match p.tracks.first().and_then(|t| self.find_track(&t.id)) {
+                        Some(t) => self.thumb_hero(&t, 56.0),
+                        None => self.playlist_cover(&p, 56.0),
+                    };
                 let pl_menu = container(
                     column![
                         row![
-                            self.playlist_cover(&p, 56.0),
+                            pl_art,
                             column![
                                 text(p.title.clone()).size(16),
                                 text(format!("Playlist · {} tracks", p.tracks.len()))
@@ -7935,6 +8283,24 @@ mod tests {
             s.album_cover(&derived).as_deref(),
             Some("https://example.invalid/track.jpg")
         );
+        // YTM-style URLs rewrite to the 544px hero key.
+        let ytm = Album {
+            id: "a2".into(),
+            title: "A".into(),
+            artist: "B".into(),
+            year: None,
+            thumbnail_url: Some("https://x=w60-h60-l90-rj".into()),
+        };
+        let url = s.album_cover(&ytm).expect("hires");
+        assert!(url.contains("=w544-h544"), "{url}");
+        // Artist photos rewrite the same way.
+        s.results.artists.push(yutu_core::Artist {
+            id: "r1".into(),
+            name: "Queen".into(),
+            thumbnail_url: Some("https://y=w60-h60-l90-rj".into()),
+        });
+        let photo = s.artist_photo("Queen").expect("photo");
+        assert!(photo.contains("=w544-h544"), "{photo}");
         // Unknown album: no cover, honest None.
         let ghost = Album {
             id: "ax".into(),
@@ -9276,6 +9642,91 @@ mod tests {
         assert!(pop + w <= 1280.0);
         // Wide window: popup sits exactly at the pill left edge.
         assert_eq!(pop, left);
+    }
+
+    #[test]
+    fn player_layout_breakpoints() {
+        assert_eq!(player_layout_mode(499.0), PlayerLayout::Minimal);
+        assert_eq!(player_layout_mode(500.0), PlayerLayout::Compact);
+        assert_eq!(player_layout_mode(699.0), PlayerLayout::Compact);
+        assert_eq!(player_layout_mode(700.0), PlayerLayout::Wide);
+        assert_eq!(player_layout_mode(1280.0), PlayerLayout::Wide);
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        assert!((s.player_zone_h() - PLAYER_ZONE_H).abs() < 0.01);
+        let _ = s.update(Message::WindowResized(iced::Size::new(400.0, 800.0)));
+        assert!(s.player_zone_h() > PLAYER_ZONE_H);
+        assert_eq!(s.player_zone_h(), PLAYER_ZONE_MINIMAL_H);
+        let _ = s.update(Message::WindowResized(iced::Size::new(650.0, 800.0)));
+        assert_eq!(s.player_zone_h(), PLAYER_ZONE_H);
+    }
+
+    #[test]
+    fn player_view_builds_at_all_widths() {
+        let mut s = test_state();
+        for w in [1280.0, 650.0, 400.0] {
+            let _ = s.update(Message::WindowResized(iced::Size::new(w, 800.0)));
+            let _ = s.view();
+        }
+        // Minimal keeps shuffle state visible (no silent restyle).
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(400.0, 800.0)));
+        let _ = s.update(Message::ToggleShuffle);
+        assert!(s.queue.shuffle);
+        let _ = s.view();
+    }
+
+    #[test]
+    fn mouse_backdismisses_menu_before_navigating() {
+        let mut s = test_state();
+        s.navigate(Route::Search);
+        s.navigate(Route::Queue);
+        let _ = s.update(Message::OpenContext("m1".into()));
+        assert!(s.context_menu.is_some());
+        let _ = s.update(Message::NavBack);
+        assert!(s.context_menu.is_none());
+        assert_eq!(s.route, Route::Queue);
+        let _ = s.update(Message::NavBack);
+        assert_eq!(s.route, Route::Search);
+    }
+
+    #[test]
+    fn mouse_back_ignores_drag() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        s.navigate(Route::Search);
+        let _ = s.update(Message::DragStart(0));
+        assert!(s.drag.is_some());
+        let _ = s.update(Message::NavBack);
+        assert_eq!(s.route, Route::Search);
+        assert!(s.drag.is_some());
+    }
+
+    #[test]
+    fn art_url_threshold_picks_hero_above_64() {
+        let mut s = test_state();
+        let t = Track {
+            id: "m1".into(),
+            title: "M1".into(),
+            artist: "A".into(),
+            album: None,
+            duration_secs: 1,
+            thumbnail_url: Some("https://example.invalid/s".into()),
+            thumbnail_large_url: None,
+        };
+        s.catalog.insert("m1".into(), t.clone());
+        let small = s.art_url_for(&t, 40.0).expect("small");
+        assert_eq!(small, "https://example.invalid/s");
+        // example.invalid passes hires through unchanged, so assert via
+        // a YTM-style URL for the hero rewrite.
+        let ytm = Track {
+            thumbnail_url: Some("https://x=w60-h60-l90-rj".into()),
+            ..t.clone()
+        };
+        s.catalog.insert("m1".into(), ytm.clone());
+        let hero = s.art_url_for(&ytm, 96.0).expect("hero");
+        assert!(hero.contains("=w544-h544"), "{hero}");
     }
 
     #[test]

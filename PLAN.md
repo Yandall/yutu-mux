@@ -161,5 +161,6 @@ Done: user can plausibly replace Spotify for daily listening.
 20. Round 9: repeat-one Next fix, between-only DnD, dividers, rail zone/empty-hide, drawer top-space + lyrics fetch + hires hero, filled hearts, playlist flyout, header/settings/search/anim upgrades, em-dash sweep (3 spec agents + 2 adversarial reviewers)
 21. Round 10: drag ghost/row/anim/row-click pass, drawer modality + popup overlay + flyout align + playlist menus, startup/art/lyrics/lyric-click/Favorites data layer (3 spec agents + 1 adversarial reviewer)
 22. Round 11: 20-item hardening (autoplay absorb, edge-slot DnD, grip removal, true-margin dividers, bar-only slot, lyrics text, drawer Fill + persistent header, Y-gated expand, aligned/shrinking search, modal hovers, add-order Favorites + liked_at, player-bar menu, MPRIS artUrl, #FF0033 + white glyphs, hero fallback, album ax- fix, shuffle play, trailing hover play) + review F fixes (3 spec agents + 1 adversarial reviewer)
+23. Round 12: art resolution policy (hi-res everywhere but song rows), bolder icons/pills, wide center cap + right-docked settings, responsive player (wide/compact/minimal) + mouse back/forward, review G key-split fixes (3 spec agents + 1 adversarial reviewer)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
