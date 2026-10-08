@@ -404,6 +404,33 @@ pub struct DragState {
     slot: Option<usize>,
 }
 
+/// Press snapshot for click-vs-drag: a release with no committed move
+/// over the same unmutated row counts as a click (plays it).
+#[derive(Debug, Clone)]
+struct PressSnap {
+    from: usize,
+    pos: Option<iced::Point>,
+    id: String,
+    len: usize,
+}
+
+/// Press within slop of release (px): hand tremor must not kill a click.
+const CLICK_SLOP_PX: f32 = 6.0;
+
+/// Press and release positions match for click purposes (exact when the
+/// cursor never moved, slop-tolerant otherwise).
+fn release_is_click_at(press: Option<iced::Point>, release: Option<iced::Point>) -> bool {
+    match (press, release) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            let dx = a.x - b.x;
+            let dy = a.y - b.y;
+            dx * dx + dy * dy < CLICK_SLOP_PX * CLICK_SLOP_PX
+        }
+        _ => false,
+    }
+}
+
 /// Right-panel tab: queue or recently played.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RightTab {
@@ -525,6 +552,8 @@ pub enum Message {
     DragEnd,
     /// Right-panel row hover: highlight + drag-target tracking.
     PanelHover(usize),
+    /// Remove-button hover (presses there never arm a drag).
+    RemoveHover(Option<usize>),
     /// Context menu open/close: right-click (per-row `mouse_area`) or the
     /// per-row `…` button opens it at the last cursor position.
     OpenContext(String),
@@ -1041,6 +1070,9 @@ pub struct AppState {
     autoplay: Vec<Track>,
     /// Queue-page row under the cursor (hover reveals its remove).
     hovered_queue: Option<usize>,
+    /// Cursor over a row remove button (presses there must never arm a
+    /// drag: slipping off delete must not become a reorder).
+    hover_remove: Option<usize>,
     /// Track-row hover by id (reveals full-row highlight where lists are
     /// not index-stable: search/library/discovery rows + recent).
     hovered_track: Option<String>,
@@ -1048,6 +1080,8 @@ pub struct AppState {
     hovered_auto: Option<usize>,
     /// Right-panel drag in progress (row press to slot hover to release).
     drag: Option<DragState>,
+    /// Press snapshot for click detection (cleared on every release).
+    press_snap: Option<PressSnap>,
     /// Sidebar playlist under the cursor (hover play affordance).
     hovered_playlist: Option<String>,
     /// Last committing reorder time: a shared press/release with the
@@ -1605,9 +1639,11 @@ impl AppState {
             autoplay_for: None,
             autoplay: Vec::new(),
             hovered_queue: None,
+            hover_remove: None,
             hovered_track: None,
             hovered_auto: None,
             drag: None,
+            press_snap: None,
             hovered_playlist: None,
             just_reordered_at: None,
             drag_gap: 0.0,
@@ -2083,6 +2119,20 @@ impl AppState {
         if let Some(art) = self.large_art_task(t) {
             tasks.push(art);
         }
+        // Warm rows ahead (current + next 5, both keys): art lands without
+        // waiting for another payload, and failures retry since
+        // ArtworkReady clears the loading flag on error.
+        if let Some(pos) = self.queue.position() {
+            let ahead: Vec<Track> = self
+                .queue
+                .items()
+                .iter()
+                .skip(pos)
+                .take(6)
+                .cloned()
+                .collect();
+            tasks.extend(self.artwork_tasks(&ahead));
+        }
         #[cfg(feature = "lyrics")]
         {
             if !self.lyrics_cache.contains_key(&t.id)
@@ -2426,6 +2476,10 @@ impl AppState {
             tracks.iter().map(|t| t.id.as_str()).collect();
         self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
         let first_new = self.queue.len();
+        // Warm art for the incoming head (~6 tracks: 2 keys each under
+        // the 12-task cap); the rest paints as the ahead-window reaches
+        // them on advance. Deduped, so repeats cost nothing.
+        let art_tasks = self.artwork_tasks(&tracks);
         for t in tracks {
             let rt = self.resolve_for_play(&t);
             self.queue.push(rt);
@@ -2434,7 +2488,9 @@ impl AppState {
         self.playing_from = label.to_string();
         self.status = format!("{label}: queued {n} track(s).");
         self.apply_volume();
-        self.fetch_current_task()
+        let mut tasks = art_tasks;
+        tasks.push(self.fetch_current_task());
+        iced::Task::batch(tasks)
     }
 
     /// Play-all for the current detail view (artist/album/playlist/
@@ -2581,7 +2637,7 @@ impl AppState {
     }
 
     /// Two-line song label: title (normal) + artist (smaller, muted).
-    /// `title_size` 14 for pages, 12–13 for panel/autoplay rows.
+    /// `title_size` 14 for pages, 12-13 for panel/autoplay rows.
     fn track_text<'a>(
         title: &str,
         artist: &str,
@@ -2591,7 +2647,10 @@ impl AppState {
         use iced::widget::{column, text};
         use iced::Fill;
         column![
-            text(title.to_owned())
+            // Two-line cap (55 + ellipsis): long names never stretch rows.
+            // Rows are art-height dominated at 40px, so 1-2 line titles
+            // share one height across the list.
+            text(truncate_title(title, 55))
                 .size(f32::from(title_size))
                 .color(color),
             text(artist.to_owned())
@@ -2839,6 +2898,13 @@ impl AppState {
             d.slot
                 .filter(|s| slot_commit(self.queue.len(), d.from, *s).is_some())
         })
+    }
+
+    /// Cancel any in-progress drag plus its press snapshot (one place,
+    /// so no stale snap survives a queue mutation).
+    fn cancel_drag(&mut self) {
+        self.drag = None;
+        self.press_snap = None;
     }
 
     /// Close the context menu and drop its anchor.
@@ -3412,7 +3478,7 @@ impl AppState {
             Message::EnqueueTrack(id) => {
                 self.show_suggest = false;
                 self.close_menu();
-                self.drag = None;
+                self.cancel_drag();
                 let task = self.enqueue_track_task(&id);
                 self.publish_mpris();
                 task
@@ -3707,19 +3773,19 @@ impl AppState {
                 }
             }
             Message::QueueRemove(i) => {
-                self.drag = None;
+                self.cancel_drag();
                 self.queue.remove_at(i);
             }
             Message::QueueUp(i) => {
-                self.drag = None;
+                self.cancel_drag();
                 self.queue.move_up(i);
             }
             Message::QueueDown(i) => {
-                self.drag = None;
+                self.cancel_drag();
                 self.queue.move_down(i);
             }
             Message::QueueClear => {
-                self.drag = None;
+                self.cancel_drag();
                 self.queue.clear();
                 self.status = if self.autoplay.is_empty() {
                     "Queue cleared.".into()
@@ -3820,7 +3886,7 @@ impl AppState {
             Message::QueueTrack(id) => {
                 self.show_suggest = false;
                 self.close_menu();
-                self.drag = None;
+                self.cancel_drag();
                 match self.find_track(&id) {
                     None => {
                         self.status = format!("Track not found: {id}.");
@@ -3859,7 +3925,7 @@ impl AppState {
             }
             Message::ToggleShuffle => {
                 let on = !self.queue.shuffle;
-                self.drag = None;
+                self.cancel_drag();
                 self.set_shuffle(on);
                 self.status = if on {
                     "Shuffle on: queue reordered.".into()
@@ -4033,7 +4099,7 @@ impl AppState {
                 if self.queue.current().is_some_and(|t| t.id == id) {
                     return iced::Task::none();
                 }
-                self.drag = None;
+                self.cancel_drag();
                 match self.find_track(&id) {
                     None => {
                         self.status = format!("Track not found: {id}.");
@@ -4101,7 +4167,7 @@ impl AppState {
             Message::PlayNext(id) => {
                 self.close_menu();
                 self.show_suggest = false;
-                self.drag = None;
+                self.cancel_drag();
                 match self.find_track(&id) {
                     None => {
                         self.status = format!("Track not found: {id}.");
@@ -4123,7 +4189,7 @@ impl AppState {
             }
             Message::PlayAutoplay(i) => {
                 self.close_menu();
-                self.drag = None;
+                self.cancel_drag();
                 match self.autoplay.get(i).cloned() {
                     None => {
                         self.status = format!("Nothing at autoplay index {i}.");
@@ -4140,7 +4206,7 @@ impl AppState {
             }
             Message::RemoveFromQueue(id) => {
                 self.close_menu();
-                self.drag = None;
+                self.cancel_drag();
                 let was_current = self.queue.current().is_some_and(|t| t.id == id);
                 if self.queue.remove_id(&id) {
                     self.status = format!("Removed {id} from the queue.");
@@ -4177,6 +4243,7 @@ impl AppState {
                 } else {
                     self.hovered_queue = h;
                 }
+                self.hovered_auto = None;
             }
             Message::TrackHover(h) => {
                 if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
@@ -4184,12 +4251,20 @@ impl AppState {
                 } else {
                     self.hovered_track = h;
                 }
+                // Entering a non-queue row drops stale queue hovers so a
+                // press there never arms a drag off old state.
+                self.hovered_queue = None;
+                self.hovered_auto = None;
             }
             Message::ClearHovers => {
                 self.hovered_track = None;
                 self.hovered_playlist = None;
                 self.hovered_queue = None;
                 self.hovered_auto = None;
+                self.hover_remove = None;
+            }
+            Message::RemoveHover(h) => {
+                self.hover_remove = h;
             }
             Message::PlaylistHover(h) => {
                 if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
@@ -4197,6 +4272,8 @@ impl AppState {
                 } else {
                     self.hovered_playlist = h;
                 }
+                self.hovered_queue = None;
+                self.hovered_auto = None;
             }
             Message::AutoHover(h) => {
                 if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
@@ -4204,6 +4281,7 @@ impl AppState {
                 } else {
                     self.hovered_auto = h;
                 }
+                self.hovered_queue = None;
             }
             Message::PanelHover(i) => {
                 if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
@@ -4211,23 +4289,52 @@ impl AppState {
                 } else {
                     self.hovered_queue = Some(i);
                 }
+                self.hovered_auto = None;
             }
             Message::DragStart(from) => {
                 // Two-row lists reorder via the trailing edge slot, so
-                // drags start at two rows and up.
-                if from < self.queue.len() && self.queue.len() >= 2 {
+                // drags start at two rows and up. Never from the remove
+                // button: slipping off delete must not reorder.
+                if from < self.queue.len()
+                    && self.queue.len() >= 2
+                    && self.hover_remove != Some(from)
+                {
                     self.drag = Some(DragState { from, slot: None });
+                    self.press_snap = Some(PressSnap {
+                        from,
+                        pos: self.cursor,
+                        id: self
+                            .queue
+                            .items()
+                            .get(from)
+                            .map(|t| t.id.clone())
+                            .unwrap_or_default(),
+                        len: self.queue.len(),
+                    });
                 }
             }
             Message::GlobalPress => {
-                // Arm from the hovered queue row (covers text/art presses
-                // the inner buttons swallow). Anything else is a no-op.
+                // Arm from the hovered queue row: one press path for text,
+                // art, and gaps (only the remove button owns its press).
+                // Queue-page buttons coexist order-independently (a shared
+                // release either jumps once or no-ops).
                 if self.drag.is_none() && self.queue.len() >= 2 {
                     if let Some(i) = self.hovered_queue {
-                        if i < self.queue.len() {
+                        if i < self.queue.len() && self.hover_remove != Some(i) {
                             self.drag = Some(DragState {
                                 from: i,
                                 slot: None,
+                            });
+                            self.press_snap = Some(PressSnap {
+                                from: i,
+                                pos: self.cursor,
+                                id: self
+                                    .queue
+                                    .items()
+                                    .get(i)
+                                    .map(|t| t.id.clone())
+                                    .unwrap_or_default(),
+                                len: self.queue.len(),
                             });
                         }
                     }
@@ -4243,13 +4350,49 @@ impl AppState {
                 }
             }
             Message::DragEnd => {
+                let snap = self.press_snap.take();
                 if let Some(drag) = self.drag.take() {
-                    if let Some(slot) = drag.slot {
-                        if let Some(to) = slot_commit(self.queue.len(), drag.from, slot) {
-                            if self.queue.move_to(drag.from, to) {
-                                self.status = "Queue reordered.".into();
-                                self.just_reordered_at = Some(std::time::Instant::now());
+                    // No move plus a clean press/release over the same
+                    // unmutated row: the whole row clicks (plays it).
+                    // Snapshot-guarded on both paths: a queue mutated
+                    // mid-press (remove, play-all, mix) never jumps or
+                    // reorders off stale indices.
+                    let snap_ok = snap.as_ref().is_some_and(|s| {
+                        s.from == drag.from
+                            && self.queue.len() == s.len
+                            && self.queue.items().get(s.from).is_some_and(|t| t.id == s.id)
+                    });
+                    let mut committed = false;
+                    if snap_ok {
+                        if let Some(slot) = drag.slot {
+                            if let Some(to) = slot_commit(self.queue.len(), drag.from, slot) {
+                                if self.queue.move_to(drag.from, to) {
+                                    self.status = "Queue reordered.".into();
+                                    self.just_reordered_at = Some(std::time::Instant::now());
+                                    committed = true;
+                                }
                             }
+                        }
+                    }
+                    let modal =
+                        self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest;
+                    let click = !committed
+                        && !modal
+                        && snap.as_ref().is_some_and(|s| {
+                            snap_ok
+                                && !self.just_reordered_at.is_some_and(|at| {
+                                    at.elapsed() < std::time::Duration::from_millis(150)
+                                })
+                                && release_is_click_at(s.pos, self.cursor)
+                                && self.hovered_queue == Some(s.from)
+                                && self.queue.position() != Some(s.from)
+                        });
+                    if click {
+                        let from = snap.as_ref().map(|s| s.from).unwrap_or(0);
+                        if self.queue.jump_to(from) {
+                            self.apply_volume();
+                            self.publish_mpris();
+                            return self.play_current_task();
                         }
                     }
                 }
@@ -4325,7 +4468,7 @@ impl AppState {
                 self.queue.clear();
                 self.autoplay.clear();
                 self.autoplay_for = None;
-                self.drag = None;
+                self.cancel_drag();
                 let title = p.title.clone();
                 // queue_many resolves each row against the catalog itself.
                 let task = self.queue_many(p.tracks.clone(), &format!("Playlist {title}"));
@@ -4376,7 +4519,7 @@ impl AppState {
                 self.queue.clear();
                 self.autoplay.clear();
                 self.autoplay_for = None;
-                self.drag = None;
+                self.cancel_drag();
                 let title = p.title.clone();
                 let task = self.queue_many(p.tracks.clone(), &format!("Playlist {title}"));
                 self.set_shuffle(true);
@@ -4425,7 +4568,7 @@ impl AppState {
                 } else if self.drag.is_some() {
                     // Esc cancels an in-progress drag first (it owns the
                     // pointer); the drawer goes on the next Esc.
-                    self.drag = None;
+                    self.cancel_drag();
                 } else if self.drawer_open {
                     self.drawer_open = false;
                 }
@@ -5331,22 +5474,23 @@ impl AppState {
         let remove_id = t.id.clone();
         let hovered = self.hovered_queue == Some(i);
         let remove_btn: iced::Element<'_, Message> = if hovered {
-            button(icon("x", 11.0, MUTED))
-                .style(hover_row)
-                .on_press(Message::RemoveFromQueue(remove_id))
-                .padding(3)
-                .into()
+            mouse_area(
+                button(icon("x", 11.0, MUTED))
+                    .style(hover_row)
+                    .on_press(Message::RemoveFromQueue(remove_id))
+                    .padding(3),
+            )
+            .on_enter(Message::RemoveHover(Some(i)))
+            .on_exit(Message::RemoveHover(None))
+            .into()
         } else {
             iced::widget::Space::new()
                 .width(iced::Length::Fixed(20.0))
                 .into()
         };
         let row_content = row![
-            button(self.thumb(t))
-                .style(row_click)
-                .on_press(Message::QueueJump(i))
-                .padding(2),
-            button(Self::track_text(
+            container(self.thumb(t)).padding(2),
+            container(Self::track_text(
                 &t.title,
                 &t.artist,
                 12,
@@ -5356,14 +5500,9 @@ impl AppState {
                     iced::Color::WHITE
                 },
             ))
-            .style(row_click)
-            .on_press(Message::QueueJump(i))
             .padding(3)
             .width(Fill),
-            button(text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),)
-                .style(row_click)
-                .on_press(Message::QueueJump(i))
-                .padding(3),
+            container(text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED)).padding(3),
             remove_btn,
         ]
         .spacing(6)
@@ -5373,8 +5512,10 @@ impl AppState {
             .style(row_bg(hovered))
             .width(Fill)
             .into();
-        // The whole row arms the drag on press (clicks without a move
-        // release with no slot: a harmless no-op, then click through).
+        // One press path for the whole row: plain visuals let the press
+        // reach this area from text, art, or gaps (only the tiny remove
+        // button owns its press). A clean press/release plays the row
+        // via the DragEnd snapshot; a move to a slot reorders instead.
         mouse_area(lifted)
             .on_press(Message::DragStart(i))
             .on_right_press(Message::OpenContext(menu_id))
@@ -6666,7 +6807,11 @@ impl AppState {
                                         .on_press(Message::QueueJump(i))
                                         .padding(2),
                                     button(Self::track_text(
-                                        &format!("{marker}{}. {}", i + 1, t.title),
+                                        &format!(
+                                            "{marker}{}. {}",
+                                            i + 1,
+                                            truncate_title(&t.title, 55)
+                                        ),
                                         &t.artist,
                                         14,
                                         if is_current {
@@ -6722,7 +6867,7 @@ impl AppState {
                             container(
                                 row![
                                     button(Self::track_text(
-                                        &format!("{}. {}", i + 1, t.title),
+                                        &format!("{}. {}", i + 1, truncate_title(&t.title, 55)),
                                         &t.artist,
                                         13,
                                         iced::Color::WHITE
@@ -9640,16 +9785,22 @@ mod tests {
         let _ = s.update(Message::TrackHover(Some("m1".into())));
         let _ = s.update(Message::PlaylistHover(Some("u1".into())));
         let _ = s.update(Message::QueueHover(Some(2)));
+        // Queue and autoplay hovers are mutually exclusive by design
+        // (entering one list drops the other, so presses never arm off
+        // stale state).
+        assert!(s.hovered_queue.is_some());
+        assert!(s.hovered_auto.is_none());
         let _ = s.update(Message::AutoHover(Some(1)));
         assert!(s.hovered_track.is_some());
         assert!(s.hovered_playlist.is_some());
-        assert!(s.hovered_queue.is_some());
+        assert!(s.hovered_queue.is_none());
         assert!(s.hovered_auto.is_some());
         let _ = s.update(Message::ClearHovers);
         assert!(s.hovered_track.is_none());
         assert!(s.hovered_playlist.is_none());
         assert!(s.hovered_queue.is_none());
         assert!(s.hovered_auto.is_none());
+        assert!(s.hover_remove.is_none());
     }
 
     #[test]
@@ -9681,6 +9832,98 @@ mod tests {
         assert!(pop + w <= 1280.0);
         // Wide window: popup sits exactly at the pill left edge.
         assert_eq!(pop, left);
+    }
+
+    #[test]
+    fn clean_release_clicks_the_row() {
+        // Press + release without moving over the same unmutated row
+        // plays it (the whole row is one press path now).
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        assert_eq!(s.queue.position(), Some(2));
+        let at = iced::Point::new(10.0, 10.0);
+        let _ = s.update(Message::CursorMoved(at));
+        assert_eq!(s.cursor, Some(at));
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::DragStart(0));
+        let _ = s.update(Message::DragEnd);
+        assert_eq!(s.queue.position(), Some(0));
+        // Order untouched by a click.
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
+        // Tiny tremor inside slop still clicks.
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::CursorMoved(iced::Point::new(20.0, 20.0)));
+        let _ = s.update(Message::PanelHover(2));
+        let _ = s.update(Message::DragStart(2));
+        let _ = s.update(Message::CursorMoved(iced::Point::new(22.0, 21.0)));
+        let _ = s.update(Message::DragEnd);
+        assert_eq!(s.queue.position(), Some(2));
+        // Menu open at release: no click behind the menu.
+        let _ = s.update(Message::CursorMoved(iced::Point::new(30.0, 30.0)));
+        let _ = s.update(Message::PanelHover(1));
+        let _ = s.update(Message::DragStart(1));
+        let _ = s.update(Message::OpenContext("m2".into()));
+        let _ = s.update(Message::DragEnd);
+        assert_eq!(s.queue.position(), Some(2));
+    }
+
+    #[test]
+    fn click_suppressed_after_mutation_or_move() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        // Removal mutates the queue: no jump.
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::DragStart(0));
+        let _ = s.update(Message::RemoveFromQueue("m1".into()));
+        let _ = s.update(Message::DragEnd);
+        assert_eq!(s.queue.position(), Some(1));
+        // Cursor moved away: no jump.
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::DragStart(0));
+        let _ = s.update(Message::CursorMoved(iced::Point::new(600.0, 100.0)));
+        let _ = s.update(Message::DragEnd);
+        assert_eq!(s.queue.position(), Some(1));
+    }
+
+    #[test]
+    fn press_on_remove_never_arms_drag() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::RemoveHover(Some(0)));
+        let _ = s.update(Message::DragStart(0));
+        assert!(s.drag.is_none());
+        let _ = s.update(Message::GlobalPress);
+        assert!(s.drag.is_none());
+        let _ = s.update(Message::RemoveHover(None));
+        let _ = s.update(Message::GlobalPress);
+        assert!(s.drag.is_some());
+    }
+
+    #[test]
+    fn list_titles_cap_at_two_lines() {
+        assert_eq!(truncate_title("Short", 55), "Short");
+        assert_eq!(truncate_title("", 55), "");
+        let exact: String = "x".repeat(55);
+        assert_eq!(truncate_title(&exact, 55), exact);
+        let over: String = "y".repeat(57);
+        let cut = truncate_title(&over, 55);
+        assert!(cut.ends_with("…"));
+        assert_eq!(cut.chars().count(), 56);
+        let uni = "é".repeat(60);
+        let ucut = truncate_title(&uni, 55);
+        assert_eq!(ucut.chars().count(), 56);
+        // Drawer and player bypass track_text (full titles kept): they
+        // call text(t.title) directly, never truncate_title.
     }
 
     #[test]
