@@ -137,6 +137,9 @@
   text/art/gaps); snapshot click with slop/modal/mutation guards;
   remove-hover never arms; titles cap at 2 lines; queue art warms the
   head plus the ahead window on every track start
+- Search focus: view root is always a Stack, so popup layers appearing
+  no longer rebuild widget state; typing keeps focus and cursor until
+  the user clicks elsewhere (plus a stable search input id)
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

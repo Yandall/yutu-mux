@@ -6449,6 +6449,7 @@ impl AppState {
                 icon("search", 14.0, MUTED),
                 text_input("Search YouTube Music…", &self.search_query)
                     .style(search_inner_input)
+                    .id("yutu-search")
                     .on_input(Message::HomeSearchChanged)
                     .on_submit(Message::SearchStay)
                     .width(Fill)
@@ -8051,11 +8052,10 @@ impl AppState {
                 layers.push(pl_placed);
             }
         }
-        if layers.len() == 1 {
-            layers.pop().expect("base layer")
-        } else {
-            Stack::with_children(layers).into()
-        }
+        // Always a Stack (even with one layer): flipping between bare
+        // content and Stack would rebuild all widget state (search focus
+        // and cursor included) every time a popup appears or vanishes.
+        Stack::with_children(layers).into()
     }
 
     /// Now Playing sheet that overlays the center column (drawer slide).
