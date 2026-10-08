@@ -860,6 +860,11 @@ fn drag_slot_preview(len: usize, from: usize, slot: Option<usize>) -> Vec<usize>
 const SEARCH_CACHE_TTL_SECS: u64 = 300;
 const SEARCH_CACHE_CAP: usize = 30;
 
+/// Retry cooldown (s) for failed artwork/metadata fetches: completion
+/// chaining re-scans the visible screenful on every arrival, so without
+/// this a permanently failing URL or video would refetch in a loop.
+const FAILED_COOLDOWN_SECS: u64 = 120;
+
 /// Normalize a query for cache keys (case, edges, inner runs).
 fn search_cache_key(query: &str) -> String {
     query
@@ -1115,6 +1120,19 @@ pub struct AppState {
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
     artwork: HashMap<String, iced::widget::image::Handle>,
     artwork_loading: HashSet<String>,
+    /// Failed artwork URLs with the failure instant: sketchy or removed
+    /// covers are not refetched for a cooldown (stops retry loops when
+    /// completion chaining re-scans the visible screenful).
+    artwork_failed: HashMap<String, std::time::Instant>,
+    /// Ids whose metadata probe came back empty, with the instant:
+    /// unresolvable videos are not re-probed for a cooldown.
+    hydrate_cooldown: HashMap<String, std::time::Instant>,
+    /// Ids with a metadata probe in flight (dedups lazy batches
+    /// across navigations and ticks: no repeat fetch while pending).
+    hydrating: HashSet<String>,
+    /// First Tick after launch runs the Home lazy batch (startup
+    /// itself does zero network so the window appears instantly).
+    lazy_init_done: bool,
     /// Track id a prefetch was already attempted for (no Tick spam).
     prefetch_attempted: Option<String>,
     /// Google device-flow login in progress (cloned into poll tasks).
@@ -1337,6 +1355,212 @@ impl AppState {
         tracks
     }
 
+    /// Memory-only catalog seed (startup path): inserts without touching
+    /// SQLite, so opening the app never blocks on writes. Fresh network
+    /// data still goes through [`Self::register_tracks`] (small batches).
+    fn seed_catalog_mem(&mut self, tracks: Vec<Track>) {
+        for t in tracks {
+            self.catalog.insert(t.id.clone(), t);
+        }
+    }
+
+    /// First screenful of track ids for the current route (lazy scope).
+    /// Home shows the recent grid (or Favorites fallback); Library shows
+    /// the head of Favorites; detail routes show the head of their list;
+    /// the sidebar covers come from the head of each playlist's first
+    /// track. Everything is capped: never a whole-library sweep.
+    fn visible_ids(&self) -> Vec<String> {
+        const CAP: usize = 12;
+        match &self.route {
+            Route::Home => {
+                let mut ids: Vec<String> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for id in self.history.iter().rev() {
+                    if ids.len() >= 8 {
+                        break;
+                    }
+                    if seen.insert(id.clone()) {
+                        ids.push(id.clone());
+                    }
+                }
+                if ids.is_empty() {
+                    ids.extend(self.liked_order.iter().take(8).cloned());
+                }
+                ids
+            }
+            Route::Library => self.liked_order.iter().take(CAP).cloned().collect(),
+            Route::PlaylistDetail(id) => self
+                .find_playlist(id)
+                .map(|p| p.tracks.iter().take(15).map(|t| t.id.clone()).collect())
+                .unwrap_or_default(),
+            Route::Artist(id) => {
+                let name = self.resolve_artist_name(id);
+                self.artist_tracks(&name)
+                    .into_iter()
+                    .take(CAP)
+                    .map(|t| t.id)
+                    .collect()
+            }
+            Route::Album(id) => self
+                .album_tracks(id)
+                .into_iter()
+                .take(CAP)
+                .map(|t| t.id)
+                .collect(),
+            Route::Search => self
+                .results
+                .tracks
+                .iter()
+                .take(CAP)
+                .map(|t| t.id.clone())
+                .collect(),
+            Route::Discovery => {
+                let mut ids: Vec<String> = self.liked_order.iter().take(6).cloned().collect();
+                for id in self.history.iter().rev().take(6) {
+                    if !ids.contains(id) {
+                        ids.push(id.clone());
+                    }
+                }
+                ids
+            }
+            Route::Queue => {
+                let mut ids: Vec<String> = self
+                    .queue
+                    .items()
+                    .iter()
+                    .take(CAP)
+                    .map(|t| t.id.clone())
+                    .collect();
+                ids.extend(self.autoplay.iter().take(4).map(|t| t.id.clone()));
+                ids
+            }
+            Route::Radio(_) => self
+                .radio_tracks
+                .iter()
+                .take(15)
+                .map(|t| t.id.clone())
+                .collect(),
+            Route::Lyrics(id) => vec![id.clone()],
+            Route::NowPlaying => self
+                .queue
+                .current()
+                .map(|t| vec![t.id.clone()])
+                .unwrap_or_default(),
+            Route::Settings => Vec::new(),
+        }
+    }
+
+    /// Visible tracks (resolved) for artwork warming: catalog rows first,
+    /// falling back to the stored playlist row so covers show even before
+    /// hydration fills the catalog.
+    fn visible_tracks_for_art(&self) -> Vec<Track> {
+        const CAP: usize = 12;
+        match &self.route {
+            Route::PlaylistDetail(id) => self
+                .find_playlist(id)
+                .map(|p| p.tracks.into_iter().take(15).collect())
+                .unwrap_or_default(),
+            Route::Home => {
+                let mut out = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for id in self.history.iter().rev() {
+                    if out.len() >= 8 {
+                        break;
+                    }
+                    if seen.insert(id.clone()) {
+                        if let Some(t) = self.find_track(id) {
+                            out.push(t);
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    out = self.favorite_tracks().into_iter().take(8).collect();
+                }
+                out
+            }
+            Route::Library => self.favorite_tracks().into_iter().take(CAP).collect(),
+            _ => self
+                .visible_ids()
+                .into_iter()
+                .filter_map(|id| self.find_track(&id))
+                .take(CAP)
+                .collect(),
+        }
+    }
+
+    /// Sidebar playlist covers (first track of the first playlists):
+    /// disk-cached art shows instantly via [`Self::art_handle`]; this
+    /// warms only covers missing from both memory and disk.
+    fn sidebar_cover_tracks(&self) -> Vec<Track> {
+        self.all_playlists()
+            .into_iter()
+            .take(8)
+            .filter_map(|p| {
+                let first = p.tracks.first()?;
+                // Catalog row wins (fresh art); stored row is the fallback.
+                Some(self.find_track(&first.id).unwrap_or_else(|| first.clone()))
+            })
+            .collect()
+    }
+
+    /// Lazy batch for what is on screen right now: metadata probes for
+    /// visible ids lacking a catalog row or art (deduped via `hydrating`,
+    /// cooldown-skipped when a probe came back empty, capped small), plus
+    /// artwork fetches for visible covers missing from both memory and
+    /// disk (also capped). Cache hits render instantly; network fills the
+    /// rest without ever sweeping the library.
+    fn ensure_visible_tasks(&mut self) -> iced::Task<Message> {
+        const META_CAP: usize = 8;
+        let mut need_meta: Vec<String> = Vec::new();
+        for id in self.visible_ids() {
+            if need_meta.len() >= META_CAP {
+                break;
+            }
+            if self.hydrating.contains(&id) || Self::cooled(&self.hydrate_cooldown, &id) {
+                continue;
+            }
+            let needs = match self.catalog.get(&id) {
+                None => true,
+                Some(t) => t.thumbnail_url.is_none() && t.thumbnail_large_url.is_none(),
+            };
+            if needs {
+                self.hydrating.insert(id.clone());
+                need_meta.push(id);
+            }
+        }
+        let mut tasks = Vec::new();
+        if !need_meta.is_empty() {
+            tasks.push(Self::hydrate_task(need_meta));
+        }
+        // Artwork: visible rows plus sidebar covers, disk-first. Both URL
+        // keys are warmed (rows read the raw thumb, hero cards read the
+        // 544px key): warming only one leaves the other placeholder.
+        let mut art_tracks = self.visible_tracks_for_art();
+        art_tracks.extend(self.sidebar_cover_tracks());
+        tasks.extend(self.artwork_tasks(&art_tracks));
+        iced::Task::batch(tasks)
+    }
+
+    /// True when `key` failed within the retry cooldown (stops refetch
+    /// loops: completion chaining re-scans visible on every arrival).
+    fn cooled(map: &HashMap<String, std::time::Instant>, key: &str) -> bool {
+        map.get(key)
+            .is_some_and(|at| at.elapsed().as_secs() < FAILED_COOLDOWN_SECS)
+    }
+
+    /// Record a failure with now (capped map: drop history past 500).
+    fn note_failed(map: &mut HashMap<String, std::time::Instant>, key: String) {
+        if map.len() >= 500 {
+            map.clear();
+        }
+        map.insert(key, std::time::Instant::now());
+    }
+
+    /// Clear a failure on success (a later URL rotation refetches cleanly).
+    fn note_success(map: &mut HashMap<String, std::time::Instant>, key: &str) {
+        map.remove(key);
+    }
+
     /// Best-effort write-through to the track metadata cache (never
     /// fails the caller: a missing DB just means next launch re-fetches).
     fn cache_tracks(&self, tracks: &[Track]) {
@@ -1348,10 +1572,10 @@ impl AppState {
         }
     }
 
-    /// Ids the UI cares about but the catalog cannot render yet: liked
-    /// ids with no catalog entry, plus catalog entries (liked, recent,
-    /// or playlist) that have no artwork at all. Those are the rows the
-    /// issue reports as missing covers or missing favorites.
+    /// Full-library sweep (tests + one-off diagnostics). The live UI
+    /// never calls this on navigation: [`Self::ensure_visible_tasks`]
+    /// scopes every fetch to the visible screenful instead.
+    #[allow(dead_code)]
     fn missing_track_ids(&self) -> Vec<String> {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
@@ -1385,29 +1609,40 @@ impl AppState {
         out
     }
 
-    /// Background fetch for ids the catalog lacks. Capped per batch so a
-    /// huge legacy library cannot spam the network on every launch; the
-    /// remainder resolves on the next launch (cache shrinks the set).
+    /// Background fetch for ids the catalog lacks. Small lazy batches
+    /// only (callers cap to the visible screenful): never a library sweep.
+    /// One concurrent probe per id (not one sequential task): covers on a
+    /// screenful land together instead of one watch-playlist round trip at
+    /// a time. Each completion registers independently.
     fn hydrate_task(ids: Vec<String>) -> iced::Task<Message> {
         if ids.is_empty() {
             return iced::Task::none();
         }
-        // Cap: 40 watch-playlist probes per batch (sequential, cheap).
-        let ids: Vec<String> = ids.into_iter().take(40).collect();
-        let requested = ids.clone();
-        iced::Task::perform(async move { hydrate_missing(ids).await }, move |tracks| {
-            Message::TracksHydrated {
-                requested: requested.clone(),
-                tracks,
-            }
-        })
+        // Cap: 8 concurrent probes per batch.
+        let mut tasks = Vec::new();
+        for id in ids.into_iter().take(8) {
+            let requested = vec![id.clone()];
+            tasks.push(iced::Task::perform(
+                async move { hydrate_one(id).await },
+                move |tracks| Message::TracksHydrated {
+                    requested: requested.clone(),
+                    tracks,
+                },
+            ));
+        }
+        iced::Task::batch(tasks)
     }
 
     /// On-demand fetch for one unknown id: reports "fetching" and fires
     /// the hydration probe so the song appears without a manual search.
+    /// Skips when a probe for the id is already in flight (Tick or
+    /// navigation fired it first): no duplicate network work.
     fn unknown_track_task(&mut self, id: &str) -> iced::Task<Message> {
         self.status = format!("Fetching info for {id}…");
         self.publish_mpris();
+        if !self.hydrating.insert(id.to_string()) {
+            return iced::Task::none();
+        }
         Self::hydrate_task(vec![id.to_string()])
     }
 
@@ -1541,55 +1776,30 @@ async fn live_radio(seed: &str, artist: &str) -> Result<Vec<Track>, String> {
     Ok(seq)
 }
 
-/// Hydrate bare ids (liked/history rows from installs that only stored
-/// ids, or catalog rows missing art) into full Tracks. One anonymous
-/// connect, then a watch-playlist probe per id: the panel contains the
-/// seed plus neighbours, so only exact-id matches are kept (neighbours
-/// join the catalog as a side effect when they are fresh).
+/// Hydrate one bare id (liked/history rows from installs that only
+/// stored ids, or catalog rows missing art) into a full Track: a
+/// watch-playlist probe whose panel contains the seed, keeping only the
+/// exact-id match (neighbours stay out so a small lazy batch never
+/// explodes into 100+ rows of DB writes + art).
 #[cfg(feature = "innertube")]
-async fn hydrate_missing(ids: Vec<String>) -> Vec<Track> {
+async fn hydrate_one(id: String) -> Vec<Track> {
     use yutu_core::InnertubeBackend;
     let Ok(backend) = InnertubeBackend::connect_anonymous().await else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for id in ids {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        match backend.recommendations_for(&id).await {
-            Ok(tracks) => {
-                // Exact match first (the seed row itself).
-                if let Some(t) = tracks.iter().find(|t| t.id == id).cloned() {
-                    out.push(t);
-                }
-                // Neighbours are still real catalog data: keep fresh ones
-                // so future mixes/searches have more to work with.
-                for t in tracks {
-                    if t.id != id && seen.insert(t.id.clone()) {
-                        out.push(t);
-                    }
-                    if out.len() >= 120 {
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("[yutu-hydrate] {id}: {e}");
-            }
-        }
-        if out.len() >= 120 {
-            break;
+    match backend.recommendations_for(&id).await {
+        Ok(tracks) => tracks.into_iter().filter(|t| t.id == id).collect(),
+        Err(e) => {
+            eprintln!("[yutu-hydrate] {id}: {e}");
+            Vec::new()
         }
     }
-    out
 }
 
 /// Offline builds cannot hydrate (no Innertube): the SQLite track cache
 /// is the only source, so callers just get nothing new.
 #[cfg(not(feature = "innertube"))]
-async fn hydrate_missing(_ids: Vec<String>) -> Vec<Track> {
+async fn hydrate_one(_id: String) -> Vec<Track> {
     Vec::new()
 }
 
@@ -2051,6 +2261,14 @@ impl AppState {
             playing_from: String::new(),
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
+            artwork_failed: HashMap::new(),
+            hydrate_cooldown: HashMap::new(),
+            // Ids with a metadata probe in flight (dedups lazy batches
+            // across navigations and ticks: no repeat fetch while pending).
+            hydrating: HashSet::new(),
+            // First Tick after launch runs the Home lazy batch (startup
+            // itself does zero network so the window appears instantly).
+            lazy_init_done: false,
             prefetch_attempted: None,
             #[cfg(feature = "innertube")]
             google_login: None,
@@ -2068,11 +2286,12 @@ impl AppState {
             radio_tracks: Vec::new(),
             mpris: None,
         };
-        // Seed the catalog from the track cache plus persisted
-        // playlists so Favorites/history/playlist songs render and play
-        // on first launch (no search-first needed), and warm art.
-        // Playlist rows win over stale cache rows for the same id when
-        // they carry art the cache lacks (and vice versa).
+        // Seed the in-memory catalog from the track cache plus
+        // persisted playlists so Favorites/history/playlist songs render
+        // on first launch with no search. Memory-only (no SQLite writes,
+        // no network, no artwork fetches): the window appears instantly
+        // with cached titles plus disk-cached covers, then the first Tick
+        // lazily hydrates only the Home screenful (see ensure_visible).
         let mut seed: Vec<Track> = cached;
         seed.extend(state.user_playlists.iter().flat_map(|p| p.tracks.clone()));
         // Merge duplicates: prefer rows with artwork so covers survive.
@@ -2100,21 +2319,8 @@ impl AppState {
             }
             seed = merged.into_values().collect();
         }
-        let seeded = state.register_tracks(seed);
-        let mut tasks = state.artwork_tasks(&seeded);
-        // Older installs stored likes/history as bare ids with no cached
-        // row: hydrate them in the background so Favorites appears without
-        // a manual search. Failures stay silent (offline): the ids simply
-        // remain unresolved until the next launch or search.
-        let missing = state.missing_track_ids();
-        if !missing.is_empty() {
-            eprintln!(
-                "[yutu-hydrate] {} track(s) missing metadata, fetching…",
-                missing.len()
-            );
-            tasks.push(Self::hydrate_task(missing));
-        }
-        (state, iced::Task::batch(tasks))
+        state.seed_catalog_mem(seed);
+        (state, iced::Task::none())
     }
 
     /// Browser-style navigation: records back history, clears forward.
@@ -3174,6 +3380,7 @@ impl AppState {
     }
 
     /// Same fetch for any URL list (album covers, artist photos).
+    /// Skips memory, in-flight, on-disk, and cooldown-failed URLs.
     fn artwork_tasks_for_urls(&mut self, urls: &[String]) -> Vec<iced::Task<Message>> {
         let mut tasks = Vec::new();
         for url in urls {
@@ -3181,6 +3388,7 @@ impl AppState {
                 && !self.artwork_loading.contains(url)
                 && tasks.len() < 12
                 && !artwork_file_exists(url)
+                && !Self::cooled(&self.artwork_failed, url)
             {
                 self.artwork_loading.insert(url.clone());
                 let url_owned = url.clone();
@@ -4159,7 +4367,11 @@ impl AppState {
             Message::ScrobbleSubmitted { .. } => {
                 unreachable!("scrobble results are dispatched in update()")
             }
-            Message::Navigate(r) => self.navigate(r),
+            Message::Navigate(r) => {
+                self.navigate(r);
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
+            }
             Message::NavBack => {
                 // Side buttons never disturb a drag (Esc owns cancel);
                 // menus and the popup dismiss first, second press goes.
@@ -4177,6 +4389,8 @@ impl AppState {
                     return iced::Task::none();
                 }
                 self.go_back();
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
             }
             Message::NavForward => {
                 if self.drag.is_some() {
@@ -4191,6 +4405,8 @@ impl AppState {
                     return iced::Task::none();
                 }
                 self.go_forward();
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
             }
             Message::SetRightTab(t) => {
                 self.right_tab = t;
@@ -4456,9 +4672,21 @@ impl AppState {
                     format!("Queue cleared ({} autoplay kept).", self.autoplay.len())
                 };
             }
-            Message::OpenArtist(id) => self.go(Route::Artist(id)),
-            Message::OpenAlbum(id) => self.go(Route::Album(id)),
-            Message::OpenPlaylist(id) => self.go(Route::PlaylistDetail(id)),
+            Message::OpenArtist(id) => {
+                self.go(Route::Artist(id));
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
+            }
+            Message::OpenAlbum(id) => {
+                self.go(Route::Album(id));
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
+            }
+            Message::OpenPlaylist(id) => {
+                self.go(Route::PlaylistDetail(id));
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
+            }
             Message::OpenLyrics(id) => {
                 self.close_menu();
                 self.go(Route::Lyrics(id.clone()));
@@ -4510,6 +4738,16 @@ impl AppState {
             }
             Message::ArtworkReady { url, result } => {
                 self.artwork_loading.remove(&url);
+                match &result {
+                    Ok(bytes) if bytes.len() > 512 => {
+                        Self::note_success(&mut self.artwork_failed, &url);
+                    }
+                    _ => {
+                        // Tiny/errored bodies never decode: cool down so
+                        // chained visible scans do not refetch in a loop.
+                        Self::note_failed(&mut self.artwork_failed, url.clone());
+                    }
+                }
                 if let Ok(bytes) = result {
                     if bytes.len() > 512 {
                         // Like lyrics: on-disk art exists only for
@@ -4522,6 +4760,12 @@ impl AppState {
                             .insert(url, iced::widget::image::Handle::from_bytes(bytes));
                     }
                 }
+                // Cover the rest of the screenful: the batch cap (12 tasks
+                // for ~6 two-key tracks) leaves remainder that only an
+                // arrival can pick up. Self-terminating: memory, in-flight,
+                // disk, and cooldown gates make this a no-op when done.
+                self.publish_mpris();
+                return self.ensure_visible_tasks();
             }
             Message::StartRadio(seed) => {
                 self.close_menu();
@@ -5538,6 +5782,13 @@ impl AppState {
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
                 let mut tasks = vec![self.drain_player_commands()];
+                // First frame after launch: lazily fetch only the Home
+                // screenful (cached titles + disk covers already painted).
+                // Startup itself does zero network so the window opens fast.
+                if !self.lazy_init_done {
+                    self.lazy_init_done = true;
+                    tasks.push(self.ensure_visible_tasks());
+                }
                 // Position clock: manual advance while a user seek settles
                 // (the backend reports the stale pre-seek position for a
                 // tick or two: that stale tick is the lyrics flicker).
@@ -5680,19 +5931,24 @@ impl AppState {
                 }
             }
             Message::TracksHydrated { requested, tracks } => {
+                // Probes landed (or failed): clear the in-flight marks so a
+                // later navigation can retry what is still visible.
+                for id in &requested {
+                    self.hydrating.remove(id);
+                }
                 if tracks.is_empty() {
-                    // Offline or unknown ids: stay silent unless the user is
-                    // staring at an empty Favorites (then say so once).
-                    eprintln!(
-                        "[yutu-hydrate] 0/{} resolved (offline or removed upstream)",
-                        requested.len()
-                    );
+                    // Offline or removed videos: cool down so chained
+                    // visible scans do not re-probe in a loop. Explicit
+                    // navigation retries after the cooldown expires.
+                    for id in requested {
+                        Self::note_failed(&mut self.hydrate_cooldown, id);
+                    }
                     return iced::Task::none();
                 }
                 let registered = self.register_tracks(tracks);
                 let tasks = self.artwork_tasks(&registered);
-                // Retry any still-missing requested ids once via the
-                // leftover set: hydration already capped, so this is cheap.
+                // Still-missing ids are unresolvable right now: cool them
+                // down instead of letting art arrivals re-probe at once.
                 let still_missing: Vec<String> = requested
                     .into_iter()
                     .filter(|id| !self.catalog.contains_key(id))
@@ -5702,6 +5958,9 @@ impl AppState {
                         "[yutu-hydrate] {} still missing after batch",
                         still_missing.len()
                     );
+                    for id in still_missing {
+                        Self::note_failed(&mut self.hydrate_cooldown, id);
+                    }
                 }
                 let n = registered.len();
                 eprintln!("[yutu-hydrate] restored {n} track(s)");
@@ -9992,6 +10251,211 @@ mod tests {
         assert!(s.status.contains("Fetching info"));
         let _ = s.update(Message::PlayNext("ghost3".into()));
         assert!(s.status.contains("Fetching info"));
+    }
+
+    #[test]
+    fn startup_does_zero_network_work() {
+        // A bare liked id (old install, no cached row) must not trigger
+        // any fetch or write during open: the window appears instantly,
+        // cached titles plus disk covers paint first.
+        let path = std::env::temp_dir().join(format!(
+            "yutu-test-lazy-start-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let p = path.to_string_lossy().into_owned();
+        {
+            let store = LibraryStore::open(&p).unwrap();
+            store.like("bare-like").unwrap();
+        }
+        let (mut s, _) = AppState::with_library_path(p);
+        assert!(s.liked.contains("bare-like"));
+        // Nothing resolved yet (no eager sweep), nothing in flight.
+        assert!(s.find_track("bare-like").is_none());
+        assert!(s.hydrating.is_empty());
+        assert!(s.artwork_loading.is_empty());
+        assert!(!s.lazy_init_done);
+        // First Tick after the window shows: only the Home screenful.
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        assert!(s.lazy_init_done);
+        assert!(s.hydrating.contains("bare-like"));
+        assert!(s.hydrating.len() <= 8);
+    }
+
+    #[test]
+    fn first_tick_hydrates_only_home_screenful() {
+        let mut s = test_state();
+        // 20 bare liked ids: Home shows at most 8 (fallback grid).
+        for i in 0..20 {
+            s.like_id(&format!("bare-{i}"));
+        }
+        assert_eq!(s.route, Route::Home);
+        let _ = s.ensure_visible_tasks();
+        // Capped small batch, deduped in flight.
+        assert!(!s.hydrating.is_empty());
+        assert!(s.hydrating.len() <= 8);
+        let n = s.hydrating.len();
+        // Second call while in flight: no duplicates, no growth.
+        let _ = s.ensure_visible_tasks();
+        assert_eq!(s.hydrating.len(), n);
+    }
+
+    #[test]
+    fn navigation_hydrates_playlist_head_only() {
+        let mut s = test_state();
+        // Playlist with 30 bare ids (no catalog rows at all).
+        let tracks: Vec<Track> = (0..30)
+            .map(|i| Track {
+                id: format!("pl-{i}"),
+                title: format!("Song {i}"),
+                artist: "Someone".into(),
+                album: None,
+                duration_secs: 200,
+                thumbnail_url: None,
+                thumbnail_large_url: None,
+            })
+            .collect();
+        s.user_playlists.push(Playlist {
+            id: "u9".into(),
+            title: "Big".into(),
+            tracks,
+        });
+        let _ = s.update(Message::OpenPlaylist("u9".into()));
+        assert_eq!(s.route, Route::PlaylistDetail("u9".into()));
+        // Visible scope is the head (15), metadata batch capped at 8.
+        assert!(s.hydrating.len() <= 8);
+        assert!(!s.hydrating.is_empty());
+    }
+
+    #[test]
+    fn visible_ids_capped_per_route() {
+        let mut s = test_state();
+        for i in 0..30 {
+            s.like_id(&format!("v-{i}"));
+        }
+        s.route = Route::Library;
+        assert!(s.visible_ids().len() <= 12);
+        s.route = Route::Home;
+        // Home fallback grid shows at most 8 favorites.
+        assert!(s.visible_ids().len() <= 8);
+    }
+
+    #[test]
+    fn hydrated_empty_cools_down_before_navigation_retries() {
+        let mut s = test_state();
+        s.hydrating.insert("retry-me".into());
+        let _ = s.update(Message::TracksHydrated {
+            requested: vec!["retry-me".into()],
+            tracks: vec![],
+        });
+        assert!(!s.hydrating.contains("retry-me"));
+        // Unresolvable ids cool down: an immediate re-scan (art arrival
+        // chaining) must not re-probe at once.
+        s.like_id("retry-me");
+        s.route = Route::Library;
+        let _ = s.ensure_visible_tasks();
+        assert!(!s.hydrating.contains("retry-me"));
+    }
+
+    #[test]
+    fn lazy_warmer_covers_hero_keys_for_home_cards() {
+        // Regression: Home "Jump back in" cards read the 544px hero key
+        // (thumb_hero), but the lazy warmer only queued the raw thumb, so
+        // covers stayed placeholder until a play warmed both keys.
+        let mut s = test_state();
+        let t = Track {
+            id: "hero-card".into(),
+            title: "Hero Card".into(),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: Some("https://example.invalid/s=w60-h60-l90-rj".into()),
+            thumbnail_large_url: Some("https://example.invalid/l=w120-h120-l90-rj".into()),
+        };
+        let hero = yutu_core::hires_thumb_url(t.thumbnail_large_url.as_deref().unwrap(), 544);
+        s.catalog.insert(t.id.clone(), t);
+        s.history.push("hero-card".into());
+        s.route = Route::Home;
+        let _ = s.ensure_visible_tasks();
+        assert!(s
+            .artwork_loading
+            .contains("https://example.invalid/s=w60-h60-l90-rj"));
+        assert!(
+            s.artwork_loading.contains(&hero),
+            "hero key must warm or Home cards never leave placeholder"
+        );
+    }
+
+    #[test]
+    fn failed_artwork_cools_down_against_chained_rescans() {
+        let mut s = test_state();
+        let url = "https://example.invalid/dead.jpg".to_string();
+        let t = Track {
+            id: "dead-art".into(),
+            title: "Dead Art".into(),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: Some(url.clone()),
+            thumbnail_large_url: None,
+        };
+        s.catalog.insert(t.id.clone(), t);
+        s.history.push("dead-art".into());
+        s.route = Route::Home;
+        let _ = s.ensure_visible_tasks();
+        assert!(s.artwork_loading.contains(&url));
+        // The fetch fails: completion chaining must not requeue at once.
+        let _ = s.update(Message::ArtworkReady {
+            url: url.clone(),
+            result: Err("404".into()),
+        });
+        assert!(!s.artwork_loading.contains(&url));
+        let _ = s.ensure_visible_tasks();
+        assert!(
+            !s.artwork_loading.contains(&url),
+            "failed covers cool down instead of refetch-looping"
+        );
+    }
+
+    #[test]
+    fn artwork_ready_chains_the_capped_remainder() {
+        // Batch cap (12 tasks for ~6 two-key tracks) leaves remainder;
+        // each arrival re-scans visible so the rest still loads.
+        let mut s = test_state();
+        for i in 0..8 {
+            let id = format!("chain-{i}");
+            s.catalog.insert(
+                id.clone(),
+                Track {
+                    id: id.clone(),
+                    title: format!("Chain {i}"),
+                    artist: "Someone".into(),
+                    album: None,
+                    duration_secs: 200,
+                    thumbnail_url: Some(format!("https://example.invalid/c{i}.jpg")),
+                    thumbnail_large_url: None,
+                },
+            );
+            s.history.push(id);
+        }
+        s.route = Route::Home;
+        let _ = s.ensure_visible_tasks();
+        let first_batch = s.artwork_loading.len();
+        assert!(first_batch > 0);
+        // One arrival chains the remainder: still progress, no duplicates.
+        let url = s.artwork_loading.iter().next().unwrap().clone();
+        let _ = s.update(Message::ArtworkReady {
+            url: url.clone(),
+            result: Ok(vec![0u8; 1024]),
+        });
+        assert!(s.artwork.contains_key(&url));
+        assert!(
+            !s.artwork_loading.is_empty(),
+            "chained scan picks up the capped remainder"
+        );
     }
 
     /// Full click-to-play path (minus audible sound): catalog insert →
