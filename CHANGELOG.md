@@ -124,6 +124,12 @@
   with liked_at; player-bar menu + artist link; MPRIS artUrl; #FF0033
   with white glyphs; catalog hero fallback; album ax- resolution;
   playlist shuffle play + trailing hover play
+- Art policy: hi-res art everywhere except small song rows (64px
+  threshold + focal heroes + album/artist hires + warmed keys); bolder
+  icons (16px) + bold pill labels; wide center cap (1150 at 1600px);
+  right-docked settings; responsive player (compact < 700, stacked
+  minimal < 500, taller hover zone); mouse side-button back/forward
+  with drag/menu/popup guards
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
