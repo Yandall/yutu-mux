@@ -140,6 +140,7 @@ mod tests {
             album: None,
             duration_secs: 200,
             thumbnail_url: None,
+            thumbnail_large_url: None,
         }
     }
 

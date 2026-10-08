@@ -96,9 +96,19 @@ fn parse_timestamp(tag: &str) -> Option<u64> {
 ///   all `[...]` tags, are skipped.
 /// - Output is sorted by `start_ms`.
 /// - Malformed lines are skipped; this function never panics.
+/// - Blank lines are preserved as empty-text stanza markers sharing the
+///   next line's timestamp, so renderers can separate strophes; markers
+///   never win [`line_at`].
 pub fn parse_lrc(input: &str) -> Vec<LyricLine> {
-    let mut out = Vec::new();
+    let mut parsed: Vec<(u64, String, bool)> = Vec::new();
+    let mut stanza_break = false;
     for raw_line in input.lines() {
+        if raw_line.trim().is_empty() {
+            if !parsed.is_empty() {
+                stanza_break = true;
+            }
+            continue;
+        }
         let mut timestamps = Vec::new();
         let mut text_buf = String::with_capacity(raw_line.len());
         let mut rest = raw_line;
@@ -127,13 +137,21 @@ pub fn parse_lrc(input: &str) -> Vec<LyricLine> {
             continue;
         }
         for start_ms in timestamps {
-            out.push(LyricLine {
-                start_ms,
-                text: text.clone(),
-            });
+            parsed.push((start_ms, text.clone(), stanza_break));
+            stanza_break = false;
         }
     }
-    out.sort_by_key(|l| l.start_ms);
+    parsed.sort_by_key(|(start_ms, _, _)| *start_ms);
+    let mut out = Vec::with_capacity(parsed.len());
+    for (start_ms, text, stanza_break) in parsed {
+        if stanza_break {
+            out.push(LyricLine {
+                start_ms,
+                text: String::new(),
+            });
+        }
+        out.push(LyricLine { start_ms, text });
+    }
     out
 }
 
@@ -299,6 +317,17 @@ pub async fn fetch_lrclib(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_lrc_keeps_stanza_breaks_as_markers() {
+        let lines = parse_lrc("[00:01.00]one\n[00:05.00]two\n\n[00:09.00]three\n");
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[2].text, "");
+        assert_eq!(lines[2].start_ms, lines[3].start_ms);
+        // Markers never steal the highlight.
+        assert_eq!(line_at(&lines, 9_000), Some(3));
+        assert_eq!(line_at(&lines, 5_000), Some(1));
+    }
+
     use super::*;
 
     fn tagged(start_ms: u64, text: &str) -> LyricLine {
