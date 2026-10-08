@@ -299,6 +299,8 @@ impl LibraryStore {
                     duration_secs: r.get::<_, i64>(4)? as u32,
                     thumbnail_url: r.get(5).unwrap_or(None),
                     thumbnail_large_url: r.get(6).unwrap_or(None),
+                    // Play counts are search-only metadata, never persisted.
+                    plays: None,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -484,6 +486,8 @@ impl LibraryStore {
                     duration_secs: r.get::<_, i64>(4)? as u32,
                     thumbnail_url: r.get(5).unwrap_or(None),
                     thumbnail_large_url: r.get(6).unwrap_or(None),
+                    // Play counts are search-only metadata, never persisted.
+                    plays: None,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -523,6 +527,8 @@ impl LibraryStore {
                     duration_secs: r.get::<_, i64>(4)? as u32,
                     thumbnail_url: r.get(5).unwrap_or(None),
                     thumbnail_large_url: r.get(6).unwrap_or(None),
+                    // Play counts are search-only metadata, never persisted.
+                    plays: None,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -671,6 +677,7 @@ mod tests {
             duration_secs: 259,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         };
         s.add_to_playlist("u1", &t).unwrap();
         s.add_to_playlist("u1", &t).unwrap(); // deduped
@@ -697,6 +704,7 @@ mod tests {
             duration_secs: 259,
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
+            plays: None,
         };
         s.add_to_playlist("u1", &t).unwrap();
         let lists = s.user_playlists().unwrap();
@@ -757,6 +765,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
+            plays: None,
         }
     }
 
@@ -807,6 +816,7 @@ mod tests {
             duration_secs: 0,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         };
         s.upsert_track(&bare).unwrap();
         assert!(s.cached_track("ghost").unwrap().is_none());
@@ -837,6 +847,7 @@ mod tests {
             duration_secs: 259,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         };
         s.add_to_playlist("u1", &bare).unwrap();
         assert!(s.user_playlists().unwrap()[0].tracks[0]
