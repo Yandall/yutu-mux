@@ -887,7 +887,9 @@ fn truncate_title(title: &str, max: usize) -> String {
 /// names truncate with an ellipsis instead of stretching the container.
 /// Containers pair these with `.clip(true)` as a backstop, so even an
 /// untruncated overflow can never move its neighbours.
-const HOME_CARD_H: f32 = 64.0;
+const HOME_CARD_W: f32 = 156.0;
+const HOME_PICK_ART: f32 = 140.0;
+const HOME_CARD_H: f32 = 200.0;
 const TRACK_ROW_H: f32 = 52.0;
 const SUGGEST_ROW_H: f32 = 44.0;
 const QUEUE_ROW_H: f32 = 58.0;
@@ -3479,10 +3481,12 @@ impl AppState {
         self.thumb_sized(track, 40.0)
     }
 
-    /// Two-line song label for narrow rows (queue sidebar): the title
-    /// wraps up to about two lines (55 chars + ellipsis), the artist is
-    /// always a single truncated line. Callers fix the row height and
-    /// clip, so longer titles clip instead of stretching the list.
+    /// Two-line song label for the narrow queue sidebar: the title
+    /// wraps to at most two lines (40 chars + ellipsis), the artist is
+    /// always a single truncated line. The column clips, so a narrower
+    /// window cuts text instead of painting over the duration/remove
+    /// controls, and callers fix the row height so longer titles clip
+    /// instead of stretching the list.
     fn track_text<'a>(
         title: &str,
         artist: &str,
@@ -3493,13 +3497,10 @@ impl AppState {
         use iced::widget::{column, text};
         use iced::Fill;
         column![
-            // Two-line cap (55 + ellipsis): long names never stretch rows.
-            // Rows are art-height dominated at 40px, so 1-2 line titles
-            // share one height across the list.
-            text(truncate_title(title, 55))
+            text(truncate_title(title, 40))
                 .size(f32::from(title_size))
                 .color(color),
-            text(truncate_title(artist, 40))
+            text(truncate_title(artist, 32))
                 .size(f32::from(title_size.saturating_sub(2).max(11)))
                 .color(MUTED)
                 .width(Fill)
@@ -3507,12 +3508,15 @@ impl AppState {
         ]
         .spacing(2)
         .width(Fill)
+        .clip(true)
         .into()
     }
 
     /// Single-line song label for wide lists (search, library, radio,
     /// queue page): title and artist both truncate with an ellipsis and
-    /// never wrap, so every row shares one fixed height.
+    /// never wrap. The column clips, so in a narrow window the text cuts
+    /// instead of painting over the duration/action controls, and every
+    /// row shares one fixed height.
     fn track_text_single<'a>(
         title: &str,
         artist: &str,
@@ -3536,6 +3540,7 @@ impl AppState {
         ]
         .spacing(2)
         .width(Fill)
+        .clip(true)
         .into()
     }
 
@@ -6337,8 +6342,9 @@ impl AppState {
 
     /// Compact search-popup row: smaller cover, single-line title/artist,
     /// play count + duration, no inline buttons. The whole row clicks to
-    /// play; right-click opens the context menu. Fixed height so long
-    /// names never stretch the popup.
+    /// play; right-click opens the context menu. Fixed height plus a
+    /// clipped text column so long names cut instead of painting over
+    /// the play count.
     fn suggest_track_row(&self, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{button, column, container, mouse_area, row, text};
@@ -6358,19 +6364,20 @@ impl AppState {
                     row![
                         self.thumb_sized(t, 32.0),
                         column![
-                            text(truncate_title(&t.title, 35))
+                            text(truncate_title(&t.title, 30))
                                 .size(13)
                                 .color(iced::Color::WHITE)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
-                            text(truncate_title(&t.artist, 32))
+                            text(truncate_title(&t.artist, 28))
                                 .size(11)
                                 .color(MUTED)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                         ]
                         .spacing(2)
-                        .width(Fill),
+                        .width(Fill)
+                        .clip(true),
                         text(meta).size(11).color(MUTED).wrapping(Wrapping::None),
                     ]
                     .spacing(8)
@@ -7703,53 +7710,54 @@ impl AppState {
                     .spacing(8)
                     .into()
                 } else {
-                    // Two-across quick picks, Spotify-style: artwork + title.
-                    // Fixed height + single-line truncated labels: every
-                    // card shares one size no matter how long the names are.
-                    let rows: Vec<iced::Element<'_, Message>> = picks
-                        .chunks(2)
-                        .map(|pair| {
-                            let cards: Vec<iced::Element<'_, Message>> = pair
-                                .iter()
-                                .map(|t| {
-                                    let menu_id = t.id.clone();
-                                    mouse_area(
-                                        button(
-                                            row![
-                                                self.thumb_hero(t, 52.0),
-                                                column![
-                                                    text(truncate_title(&t.title, 30))
-                                                        .size(14)
-                                                        .width(Fill)
-                                                        .wrapping(Wrapping::None),
-                                                    text(truncate_title(&t.artist, 28))
-                                                        .size(12)
-                                                        .color(MUTED)
-                                                        .width(Fill)
-                                                        .wrapping(Wrapping::None),
-                                                ]
-                                                .spacing(2)
-                                                .width(Fill),
-                                            ]
-                                            .spacing(10)
-                                            .padding(6)
-                                            .align_y(iced::alignment::Vertical::Center),
-                                        )
-                                        .style(card_button)
-                                        .on_press(Message::PlayNow(t.id.clone()))
-                                        .padding(0)
+                    // Horizontal pick strip: big square cover on top with
+                    // single-line title + artist below. Fixed card size so
+                    // long names truncate instead of stretching.
+                    let cards: Vec<iced::Element<'_, Message>> = picks
+                        .iter()
+                        .map(|t| {
+                            let menu_id = t.id.clone();
+                            mouse_area(
+                                button(
+                                    column![
+                                        self.thumb_hero(t, HOME_PICK_ART),
+                                        column![
+                                            text(truncate_title(&t.title, 20))
+                                                .size(13)
+                                                .width(Fill)
+                                                .wrapping(Wrapping::None),
+                                            text(truncate_title(&t.artist, 22))
+                                                .size(11)
+                                                .color(MUTED)
+                                                .width(Fill)
+                                                .wrapping(Wrapping::None),
+                                        ]
+                                        .spacing(2)
                                         .width(Fill)
-                                        .height(iced::Length::Fixed(HOME_CARD_H))
                                         .clip(true),
-                                    )
-                                    .on_right_press(Message::OpenContext(menu_id))
-                                    .into()
-                                })
-                                .collect();
-                            row(cards).spacing(8).into()
+                                    ]
+                                    .spacing(8)
+                                    .padding(8)
+                                    .width(Fill),
+                                )
+                                .style(card_button)
+                                .on_press(Message::PlayNow(t.id.clone()))
+                                .padding(0)
+                                .width(iced::Length::Fixed(HOME_CARD_W))
+                                .height(iced::Length::Fixed(HOME_CARD_H))
+                                .clip(true),
+                            )
+                            .on_right_press(Message::OpenContext(menu_id))
+                            .into()
                         })
                         .collect();
-                    column(rows).spacing(8).into()
+                    scrollable(row(cards).spacing(10))
+                        .direction(scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new(),
+                        ))
+                        .width(Fill)
+                        .height(iced::Length::Fixed(HOME_CARD_H))
+                        .into()
                 };
                 let home_hits: iced::Element<'_, Message> =
                     if self.searching && self.results.tracks.is_empty() {
@@ -9484,6 +9492,10 @@ mod tests {
         let _ = s.suggest_track_row(&wide);
         let _ = s.track_row(&wide);
         let _ = s.queue_row(0);
+        // Home pick strip renders with real picks (long names truncate).
+        s.history.push("m1".into());
+        s.history.push("m2".into());
+        let _ = s.view();
     }
 
     #[test]

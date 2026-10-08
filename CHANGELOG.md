@@ -161,6 +161,13 @@
   buttons (row click plays, right-click opens the menu), play count
   plus duration on the trailing edge; play counts come from the
   search mapping (`Track.plays`, memory-only, never persisted)
+- Overlap-proof rows: every text column clips, so narrow windows cut
+  text instead of painting over durations/controls; tighter char
+  caps (popup 30/28, queue title 40 for a real 2-line cap with the
+  artist always visible)
+- Jump Back In is a horizontal pick strip: 140px cover on top with
+  single-line title/artist below in fixed 156x200 cards (click plays,
+  right-click opens the menu)
 
 ## 0.1.0
 
