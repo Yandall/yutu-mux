@@ -88,7 +88,7 @@ pub fn looks_po_gated(lowered_message: &str) -> bool {
 }
 
 /// Save a failing Innertube payload for the breakage harness (like rustypipe
-/// `reports/`). Never include cookies — callers must redact first.
+/// `reports/`). Never include cookies: callers must redact first.
 pub fn save_report(dir: &Path, name: &str, redacted_payload: &str) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let safe: String = name

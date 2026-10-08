@@ -146,7 +146,7 @@ impl Player {
     /// so [`Player::now_playing`] still reports the last track).
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<&Track> {
-        let advanced = self.queue.next_track().is_some();
+        let advanced = self.queue.next_manual().is_some();
         if advanced {
             self.state = PlaybackState::Playing;
             self.start_clock();
@@ -307,6 +307,19 @@ mod tests {
         // Stepping back from Stopped restarts playback.
         assert_eq!(p.prev().unwrap().id, "m2");
         assert_eq!(p.state(), PlaybackState::Playing);
+    }
+
+    #[test]
+    fn next_under_repeat_one_advances_then_stops() {
+        use crate::queue::RepeatMode;
+        let mut p = player_with(2);
+        p.queue.repeat = RepeatMode::One;
+        p.play();
+        assert_eq!(p.next().unwrap().id, "m2");
+        assert!(p.is_playing());
+        // Tail under One: manual next ends (no replay, no autoplay here).
+        assert!(p.next().is_none());
+        assert_eq!(p.state(), PlaybackState::Stopped);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use yutu_desktop::mpris::{MprisPlayer, PlaybackStatus, SharedPlayer};
 use yutu_desktop::NowPlaying;
 
 /// Best-effort MPRIS advertisement on a helper thread. Any failure
-/// (headless, no bus) is a logged no-op — the GUI runs regardless.
+/// (headless, no bus) is a logged no-op: the GUI runs regardless.
 /// The shared handle is also handed to the UI, which publishes the current
 /// track/status/volume on every state change, so external clients
 /// (`playerctl`, desktop widgets) observe live updates on property read.

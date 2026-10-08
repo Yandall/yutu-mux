@@ -26,7 +26,10 @@ pub use library::LibraryStore;
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};
-pub use models::{Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults, Track};
+pub use models::{
+    hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults,
+    Track,
+};
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 pub use scrobble::{
     api_sig, build_listen_payload, build_scrobble_params, should_scrobble, Scrobble,

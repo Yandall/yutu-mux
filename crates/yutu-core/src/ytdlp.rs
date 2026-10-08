@@ -6,7 +6,7 @@
 //! longer parse the player JS). Same sidecar pattern as `pot.rs`: external
 //! binary, auto-detected, graceful degradation when absent.
 //!
-//! Std-only, no cargo deps, no feature gate — and license-clean (yt-dlp is
+//! Std-only, no cargo deps, no feature gate: and license-clean (yt-dlp is
 //! public domain / Unlicense), unlike the removed GPL `rustypipe` path.
 
 use std::path::PathBuf;

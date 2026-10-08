@@ -30,7 +30,7 @@ use crate::NowPlaying;
 pub struct TrayState {
     /// True while audio is playing (as opposed to paused/stopped).
     pub playing: bool,
-    /// One-line label such as `"M83 — Midnight City"`; empty when idle.
+    /// One-line label such as `"M83 · Midnight City"`; empty when idle.
     pub track_label: String,
 }
 
@@ -57,7 +57,7 @@ impl TrayState {
     }
 
     /// Build a snapshot from player metadata. The label is
-    /// `"artist — title"`, falling back to whichever part is non-empty, and
+    /// `"artist · title"`, falling back to whichever part is non-empty, and
     /// empty when both are missing.
     pub fn from_now_playing(track: &NowPlaying, playing: bool) -> Self {
         Self {
@@ -82,23 +82,23 @@ impl TrayState {
         self.playing = false;
     }
 
-    /// Human-readable tooltip: `"yutu-mux — ▶ <label>"` while playing,
-    /// `"yutu-mux — ⏸ <label>"` while paused, `"yutu-mux — idle"` with no
+    /// Human-readable tooltip: `"yutu-mux: <label>"` while playing,
+    /// `"yutu-mux (paused): <label>"` while paused, `"yutu-mux: idle"` with no
     /// label.
     pub fn tooltip(&self) -> String {
         if self.track_label.is_empty() {
-            "yutu-mux — idle".to_owned()
+            "yutu-mux: idle".to_owned()
         } else if self.playing {
-            format!("yutu-mux — ▶ {}", self.track_label)
+            format!("yutu-mux: {}", self.track_label)
         } else {
-            format!("yutu-mux — ⏸ {}", self.track_label)
+            format!("yutu-mux (paused): {}", self.track_label)
         }
     }
 
-    /// One-line `"artist — title"` label for a track.
+    /// One-line `"artist · title"` label for a track.
     pub fn label_for(track: &NowPlaying) -> String {
         match (track.artist.is_empty(), track.title.is_empty()) {
-            (false, false) => format!("{} — {}", track.artist, track.title),
+            (false, false) => format!("{} · {}", track.artist, track.title),
             (false, true) => track.artist.clone(),
             (true, false) => track.title.clone(),
             (true, true) => String::new(),
@@ -122,26 +122,26 @@ mod tests {
 
     #[test]
     fn tooltip_while_playing() {
-        let state = TrayState::playing("M83 — Midnight City");
-        assert_eq!(state.tooltip(), "yutu-mux — ▶ M83 — Midnight City");
+        let state = TrayState::playing("M83 · Midnight City");
+        assert_eq!(state.tooltip(), "yutu-mux: M83 · Midnight City");
     }
 
     #[test]
     fn tooltip_while_paused() {
-        let state = TrayState::paused("M83 — Midnight City");
-        assert_eq!(state.tooltip(), "yutu-mux — ⏸ M83 — Midnight City");
+        let state = TrayState::paused("M83 · Midnight City");
+        assert_eq!(state.tooltip(), "yutu-mux (paused): M83 · Midnight City");
     }
 
     #[test]
     fn tooltip_idle_without_label() {
-        assert_eq!(TrayState::new().tooltip(), "yutu-mux — idle");
+        assert_eq!(TrayState::new().tooltip(), "yutu-mux: idle");
         assert_eq!(
             TrayState {
                 playing: true,
                 track_label: String::new(),
             }
             .tooltip(),
-            "yutu-mux — idle"
+            "yutu-mux: idle"
         );
     }
 
@@ -149,8 +149,8 @@ mod tests {
     fn from_now_playing_builds_artist_title_label() {
         let state = TrayState::from_now_playing(&sample(), true);
         assert!(state.playing);
-        assert_eq!(state.track_label, "M83 — Midnight City");
-        assert_eq!(state.tooltip(), "yutu-mux — ▶ M83 — Midnight City");
+        assert_eq!(state.track_label, "M83 · Midnight City");
+        assert_eq!(state.tooltip(), "yutu-mux: M83 · Midnight City");
     }
 
     #[test]
@@ -168,13 +168,13 @@ mod tests {
     #[test]
     fn mutations_and_clear() {
         let mut state = TrayState::new();
-        state.set_track_label("M83 — Midnight City");
+        state.set_track_label("M83 · Midnight City");
         state.set_playing(true);
-        assert_eq!(state.tooltip(), "yutu-mux — ▶ M83 — Midnight City");
+        assert_eq!(state.tooltip(), "yutu-mux: M83 · Midnight City");
         state.set_playing(false);
-        assert_eq!(state.tooltip(), "yutu-mux — ⏸ M83 — Midnight City");
+        assert_eq!(state.tooltip(), "yutu-mux (paused): M83 · Midnight City");
         state.clear_track();
         assert_eq!(state, TrayState::new());
-        assert_eq!(state.tooltip(), "yutu-mux — idle");
+        assert_eq!(state.tooltip(), "yutu-mux: idle");
     }
 }

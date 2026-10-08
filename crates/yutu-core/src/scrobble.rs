@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn sig_empty_params_is_md5_of_secret() {
-        // md5("secret") — pins the algorithm + hex encoding.
+        // md5("secret"): pins the algorithm + hex encoding.
         let sig = api_sig(&BTreeMap::new(), "secret");
         assert_eq!(sig, "5ebe2294ecd0e0f08eab7690d2a6ee69");
     }

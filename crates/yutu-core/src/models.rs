@@ -10,12 +10,68 @@ pub struct Track {
     pub album: Option<String>,
     pub duration_secs: u32,
     /// Small artwork URL (YTM thumbnail) if the source provided one.
-    /// Missing on old rows — always `#[serde(default)]`.
+    /// Missing on old rows: always `#[serde(default)]`.
     #[serde(default)]
     pub thumbnail_url: Option<String>,
     /// Largest artwork URL (hero views); same default policy as above.
     #[serde(default)]
     pub thumbnail_large_url: Option<String>,
+}
+
+/// Rewrite a YTM `=wNN-hNN` thumbnail URL to the requested width (same
+/// backing image, larger raster; YTM serves arbitrary sizes server-side).
+/// Non-matching URLs (other hosts, mocks, empty) pass through unchanged.
+pub fn hires_thumb_url(url: &str, width: u32) -> String {
+    let Some(eq) = url.find("=w") else {
+        return url.to_owned();
+    };
+    let after_w = &url[eq + 2..];
+    let w_end = after_w
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_w.len());
+    if w_end == 0 {
+        return url.to_owned();
+    }
+    let rest = &after_w[w_end..];
+    let Some(h_digits) = rest.strip_prefix("-h") else {
+        return url.to_owned();
+    };
+    let h_end = h_digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(h_digits.len());
+    if h_end == 0 {
+        return url.to_owned();
+    }
+    format!("{}=w{width}-h{width}{}", &url[..eq], &h_digits[h_end..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hires_rewrites_ytm_sizes_and_keeps_suffix() {
+        assert_eq!(
+            hires_thumb_url("https://yt3.googleusercontent.com/abc=w60-h60-l90-rj", 544),
+            "https://yt3.googleusercontent.com/abc=w544-h544-l90-rj"
+        );
+        assert_eq!(
+            hires_thumb_url(
+                "https://yt3.googleusercontent.com/abc=w120-h120-l90-rj",
+                544
+            ),
+            "https://yt3.googleusercontent.com/abc=w544-h544-l90-rj"
+        );
+    }
+
+    #[test]
+    fn hires_passes_through_non_matching() {
+        let other = "https://i.ytimg.com/vi/x/hqdefault.jpg";
+        assert_eq!(hires_thumb_url(other, 544), other);
+        assert_eq!(hires_thumb_url("", 544), "");
+        let no_digits = "https://example.invalid/img=w-h10-rj";
+        assert_eq!(hires_thumb_url(no_digits, 544), no_digits);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -72,7 +72,7 @@ const OAUTH_CLIENT_SECRET_VARS: [&str; 2] =
 ///
 /// The file format is the wrapped [`OAuthToken`]'s own serde JSON (access +
 /// refresh tokens, client id/secret, `expires_in`, request time), so it always
-/// contains exactly what `OAuthToken` needs to rebuild — no parallel schema to
+/// contains exactly what `OAuthToken` needs to rebuild: no parallel schema to
 /// drift. Tokens auto-refresh client-side shortly before expiry (see
 /// `REFRESH_S_BEFORE_EXPIRING` upstream); use
 /// [`InnertubeBackend::refresh_oauth`](crate::innertube::InnertubeBackend::refresh_oauth)
@@ -166,7 +166,7 @@ impl std::fmt::Debug for OAuthPersist {
 ///
 /// Show [`verification_url`](Self::verification_url) to the user and ask them
 /// to enter [`user_code`](Self::user_code); then call [`poll_google_login`]
-/// repeatedly (waiting `interval` seconds between attempts — Google asks for
+/// repeatedly (waiting `interval` seconds between attempts: Google asks for
 /// ~5s) until it returns `Ok(Some(_))` or a hard error.
 #[cfg(feature = "innertube")]
 #[derive(Clone)]
@@ -198,7 +198,7 @@ impl std::fmt::Debug for GoogleLogin {
 /// Client credentials come from `YUTU_OAUTH_CLIENT_ID` /
 /// `YUTU_OAUTH_CLIENT_SECRET` (falling back to the `YOUTUI_*` names
 /// `ytmapi-rs` documents). They are read from the environment because
-/// `ytmapi-rs` embeds no client id/secret — bring your own Google OAuth
+/// `ytmapi-rs` embeds no client id/secret: bring your own Google OAuth
 /// client. Performs network I/O (device-code request).
 #[cfg(feature = "innertube")]
 pub async fn begin_google_login() -> Result<GoogleLogin, String> {
@@ -237,12 +237,12 @@ pub async fn begin_google_login() -> Result<GoogleLogin, String> {
 
 /// One poll attempt for [`GoogleLogin`]: exchanges the device code for tokens.
 ///
-/// - `Ok(Some(persist))` — user approved; save `persist` via
+/// - `Ok(Some(persist))`: user approved; save `persist` via
 ///   [`OAuthPersist::save_to_file`] and connect with
 ///   [`InnertubeBackend::connect_with_oauth`](crate::innertube::InnertubeBackend::connect_with_oauth).
-/// - `Ok(None)` — still pending (`authorization_pending` / `slow_down` from
+/// - `Ok(None)`: still pending (`authorization_pending` / `slow_down` from
 ///   Google); wait and retry.
-/// - `Err(_)` — hard failure (`access_denied`, `expired_token`, network…);
+/// - `Err(_)`: hard failure (`access_denied`, `expired_token`, network…);
 ///   the message never contains token material.
 #[cfg(feature = "innertube")]
 pub async fn poll_google_login(login: &GoogleLogin) -> Result<Option<OAuthPersist>, String> {

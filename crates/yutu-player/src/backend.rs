@@ -201,7 +201,7 @@ impl AudioBackend for RodioBackend {
 }
 
 /// Download a URL into memory. GoogleVideo throttles full-body GETs to a
-/// trickle, but answers `Range` requests at full speed — so songs are pulled
+/// trickle, but answers `Range` requests at full speed: so songs are pulled
 /// in 1 MiB chunks and concatenated. Servers without range support (plain
 /// 200 + full body) are returned as-is. HTTP errors surface as
 /// `PlayerError::Stream` with the status preserved for PO-token hints.
