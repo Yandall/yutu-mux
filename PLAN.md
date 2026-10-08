@@ -165,5 +165,8 @@ Done: user can plausibly replace Spotify for daily listening.
 24. Round 13: drag from anywhere (global press arming over inner buttons) + stable origin chip while held (no collapse, bar-only slot)
 25. Round 14: whole-row press path (no inner buttons) + snapshot click + remove-hover guard + 2-line titles + queue art warming (head + ahead window) + review H fixes
 26. Round 15: search focus kept while typing (view root always a Stack; layer toggles no longer rebuild widget state)
+27. Round 16: library track cache + missing-metadata hydration (Favorites and covers survive restart with no search-first; bare liked/history ids hydrate in background via watch playlist, on-demand fetch on unknown ids, pre-art playlist rows healed)
+28. Round 17: Downloaded default playlist (built-in alongside Favorites; completed offline downloads join in add order, persisted in SQLite `downloads`, startup prune of missing files, remove deletes the cached audio, add triggers a download, undeletable)
+29. Round 18: offline playback (disk-first play on both backends; full download bundle of audio + lyrics + artwork + metadata; disk read-through for covers/lyrics; sidecar heal on online play; 403 retry + direct-download fallback)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

@@ -37,4 +37,4 @@ pub use scrobble::{
 #[cfg(feature = "submit")]
 pub use scrobble::{submit_lastfm_scrobble, submit_listenbrainz_listen};
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
-pub use ytdlp::{find_yt_dlp, resolve_audio_url};
+pub use ytdlp::{download_audio_bytes, find_yt_dlp, resolve_audio_url};

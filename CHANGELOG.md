@@ -137,6 +137,12 @@
   text/art/gaps); snapshot click with slop/modal/mutation guards;
   remove-hover never arms; titles cap at 2 lines; queue art warms the
   head plus the ahead window on every track start
+- Library track cache + hydration: every seen Track is cached in SQLite so Favorites/history/covers render on launch with no search; bare liked/history ids from older installs hydrate in the background (watch playlist probes, capped) plus on-demand fetch whenever an unknown id is opened/played/queued; pre-art playlist rows heal their covers; unknown actions now say Fetching info instead of Track not found
+- Downloaded default playlist: built-in list alongside Favorites for offline songs; completed downloads join in add order and persist across restarts (SQLite `downloads` plus track cache), startup prunes files that are gone, removing deletes the cached audio, adding starts a download, play/queue/shuffle work from the detail page
+- Download 403 resilience: chunked fetches now send browser-like headers, a 403 re-resolves once for a fresh URL, then falls back to a direct sidecar download (`yt-dlp -o -`) before the raw probes
+- Offline playback of downloads: play paths try the on-disk bytes first (either backend, no network), and downloads now store the full bundle (audio + lyrics + artwork on disk with metadata in SQLite); covers/lyrics render from disk, online plays heal missing sidecars for downloaded songs
+- Offline artwork fix: saved covers now carry a sniffed image extension (the decoder keys off it, so extensionless files never rendered); early `.bin` files migrate on first lookup
+- Download removal: the context menu toggles Download/Remove download per song, and removal deletes the whole bundle (audio + lyrics + covers) instead of just the audio file
 - Search focus: view root is always a Stack, so popup layers appearing
   no longer rebuild widget state; typing keeps focus and cursor until
   the user clicks elsewhere (plus a stable search input id)

@@ -74,6 +74,45 @@ pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamErro
     Err(classify_ytdlp_error(&stderr, video_id))
 }
 
+/// Download `video_id` audio straight to memory via the sidecar itself
+/// (`yt-dlp -o -`): the sidecar's own HTTP stack sends the headers,
+/// retries, and throttling handling that a bare `GET` of a `--get-url`
+/// URL lacks, so this is the fallback when fetching a resolved URL
+/// 403s (transient edge rejection) or when re-resolving also fails.
+/// Same format preference as [`resolve_audio_url`]. Capped at 200 MiB.
+pub fn download_audio_bytes(bin: &str, video_id: &str) -> Result<Vec<u8>, StreamError> {
+    const MAX_BYTES: u64 = 200 * 1024 * 1024;
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let output = Command::new(bin)
+        .args([
+            "-f",
+            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
+            "--no-playlist",
+            "--quiet",
+            "--no-warnings",
+            "--no-progress",
+            "-o",
+            "-",
+            &url,
+        ])
+        .output()
+        .map_err(|e| StreamError::Network(format!("run {bin}: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(classify_ytdlp_error(&stderr, video_id));
+    }
+    if output.stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(classify_ytdlp_error(&stderr, video_id));
+    }
+    if output.stdout.len() as u64 > MAX_BYTES {
+        return Err(StreamError::Network(format!(
+            "yt-dlp direct download of {video_id}: over size cap"
+        )));
+    }
+    Ok(output.stdout)
+}
+
 fn classify_ytdlp_error(stderr: &str, video_id: &str) -> StreamError {
     let lowered = stderr.to_lowercase();
     if crate::stream::looks_po_gated(&lowered) {
@@ -134,6 +173,22 @@ mod tests {
     #[test]
     fn missing_binary_is_a_clean_error() {
         let err = resolve_audio_url("/nonexistent/yt-dlp", "x").unwrap_err();
+        assert!(matches!(err, StreamError::Network(_)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn direct_download_returns_stdout_bytes() {
+        // Fake sidecar: ignores args, prints media bytes to stdout.
+        let bin = write_fake_ytdlp("fake-audio-bytes");
+        let bytes = download_audio_bytes(&bin.to_string_lossy(), "vid").unwrap();
+        // `echo` appends a newline; the point is stdout passes through.
+        assert_eq!(bytes, b"fake-audio-bytes\n");
+    }
+
+    #[test]
+    fn direct_download_missing_binary_is_a_clean_error() {
+        let err = download_audio_bytes("/nonexistent/yt-dlp", "x").unwrap_err();
         assert!(matches!(err, StreamError::Network(_)));
     }
 
