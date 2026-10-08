@@ -133,6 +133,10 @@
 - Drag from anywhere: global left-press arms via hovered row (inner
   buttons swallow area presses); origin keeps a full-size held chip so
   the song never disappears and siblings never shift
+- Whole-row press: inner buttons removed (press reaches the row from
+  text/art/gaps); snapshot click with slop/modal/mutation guards;
+  remove-hover never arms; titles cap at 2 lines; queue art warms the
+  head plus the ahead window on every track start
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
