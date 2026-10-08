@@ -510,7 +510,11 @@ pub enum Message {
     AutoHover(Option<usize>),
     /// Right-panel drag reorder (row press, slot hover, release anywhere).
     DragStart(usize),
-    /// Insertion-slot hover while dragging (1..=len-1, between rows).
+    /// Global left press: arms a drag when the cursor is over a queue
+    /// row (inner buttons swallow the row area press, so the row alone
+    /// cannot arm from text/art; this covers the whole row).
+    GlobalPress,
+    /// Insertion-slot hover while dragging (0..=len, edges included).
     DragSlot(usize),
     /// Animation frame (sidebar widths + drawer slide converge).
     Animate,
@@ -1725,6 +1729,11 @@ impl AppState {
             // never commit or abort a reorder in progress.
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                 Some(Message::DragEnd)
+            }
+            // Left press anywhere: the handler arms a queue drag only
+            // when the cursor sits on a queue row.
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                Some(Message::GlobalPress)
             }
             _ => None,
         });
@@ -4210,6 +4219,20 @@ impl AppState {
                     self.drag = Some(DragState { from, slot: None });
                 }
             }
+            Message::GlobalPress => {
+                // Arm from the hovered queue row (covers text/art presses
+                // the inner buttons swallow). Anything else is a no-op.
+                if self.drag.is_none() && self.queue.len() >= 2 {
+                    if let Some(i) = self.hovered_queue {
+                        if i < self.queue.len() {
+                            self.drag = Some(DragState {
+                                from: i,
+                                slot: None,
+                            });
+                        }
+                    }
+                }
+            }
             Message::DragSlot(k) => {
                 // Slot strips only exist while dragging (edges included);
                 // anything else is a stale hover (no-op).
@@ -5277,9 +5300,25 @@ impl AppState {
         use iced::widget::{button, container, mouse_area, row, text};
         use iced::Fill;
         if self.drag.is_some_and(|d| d.from == i) {
-            // Origin always collapses while held (the chip lives at the
-            // armed slot only), so slot lanes stay hittable and siblings
-            // close ranks with no hole.
+            // Origin keeps a full-size held chip (same art + title as the
+            // row, no red border, no handlers): the song stays visible
+            // while held and siblings never shift, since only the thin
+            // bar opens at the armed slot.
+            if let Some(t) = self.queue.items().get(i) {
+                return container(
+                    row![
+                        self.thumb(t),
+                        Self::track_text(&t.title, &t.artist, 12, iced::Color::WHITE),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .padding(2),
+                )
+                .style(card_bg)
+                .padding(0)
+                .width(Fill)
+                .into();
+            }
             return iced::widget::Space::new().width(Fill).into();
         }
         let items = self.queue.items();
@@ -9871,6 +9910,27 @@ mod tests {
         // Out-of-range press ignored.
         let _ = s.update(Message::DragStart(99));
         assert!(s.drag.is_none());
+    }
+
+    #[test]
+    fn global_press_arms_drag_from_hovered_row() {
+        // Text/art presses never reach the row area (inner buttons own
+        // them), so the global press covers the whole row via hover.
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        let _ = s.update(Message::GlobalPress);
+        assert!(s.drag.is_none());
+        let _ = s.update(Message::PanelHover(1));
+        let _ = s.update(Message::GlobalPress);
+        assert_eq!(s.drag.map(|d| d.from), Some(1));
+        // A normal click still works after: release with no slot is a
+        // no-op, then the row button jumps.
+        let _ = s.update(Message::DragEnd);
+        assert!(s.drag.is_none());
+        let _ = s.update(Message::QueueJump(1));
+        assert_eq!(s.queue.position(), Some(1));
     }
 
     #[test]
