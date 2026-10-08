@@ -667,7 +667,7 @@ pub async fn serve(state: SharedPlayer) -> Result<zbus::Connection, String> {
 ///
 /// Without these signals, desktop widgets read `Metadata`/`PlaybackStatus`
 /// once and never update (stuck timeline). Position itself is not
-/// signalled — clients poll it and interpolate with `Rate` — and seeks
+/// signalled: clients poll it and interpolate with `Rate`, and seeks
 /// surface on the next poll (≤1s late).
 pub async fn watch_and_signal(conn: zbus::Connection, state: SharedPlayer) {
     use std::borrow::Cow;

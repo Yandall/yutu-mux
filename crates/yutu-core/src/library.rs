@@ -73,7 +73,7 @@ impl LibraryStore {
         Ok(n > 0)
     }
 
-    /// Every liked track id (no catalog probe needed — no mock data).
+    /// Every liked track id (no catalog probe needed: no mock data).
     pub fn liked_ids(&self) -> Result<Vec<String>, String> {
         let mut stmt = self
             .conn

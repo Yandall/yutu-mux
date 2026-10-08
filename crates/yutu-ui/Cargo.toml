@@ -2,7 +2,7 @@
 name = "yutu-ui"
 version = "0.1.0"
 edition = "2021"
-description = "Iced app shell (yutu-mux) — native UI, no webview"
+description = "Iced app shell (yutu-mux): native UI, no webview"
 license = "MIT"
 
 [dependencies]

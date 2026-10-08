@@ -85,8 +85,8 @@ pub fn fetch_po_token(bin: &str, identifier: &str) -> Result<PoToken, String> {
 ///
 /// Tokens are base64(ish) and routinely *end* with `=` padding, so an item is
 /// only treated as metadata when the part before the first `=` is a short
-/// identifier (`valid_until`, `from_snapshot`, …). Anything else — including
-/// strings containing `=` — is a token.
+/// identifier (`valid_until`, `from_snapshot`, …). Anything else (including
+/// strings containing `=`) is a token.
 pub fn parse_po_output(out: &str) -> Result<PoToken, String> {
     let mut tokens = Vec::new();
     let mut valid_until = None;

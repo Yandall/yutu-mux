@@ -306,7 +306,7 @@ impl OfflineCache {
     /// File-deletion policy: deletes every `*.m4a` file directly inside the
     /// cache dir (non-recursive), regardless of whether its stem currently
     /// maps to a tracked id. Rationale: this cache only ever creates
-    /// `*.m4a` files in that dir, so any `*.m4a` there is ours — including
+    /// `*.m4a` files in that dir, so any `*.m4a` there is ours: including
     /// orphans left by a previous crash, by [`OfflineCache::insert`] /
     /// [`OfflineCache::set_capacity`] / [`OfflineCache::remove`] /
     /// [`OfflineCache::clear`] (which never touch disk), or by filename

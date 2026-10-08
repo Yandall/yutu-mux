@@ -99,6 +99,14 @@
   the sidebar (menu + drawer own them); icon-inside search pill
 - Sidebar hover hysteresis (panels linger while inside), 56px right
   thumbnail rail, smoother animation steps + Settings toggle/speed
+- Repeat One replays only at track end (manual Next always advances,
+  incl. MPRIS/controller); drag slots live only between songs with no
+  origin hole; hairline queue dividers; empty rail reserves nothing
+- Drawer sheet sits below the header with no bottom gap; drawer fetches
+  lyrics on open; 544px hi-res hero art; filled hearts when liked;
+  favorites labels; playlist side-flyout with covers; capped search
+  bar; search query cache + 200ms debounce; stacked settings;
+  animation speed in ms; full em-dash sweep
 - Playback clock: wall-clock position on rodio, real `time-pos` on mpv
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,

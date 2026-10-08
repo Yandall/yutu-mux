@@ -4,7 +4,7 @@
 //! and provided as a dynamically linked system library (`/usr/lib/libmpv.so`,
 //! it is NOT vendored and no libmpv source is included here). All code in
 //! this file remains MIT like the rest of the workspace, but a binary built
-//! with `--features mpv` links a copyleft (LGPL) library at runtime — the
+//! with `--features mpv` links a copyleft (LGPL) library at runtime: the
 //! same opt-in pattern this project previously used for GPL-adjacent code:
 //! default builds stay pure MIT with no libmpv dependency, and only an
 //! explicit `mpv` feature flag pulls the LGPL link in.
@@ -26,8 +26,8 @@
 //!   the `af` property (see [`af_chain_for_gains`]). This reuses the exact
 //!   format of [`crate::eq::EqPreset::to_mpv_af_chain`]. Approximation note:
 //!   each section is a narrow peaking filter at the band center frequency, so
-//!   the chain approximates — but does not exactly reproduce — an octave-wide
-//!   graphic EQ; gains are defensively clamped to +/-12 dB because `EqPreset`
+//!   the chain approximates an octave-wide graphic EQ without exactly
+//!   reproducing it; gains are defensively clamped to +/-12 dB because `EqPreset`
 //!   fields are public and may bypass validation. Applying a preset replaces
 //!   the whole `af` chain and may cause a brief audible re-init glitch.
 //! - `load_bytes` spills audio to a temp file (`std::env::temp_dir`) because
@@ -101,7 +101,7 @@ pub struct MpvBackend {
 impl MpvBackend {
     /// Create and initialize a headless mpv instance (`vo=null`,
     /// `gapless-audio=yes`). Returns `Err` (never panics) when mpv cannot be
-    /// created/initialized — e.g. headless environments or a broken install.
+    /// created/initialized: e.g. headless environments or a broken install.
     pub fn new() -> Result<Self, PlayerError> {
         let mpv = libmpv2::Mpv::with_initializer(|init| {
             init.set_option("vo", "null")?;

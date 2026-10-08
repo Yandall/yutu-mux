@@ -1,8 +1,8 @@
 //! yutu-desktop: OS integration (MPRIS on Linux, Now Playing notes for macOS).
 //!
-//! * [`mpris`] — Linux MPRIS2 D-Bus service skeleton (`zbus`-based).
-//! * [`tray`] — toolkit-free tray state model feeding a future tray backend.
-//! * [`macos_notes`] — macOS Now Playing / media-key integration plan.
+//! * [`mpris`] : Linux MPRIS2 D-Bus service skeleton (`zbus`-based).
+//! * [`tray`] : toolkit-free tray state model feeding a future tray backend.
+//! * [`macos_notes`] : macOS Now Playing / media-key integration plan.
 
 /// MPRIS identity advertised on D-Bus.
 pub const MPRIS_IDENTITY: &str = "yutu-mux";

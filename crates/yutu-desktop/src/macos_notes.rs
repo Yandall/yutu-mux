@@ -22,7 +22,7 @@
 //!
 //! * Subscribe to `MPRemoteCommandCenter` (`playCommand`, `pauseCommand`,
 //!   `togglePlayPauseCommand`, `nextTrackCommand`, `previousTrackCommand`)
-//!   and route the handlers back into the Iced playback controller — the
+//!   and route the handlers back into the Iced playback controller: the
 //!   same direction as MPRIS transport methods on Linux.
 //! * Play/pause keys on their own do **not** need extra work once remote
 //!   commands are registered; intercepting raw key events globally
@@ -40,8 +40,8 @@
 //!    dependency-free.
 //! 2. Depend on `objc2` (+ `objc2-foundation`, plus generated MediaPlayer
 //!    bindings) only under that `cfg`.
-//! 3. Expose the same shape as the Linux side — `update_track`, `set_status`
-//!    — so the Iced layer calls one cross-platform facade.
+//! 3. Expose the same shape as the Linux side: `update_track`, `set_status`:
+//!    so the Iced layer calls one cross-platform facade.
 
 #[cfg(test)]
 mod tests {

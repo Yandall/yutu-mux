@@ -12,7 +12,7 @@
 //!   login-gated library queries ([`InnertubeBackend::library_songs`],
 //!   [`InnertubeBackend::liked_songs`] via the `LM` playlist,
 //!   [`InnertubeBackend::library_albums`]), radio recommendations
-//!   ([`InnertubeBackend::recommendations_for`] — there is no home query in
+//!   ([`InnertubeBackend::recommendations_for`]: there is no home query in
 //!   `ytmapi-rs` 0.3, so no `home_feed`), YTM lyrics
 //!   ([`InnertubeBackend::song_lyrics`]), and per-video `player`-endpoint
 //!   probes (the same endpoint real stream resolution uses) via
@@ -51,7 +51,7 @@ use crate::stream::{StreamClient, StreamError, StreamRequest};
 ///
 /// `YtMusic` is generic over its auth token (`NoAuthToken` vs `BrowserToken`),
 /// so both are carried in one enum instead of leaking the generic into our
-/// public API. The inner client owns a connection pool — clone and re-use it.
+/// public API. The inner client owns a connection pool: clone and re-use it.
 #[derive(Debug, Clone)]
 pub struct InnertubeBackend {
     inner: Inner,
@@ -84,7 +84,7 @@ impl InnertubeBackend {
     /// fails before any network). The cookie value itself is never logged;
     /// only the ytmapi error (server response, no request headers) is echoed.
     pub async fn connect_with_cookie_file(path: &Path) -> Result<Self, String> {
-        // Local validation; the parsed value is intentionally dropped — the
+        // Local validation; the parsed value is intentionally dropped: the
         // real client reads the file itself.
         let _auth = CookieAuth::from_file(path).map_err(|e| format!("cookie file: {e}"))?;
         YtMusic::from_cookie_file(path)
@@ -231,10 +231,10 @@ impl InnertubeBackend {
     }
 
     /// The user's liked-music tracks, via the `LM` liked playlist
-    /// (`get_playlist_tracks` — `ytmapi-rs` 0.3 exposes no dedicated
+    /// (`get_playlist_tracks`: `ytmapi-rs` 0.3 exposes no dedicated
     /// liked-songs query).
     ///
-    /// Auth: cookie OR Google OAuth in practice — the query itself is
+    /// Auth: cookie OR Google OAuth in practice: the query itself is
     /// `impl<A: AuthToken>` so anonymous attempts hit the server and fail
     /// there. Song and video items map to [`Track`]; podcast episodes are
     /// skipped (not music).
@@ -305,14 +305,14 @@ impl InnertubeBackend {
         Ok(tracks.iter().map(watch_track_to_track).collect())
     }
 
-    /// YouTube Music lyrics for `video_id` as plain text lines (no timing —
+    /// YouTube Music lyrics for `video_id` as plain text lines (no timing:
     /// timing is LRCLIB's job).
     ///
     /// Two-step upstream flow: `get_lyrics_id` (watch `next` endpoint) then
     /// `get_lyrics` (browse the lyrics id). Both queries are
     /// `impl<A: AuthToken>`, so this is attempted on all backends; in
     /// practice lyric availability is per-track server-side (many tracks have
-    /// none — that surfaces as an API error here).
+    /// none: that surfaces as an API error here).
     pub async fn song_lyrics(&self, video_id: &str) -> Result<Vec<String>, String> {
         let lyrics_id = match &self.inner {
             Inner::Anonymous(client) => client
@@ -351,7 +351,7 @@ impl InnertubeBackend {
     ///
     /// Each client is recorded in `req.tried` via [`StreamRequest::next_client`].
     /// Per client we hit the live Innertube `player` endpoint (the closest
-    /// `ytmapi-rs` 0.3 offers — see [`GetSongTrackingUrlQuery`]) and
+    /// `ytmapi-rs` 0.3 offers: see [`GetSongTrackingUrlQuery`]) and
     /// best-effort extract an audio URL with [`extract_audio_url`].
     /// HTTP-403-like failures map to [`StreamError::PoTokenRequired`] (see
     /// [`StreamError::hint`](crate::stream::StreamError::hint)); an exhausted
@@ -517,7 +517,7 @@ pub struct ResolvedStream {
 
 /// Raw Innertube `player` POST mirroring `ytmapi-rs` (WEB_REMIX context, same
 /// API key and signature-timestamp scheme) plus `serviceIntegrityDimensions`,
-/// which upstream 0.3 cannot express — hence this bypass exists.
+/// which upstream 0.3 cannot express: hence this bypass exists.
 async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String, StreamError> {
     let body = player_request_body(video_id, Some(po_token));
     let response = reqwest::Client::new()
@@ -576,7 +576,7 @@ fn player_request_body(video_id: &str, po_token: Option<&str>) -> serde_json::Va
     body
 }
 
-/// Days since epoch — mirrors upstream's `get_signature_timestamp`.
+/// Days since epoch: mirrors upstream's `get_signature_timestamp`.
 fn signature_timestamp_days() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -629,7 +629,7 @@ fn classify_no_url(value: &serde_json::Value, client: StreamClient, video_id: &s
 /// Scans `streamingData.adaptiveFormats` (then `streamingData.formats`) for the
 /// first entry whose `mimeType` starts with `audio/` and carries a direct
 /// `url`. Returns `None` for ciphered (`signatureCipher`-only), missing, or
-/// malformed `streamingData` — callers treat that as "this client cannot play
+/// malformed `streamingData`: callers treat that as "this client cannot play
 /// it" per the fallback policy.
 pub fn extract_audio_url(player: &serde_json::Value) -> Option<String> {
     for pointer in ["/streamingData/adaptiveFormats", "/streamingData/formats"] {
@@ -653,7 +653,7 @@ fn first_audio_url(formats: Option<&serde_json::Value>) -> Option<String> {
 /// Map one `search_songs` hit to our [`Track`].
 ///
 /// The API gives a single joined `artist` string, an optional album (some
-/// songs have none — see youtui#174), and a `"m:ss"`/`"h:mm:ss"` duration
+/// songs have none: see youtui#174), and a `"m:ss"`/`"h:mm:ss"` duration
 /// string; unparseable durations become `0`.
 /// Smallest artwork thumbnail (keeps row art light), if any.
 fn pick_thumb_url(thumbs: &[Thumbnail]) -> Option<String> {
@@ -1263,7 +1263,7 @@ mod tests {
             assert!(!track.title.is_empty(), "track title empty: {track:?}");
             assert!(!track.artist.is_empty(), "track artist empty: {track:?}");
         }
-        // The real fixture carries artwork — mapping must keep it.
+        // The real fixture carries artwork: mapping must keep it.
         assert!(
             tracks.iter().any(|t| t
                 .thumbnail_url

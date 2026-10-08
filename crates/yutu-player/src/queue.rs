@@ -187,6 +187,23 @@ impl Queue {
         self.current()
     }
 
+    /// Manual Next: plain advance that ignores Repeat One (repeat applies
+    /// only when a song ends on its own). Repeat All still wraps; Off and
+    /// One return None at the tail so the caller can reach autoplay.
+    pub fn next_manual(&mut self) -> Option<&Track> {
+        if self.items.is_empty() {
+            return None;
+        }
+        let next = match self.index {
+            None => 0,
+            Some(i) if i + 1 < self.items.len() => i + 1,
+            Some(_) if self.repeat == RepeatMode::All => 0,
+            _ => return None,
+        };
+        self.index = Some(next);
+        self.current()
+    }
+
     pub fn prev_track(&mut self) -> Option<&Track> {
         if self.items.is_empty() {
             return None;
@@ -279,6 +296,22 @@ mod tests {
         assert_eq!(q.position(), Some(0));
         assert!(q.jump_to(1));
         assert_eq!(q.next_track().unwrap().id, "m2");
+    }
+
+    #[test]
+    fn manual_next_bypasses_repeat_one() {
+        let mut q = queue_of(3);
+        q.repeat = RepeatMode::One;
+        assert!(q.jump_to(0));
+        assert_eq!(q.next_manual().unwrap().id, "m2");
+        assert_eq!(q.position(), Some(1));
+        assert!(q.jump_to(2));
+        assert!(q.next_manual().is_none());
+        assert_eq!(q.position(), Some(2));
+        assert_eq!(q.next_track().unwrap().id, "m3");
+        q.repeat = RepeatMode::All;
+        assert!(q.jump_to(2));
+        assert_eq!(q.next_manual().unwrap().id, "m1");
     }
 
     #[test]
