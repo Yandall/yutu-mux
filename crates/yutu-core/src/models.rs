@@ -16,6 +16,12 @@ pub struct Track {
     /// Largest artwork URL (hero views); same default policy as above.
     #[serde(default)]
     pub thumbnail_large_url: Option<String>,
+    /// Play count text from search hits (e.g. `"213M plays"`).
+    /// Search-only metadata: only the Innertube search mapping populates
+    /// it, everything else leaves it `None`, and the SQLite cache never
+    /// persists it (stale counts must not survive restarts).
+    #[serde(default)]
+    pub plays: Option<String>,
 }
 
 /// Rewrite a YTM `=wNN-hNN` thumbnail URL to the requested width (same

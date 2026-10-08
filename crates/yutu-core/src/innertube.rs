@@ -682,6 +682,7 @@ fn song_to_track(song: &SearchResultSong) -> Track {
         duration_secs: parse_duration_secs(&song.duration),
         thumbnail_url: pick_thumb_url(&song.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
+        plays: (!song.plays.trim().is_empty()).then(|| song.plays.clone()),
     }
 }
 
@@ -718,6 +719,7 @@ fn table_song_to_track(song: &TableListSong) -> Track {
         duration_secs: parse_duration_secs(&song.duration),
         thumbnail_url: pick_thumb_url(&song.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
+        plays: None,
     }
 }
 
@@ -734,6 +736,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             duration_secs: parse_duration_secs(&song.duration),
             thumbnail_url: pick_thumb_url(&song.thumbnails),
             thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
+            plays: None,
         }),
         PlaylistItem::Video(video) => Some(Track {
             id: video.video_id.get_raw().to_string(),
@@ -743,6 +746,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             duration_secs: parse_duration_secs(&video.duration),
             thumbnail_url: pick_thumb_url(&video.thumbnails),
             thumbnail_large_url: pick_large_thumb_url(&video.thumbnails),
+            plays: None,
         }),
         PlaylistItem::UploadSong(song) => Some(Track {
             id: song.video_id.get_raw().to_string(),
@@ -756,6 +760,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             duration_secs: parse_duration_secs(&song.duration),
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         }),
         PlaylistItem::Episode(_) => None,
     }
@@ -772,6 +777,7 @@ fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
         duration_secs: parse_duration_secs(&track.duration),
         thumbnail_url: pick_thumb_url(&track.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&track.thumbnails),
+        plays: None,
     }
 }
 
@@ -958,6 +964,7 @@ mod tests {
                 duration_secs: 308,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             }
         );
         // Multiple artists join the way the search API pre-joins them.
@@ -984,6 +991,7 @@ mod tests {
                 duration_secs: 260,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             }
         );
         assert_eq!(tracks[1].duration_secs, 186);
@@ -1271,6 +1279,13 @@ mod tests {
                 .is_some_and(|u| u.starts_with("https://"))),
             "expected at least one thumbnail url"
         );
+        // Play counts survive the mapping (search popup shows them).
+        assert!(
+            tracks
+                .iter()
+                .any(|t| t.plays.as_deref().is_some_and(|p| !p.is_empty())),
+            "expected at least one play count"
+        );
     }
 
     #[test]
@@ -1327,6 +1342,7 @@ mod tests {
                 duration_secs: 0,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: Some("0".into()),
             }
         );
     }

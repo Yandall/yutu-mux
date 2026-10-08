@@ -152,6 +152,15 @@
 - Lyrics providers: LRCLIB (no login) + LRC parse/sync helpers
 - Google login: OAuth device flow, library/liked/albums, YTM lyrics,
   watch-based recommendations
+- Uniform cards and rows: Home quick picks are a fixed 64px with
+  single-line truncated title/artist; search/library/radio/queue-page
+  rows are a fixed 52px single-line; artists truncate everywhere so
+  long names clip instead of stretching the list; queue sidebar rows
+  are a fixed 58px with the title capped at 2 lines
+- Compact search popup rows: 32px cover, no inline play/like/menu
+  buttons (row click plays, right-click opens the menu), play count
+  plus duration on the trailing edge; play counts come from the
+  search mapping (`Track.plays`, memory-only, never persisted)
 
 ## 0.1.0
 

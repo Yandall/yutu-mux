@@ -170,5 +170,6 @@ Done: user can plausibly replace Spotify for daily listening.
 29. Round 17 fix: Home covers read the 544px hero key so the lazy warmer now warms both URL keys (raw + hero) like every other path; ArtworkReady chains the capped remainder; 120s failure cooldowns for dead art/unresolvable ids stop refetch loops; hydrate probes run concurrently per id
 28. Round 17: Downloaded default playlist (built-in alongside Favorites; completed offline downloads join in add order, persisted in SQLite `downloads`, startup prune of missing files, remove deletes the cached audio, add triggers a download, undeletable)
 29. Round 18: offline playback (disk-first play on both backends; full download bundle of audio + lyrics + artwork + metadata; disk read-through for covers/lyrics; sidecar heal on online play; 403 retry + direct-download fallback)
+30. Round 19: uniform cards/rows (fixed heights + clip + truncation: 64px home cards single-line, 52px wide rows single-line, 58px queue sidebar with 2-line titles, truncated artists everywhere) + compact search popup rows (32px cover, no inline buttons, row-click plays, right-click menu, `Track.plays` play counts from search mapping, memory-only)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

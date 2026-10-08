@@ -141,6 +141,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         }
     }
 

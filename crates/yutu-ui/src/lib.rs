@@ -883,6 +883,16 @@ fn truncate_title(title: &str, max: usize) -> String {
     }
 }
 
+/// Fixed row/card heights: every card and row keeps one height and long
+/// names truncate with an ellipsis instead of stretching the container.
+/// Containers pair these with `.clip(true)` as a backstop, so even an
+/// untruncated overflow can never move its neighbours.
+const HOME_CARD_H: f32 = 64.0;
+const TRACK_ROW_H: f32 = 52.0;
+const SUGGEST_ROW_H: f32 = 44.0;
+const QUEUE_ROW_H: f32 = 58.0;
+const AUTO_ROW_H: f32 = 44.0;
+
 /// Hover hysteresis grace (px): how far outside the expanded panel the
 /// cursor may roam before an unpinned sidebar collapses.
 const SIDEBAR_GRACE: f32 = 16.0;
@@ -1327,6 +1337,10 @@ impl AppState {
                 }
                 if full.thumbnail_large_url.is_none() && t.thumbnail_large_url.is_some() {
                     full.thumbnail_large_url = t.thumbnail_large_url.clone();
+                    healed = true;
+                }
+                if full.plays.is_none() && t.plays.is_some() {
+                    full.plays = t.plays.clone();
                     healed = true;
                 }
                 if healed {
@@ -2308,6 +2322,9 @@ impl AppState {
                         if e.thumbnail_large_url.is_none() && t.thumbnail_large_url.is_some() {
                             e.thumbnail_large_url = t.thumbnail_large_url.clone();
                         }
+                        if e.plays.is_none() && t.plays.is_some() {
+                            e.plays = t.plays.clone();
+                        }
                         if e.title.is_empty() && !t.title.is_empty() {
                             e.title = t.title.clone();
                             e.artist = t.artist.clone();
@@ -3146,7 +3163,7 @@ impl AppState {
                         .style(green_play)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
-                    Self::track_text(&t.title, &t.artist, 14, iced::Color::WHITE),
+                    Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
                     text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
                     button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                         .style(hover_row)
@@ -3162,7 +3179,9 @@ impl AppState {
                 .padding(4),
             )
             .style(row_bg(hovered))
-            .width(Fill),
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
         .on_enter(Message::TrackHover(Some(hover_id)))
@@ -3460,14 +3479,17 @@ impl AppState {
         self.thumb_sized(track, 40.0)
     }
 
-    /// Two-line song label: title (normal) + artist (smaller, muted).
-    /// `title_size` 14 for pages, 12-13 for panel/autoplay rows.
+    /// Two-line song label for narrow rows (queue sidebar): the title
+    /// wraps up to about two lines (55 chars + ellipsis), the artist is
+    /// always a single truncated line. Callers fix the row height and
+    /// clip, so longer titles clip instead of stretching the list.
     fn track_text<'a>(
         title: &str,
         artist: &str,
         title_size: u16,
         color: iced::Color,
     ) -> iced::Element<'a, Message> {
+        use iced::widget::text::Wrapping;
         use iced::widget::{column, text};
         use iced::Fill;
         column![
@@ -3477,9 +3499,40 @@ impl AppState {
             text(truncate_title(title, 55))
                 .size(f32::from(title_size))
                 .color(color),
-            text(artist.to_owned())
+            text(truncate_title(artist, 40))
                 .size(f32::from(title_size.saturating_sub(2).max(11)))
-                .color(MUTED),
+                .color(MUTED)
+                .width(Fill)
+                .wrapping(Wrapping::None),
+        ]
+        .spacing(2)
+        .width(Fill)
+        .into()
+    }
+
+    /// Single-line song label for wide lists (search, library, radio,
+    /// queue page): title and artist both truncate with an ellipsis and
+    /// never wrap, so every row shares one fixed height.
+    fn track_text_single<'a>(
+        title: &str,
+        artist: &str,
+        title_size: u16,
+        color: iced::Color,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::text::Wrapping;
+        use iced::widget::{column, text};
+        use iced::Fill;
+        column![
+            text(truncate_title(title, 45))
+                .size(f32::from(title_size))
+                .color(color)
+                .width(Fill)
+                .wrapping(Wrapping::None),
+            text(truncate_title(artist, 40))
+                .size(f32::from(title_size.saturating_sub(2).max(11)))
+                .color(MUTED)
+                .width(Fill)
+                .wrapping(Wrapping::None),
         ]
         .spacing(2)
         .width(Fill)
@@ -6256,7 +6309,7 @@ impl AppState {
                         .style(green_play)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
-                    Self::track_text(&t.title, &t.artist, 14, iced::Color::WHITE),
+                    Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
                     text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
                     button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                         .style(hover_row)
@@ -6272,9 +6325,69 @@ impl AppState {
                 .padding(4),
             )
             .style(row_bg(hovered))
-            .width(Fill),
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
+        .on_enter(Message::TrackHover(Some(hover_id)))
+        .on_exit(Message::TrackHover(None))
+        .into()
+    }
+
+    /// Compact search-popup row: smaller cover, single-line title/artist,
+    /// play count + duration, no inline buttons. The whole row clicks to
+    /// play; right-click opens the context menu. Fixed height so long
+    /// names never stretch the popup.
+    fn suggest_track_row(&self, t: &Track) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
+        use iced::widget::{button, column, container, mouse_area, row, text};
+        use iced::Fill;
+        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let hover_id = t.id.clone();
+        let play_id = t.id.clone();
+        let menu_id = t.id.clone();
+        let plays = t.plays.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let meta = match plays {
+            Some(p) => format!("{p} · {}", fmt_time(t.duration_secs as f64)),
+            None => fmt_time(t.duration_secs as f64),
+        };
+        mouse_area(
+            container(
+                button(
+                    row![
+                        self.thumb_sized(t, 32.0),
+                        column![
+                            text(truncate_title(&t.title, 35))
+                                .size(13)
+                                .color(iced::Color::WHITE)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                            text(truncate_title(&t.artist, 32))
+                                .size(11)
+                                .color(MUTED)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .width(Fill),
+                        text(meta).size(11).color(MUTED).wrapping(Wrapping::None),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .padding(4),
+                )
+                .style(row_click)
+                .on_press(Message::PlayNow(play_id))
+                .padding(0)
+                .width(Fill),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(SUGGEST_ROW_H))
+            .clip(true),
+        )
+        .on_right_press(Message::OpenContext(menu_id))
         .on_enter(Message::TrackHover(Some(hover_id)))
         .on_exit(Message::TrackHover(None))
         .into()
@@ -6517,6 +6630,8 @@ impl AppState {
                 .style(card_bg)
                 .padding(0)
                 .width(Fill)
+                .height(iced::Length::Fixed(QUEUE_ROW_H))
+                .clip(true)
                 .into();
             }
             return iced::widget::Space::new().width(Fill).into();
@@ -6565,9 +6680,13 @@ impl AppState {
         .spacing(6)
         .align_y(iced::alignment::Vertical::Center)
         .padding(2);
+        // Fixed height: the title may wrap to two lines, anything more
+        // clips instead of stretching the row.
         let lifted: iced::Element<'_, Message> = container(row_content)
             .style(row_bg(hovered))
             .width(Fill)
+            .height(iced::Length::Fixed(QUEUE_ROW_H))
+            .clip(true)
             .into();
         // One press path for the whole row: plain visuals let the press
         // reach this area from text, art, or gaps (only the tiny remove
@@ -6709,7 +6828,7 @@ impl AppState {
                     container(
                         row![
                             self.thumb(t),
-                            button(Self::track_text(
+                            button(Self::track_text_single(
                                 &t.title,
                                 &t.artist,
                                 12,
@@ -6727,7 +6846,9 @@ impl AppState {
                         .padding(2),
                     )
                     .style(row_bg(self.hovered_auto == Some(i)))
-                    .width(Fill),
+                    .width(Fill)
+                    .height(iced::Length::Fixed(TRACK_ROW_H))
+                    .clip(true),
                 )
                 .on_right_press(Message::OpenContext(menu_id))
                 .on_enter(Message::AutoHover(Some(i)))
@@ -6799,7 +6920,7 @@ impl AppState {
                                     container(
                                         row![
                                             self.thumb(t),
-                                            button(Self::track_text(
+                                            button(Self::track_text_single(
                                                 &t.title,
                                                 &t.artist,
                                                 12,
@@ -6818,7 +6939,9 @@ impl AppState {
                                         .padding(2),
                                     )
                                     .style(row_bg(hovered))
-                                    .width(Fill),
+                                    .width(Fill)
+                                    .height(iced::Length::Fixed(TRACK_ROW_H))
+                                    .clip(true),
                                 )
                                 .on_right_press(Message::OpenContext(menu_id))
                                 .on_enter(Message::TrackHover(Some(hover_id)))
@@ -7544,6 +7667,7 @@ impl AppState {
     }
 
     fn center_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
         use iced::widget::{
             button, checkbox, column, container, mouse_area, row, scrollable, slider, text,
             text_input,
@@ -7580,6 +7704,8 @@ impl AppState {
                     .into()
                 } else {
                     // Two-across quick picks, Spotify-style: artwork + title.
+                    // Fixed height + single-line truncated labels: every
+                    // card shares one size no matter how long the names are.
                     let rows: Vec<iced::Element<'_, Message>> = picks
                         .chunks(2)
                         .map(|pair| {
@@ -7592,8 +7718,15 @@ impl AppState {
                                             row![
                                                 self.thumb_hero(t, 52.0),
                                                 column![
-                                                    text(t.title.clone()).size(14),
-                                                    text(t.artist.clone()).size(12).color(MUTED),
+                                                    text(truncate_title(&t.title, 30))
+                                                        .size(14)
+                                                        .width(Fill)
+                                                        .wrapping(Wrapping::None),
+                                                    text(truncate_title(&t.artist, 28))
+                                                        .size(12)
+                                                        .color(MUTED)
+                                                        .width(Fill)
+                                                        .wrapping(Wrapping::None),
                                                 ]
                                                 .spacing(2)
                                                 .width(Fill),
@@ -7605,7 +7738,9 @@ impl AppState {
                                         .style(card_button)
                                         .on_press(Message::PlayNow(t.id.clone()))
                                         .padding(0)
-                                        .width(Fill),
+                                        .width(Fill)
+                                        .height(iced::Length::Fixed(HOME_CARD_H))
+                                        .clip(true),
                                     )
                                     .on_right_press(Message::OpenContext(menu_id))
                                     .into()
@@ -7864,7 +7999,7 @@ impl AppState {
                                         .style(row_click)
                                         .on_press(Message::QueueJump(i))
                                         .padding(2),
-                                    button(Self::track_text(
+                                    button(Self::track_text_single(
                                         &format!(
                                             "{marker}{}. {}",
                                             i + 1,
@@ -7905,7 +8040,9 @@ impl AppState {
                                 .padding(2),
                             )
                             .style(row_bg(self.hovered_queue == Some(i)))
-                            .width(Fill),
+                            .width(Fill)
+                            .height(iced::Length::Fixed(TRACK_ROW_H))
+                            .clip(true),
                         )
                         .on_right_press(Message::OpenContext(jump))
                         .on_enter(Message::QueueHover(Some(i)))
@@ -7924,7 +8061,7 @@ impl AppState {
                         mouse_area(
                             container(
                                 row![
-                                    button(Self::track_text(
+                                    button(Self::track_text_single(
                                         &format!("{}. {}", i + 1, truncate_title(&t.title, 55)),
                                         &t.artist,
                                         13,
@@ -7945,7 +8082,9 @@ impl AppState {
                                 .padding(2),
                             )
                             .style(row_bg(self.hovered_auto == Some(i)))
-                            .width(Fill),
+                            .width(Fill)
+                            .height(iced::Length::Fixed(AUTO_ROW_H))
+                            .clip(true),
                         )
                         .on_right_press(Message::OpenContext(menu_id))
                         .on_enter(Message::AutoHover(Some(i)))
@@ -8521,7 +8660,7 @@ impl AppState {
                 .tracks
                 .iter()
                 .take(5)
-                .map(|t| self.track_row(t))
+                .map(|t| self.suggest_track_row(t))
                 .collect();
             let progress: iced::Element<'_, Message> = if self.searching {
                 text("Searching…").size(11).color(SPOT_GREEN).into()
@@ -9248,6 +9387,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         }
     }
 
@@ -9310,6 +9450,40 @@ mod tests {
             result: Err("offline".into()),
         });
         assert!(s.status.contains("offline"));
+    }
+
+    #[test]
+    fn search_preserves_play_counts() {
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("beatles".into()));
+        let mut hit = mk_track("v1", "Yesterday", "The Beatles");
+        hit.plays = Some("213M plays".into());
+        let _ = s.update(Message::SearchCompleted {
+            query: "beatles".into(),
+            result: Ok(SearchResults {
+                tracks: vec![hit],
+                albums: vec![],
+                artists: vec![],
+            }),
+        });
+        // Counts survive staging into results + catalog (popup reads them).
+        assert_eq!(s.results.tracks[0].plays.as_deref(), Some("213M plays"));
+        assert_eq!(
+            s.find_track("v1").and_then(|t| t.plays).as_deref(),
+            Some("213M plays")
+        );
+        // Local keystroke filtering keeps the counts.
+        let _ = s.update(Message::SearchChanged("yesterday".into()));
+        assert_eq!(s.results.tracks.len(), 1);
+        assert_eq!(s.results.tracks[0].plays.as_deref(), Some("213M plays"));
+        // Long names build every touched row shape with no panic.
+        let long = "y".repeat(120);
+        let mut wide = mk_track("v9", &long, &long);
+        wide.plays = Some("1B plays".into());
+        let _ = s.view();
+        let _ = s.suggest_track_row(&wide);
+        let _ = s.track_row(&wide);
+        let _ = s.queue_row(0);
     }
 
     #[test]
@@ -9668,6 +9842,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
+            plays: None,
         };
         // Fake a complete bundle on disk.
         let mut cache = yutu_player::OfflineCache::new(10 * 1024 * 1024);
@@ -10077,6 +10252,7 @@ mod tests {
                 duration_secs: 1,
                 thumbnail_url: Some("https://example.invalid/cover".into()),
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         let _ = s2.update(Message::CreatePlaylist("Gym".into()));
@@ -10089,6 +10265,7 @@ mod tests {
             duration_secs: 1,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         });
         let _ = s2.update(Message::PlayPlaylist(pid));
         assert_eq!(
@@ -10146,6 +10323,7 @@ mod tests {
             duration_secs: 135,
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
+            plays: None,
         };
         s.catalog.insert(liked.id.clone(), liked.clone());
         let _ = s.update(Message::AddToPlaylist {
@@ -10192,6 +10370,7 @@ mod tests {
                 duration_secs: 200,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         s.liked_order.push("artless".into());
@@ -10208,6 +10387,7 @@ mod tests {
                 duration_secs: 200,
                 thumbnail_url: Some("https://example.invalid/s".into()),
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         s.liked_order.push("artful".into());
@@ -10228,6 +10408,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: None,
+            plays: None,
         };
         let _ = s.update(Message::TracksHydrated {
             requested: vec!["hydra".into()],
@@ -10316,6 +10497,7 @@ mod tests {
                 duration_secs: 200,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             })
             .collect();
         s.user_playlists.push(Playlist {
@@ -10374,6 +10556,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: Some("https://example.invalid/s=w60-h60-l90-rj".into()),
             thumbnail_large_url: Some("https://example.invalid/l=w120-h120-l90-rj".into()),
+            plays: None,
         };
         let hero = yutu_core::hires_thumb_url(t.thumbnail_large_url.as_deref().unwrap(), 544);
         s.catalog.insert(t.id.clone(), t);
@@ -10401,6 +10584,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: Some(url.clone()),
             thumbnail_large_url: None,
+            plays: None,
         };
         s.catalog.insert(t.id.clone(), t);
         s.history.push("dead-art".into());
@@ -10437,6 +10621,7 @@ mod tests {
                     duration_secs: 200,
                     thumbnail_url: Some(format!("https://example.invalid/c{i}.jpg")),
                     thumbnail_large_url: None,
+                    plays: None,
                 },
             );
             s.history.push(id);
@@ -10484,6 +10669,7 @@ mod tests {
                 duration_secs: 200,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         let _ = s.update(Message::EnqueueTrack(video.clone()));
@@ -10525,6 +10711,7 @@ mod tests {
             duration_secs: 200,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         };
         // Audio leg of the bundle task (lyrics/art are best-effort
         // sidecars over the same fetch helpers, covered offline above).
@@ -11440,6 +11627,7 @@ mod tests {
                 duration_secs: 1,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             });
         }
         let _ = s.update(Message::ShufflePlaylist(pid));
@@ -11461,6 +11649,7 @@ mod tests {
                 duration_secs: 1,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         s.catalog.insert(
@@ -11473,6 +11662,7 @@ mod tests {
                 duration_secs: 1,
                 thumbnail_url: None,
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         assert_eq!(s.resolve_album_title("ax-Test Album XYZ"), "Test Album XYZ");
@@ -11492,6 +11682,7 @@ mod tests {
                 duration_secs: 1,
                 thumbnail_url: Some("https://example.invalid/s".into()),
                 thumbnail_large_url: None,
+                plays: None,
             },
         );
         let stale = Track {
@@ -11502,6 +11693,7 @@ mod tests {
             duration_secs: 1,
             thumbnail_url: None,
             thumbnail_large_url: None,
+            plays: None,
         };
         assert!(s.hero_art_for(&stale).is_some());
     }
@@ -11723,6 +11915,7 @@ mod tests {
             duration_secs: 1,
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: None,
+            plays: None,
         };
         s.catalog.insert("m1".into(), t.clone());
         let small = s.art_url_for(&t, 40.0).expect("small");
@@ -11750,6 +11943,7 @@ mod tests {
             thumbnail_large_url: Some(
                 "https://yt3.googleusercontent.com/x=w120-h120-l90-rj".into(),
             ),
+            plays: None,
         };
         let url = AppState::hero_art_url(&t).expect("hero");
         assert!(url.contains("=w544-h544"), "{url}");
