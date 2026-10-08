@@ -15,8 +15,8 @@ use yutu_player::{EqPreset, Queue, RodioBackend};
 // primary action, muted secondary text, text-buttons for row actions.
 // ---------------------------------------------------------------------------
 
-const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xE6, 0x21, 0x17);
-const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xF0, 0x44, 0x38);
+const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
+const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x33, 0x66);
 const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
 const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
 const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
@@ -98,7 +98,7 @@ fn green_play(
     };
     iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
-        text_color: iced::Color::BLACK,
+        text_color: iced::Color::WHITE,
         border: iced::Border::default().rounded(20),
         ..Default::default()
     }
@@ -301,18 +301,6 @@ fn card_button(
 
 /// Ghost chip: the held block while dragging (card + accent border,
 /// deliberately more compact than a full row).
-fn ghost_chip(_: &iced::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(iced::Background::Color(CARD_BG_HOVER)),
-        border: iced::Border {
-            color: SPOT_GREEN,
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        ..Default::default()
-    }
-}
-
 /// Accent bar marking the armed insertion slot.
 fn drop_bar(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
@@ -332,13 +320,15 @@ fn hairline(_: &iced::Theme) -> iced::widget::container::Style {
 
 fn hairline_rule() -> iced::Element<'static, Message> {
     iced::widget::container(
-        iced::widget::Space::new()
-            .height(iced::Length::Fixed(1.0))
-            .width(iced::Length::Fill),
+        iced::widget::container(
+            iced::widget::Space::new()
+                .height(iced::Length::Fixed(1.0))
+                .width(iced::Length::Fill),
+        )
+        .style(hairline),
     )
-    .style(hairline)
-    // Total divider height is 1 plus top plus bottom (5px): air around
-    // the rule without growing the rows themselves.
+    // Total layout 1 plus 2 top plus 2 bottom (5px); only the inner
+    // 1px paints, the rest is transparent breathing room.
     .padding(iced::Padding {
         top: 2.0,
         bottom: 2.0,
@@ -518,7 +508,7 @@ pub enum Message {
     PlaylistHover(Option<String>),
     /// Autoplay hover tracking (reveals the row remove).
     AutoHover(Option<usize>),
-    /// Right-panel drag reorder (grip press, slot hover, release anywhere).
+    /// Right-panel drag reorder (row press, slot hover, release anywhere).
     DragStart(usize),
     /// Insertion-slot hover while dragging (1..=len-1, between rows).
     DragSlot(usize),
@@ -537,12 +527,17 @@ pub enum Message {
     CloseContext,
     /// Dismiss the search popup only (scrim outside the input).
     CloseSuggest,
+    /// Clear every row hover (scrims swallow hovers so nothing behind
+    /// a popup or menu highlights).
+    ClearHovers,
     /// Playlist context menu open/close (sidebar rows, detail header).
     OpenPlaylistMenu(String),
     /// Play a playlist from the top (clears the queue first).
     PlayPlaylist(String),
     /// Append a whole playlist to the queue (never interrupts).
     QueuePlaylist(String),
+    /// Shuffle a playlist then play from the top.
+    ShufflePlaylist(String),
     /// Toggle the playlist flyout for a track (menu stays open).
     TogglePlaylistSubmenu(String),
     CursorMoved(iced::Point),
@@ -793,8 +788,11 @@ fn menu_pos(cursor: Option<iced::Point>, window: Option<iced::Size>) -> (f32, f3
 /// Commit mapping for an insertion slot: `slot == from` and `slot ==
 /// from + 1` are the item's own spot (no-op); anything else maps to a
 /// `move_to` index. `None` on no-op or out-of-range.
+/// Insertion slots live between rows plus both edges (0 before the
+/// first row, len after the last) so every song, including the middle
+/// of 3, always has a committable move.
 fn slot_commit(len: usize, from: usize, slot: usize) -> Option<usize> {
-    if from >= len || slot < 1 || slot >= len {
+    if from >= len || slot > len {
         return None;
     }
     let to = if slot <= from { slot } else { slot - 1 };
@@ -849,6 +847,10 @@ const RIGHT_GRACE: f32 = 16.0;
 const RIGHT_RAIL_W: f32 = 56.0;
 /// How far outside the collapsed rail the expand zone reaches.
 const RIGHT_EXPAND_GRACE: f32 = 8.0;
+/// Bottom strip reserved for the player bar: sidebar hover expand never
+/// fires from inside this zone. Measured: status line (~16) + control
+/// row (~50) + player padding (2x10) + spacings (~16) with margin.
+const PLAYER_ZONE_H: f32 = 105.0;
 /// Animation tick and duration slider bounds (Settings slider, ms).
 const ANIM_TICK_MS: u64 = 16;
 const ANIM_MIN_MS: u64 = 20;
@@ -870,9 +872,11 @@ fn anim_steps(anim_ms: u64) -> (f32, f32, f32) {
     )
 }
 
-/// Header-height reserve above the Now Playing sheet (header row plus
-/// breathing room); tied to the header control heights.
-const DRAWER_TOP_RESERVE: f32 = 76.0;
+/// Header-height reserve above the Now Playing sheet: measured header
+/// row (22px icon + 2x10 padding = 42) plus the 4px column spacing.
+/// Tied to the header control heights; the fully-open body layer drops
+/// it (real header above) so both states meet with no snap.
+const DRAWER_TOP_RESERVE: f32 = 46.0;
 /// Top strip the search-popup scrim leaves clickable (header + input).
 const SUGGEST_SCRIM_TOP: f32 = 110.0;
 
@@ -898,6 +902,8 @@ pub struct AppState {
     pub results: SearchResults,
     pub queue: Queue,
     pub liked: HashSet<String>,
+    /// Liked ids in add order (membership stays in `liked`).
+    pub liked_order: Vec<String>,
     pub history: Vec<String>,
     pub volume: f32,
     pub status: String,
@@ -992,7 +998,7 @@ pub struct AppState {
     hovered_track: Option<String>,
     /// Autoplay row under the cursor (same reveal, separate index space).
     hovered_auto: Option<usize>,
-    /// Right-panel drag in progress (grip press → slot hover → release).
+    /// Right-panel drag in progress (row press to slot hover to release).
     drag: Option<DragState>,
     /// Sidebar playlist under the cursor (hover play affordance).
     hovered_playlist: Option<String>,
@@ -1235,7 +1241,7 @@ impl AppState {
     ) -> Vec<iced::Task<Message>> {
         let tracks = self.register_tracks(tracks);
         for id in &liked_ids {
-            self.liked.insert(id.clone());
+            self.like_id(id);
         }
         if let Ok(store) = LibraryStore::open(&self.library_path) {
             for id in &liked_ids {
@@ -1438,14 +1444,23 @@ fn oauth_path_exists() -> bool {
     }
 }
 
-fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>, Vec<Playlist>, u64) {
-    let empty = (HashSet::new(), Vec::new(), Vec::new(), 0);
+fn load_persisted(
+    path: &str,
+) -> (
+    HashSet<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<Playlist>,
+    u64,
+) {
+    let empty = (HashSet::new(), Vec::new(), Vec::new(), Vec::new(), 0);
     let store = match LibraryStore::open(path) {
         Ok(s) => s,
         Err(_) => return empty,
     };
-    // Likes: every id in SQLite, no catalog probe, no fixtures.
-    let liked: HashSet<String> = store.liked_ids().unwrap_or_default().into_iter().collect();
+    // Likes: every id in SQLite in add order, no catalog probe.
+    let order: Vec<String> = store.liked_ids().unwrap_or_default();
+    let liked: HashSet<String> = order.iter().cloned().collect();
     let history = store
         .history(50)
         .unwrap_or_default()
@@ -1458,7 +1473,7 @@ fn load_persisted(path: &str) -> (HashSet<String>, Vec<String>, Vec<Playlist>, u
         .filter_map(|p| p.id.strip_prefix('u')?.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
-    (liked, history, user_playlists, seq)
+    (liked, order, history, user_playlists, seq)
 }
 
 impl AppState {
@@ -1480,13 +1495,15 @@ impl AppState {
         if let Some(parent) = std::path::Path::new(&library_path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let (liked, history, user_playlists, playlist_seq) = load_persisted(&library_path);
+        let (liked, liked_order, history, user_playlists, playlist_seq) =
+            load_persisted(&library_path);
         let mut state = Self {
             route: Route::Home,
             search_query: String::new(),
             results: SearchResults::default(),
             queue: Queue::default(),
             liked,
+            liked_order,
             history,
             volume: 0.8,
             status: "Ready: search for music.".into(),
@@ -1709,6 +1726,7 @@ impl AppState {
     /// The fetch task completes in `StreamResolved`; the tone is gone.
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
         let track = self.resolve_for_play(&track);
+        self.absorb_autoplay(&track.id);
         self.playing_from = "Single".into();
         self.history.push(track.id.clone());
         self.persist_play(&track.id);
@@ -1737,10 +1755,19 @@ impl AppState {
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 
+    /// Catalog-aware hero URL: stale queue rows fall back to catalog art,
+    /// same as thumb_sized, so the drawer never stays empty while the
+    /// player bar shows art.
+    fn hero_art_for(&self, t: &Track) -> Option<String> {
+        let merged = self.catalog.get(&t.id).unwrap_or(t);
+        Self::hero_art_url(merged)
+    }
+
     /// Fetch the hero artwork unless cached/in-flight (drawer hero): the
     /// large URL first, falling back to the small one like the hero does.
+    /// Catalog-aware so stale rows warm the same key they display.
     fn large_art_task(&mut self, t: &Track) -> Option<iced::Task<Message>> {
-        let url = Self::hero_art_url(t)?;
+        let url = self.hero_art_for(t)?;
         if self.artwork.contains_key(&url) || self.artwork_loading.contains(&url) {
             return None;
         }
@@ -2166,7 +2193,7 @@ impl AppState {
     fn play_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
         use iced::widget::{button, row, text};
         button(
-            row![icon("play", 14.0, iced::Color::BLACK), text(label).size(13),]
+            row![icon("play", 14.0, iced::Color::WHITE), text(label).size(13),]
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center),
         )
@@ -2192,7 +2219,7 @@ impl AppState {
                 row![
                     text(format!("{n}")).size(13).color(MUTED).width(28),
                     self.thumb(t),
-                    button(icon("play", 13.0, iced::Color::BLACK))
+                    button(icon("play", 13.0, iced::Color::WHITE))
                         .style(green_play)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
@@ -2294,6 +2321,12 @@ impl AppState {
 
     /// Bulk-append without spamming history (one entry-free push per track),
     /// then play the first new track for real.
+    /// Drop one id from the autoplay tail (queue ops absorb matches so
+    /// the two lists never show the same song twice).
+    fn absorb_autoplay(&mut self, id: &str) {
+        self.autoplay.retain(|t| t.id != id);
+    }
+
     fn queue_many(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
         let n = tracks.len();
         if n == 0 {
@@ -2390,9 +2423,15 @@ impl AppState {
             .flat_map(|t| {
                 [
                     t.thumbnail_url.clone(),
+                    // Hero key for small-only tracks so the drawer shares
+                    // the row fetch instead of warming late.
                     t.thumbnail_large_url
                         .clone()
-                        .map(|u| yutu_core::hires_thumb_url(&u, 544)),
+                        .map(|u| yutu_core::hires_thumb_url(&u, 544))
+                        .or(t
+                            .thumbnail_url
+                            .clone()
+                            .map(|u| yutu_core::hires_thumb_url(&u, 544))),
                 ]
             })
             .flatten()
@@ -2715,32 +2754,6 @@ impl AppState {
         })
     }
 
-    /// Compact held block for the dragged track: in place at the origin
-    /// while no slot arms, at the armed slot otherwise.
-    fn drag_chip(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{container, row, text};
-        use iced::Fill;
-        match self.drag.and_then(|d| self.queue.items().get(d.from)) {
-            Some(t) => container(
-                row![
-                    icon("grip", 12.0, MUTED),
-                    self.thumb_sized(t, 20.0),
-                    text(t.title.clone()).size(11).color(iced::Color::WHITE),
-                ]
-                .spacing(6)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(ghost_chip)
-            .padding(4)
-            .width(Fill)
-            .into(),
-            None => iced::widget::Space::new()
-                .height(iced::Length::Fixed(4.0))
-                .width(Fill)
-                .into(),
-        }
-    }
-
     /// Close the context menu and drop its anchor.
     fn close_menu(&mut self) {
         self.context_menu = None;
@@ -2997,12 +3010,16 @@ impl AppState {
         };
         let mut player = handle.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(t) = self.queue.current() {
+            // Crisp hero URL so external widgets get cover art (https URI
+            // is valid MPRIS artUrl; no file download lifecycle needed).
+            let art_url = self.hero_art_for(t).unwrap_or_default();
             player.update_track(yutu_desktop::NowPlaying {
                 title: t.title.clone(),
                 artist: t.artist.clone(),
                 album: t.album.clone().unwrap_or_default(),
                 track_id: t.id.clone(),
                 length_secs: t.duration_secs,
+                art_url,
             });
         }
         player.set_shuffle(self.queue.shuffle);
@@ -3107,15 +3124,25 @@ impl AppState {
         out
     }
 
-    /// Liked tracks resolved via catalog (sorted, unresolved skipped).
+    /// Liked tracks in add order via catalog (unresolved skipped).
     fn favorite_tracks(&self) -> Vec<Track> {
-        let mut v: Vec<Track> = self
-            .liked
+        self.liked_order
             .iter()
             .filter_map(|id| self.find_track(id))
-            .collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
+            .collect()
+    }
+
+    /// Like helper: membership plus add-order append.
+    fn like_id(&mut self, id: &str) {
+        if self.liked.insert(id.to_string()) {
+            self.liked_order.push(id.to_string());
+        }
+    }
+
+    /// Unlike helper: membership plus order removal.
+    fn unlike_id(&mut self, id: &str) {
+        self.liked.remove(id);
+        self.liked_order.retain(|x| x != id);
     }
 
     fn find_playlist(&self, id: &str) -> Option<Playlist> {
@@ -3195,6 +3222,24 @@ impl AppState {
             if let Some(album) = t.album.as_deref() {
                 return album.to_string();
             }
+        }
+        // Synthetic cards use ax-Title ids; strip back to the title.
+        if let Some(rest) = id_or_title.strip_prefix("ax-") {
+            if self
+                .catalog
+                .values()
+                .any(|t| t.album.as_deref() == Some(rest))
+            {
+                return rest.to_string();
+            }
+        }
+        // Plain title passthrough (OpenTrackAlbum already passes titles).
+        if self
+            .catalog
+            .values()
+            .any(|t| t.album.as_deref() == Some(id_or_title))
+        {
+            return id_or_title.to_string();
         }
         id_or_title.to_string()
     }
@@ -3473,11 +3518,12 @@ impl AppState {
                 }
             }
             Message::Like(id) => {
-                if self.liked.remove(&id) {
+                if self.liked.contains(&id) {
+                    self.unlike_id(&id);
                     self.persist_like(&id, false);
                     self.status = format!("Removed from favorites: {id}.");
                 } else {
-                    self.liked.insert(id.clone());
+                    self.like_id(&id);
                     self.persist_like(&id, true);
                     self.status = format!("Added to favorites: {id}.");
                 }
@@ -3608,6 +3654,7 @@ impl AppState {
                         self.status = format!("Track not found: {id}.");
                     }
                     Some(t) => {
+                        self.absorb_autoplay(&t.id);
                         let was_empty = self.queue.is_empty();
                         self.queue.push(t.clone());
                         self.status = if was_empty {
@@ -3682,7 +3729,7 @@ impl AppState {
                         if self.liked.contains(&track.id) {
                             self.status = format!("Already in Favorites: {}.", track.title);
                         } else {
-                            self.liked.insert(track.id.clone());
+                            self.like_id(&track.id);
                             self.persist_like(&track.id, true);
                             self.status = format!("Added {} to Favorites.", track.title);
                         }
@@ -3721,7 +3768,8 @@ impl AppState {
             } => {
                 // Virtual Favorites maps to unlikes, never SQLite.
                 if playlist_id == Self::FAVORITES_ID {
-                    if self.liked.remove(&track_id) {
+                    if self.liked.contains(&track_id) {
+                        self.unlike_id(&track_id);
                         self.persist_like(&track_id, false);
                         self.status = format!("Removed {track_id} from Favorites.");
                     } else {
@@ -3887,6 +3935,7 @@ impl AppState {
                         self.status = format!("Track not found: {id}.");
                     }
                     Some(t) => {
+                        self.absorb_autoplay(&t.id);
                         if self.queue.is_empty() {
                             self.queue.push(t);
                             self.queue.jump_to(0);
@@ -3950,32 +3999,59 @@ impl AppState {
                 }
             }
             Message::QueueHover(h) => {
-                self.hovered_queue = h;
+                // Modal open: rows behind scrims never highlight.
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                    self.hovered_queue = None;
+                } else {
+                    self.hovered_queue = h;
+                }
             }
             Message::TrackHover(h) => {
-                self.hovered_track = h;
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                    self.hovered_track = None;
+                } else {
+                    self.hovered_track = h;
+                }
+            }
+            Message::ClearHovers => {
+                self.hovered_track = None;
+                self.hovered_playlist = None;
+                self.hovered_queue = None;
+                self.hovered_auto = None;
             }
             Message::PlaylistHover(h) => {
-                self.hovered_playlist = h;
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                    self.hovered_playlist = None;
+                } else {
+                    self.hovered_playlist = h;
+                }
             }
             Message::AutoHover(h) => {
-                self.hovered_auto = h;
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                    self.hovered_auto = None;
+                } else {
+                    self.hovered_auto = h;
+                }
             }
             Message::PanelHover(i) => {
-                self.hovered_queue = Some(i);
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                    self.hovered_queue = None;
+                } else {
+                    self.hovered_queue = Some(i);
+                }
             }
             Message::DragStart(from) => {
-                // Two-row lists cannot reorder (the only slot is always
-                // own-spot), so drags start at three rows and up.
-                if from < self.queue.len() && self.queue.len() >= 3 {
+                // Two-row lists reorder via the trailing edge slot, so
+                // drags start at two rows and up.
+                if from < self.queue.len() && self.queue.len() >= 2 {
                     self.drag = Some(DragState { from, slot: None });
                 }
             }
             Message::DragSlot(k) => {
-                // Slot strips only exist while dragging and only between
-                // rows; anything else is a stale hover (no-op).
+                // Slot strips only exist while dragging (edges included);
+                // anything else is a stale hover (no-op).
                 if let Some(drag) = self.drag.as_mut() {
-                    if k >= 1 && k < self.queue.len() {
+                    if k <= self.queue.len() {
                         drag.slot = Some(k);
                     }
                 }
@@ -4100,24 +4176,50 @@ impl AppState {
                 }
                 return iced::Task::none();
             }
+            Message::ShufflePlaylist(id) => {
+                self.close_menu();
+                self.show_suggest = false;
+                let Some(p) = self.find_playlist(&id) else {
+                    self.status = format!("Playlist not found: {id}.");
+                    return iced::Task::none();
+                };
+                if p.tracks.is_empty() {
+                    self.status = format!("Playlist {}: nothing to queue.", p.title);
+                    return iced::Task::none();
+                }
+                self.queue.clear();
+                self.autoplay.clear();
+                self.autoplay_for = None;
+                self.drag = None;
+                let title = p.title.clone();
+                let task = self.queue_many(p.tracks.clone(), &format!("Playlist {title}"));
+                self.set_shuffle(true);
+                self.publish_mpris();
+                return task;
+            }
             Message::CursorMoved(p) => {
                 self.cursor = Some(p);
+                // Modal freeze: hover latch never glides behind menus.
+                let modal =
+                    self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest;
                 // Latched hover hysteresis: expand on rail/edge entry, stay
                 // open anywhere inside panel + grace, collapse only outside.
-                // Latched (not width-derived) so mid-animation widths can
-                // never flip the target under the cursor.
-                if !self.sidebar_pinned {
-                    if p.x < 72.0 {
+                // Y-gated above the player zone so the bottom strip never
+                // expands the rails.
+                let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+                let above_player = p.y < wh - PLAYER_ZONE_H;
+                if !self.sidebar_pinned && !modal {
+                    if p.x < 72.0 && above_player {
                         self.sidebar_latched = true;
-                    } else if p.x >= self.sidebar_w + SIDEBAR_GRACE {
+                    } else if p.x >= self.sidebar_w + SIDEBAR_GRACE || !above_player {
                         self.sidebar_latched = false;
                     }
                 }
-                if !self.right_pinned {
+                if !self.right_pinned && !modal {
                     let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-                    if p.x > ww - RIGHT_RAIL_W - RIGHT_EXPAND_GRACE {
+                    if p.x > ww - RIGHT_RAIL_W - RIGHT_EXPAND_GRACE && above_player {
                         self.right_latched = true;
-                    } else if p.x <= ww - self.right_w - RIGHT_GRACE {
+                    } else if p.x <= ww - self.right_w - RIGHT_GRACE || !above_player {
                         self.right_latched = false;
                     }
                 }
@@ -4758,7 +4860,7 @@ impl AppState {
             container(
                 row![
                     self.thumb(t),
-                    button(icon("play", 13.0, iced::Color::BLACK))
+                    button(icon("play", 13.0, iced::Color::WHITE))
                         .style(green_play)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
@@ -4865,26 +4967,27 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Center)
                             .into()
                     });
-                // Hover swaps the art for a play button; right-click
+                // Hover reveals a trailing play button; right-click
                 // opens the playlist menu.
-                let lead: iced::Element<'_, Message> = if self.hovered_playlist.as_deref()
-                    == Some(pl.id.as_str())
-                    && !pl.tracks.is_empty()
-                {
-                    button(icon("play", 16.0, iced::Color::WHITE))
+                let show_play = self.hovered_playlist.as_deref() == Some(pl.id.as_str())
+                    && !pl.tracks.is_empty();
+                let trailing: iced::Element<'_, Message> = if show_play {
+                    button(icon("play", 14.0, iced::Color::WHITE))
                         .style(green_play)
                         .on_press(Message::PlayPlaylist(pl.id.clone()))
-                        .padding(12)
+                        .padding(8)
                         .into()
                 } else {
-                    art
+                    iced::widget::Space::new()
+                        .width(iced::Length::Fixed(30.0))
+                        .into()
                 };
                 let pl_id = pl.id.clone();
                 let pl_hover = pl.id.clone();
                 mouse_area(
                     button(
                         row![
-                            lead,
+                            art,
                             column![
                                 text(pl.title.clone()).size(13),
                                 text(format!("Playlist · {} songs", pl.tracks.len()))
@@ -4893,6 +4996,7 @@ impl AppState {
                             ]
                             .spacing(1)
                             .width(Fill),
+                            trailing,
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
@@ -4981,7 +5085,7 @@ impl AppState {
                         .on_input(Message::NewPlaylistNameChanged)
                         .width(Fill)
                         .padding(10),
-                    button(icon("plus", 14.0, iced::Color::BLACK))
+                    button(icon("plus", 14.0, iced::Color::WHITE))
                         .style(green_play)
                         .on_press(Message::CreatePlaylist(new_name))
                         .padding(7),
@@ -5004,12 +5108,9 @@ impl AppState {
         use iced::widget::{button, container, mouse_area, row, text};
         use iced::Fill;
         if self.drag.is_some_and(|d| d.from == i) {
-            // Held with no armed slot: the chip stays in place so the song
-            // never disappears. Once a slot arms, the origin collapses
-            // and the chip lives at the slot.
-            if self.effective_drag_slot().is_none() {
-                return self.drag_chip();
-            }
+            // Origin always collapses while held (the chip lives at the
+            // armed slot only), so slot lanes stay hittable and siblings
+            // close ranks with no hole.
             return iced::widget::Space::new().width(Fill).into();
         }
         let items = self.queue.items();
@@ -5033,11 +5134,6 @@ impl AppState {
                 .into()
         };
         let row_content = row![
-            icon(
-                "grip",
-                12.0,
-                if hovered { iced::Color::WHITE } else { MUTED }
-            ),
             button(self.thumb(t))
                 .style(row_click)
                 .on_press(Message::QueueJump(i))
@@ -5079,34 +5175,31 @@ impl AppState {
             .into()
     }
 
-    /// Insertion slot between rows: slot `k` sits between rows `k`-1
-    /// and `k` (1..=len-1 only, never above the first or below the
-    /// last). Resting height is a 4px micro-gap; the
-    /// armed slot eases open and shows the compact ghost block, so rows
-    /// visibly move apart to make room for it.
+    /// Insertion slot: slot `k` sits before row `k` (0..=len, edges
+    /// included) so every song always has a committable move. Resting
+    /// height is a 10px invisible lane; the armed slot shows a single
+    /// red insertion bar, so rows visibly part for it.
     fn drop_slot(&self, k: usize) -> iced::Element<'_, Message> {
-        use iced::widget::{column, container, mouse_area};
+        use iced::widget::{container, mouse_area};
         use iced::Fill;
-        // Only an armed slot that commits to a real move shows the ghost.
+        // Only an armed slot that commits to a real move shows the bar.
         let active = self.effective_drag_slot() == Some(k);
         let bar_h = 2.0 + 6.0 * self.drag_gap;
         let inner: iced::Element<'_, Message> = if active {
-            let bar: iced::Element<'_, Message> = container(
+            container(
                 iced::widget::Space::new()
                     .height(iced::Length::Fixed(bar_h))
                     .width(Fill),
             )
             .style(drop_bar)
-            .into();
-            let chip: iced::Element<'_, Message> = self.drag_chip();
-            column![bar, chip].spacing(2).into()
+            .into()
         } else {
             iced::widget::Space::new()
-                .height(iced::Length::Fixed(4.0))
+                .height(iced::Length::Fixed(10.0))
                 .width(Fill)
                 .into()
         };
-        // The chip reads as a held block by sitting slightly narrower
+        // The bar reads as an insertion line by sitting slightly narrower
         // than the full rows around it.
         let padded = if active {
             container(inner).padding(iced::Padding {
@@ -5158,14 +5251,18 @@ impl AppState {
             .into(),
         };
         // Slot-interleaved manual list while dragging: slot k sits
-        // between rows k-1 and k (1..=len-1 only, never above the first
-        // or below the last row). At rest the rows render plain.
+        // before row k (0..=len, edges included). Dividers stay off
+        // while dragging on purpose (slots need clean lanes); they
+        // return at rest. At rest rows render plain with dividers.
         let n = self.queue.len();
         let mut upcoming: Vec<iced::Element<'_, Message>> =
-            Vec::with_capacity(if self.drag.is_some() { 2 * n } else { n });
+            Vec::with_capacity(if self.drag.is_some() { 2 * n + 1 } else { n });
+        if self.drag.is_some() {
+            upcoming.push(self.drop_slot(0));
+        }
         for k in 0..n {
             upcoming.push(self.queue_row(k));
-            if self.drag.is_some() && k + 1 < n {
+            if self.drag.is_some() {
                 upcoming.push(self.drop_slot(k + 1));
             }
         }
@@ -5250,12 +5347,20 @@ impl AppState {
                     .on_press(Message::QueueClear)
                     .padding(4),
                 scrollable(
-                    column![column(with_dividers(upcoming)).spacing(0), auto_block,]
-                        .spacing(2)
-                        .padding(iced::Padding {
-                            right: 14.0,
-                            ..iced::Padding::ZERO
+                    column![
+                        column(if self.drag.is_some() {
+                            upcoming
+                        } else {
+                            with_dividers(upcoming)
                         })
+                        .spacing(0),
+                        auto_block,
+                    ]
+                    .spacing(2)
+                    .padding(iced::Padding {
+                        right: 14.0,
+                        ..iced::Padding::ZERO
+                    })
                 )
                 .height(Fill),
             ]
@@ -5394,7 +5499,7 @@ impl AppState {
     }
 
     fn player_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, slider, text, tooltip};
+        use iced::widget::{button, column, container, mouse_area, row, slider, text, tooltip};
         use iced::Fill;
         let current = self.queue.current().cloned();
         let loading = self.loading_track.is_some();
@@ -5430,7 +5535,7 @@ impl AppState {
             None => text("").size(1).into(),
         };
         let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
-            button(icon("shuffle", 14.0, iced::Color::BLACK))
+            button(icon("shuffle", 14.0, iced::Color::WHITE))
                 .style(green_play)
                 .on_press(Message::ToggleShuffle)
                 .padding(7)
@@ -5451,21 +5556,39 @@ impl AppState {
             column![
                 text(self.status_text()).size(12).color(MUTED),
                 row![
-                    row![
-                        match &current {
+                    {
+                        let art: iced::Element<'_, Message> = match &current {
                             Some(t) => self.thumb(t),
                             None => container(icon("music", 20.0, MUTED))
                                 .style(card_bg)
                                 .padding(10)
                                 .into(),
-                        },
-                        column![text(title).size(14), text(artist).size(12).color(MUTED),]
-                            .spacing(1),
-                        like_button,
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .width(iced::Length::FillPortion(2)),
+                        };
+                        let artist_el: iced::Element<'_, Message> = match &current {
+                            Some(t) => button(text(artist).size(12).color(MUTED))
+                                .style(row_click)
+                                .on_press(Message::OpenTrackArtist(t.id.clone()))
+                                .padding(0)
+                                .into(),
+                            None => text(artist).size(12).color(MUTED).into(),
+                        };
+                        let left = row![
+                            art,
+                            column![text(title).size(14), artist_el,].spacing(1),
+                            like_button,
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center);
+                        let boxed: iced::Element<'_, Message> = match &current {
+                            Some(t) => mouse_area(left)
+                                .on_right_press(Message::OpenContext(t.id.clone()))
+                                .into(),
+                            None => left.into(),
+                        };
+                        let wrapped: iced::Element<'_, Message> =
+                            container(boxed).width(iced::Length::FillPortion(2)).into();
+                        wrapped
+                    },
                     column![
                         row![
                             shuffle_button,
@@ -5473,7 +5596,7 @@ impl AppState {
                                 .style(hover_row)
                                 .on_press(Message::Prev)
                                 .padding(8),
-                            button(icon(play_icon, 18.0, iced::Color::BLACK))
+                            button(icon(play_icon, 18.0, iced::Color::WHITE))
                                 .style(green_play)
                                 .on_press(Message::TogglePause)
                                 .padding(10),
@@ -5637,9 +5760,7 @@ impl AppState {
             .spacing(6)
             .into(),
             None if self.lyrics_loading.as_deref() == Some(id) => {
-                text("Fetching lyrics (LRCLIB, no login)…")
-                    .color(MUTED)
-                    .into()
+                text("Loading lyrics").color(MUTED).into()
             }
             None => text("No lyrics for this track yet.").color(MUTED).into(),
         }
@@ -5662,7 +5783,7 @@ impl AppState {
             .padding(24)
             .into();
         };
-        let art_url = Self::hero_art_url(&t);
+        let art_url = self.hero_art_for(&t);
         let hero: iced::Element<'_, Message> = column![
             self.art_thumb(art_url.as_deref(), 300.0),
             text(t.title.clone()).size(24),
@@ -5746,6 +5867,122 @@ impl AppState {
             .into()
     }
 
+    /// Outer width of a nav arrow button (22px icon + 2x10 padding).
+    const NAV_BTN_W: f32 = 42.0;
+    /// Outer width of the settings gear (14px icon + 2x6 padding).
+    const SETTINGS_W: f32 = 26.0;
+
+    /// Window-relative search pill width (capped, floored).
+    fn search_width(&self) -> f32 {
+        self.window
+            .map(|s| {
+                (s.width * 0.42)
+                    .clamp(200.0, 640.0)
+                    .min((s.width - 220.0).max(200.0))
+            })
+            .unwrap_or(560.0)
+    }
+
+    /// Pill left edge in window coords (base pad + sidebar + gaps + navs).
+    fn search_pill_left(&self) -> f32 {
+        8.0 + self.sidebar_w + 8.0 + Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0
+    }
+
+    /// Global header (nav + search + settings), shared by the center and
+    /// the drawer-open state so the search bar never vanishes.
+    fn header_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, container, row, text, text_input};
+        use iced::Fill;
+        let can_back = !self.nav_back.is_empty();
+        let can_forward = !self.nav_forward.is_empty();
+        let back_btn: iced::Element<'_, Message> = if can_back {
+            button(icon("chevron-left", 22.0, iced::Color::WHITE))
+                .style(nav_arrow)
+                .on_press(Message::NavBack)
+                .padding(10)
+                .into()
+        } else {
+            button(icon("chevron-left", 22.0, MUTED))
+                .style(nav_arrow)
+                .padding(10)
+                .into()
+        };
+        let fwd_btn: iced::Element<'_, Message> = if can_forward {
+            button(icon("chevron-right", 22.0, iced::Color::WHITE))
+                .style(nav_arrow)
+                .on_press(Message::NavForward)
+                .padding(10)
+                .into()
+        } else {
+            button(icon("chevron-right", 22.0, MUTED))
+                .style(nav_arrow)
+                .padding(10)
+                .into()
+        };
+        let clear_btn: iced::Element<'_, Message> = if self.search_query.is_empty() {
+            text("").size(1).into()
+        } else {
+            button(icon("x", 13.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::HomeSearchChanged(String::new()))
+                .padding(6)
+                .into()
+        };
+        let search_state: iced::Element<'_, Message> = if self.searching {
+            text("…").size(14).color(MUTED).into()
+        } else {
+            text("").size(1).into()
+        };
+        let search_w = self.search_width();
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
+        // Main row gaps: sidebar|center plus center|right when visible.
+        let gaps = if self.right_target() != 0.0 {
+            16.0
+        } else {
+            8.0
+        };
+        let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome;
+        let pill_w = if center_avail < search_w {
+            iced::Length::Fill
+        } else {
+            iced::Length::Fixed(search_w)
+        };
+        row![
+            back_btn,
+            fwd_btn,
+            container(
+                row![
+                    icon("search", 14.0, MUTED),
+                    text_input("Search YouTube Music…", &self.search_query)
+                        .style(search_inner_input)
+                        .on_input(Message::HomeSearchChanged)
+                        .on_submit(Message::SearchStay)
+                        .width(Fill)
+                        .padding(10),
+                    clear_btn,
+                    search_state,
+                ]
+                .spacing(4)
+                .align_y(iced::alignment::Vertical::Center),
+            )
+            .style(search_pill)
+            .padding(iced::Padding {
+                left: 8.0,
+                right: 4.0,
+                ..iced::Padding::ZERO
+            })
+            .width(pill_w),
+            button(icon("settings", 14.0, iced::Color::WHITE))
+                .style(hover_row)
+                .on_press(Message::Navigate(Route::Settings))
+                .padding(6),
+        ]
+        .spacing(4)
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
+    }
+
     fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{
             button, checkbox, column, container, mouse_area, row, scrollable, slider, text,
@@ -5766,16 +6003,10 @@ impl AppState {
                         }
                     }
                 }
-                // Liked tracks fill an empty history so the grid is alive.
+                // Liked tracks fill an empty history so the grid is alive
+                // (add order, deterministic even past 8).
                 if recent.is_empty() {
-                    let mut liked: Vec<Track> = self
-                        .liked
-                        .iter()
-                        .filter_map(|id| self.find_track(id))
-                        .take(8)
-                        .collect();
-                    liked.sort_by(|a, b| a.title.cmp(&b.title));
-                    recent = liked;
+                    recent = self.favorite_tracks().into_iter().take(8).collect();
                 }
                 let picks: Vec<Track> = recent;
                 let grid: iced::Element<'_, Message> = if picks.is_empty() {
@@ -5946,7 +6177,7 @@ impl AppState {
                                         row![
                                             button(
                                                 row![
-                                                    icon("play", 13.0, iced::Color::BLACK),
+                                                    icon("play", 13.0, iced::Color::WHITE),
                                                     text("Play").size(13),
                                                 ]
                                                 .spacing(6)
@@ -6211,13 +6442,8 @@ impl AppState {
                 .into()
             }
             Route::Library => {
-                // Sorted like Favorites so both orders match.
-                let mut liked_tracks: Vec<Track> = self
-                    .liked
-                    .iter()
-                    .filter_map(|id| self.find_track(id))
-                    .collect();
-                liked_tracks.sort_by(|a, b| a.title.cmp(&b.title));
+                // Add order like Favorites so both orders match.
+                let liked_tracks: Vec<Track> = self.favorite_tracks();
                 let liked_missing = self.liked.len().saturating_sub(liked_tracks.len());
                 let liked: Vec<iced::Element<'_, Message>> =
                     liked_tracks.iter().map(|t| self.track_row(t)).collect();
@@ -6308,7 +6534,7 @@ impl AppState {
                         text("Weekly Mix").size(17).width(Fill),
                         button(
                             row![
-                                icon("play", 13.0, iced::Color::BLACK),
+                                icon("play", 13.0, iced::Color::WHITE),
                                 text("Play all").size(13)
                             ]
                             .spacing(6)
@@ -6323,7 +6549,7 @@ impl AppState {
                         text("Forgotten Favorites").size(17).width(Fill),
                         button(
                             row![
-                                icon("play", 13.0, iced::Color::BLACK),
+                                icon("play", 13.0, iced::Color::WHITE),
                                 text("Play all").size(13)
                             ]
                             .spacing(6)
@@ -6580,7 +6806,7 @@ impl AppState {
                         row![
                             button(
                                 row![
-                                    icon("play", 13.0, iced::Color::BLACK),
+                                    icon("play", 13.0, iced::Color::WHITE),
                                     text("Play all").size(13)
                                 ]
                                 .spacing(6)
@@ -6612,7 +6838,7 @@ impl AppState {
                     row![
                         button(
                             row![
-                                icon("play", 13.0, iced::Color::BLACK),
+                                icon("play", 13.0, iced::Color::WHITE),
                                 text("Play").size(13)
                             ]
                             .spacing(6)
@@ -6647,7 +6873,7 @@ impl AppState {
                     text("Radio").size(12).color(MUTED),
                     button(
                         row![
-                            icon("play", 13.0, iced::Color::BLACK),
+                            icon("play", 13.0, iced::Color::WHITE),
                             text("Start radio").size(13)
                         ]
                         .spacing(6)
@@ -6661,93 +6887,9 @@ impl AppState {
                 .into()
             }
         };
-        let can_back = !self.nav_back.is_empty();
-        let can_forward = !self.nav_forward.is_empty();
-        // Global header, Spotify-style: browser nav + always-visible
-        // search (as-you-type, stays on page) + clear + shortcuts.
-        let back_btn: iced::Element<'_, Message> = if can_back {
-            button(icon("chevron-left", 22.0, iced::Color::WHITE))
-                .style(nav_arrow)
-                .on_press(Message::NavBack)
-                .padding(10)
-                .into()
-        } else {
-            button(icon("chevron-left", 22.0, MUTED))
-                .style(nav_arrow)
-                .padding(10)
-                .into()
-        };
-        let fwd_btn: iced::Element<'_, Message> = if can_forward {
-            button(icon("chevron-right", 22.0, iced::Color::WHITE))
-                .style(nav_arrow)
-                .on_press(Message::NavForward)
-                .padding(10)
-                .into()
-        } else {
-            button(icon("chevron-right", 22.0, MUTED))
-                .style(nav_arrow)
-                .padding(10)
-                .into()
-        };
-        let clear_btn: iced::Element<'_, Message> = if self.search_query.is_empty() {
-            text("").size(1).into()
-        } else {
-            button(icon("x", 13.0, MUTED))
-                .style(hover_row)
-                .on_press(Message::HomeSearchChanged(String::new()))
-                .padding(6)
-                .into()
-        };
-        let search_state: iced::Element<'_, Message> = if self.searching {
-            text("…").size(14).color(MUTED).into()
-        } else {
-            text("").size(1).into()
-        };
-        // Window-relative pill width: capped so the bar never stretches
-        // edge to edge on wide windows, floored for chrome on narrow
-        // ones. Leftover space goes right.
-        let search_w = self
-            .window
-            .map(|s| {
-                (s.width * 0.42)
-                    .clamp(200.0, 640.0)
-                    .min((s.width - 220.0).max(200.0))
-            })
-            .unwrap_or(560.0);
-        let header: iced::Element<'_, Message> = row![
-            back_btn,
-            fwd_btn,
-            container(
-                row![
-                    icon("search", 14.0, MUTED),
-                    text_input("Search YouTube Music…", &self.search_query)
-                        .style(search_inner_input)
-                        .on_input(Message::HomeSearchChanged)
-                        .on_submit(Message::SearchStay)
-                        .width(Fill)
-                        .padding(10),
-                    clear_btn,
-                    search_state,
-                ]
-                .spacing(4)
-                .align_y(iced::alignment::Vertical::Center),
-            )
-            .style(search_pill)
-            .padding(iced::Padding {
-                left: 8.0,
-                right: 4.0,
-                ..iced::Padding::ZERO
-            })
-            .width(iced::Length::Fixed(search_w)),
-            iced::widget::Space::new().width(Fill),
-            button(icon("settings", 14.0, iced::Color::WHITE))
-                .style(hover_row)
-                .on_press(Message::Navigate(Route::Settings))
-                .padding(6),
-        ]
-        .spacing(4)
-        .align_y(iced::alignment::Vertical::Center)
-        .into();
+        // Single header source of truth (drawer-open state reuses it so
+        // the search bar never vanishes).
+        let header = self.header_view();
         // Quick-results popup, YouTube-style: suggestions + top tracks.
         // Enter jumps to the full Search page; picking a track plays now.
         // Rendered at window level (above the drawer), not here.
@@ -6825,11 +6967,13 @@ impl AppState {
     pub fn view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, text, Row, Stack};
         use iced::Fill;
-        // The drawer slides up over the center column only: sidebars and
-        // the player bar stay visible while it is open. Fully open, it
-        // replaces the center so nothing behind scrolls or clicks.
+        // The drawer covers the center body only: header (search) stays
+        // visible at all times. Fully open it replaces the body so
+        // nothing behind scrolls or clicks.
         let center_body: iced::Element<'_, Message> = if self.drawer_anim > 0.98 {
-            self.drawer_layer()
+            iced::widget::column![self.header_view(), self.drawer_body_layer()]
+                .spacing(4)
+                .into()
         } else if self.drawer_anim > 0.02 {
             Stack::with_children(vec![self.center_view(), self.drawer_layer()]).into()
         } else {
@@ -6861,21 +7005,31 @@ impl AppState {
         // hole so the search input stays clickable; anything else
         // outside dismisses like a context menu.
         if let Some(popup) = self.suggest_popup() {
-            let search_w = self
-                .window
-                .map(|s| {
-                    (s.width * 0.42)
-                        .clamp(200.0, 640.0)
-                        .min((s.width - 220.0).max(200.0))
-                })
-                .unwrap_or(560.0);
+            let search_w = self.search_width();
             let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-            let pop_left = 100.0_f32.min((ww - search_w).max(0.0));
-            let pop_w = search_w.min(ww - pop_left);
+            // Same shrink contract as the header pill so narrow windows
+            // never get a popup wider than the pill.
+            let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
+            let gaps = if self.right_target() != 0.0 {
+                16.0
+            } else {
+                8.0
+            };
+            let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome;
+            let pill_actual = if center_avail < search_w {
+                center_avail.max(140.0)
+            } else {
+                search_w
+            };
+            // Aligned to the real pill edges, tracking sidebar width.
+            let pop_w = pill_actual.min(ww).max(0.0);
+            let pop_left = self.search_pill_left().clamp(0.0, (ww - pop_w).max(0.0));
             let suggest_scrim: iced::Element<'_, Message> = container(column![
                 iced::widget::Space::new().height(iced::Length::Fixed(SUGGEST_SCRIM_TOP)),
                 mouse_area(container(text("").size(1)).width(Fill).height(Fill))
-                    .on_press(Message::CloseSuggest),
+                    .on_press(Message::CloseSuggest)
+                    .on_enter(Message::ClearHovers)
+                    .on_exit(Message::ClearHovers),
             ])
             .width(Fill)
             .height(Fill)
@@ -7128,6 +7282,8 @@ impl AppState {
                 let scrim: iced::Element<'_, Message> =
                     mouse_area(container(text("").size(1)).width(Fill).height(Fill))
                         .on_press(Message::CloseContext)
+                        .on_enter(Message::ClearHovers)
+                        .on_exit(Message::ClearHovers)
                         .into();
                 // Cursor-anchored placement (clamped on screen), YTM-style.
                 let (mx, my) = menu_pos(self.menu_at, self.window);
@@ -7253,6 +7409,7 @@ impl AppState {
             if let Some(p) = self.find_playlist(&pl_id) {
                 let pid = p.id.clone();
                 let pid2 = p.id.clone();
+                let pid2b = p.id.clone();
                 let pid3 = p.id.clone();
                 let items: Vec<iced::Element<'_, Message>> = vec![
                     button(
@@ -7280,6 +7437,20 @@ impl AppState {
                     )
                     .style(hover_row)
                     .on_press(Message::QueuePlaylist(pid2))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                    button(
+                        row![
+                            icon("shuffle", 14.0, iced::Color::WHITE),
+                            text("Shuffle play").size(14),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::ShufflePlaylist(pid2b))
                     .padding(8)
                     .width(Fill)
                     .into(),
@@ -7330,6 +7501,8 @@ impl AppState {
                 let pl_scrim: iced::Element<'_, Message> =
                     mouse_area(container(text("").size(1)).width(Fill).height(Fill))
                         .on_press(Message::CloseContext)
+                        .on_enter(Message::ClearHovers)
+                        .on_exit(Message::ClearHovers)
                         .into();
                 let (mx, my) = menu_pos(self.menu_at, self.window);
                 let pl_placed: iced::Element<'_, Message> = container(column![
@@ -7384,10 +7557,49 @@ impl AppState {
         .style(card_bg)
         .padding(16)
         .width(Fill)
-        .height(iced::Length::Fixed((sheet_h - offset).max(0.0)))
+        .height(Fill)
         .into();
+        // Spacer plus Fill sheet: bottom leftover is always 0 at rest so
+        // the drawer meets the player bar exactly like the sidebars.
         container(column![
             iced::widget::Space::new().height(iced::Length::Fixed(DRAWER_TOP_RESERVE + offset)),
+            sheet,
+        ])
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }
+
+    /// Drawer body without the header reserve (used under the persistent
+    /// header when fully open, so no double gap appears).
+    fn drawer_body_layer(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, row, text};
+        use iced::Fill;
+        let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
+        let center_h = (win_h - 148.0).max(300.0);
+        let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
+        let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
+        let sheet: iced::Element<'_, Message> = container(
+            column![
+                row![
+                    button(icon("chevron-down", 14.0, iced::Color::WHITE))
+                        .style(hover_row)
+                        .on_press(Message::ToggleDrawer)
+                        .padding(7),
+                    text("Now playing").size(13).color(MUTED).width(Fill),
+                ]
+                .align_y(iced::alignment::Vertical::Center),
+                self.drawer_view(),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(Fill)
+        .height(Fill)
+        .into();
+        container(column![
+            iced::widget::Space::new().height(iced::Length::Fixed(offset)),
             sheet,
         ])
         .width(Fill)
@@ -8670,9 +8882,9 @@ mod tests {
         assert_eq!(drag_slot_preview(5, 2, Some(3)), vec![0, 1, 2, 3, 4]);
         assert_eq!(drag_slot_preview(5, 9, Some(1)), vec![0, 1, 2, 3, 4]);
         assert_eq!(drag_slot_preview(5, 0, Some(9)), vec![0, 1, 2, 3, 4]);
-        // Edge slots are out of domain now (between-only): no-ops.
-        assert_eq!(drag_slot_preview(5, 4, Some(0)), vec![0, 1, 2, 3, 4]);
-        assert_eq!(drag_slot_preview(5, 0, Some(5)), vec![0, 1, 2, 3, 4]);
+        // Edge slots included: top and bottom moves commit.
+        assert_eq!(drag_slot_preview(5, 4, Some(0)), vec![4, 0, 1, 2, 3]);
+        assert_eq!(drag_slot_preview(5, 0, Some(5)), vec![1, 2, 3, 4, 0]);
         assert_eq!(drag_slot_preview(5, 4, Some(5)), vec![0, 1, 2, 3, 4]);
         // Interior moves still work.
         assert_eq!(drag_slot_preview(5, 0, Some(2)), vec![1, 0, 2, 3, 4]);
@@ -8682,8 +8894,12 @@ mod tests {
         assert_eq!(drag_slot_preview(5, 4, Some(2)), vec![0, 1, 4, 2, 3]);
         assert_eq!(drag_slot_preview(5, 1, Some(4)), vec![0, 2, 3, 1, 4]);
         assert_eq!(drag_slot_preview(5, 0, Some(4)), vec![1, 2, 3, 0, 4]);
-        // Two-row lists can never reorder (only slot 1, always own-spot).
+        // Middle of 3 always has a move (edges included).
+        assert_eq!(drag_slot_preview(3, 1, Some(0)), vec![1, 0, 2]);
+        assert_eq!(drag_slot_preview(3, 1, Some(3)), vec![0, 2, 1]);
+        // Two-row lists reorder via the trailing edge slot.
         assert_eq!(drag_slot_preview(2, 0, Some(1)), vec![0, 1]);
+        assert_eq!(drag_slot_preview(2, 0, Some(2)), vec![1, 0]);
     }
 
     #[test]
@@ -8883,6 +9099,10 @@ mod tests {
         });
         assert!(s.liked.contains("m2"));
         assert!(s.playlist_has("__favorites", "m2"));
+        // Add order, not alphabetical: m1 liked before m2.
+        let all = s.all_playlists();
+        let fav_ids: Vec<&str> = all[0].tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(fav_ids, vec!["m1", "m2"]);
         let _ = s.update(Message::AddToPlaylist {
             playlist_id: "__favorites".into(),
             track_id: "m2".into(),
@@ -8901,6 +9121,161 @@ mod tests {
         let _ = s.update(Message::PlayPlaylist("__favorites".into()));
         assert_eq!(s.queue.len(), 1);
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    }
+
+    #[test]
+    fn single_queue_absorbs_matching_autoplay() {
+        let mut s = test_state();
+        let _ = s.update(Message::PlayNow("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m4", "Four", "Y")]),
+        });
+        assert_eq!(s.autoplay.len(), 1);
+        let _ = s.update(Message::PlayNext("m4".into()));
+        assert!(s.autoplay.iter().all(|t| t.id != "m4"));
+        assert!(s.queue.items().iter().any(|t| t.id == "m4"));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m5", "Five", "Y")]),
+        });
+        let _ = s.update(Message::QueueTrack("m5".into()));
+        assert!(s.autoplay.iter().all(|t| t.id != "m5"));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m1".into(),
+            result: Ok(vec![mk_track("m6", "Six", "Y")]),
+        });
+        let _ = s.update(Message::EnqueueTrack("m6".into()));
+        assert!(s.autoplay.iter().all(|t| t.id != "m6"));
+    }
+
+    #[test]
+    fn shuffle_playlist_plays_shuffled_from_top() {
+        let mut s = test_state();
+        let _ = s.update(Message::CreatePlaylist("Gym".into()));
+        let pid = s.user_playlists[0].id.clone();
+        for id in ["m1", "m2", "m3", "m4"] {
+            s.user_playlists[0].tracks.push(Track {
+                id: id.into(),
+                title: id.into(),
+                artist: "A".into(),
+                album: None,
+                duration_secs: 1,
+                thumbnail_url: None,
+                thumbnail_large_url: None,
+            });
+        }
+        let _ = s.update(Message::ShufflePlaylist(pid));
+        assert_eq!(s.queue.len(), 4);
+        assert!(s.queue.shuffle);
+        assert_eq!(s.queue.position(), Some(0));
+    }
+
+    #[test]
+    fn album_ax_id_resolves_tracks() {
+        let mut s = test_state();
+        s.catalog.insert(
+            "t1".into(),
+            Track {
+                id: "t1".into(),
+                title: "One".into(),
+                artist: "A".into(),
+                album: Some("Test Album XYZ".into()),
+                duration_secs: 1,
+                thumbnail_url: None,
+                thumbnail_large_url: None,
+            },
+        );
+        s.catalog.insert(
+            "t2".into(),
+            Track {
+                id: "t2".into(),
+                title: "Two".into(),
+                artist: "A".into(),
+                album: Some("Test Album XYZ".into()),
+                duration_secs: 1,
+                thumbnail_url: None,
+                thumbnail_large_url: None,
+            },
+        );
+        assert_eq!(s.resolve_album_title("ax-Test Album XYZ"), "Test Album XYZ");
+        assert_eq!(s.album_tracks("ax-Test Album XYZ").len(), 2);
+    }
+
+    #[test]
+    fn hero_uses_catalog_art_when_row_is_stale() {
+        let mut s = test_state();
+        s.catalog.insert(
+            "m1".into(),
+            Track {
+                id: "m1".into(),
+                title: "M1".into(),
+                artist: "A".into(),
+                album: None,
+                duration_secs: 1,
+                thumbnail_url: Some("https://example.invalid/s".into()),
+                thumbnail_large_url: None,
+            },
+        );
+        let stale = Track {
+            id: "m1".into(),
+            title: "M1".into(),
+            artist: "A".into(),
+            album: None,
+            duration_secs: 1,
+            thumbnail_url: None,
+            thumbnail_large_url: None,
+        };
+        assert!(s.hero_art_for(&stale).is_some());
+    }
+
+    #[test]
+    fn clear_hovers_resets_all() {
+        let mut s = test_state();
+        let _ = s.update(Message::TrackHover(Some("m1".into())));
+        let _ = s.update(Message::PlaylistHover(Some("u1".into())));
+        let _ = s.update(Message::QueueHover(Some(2)));
+        let _ = s.update(Message::AutoHover(Some(1)));
+        assert!(s.hovered_track.is_some());
+        assert!(s.hovered_playlist.is_some());
+        assert!(s.hovered_queue.is_some());
+        assert!(s.hovered_auto.is_some());
+        let _ = s.update(Message::ClearHovers);
+        assert!(s.hovered_track.is_none());
+        assert!(s.hovered_playlist.is_none());
+        assert!(s.hovered_queue.is_none());
+        assert!(s.hovered_auto.is_none());
+    }
+
+    #[test]
+    fn cursor_in_player_zone_never_expands() {
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        let _ = s.update(Message::ToggleSidebarPin);
+        let _ = s.update(Message::ToggleRightPin);
+        let _ = s.update(Message::CursorMoved(iced::Point::new(10.0, 780.0)));
+        assert!(!s.sidebar_latched);
+        let _ = s.update(Message::CursorMoved(iced::Point::new(10.0, 100.0)));
+        assert!(s.sidebar_latched);
+        let _ = s.update(Message::CursorMoved(iced::Point::new(1270.0, 780.0)));
+        assert!(!s.right_latched);
+        let _ = s.update(Message::CursorMoved(iced::Point::new(1270.0, 100.0)));
+        assert!(s.right_latched);
+    }
+
+    #[test]
+    fn search_geometry_tracks_sidebar() {
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        s.sidebar_w = 56.0;
+        let left = s.search_pill_left();
+        assert!((left - 164.0).abs() < 1.0);
+        let w = s.search_width();
+        assert!((w - 537.6).abs() < 1.0);
+        let pop = left.clamp(0.0, (1280.0 - w).max(0.0));
+        assert!(pop + w <= 1280.0);
+        // Wide window: popup sits exactly at the pill left edge.
+        assert_eq!(pop, left);
     }
 
     #[test]
@@ -8985,7 +9360,7 @@ mod tests {
         // Hover without drag: no slot latched.
         let _ = s.update(Message::DragSlot(2));
         assert!(s.drag.is_none());
-        // Grip press → slot hover → release elsewhere reorders.
+        // Row press → slot hover → release elsewhere reorders.
         let _ = s.update(Message::DragStart(0));
         assert!(s.drag.is_some());
         let _ = s.update(Message::DragSlot(2));
@@ -8994,37 +9369,54 @@ mod tests {
         let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["m2", "m1", "m3"]);
         assert!(s.status.contains("reordered"));
-        // Edge slots are out of domain: no latch, no move, no gap.
+        // Own-spot edge slot: no move, no gap.
         let _ = s.update(Message::DragStart(0));
         let _ = s.update(Message::DragSlot(0));
         let _ = s.update(Message::DragEnd);
         let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["m2", "m1", "m3"]);
         assert_eq!(s.drag_gap, 0.0);
+        // Middle of 3 moves via edges: to front, then to back.
+        let _ = s.update(Message::DragStart(1));
+        let _ = s.update(Message::DragSlot(0));
+        let _ = s.update(Message::DragEnd);
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
+        let _ = s.update(Message::DragStart(1));
+        let _ = s.update(Message::DragSlot(3));
+        let _ = s.update(Message::DragEnd);
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m3", "m2"]);
+        // Out-of-range slot ignored.
+        let _ = s.update(Message::DragStart(0));
+        let _ = s.update(Message::DragSlot(9));
+        let _ = s.update(Message::DragEnd);
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m3", "m2"]);
         // Between-positions: last item lands between the first two.
         let _ = s.update(Message::DragStart(2));
         let _ = s.update(Message::DragSlot(1));
         let _ = s.update(Message::DragEnd);
         let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, vec!["m2", "m3", "m1"]);
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
         // Same/adjacent slot: no move, no noise.
         let _ = s.update(Message::DragStart(1));
         let _ = s.update(Message::DragSlot(2));
         let _ = s.update(Message::DragEnd);
         let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, vec!["m2", "m3", "m1"]);
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
         // Esc cancels the drag without touching the order.
         let _ = s.update(Message::DragStart(0));
         let _ = s.update(Message::DragSlot(1));
         let _ = s.update(Message::CloseContext);
         assert!(s.drag.is_none());
         let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, vec!["m2", "m3", "m1"]);
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
         // Press + release on the same row: no move, no noise.
         let _ = s.update(Message::DragStart(1));
         let _ = s.update(Message::DragEnd);
         let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, vec!["m2", "m3", "m1"]);
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
         // Out-of-range press ignored.
         let _ = s.update(Message::DragStart(99));
         assert!(s.drag.is_none());

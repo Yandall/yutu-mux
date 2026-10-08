@@ -117,6 +117,7 @@ mod tests {
             album: "Hurry Up, We're Dreaming".to_owned(),
             track_id: "m1".to_owned(),
             length_secs: 185,
+            art_url: String::new(),
         }
     }
 
