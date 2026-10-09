@@ -47,36 +47,41 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
-/// Slim floating scrollbar shared by every scrollable (6px). Fully
-/// transparent until the list is hovered or dragged: Iced themes
-/// scrollbars by interaction status, so visibility follows hover/drag
-/// instead of a timed fade. Floating scrollbars paint over content,
-/// so hiding never takes layout space and revealing shifts nothing.
+/// Slim floating scrollbar shared by every scrollable (4px). Fully
+/// transparent until the list is hovered, dragged, or recently
+/// scrolled: Iced themes scrollbars by interaction status, and scroll
+/// motion lights a per-list fade that the ticker eases out (see
+/// `scroll_hint`), which is the available transition mechanism.
+/// Floating scrollbars paint over content, so hiding never takes
+/// layout space and revealing shifts nothing.
 fn slim_bar() -> iced::widget::scrollable::Scrollbar {
     iced::widget::scrollable::Scrollbar::new()
-        .width(6.0)
-        .scroller_width(6.0)
+        .width(4.0)
+        .scroller_width(4.0)
         .margin(2.0)
 }
 
-fn slim_scroll(
+/// Slim scrollbar style with a travelling scroll-fade opacity 0..1
+/// from the ticking `scroll_hint` map: hover/drag always show, scroll
+/// motion shows then eases back to invisible.
+fn slim_scroll_alpha(
     theme: &iced::Theme,
     status: iced::widget::scrollable::Status,
+    alpha: f32,
 ) -> iced::widget::scrollable::Style {
     use iced::widget::scrollable::Status;
     let mut base = iced::widget::scrollable::default(theme, status);
-    let visible = !matches!(status, Status::Active { .. });
-    let scroller = if visible {
-        iced::Color::from_rgba(1.0, 1.0, 1.0, 0.35)
+    let a = if matches!(status, Status::Active { .. }) {
+        0.4 * alpha.clamp(0.0, 1.0)
     } else {
-        iced::Color::TRANSPARENT
+        0.4
     };
     let rail = iced::widget::scrollable::Rail {
         background: None,
         border: iced::Border::default(),
         scroller: iced::widget::scrollable::Scroller {
-            background: iced::Background::Color(scroller),
-            border: iced::Border::default().rounded(3),
+            background: iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, a)),
+            border: iced::Border::default().rounded(2),
         },
     };
     base.vertical_rail = rail;
@@ -586,6 +591,9 @@ pub enum Message {
     ToggleDrawer,
     /// Drawer lyrics scroll offset (sticky header past 200px).
     DrawerScrolled(f32),
+    /// A scrollable moved: lights its scrollbar fade, which the ticker
+    /// eases out after idle (the key matches a `scroll_hint` entry).
+    Scrolled(&'static str),
     DragEnd,
     /// Right-panel row hover: highlight + drag-target tracking.
     PanelHover(usize),
@@ -927,10 +935,18 @@ fn truncate_title(title: &str, max: usize) -> String {
 const HOME_CARD_W: f32 = 156.0;
 const HOME_PICK_ART: f32 = 140.0;
 const HOME_CARD_H: f32 = 200.0;
+/// Breathing room below the home pick strip: the floating horizontal
+/// scrollbar sits on the strip's bottom edge, clear of the cards above
+/// and the next section below.
+const HOME_STRIP_GAP: f32 = 14.0;
 const TRACK_ROW_H: f32 = 52.0;
 const SUGGEST_ROW_H: f32 = 44.0;
 const QUEUE_ROW_H: f32 = 58.0;
 const AUTO_ROW_H: f32 = 44.0;
+/// Scrollbar fade: idle delay before the fade starts plus the per-tick
+/// step (~8 frames on the Animate tick, matching panel glides).
+const SCROLL_FADE_DELAY_MS: u64 = 700;
+const SCROLL_FADE_STEP: f32 = 0.12;
 
 /// Hover hysteresis grace (px): how far outside the expanded panel the
 /// cursor may roam before an unpinned sidebar collapses.
@@ -1126,6 +1142,10 @@ pub struct AppState {
     anim_ms: u64,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     drawer_scroll: f32,
+    /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
+    /// scroll motion lights the bar, the ticker fades it after idle.
+    /// Never persisted; missing keys read as invisible.
+    scroll_hint: HashMap<&'static str, (std::time::Instant, f32)>,
     /// Playlist filter text in the sidebar.
     sidebar_filter: String,
     /// Autoplay tail belongs to this seed (stale arrivals drop).
@@ -2294,6 +2314,7 @@ impl AppState {
             animations_enabled: true,
             anim_ms: ANIM_DEFAULT_MS,
             drawer_scroll: 0.0,
+            scroll_hint: HashMap::new(),
             sidebar_filter: String::new(),
             autoplay_for: None,
             autoplay: Vec::new(),
@@ -3519,11 +3540,12 @@ impl AppState {
         self.thumb_sized(track, 40.0)
     }
 
-    /// Two-line song label for the narrow queue sidebar: the title gets
-    /// a fixed two-line box, the artist a fixed one-line box below it,
-    /// so a long name clips inside its own box and the artist line is
-    /// always laid out (never pushed out). Line heights are explicit so
-    /// the box math holds at any panel width.
+    /// Two-line song label for the narrow queue sidebar: the title
+    /// wraps to at most two lines (40 chars + ellipsis), the artist is
+    /// always a single truncated line below it, and the compact block
+    /// is vertically centered by the fixed-height row container. The
+    /// column clips, so a narrower window cuts text instead of painting
+    /// over the duration/remove controls.
     fn track_text<'a>(
         title: &str,
         artist: &str,
@@ -3531,37 +3553,23 @@ impl AppState {
         color: iced::Color,
     ) -> iced::Element<'a, Message> {
         use iced::widget::text::{LineHeight, Wrapping};
-        use iced::widget::{column, container, text};
+        use iced::widget::{column, text};
         use iced::Fill;
-        // Explicit 1.25 line height: box heights below are exact line
-        // multiples, never sliced mid-glyph or peeking a third line.
+        // Explicit 1.25 line height keeps 1- and 2-line titles compact.
         const LH: f32 = 1.25;
-        let title_px = f32::from(title_size);
         let artist_px = f32::from(title_size.saturating_sub(2).max(11));
         column![
-            container(
-                text(truncate_title(title, 40))
-                    .size(f32::from(title_size))
-                    .color(color)
-                    .width(Fill)
-                    .line_height(LineHeight::Relative(LH)),
-            )
-            .width(Fill)
-            .height(iced::Length::Fixed(title_px * LH * 2.0))
-            .clip(true)
-            .align_y(iced::alignment::Vertical::Top),
-            container(
-                text(truncate_title(artist, 32))
-                    .size(artist_px)
-                    .color(MUTED)
-                    .width(Fill)
-                    .wrapping(Wrapping::None)
-                    .line_height(LineHeight::Relative(LH)),
-            )
-            .width(Fill)
-            .height(iced::Length::Fixed(artist_px * LH))
-            .clip(true)
-            .align_y(iced::alignment::Vertical::Top),
+            text(truncate_title(title, 40))
+                .size(f32::from(title_size))
+                .color(color)
+                .width(Fill)
+                .line_height(LineHeight::Relative(LH)),
+            text(truncate_title(artist, 32))
+                .size(artist_px)
+                .color(MUTED)
+                .width(Fill)
+                .wrapping(Wrapping::None)
+                .line_height(LineHeight::Relative(LH)),
         ]
         .spacing(2)
         .width(Fill)
@@ -3819,6 +3827,27 @@ impl AppState {
             || self.right_w != self.right_target()
             || self.drawer_anim != if self.drawer_open { 1.0 } else { 0.0 }
             || self.drag_gap != self.drag_gap_target()
+            || self.scroll_fading()
+    }
+
+    /// Scrollbar opacity for a scrollable key (0 when never scrolled).
+    fn scroll_opacity(&self, key: &'static str) -> f32 {
+        self.scroll_hint.get(key).map(|(_, o)| *o).unwrap_or(0.0)
+    }
+
+    /// Record scroll motion: the bar shows at full strength, then the
+    /// ticker fades it once idle (see `Message::Animate`).
+    fn lit_scroll(&mut self, key: &'static str) {
+        self.scroll_hint
+            .insert(key, (std::time::Instant::now(), 1.0));
+    }
+
+    /// True while any scrollbar fade still needs ticker frames: lit but
+    /// idle past the delay (fresh motion needs no frames, it sits at 1).
+    fn scroll_fading(&self) -> bool {
+        self.scroll_hint.values().any(|(at, o)| {
+            *o > 0.0 && at.elapsed() > std::time::Duration::from_millis(SCROLL_FADE_DELAY_MS)
+        })
     }
 
     /// Eased drop-slot gap target: open while an armed slot commits to a
@@ -5479,6 +5508,9 @@ impl AppState {
                     self.right_w = self.right_target();
                     self.drawer_anim = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drag_gap = self.drag_gap_target();
+                    for (_, o) in self.scroll_hint.values_mut() {
+                        *o = 0.0;
+                    }
                 } else {
                     // Duration-based steps with a 1px floor: each glide
                     // finishes near the slider ms, and short nudges still
@@ -5490,6 +5522,15 @@ impl AppState {
                     let target = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drawer_anim = ease_toward(self.drawer_anim, target, unit_step);
                     self.drag_gap = ease_toward(self.drag_gap, self.drag_gap_target(), unit_step);
+                    // Scrollbar fades ease out after their idle delay (a
+                    // real transition: bars light on motion, then fade).
+                    for (at, o) in self.scroll_hint.values_mut() {
+                        if *o > 0.0
+                            && at.elapsed() > std::time::Duration::from_millis(SCROLL_FADE_DELAY_MS)
+                        {
+                            *o = (*o - SCROLL_FADE_STEP).max(0.0);
+                        }
+                    }
                 }
             }
             Message::ToggleDrawer => {
@@ -5510,6 +5551,10 @@ impl AppState {
             }
             Message::DrawerScrolled(y) => {
                 self.drawer_scroll = y.max(0.0);
+                self.lit_scroll("drawer");
+            }
+            Message::Scrolled(key) => {
+                self.lit_scroll(key);
             }
             Message::OpenContext(id) => {
                 self.show_suggest = false;
@@ -6959,7 +7004,8 @@ impl AppState {
                     })
                 )
                 .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                .style(slim_scroll)
+                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
+                .on_scroll(|_| Message::Scrolled("queue"))
                 .height(Fill),
             ]
             .spacing(4)
@@ -7603,7 +7649,7 @@ impl AppState {
             )
             .height(Fill)
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-            .style(slim_scroll)
+            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
             .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y)),
         ]
         .spacing(8)
@@ -7820,9 +7866,10 @@ impl AppState {
                         .collect();
                     scrollable(row(cards).spacing(10))
                         .direction(scrollable::Direction::Horizontal(slim_bar()))
-                        .style(slim_scroll)
+                        .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("home")))
+                        .on_scroll(|_| Message::Scrolled("home"))
                         .width(Fill)
-                        .height(iced::Length::Fixed(HOME_CARD_H))
+                        .height(iced::Length::Fixed(HOME_CARD_H + HOME_STRIP_GAP))
                         .into()
                 };
                 // Bottom breathing room: the floating scrollbar sits on
@@ -8699,13 +8746,15 @@ impl AppState {
                 .align_x(iced::alignment::Horizontal::Center),
             )
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-            .style(slim_scroll)
+            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("body")))
+            .on_scroll(|_| Message::Scrolled("body"))
             .height(Fill)
             .into()
         } else {
             scrollable(container(body).padding(20).width(Fill))
                 .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                .style(slim_scroll)
+                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("body")))
+                .on_scroll(|_| Message::Scrolled("body"))
                 .height(Fill)
                 .into()
         };
@@ -9195,7 +9244,10 @@ impl AppState {
                     let flyout: iced::Element<'_, Message> = container(
                         iced::widget::scrollable(column(fly_rows).spacing(2).width(Fill))
                             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                            .style(slim_scroll)
+                            .style(move |t, s| {
+                                slim_scroll_alpha(t, s, self.scroll_opacity("flyout"))
+                            })
+                            .on_scroll(|_| Message::Scrolled("flyout"))
                             .height(iced::Length::Fixed(fly_h))
                             .width(Fill),
                     )
@@ -9582,6 +9634,33 @@ mod tests {
         s.history.push("m1".into());
         s.history.push("m2".into());
         let _ = s.view();
+    }
+
+    #[test]
+    fn scrollbar_fade_lights_and_decays() {
+        let mut s = test_state();
+        assert_eq!(s.scroll_opacity("queue"), 0.0);
+        assert!(!s.scroll_fading());
+        assert!(!s.animating());
+        // Scroll motion lights the bar at full strength (no tick needed
+        // while fresh: it sits at 1).
+        let _ = s.update(Message::Scrolled("queue"));
+        assert_eq!(s.scroll_opacity("queue"), 1.0);
+        assert!(!s.scroll_fading());
+        // Other lists stay invisible.
+        assert_eq!(s.scroll_opacity("body"), 0.0);
+        // Aged activity needs ticker frames and decays on tick.
+        if let Some(h) = s.scroll_hint.get_mut("queue") {
+            h.0 = std::time::Instant::now() - std::time::Duration::from_millis(5_000);
+        }
+        assert!(s.scroll_fading());
+        assert!(s.animating());
+        let _ = s.update(Message::Animate);
+        let faded = s.scroll_opacity("queue");
+        assert!(faded < 1.0 && faded > 0.0);
+        // Drawer scrolling lights its own key through its own message.
+        let _ = s.update(Message::DrawerScrolled(10.0));
+        assert_eq!(s.scroll_opacity("drawer"), 1.0);
     }
 
     #[test]
