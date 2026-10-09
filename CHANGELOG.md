@@ -175,6 +175,13 @@
 - Queue rows center vertically in their fixed height; queue text is a
   fixed 2-line title box plus a fixed 1-line artist box with explicit
   line heights, so long names clip in-box and the artist always shows
+- Scrollbar fades with a real transition: scroll motion lights the bar
+  at full strength, the Animate ticker eases it out after 700ms idle
+  (~8 frames); 4px slim everywhere; home strip reserves 14px below
+  the cards so the bar clears them, plus 10px below the strip
+- Queue text is a compact auto-height block (title up to 2 lines +
+  artist line) centered in the fixed row, so short rows no longer hug
+  the top and long names truncate instead of crowding the artist
 
 ## 0.1.0
 
