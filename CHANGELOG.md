@@ -168,6 +168,13 @@
 - Jump Back In is a horizontal pick strip: 140px cover on top with
   single-line title/artist below in fixed 156x200 cards (click plays,
   right-click opens the menu)
+- Slim auto-hiding scrollbars everywhere (6px, transparent until
+  hover/drag; floating overlay, so hiding takes no layout space):
+  queue panel, center body, drawer lyrics, home strip (with 10px
+  bottom breathing room), playlist flyout
+- Queue rows center vertically in their fixed height; queue text is a
+  fixed 2-line title box plus a fixed 1-line artist box with explicit
+  line heights, so long names clip in-box and the artist always shows
 
 ## 0.1.0
 

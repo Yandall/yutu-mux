@@ -47,6 +47,43 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Slim floating scrollbar shared by every scrollable (6px). Fully
+/// transparent until the list is hovered or dragged: Iced themes
+/// scrollbars by interaction status, so visibility follows hover/drag
+/// instead of a timed fade. Floating scrollbars paint over content,
+/// so hiding never takes layout space and revealing shifts nothing.
+fn slim_bar() -> iced::widget::scrollable::Scrollbar {
+    iced::widget::scrollable::Scrollbar::new()
+        .width(6.0)
+        .scroller_width(6.0)
+        .margin(2.0)
+}
+
+fn slim_scroll(
+    theme: &iced::Theme,
+    status: iced::widget::scrollable::Status,
+) -> iced::widget::scrollable::Style {
+    use iced::widget::scrollable::Status;
+    let mut base = iced::widget::scrollable::default(theme, status);
+    let visible = !matches!(status, Status::Active { .. });
+    let scroller = if visible {
+        iced::Color::from_rgba(1.0, 1.0, 1.0, 0.35)
+    } else {
+        iced::Color::TRANSPARENT
+    };
+    let rail = iced::widget::scrollable::Rail {
+        background: None,
+        border: iced::Border::default(),
+        scroller: iced::widget::scrollable::Scroller {
+            background: iced::Background::Color(scroller),
+            border: iced::Border::default().rounded(3),
+        },
+    };
+    base.vertical_rail = rail;
+    base.horizontal_rail = rail;
+    base
+}
+
 /// Search pill: the rounded-input look for the container that wraps the
 /// icon + borderless input (the icon sits visually inside the field).
 fn search_pill(_: &iced::Theme) -> iced::widget::container::Style {
@@ -3183,7 +3220,8 @@ impl AppState {
             .style(row_bg(hovered))
             .width(Fill)
             .height(iced::Length::Fixed(TRACK_ROW_H))
-            .clip(true),
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
         .on_enter(Message::TrackHover(Some(hover_id)))
@@ -3481,30 +3519,49 @@ impl AppState {
         self.thumb_sized(track, 40.0)
     }
 
-    /// Two-line song label for the narrow queue sidebar: the title
-    /// wraps to at most two lines (40 chars + ellipsis), the artist is
-    /// always a single truncated line. The column clips, so a narrower
-    /// window cuts text instead of painting over the duration/remove
-    /// controls, and callers fix the row height so longer titles clip
-    /// instead of stretching the list.
+    /// Two-line song label for the narrow queue sidebar: the title gets
+    /// a fixed two-line box, the artist a fixed one-line box below it,
+    /// so a long name clips inside its own box and the artist line is
+    /// always laid out (never pushed out). Line heights are explicit so
+    /// the box math holds at any panel width.
     fn track_text<'a>(
         title: &str,
         artist: &str,
         title_size: u16,
         color: iced::Color,
     ) -> iced::Element<'a, Message> {
-        use iced::widget::text::Wrapping;
-        use iced::widget::{column, text};
+        use iced::widget::text::{LineHeight, Wrapping};
+        use iced::widget::{column, container, text};
         use iced::Fill;
+        // Explicit 1.25 line height: box heights below are exact line
+        // multiples, never sliced mid-glyph or peeking a third line.
+        const LH: f32 = 1.25;
+        let title_px = f32::from(title_size);
+        let artist_px = f32::from(title_size.saturating_sub(2).max(11));
         column![
-            text(truncate_title(title, 40))
-                .size(f32::from(title_size))
-                .color(color),
-            text(truncate_title(artist, 32))
-                .size(f32::from(title_size.saturating_sub(2).max(11)))
-                .color(MUTED)
-                .width(Fill)
-                .wrapping(Wrapping::None),
+            container(
+                text(truncate_title(title, 40))
+                    .size(f32::from(title_size))
+                    .color(color)
+                    .width(Fill)
+                    .line_height(LineHeight::Relative(LH)),
+            )
+            .width(Fill)
+            .height(iced::Length::Fixed(title_px * LH * 2.0))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Top),
+            container(
+                text(truncate_title(artist, 32))
+                    .size(artist_px)
+                    .color(MUTED)
+                    .width(Fill)
+                    .wrapping(Wrapping::None)
+                    .line_height(LineHeight::Relative(LH)),
+            )
+            .width(Fill)
+            .height(iced::Length::Fixed(artist_px * LH))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Top),
         ]
         .spacing(2)
         .width(Fill)
@@ -6332,7 +6389,8 @@ impl AppState {
             .style(row_bg(hovered))
             .width(Fill)
             .height(iced::Length::Fixed(TRACK_ROW_H))
-            .clip(true),
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
         .on_enter(Message::TrackHover(Some(hover_id)))
@@ -6392,7 +6450,8 @@ impl AppState {
             .style(row_bg(hovered))
             .width(Fill)
             .height(iced::Length::Fixed(SUGGEST_ROW_H))
-            .clip(true),
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(menu_id))
         .on_enter(Message::TrackHover(Some(hover_id)))
@@ -6639,6 +6698,7 @@ impl AppState {
                 .width(Fill)
                 .height(iced::Length::Fixed(QUEUE_ROW_H))
                 .clip(true)
+                .align_y(iced::alignment::Vertical::Center)
                 .into();
             }
             return iced::widget::Space::new().width(Fill).into();
@@ -6694,6 +6754,7 @@ impl AppState {
             .width(Fill)
             .height(iced::Length::Fixed(QUEUE_ROW_H))
             .clip(true)
+            .align_y(iced::alignment::Vertical::Center)
             .into();
         // One press path for the whole row: plain visuals let the press
         // reach this area from text, art, or gaps (only the tiny remove
@@ -6855,7 +6916,8 @@ impl AppState {
                     .style(row_bg(self.hovered_auto == Some(i)))
                     .width(Fill)
                     .height(iced::Length::Fixed(TRACK_ROW_H))
-                    .clip(true),
+                    .clip(true)
+                    .align_y(iced::alignment::Vertical::Center),
                 )
                 .on_right_press(Message::OpenContext(menu_id))
                 .on_enter(Message::AutoHover(Some(i)))
@@ -6896,6 +6958,8 @@ impl AppState {
                         ..iced::Padding::ZERO
                     })
                 )
+                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                .style(slim_scroll)
                 .height(Fill),
             ]
             .spacing(4)
@@ -6948,7 +7012,8 @@ impl AppState {
                                     .style(row_bg(hovered))
                                     .width(Fill)
                                     .height(iced::Length::Fixed(TRACK_ROW_H))
-                                    .clip(true),
+                                    .clip(true)
+                                    .align_y(iced::alignment::Vertical::Center),
                                 )
                                 .on_right_press(Message::OpenContext(menu_id))
                                 .on_enter(Message::TrackHover(Some(hover_id)))
@@ -7537,6 +7602,8 @@ impl AppState {
                 })
             )
             .height(Fill)
+            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+            .style(slim_scroll)
             .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y)),
         ]
         .spacing(8)
@@ -7752,13 +7819,21 @@ impl AppState {
                         })
                         .collect();
                     scrollable(row(cards).spacing(10))
-                        .direction(scrollable::Direction::Horizontal(
-                            scrollable::Scrollbar::new(),
-                        ))
+                        .direction(scrollable::Direction::Horizontal(slim_bar()))
+                        .style(slim_scroll)
                         .width(Fill)
                         .height(iced::Length::Fixed(HOME_CARD_H))
                         .into()
                 };
+                // Bottom breathing room: the floating scrollbar sits on
+                // the strip's bottom edge, clear of the next section.
+                let grid: iced::Element<'_, Message> = container(grid)
+                    .width(Fill)
+                    .padding(iced::Padding {
+                        bottom: 10.0,
+                        ..iced::Padding::ZERO
+                    })
+                    .into();
                 let home_hits: iced::Element<'_, Message> =
                     if self.searching && self.results.tracks.is_empty() {
                         text("Searching YouTube Music…").color(MUTED).into()
@@ -8050,7 +8125,8 @@ impl AppState {
                             .style(row_bg(self.hovered_queue == Some(i)))
                             .width(Fill)
                             .height(iced::Length::Fixed(TRACK_ROW_H))
-                            .clip(true),
+                            .clip(true)
+                            .align_y(iced::alignment::Vertical::Center),
                         )
                         .on_right_press(Message::OpenContext(jump))
                         .on_enter(Message::QueueHover(Some(i)))
@@ -8092,7 +8168,8 @@ impl AppState {
                             .style(row_bg(self.hovered_auto == Some(i)))
                             .width(Fill)
                             .height(iced::Length::Fixed(AUTO_ROW_H))
-                            .clip(true),
+                            .clip(true)
+                            .align_y(iced::alignment::Vertical::Center),
                         )
                         .on_right_press(Message::OpenContext(menu_id))
                         .on_enter(Message::AutoHover(Some(i)))
@@ -8621,10 +8698,14 @@ impl AppState {
                 .width(Fill)
                 .align_x(iced::alignment::Horizontal::Center),
             )
+            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+            .style(slim_scroll)
             .height(Fill)
             .into()
         } else {
             scrollable(container(body).padding(20).width(Fill))
+                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                .style(slim_scroll)
                 .height(Fill)
                 .into()
         };
@@ -9113,6 +9194,8 @@ impl AppState {
                     let fly_h = ((fly_rows.len() as f32) * 44.0).min(340.0);
                     let flyout: iced::Element<'_, Message> = container(
                         iced::widget::scrollable(column(fly_rows).spacing(2).width(Fill))
+                            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                            .style(slim_scroll)
                             .height(iced::Length::Fixed(fly_h))
                             .width(Fill),
                     )
@@ -9492,6 +9575,9 @@ mod tests {
         let _ = s.suggest_track_row(&wide);
         let _ = s.track_row(&wide);
         let _ = s.queue_row(0);
+        // Queue text boxes hold 2 title lines + 1 artist line always.
+        let _ = AppState::track_text(&long, &long, 12, iced::Color::WHITE);
+        let _ = AppState::track_text_single(&long, &long, 14, iced::Color::WHITE);
         // Home pick strip renders with real picks (long names truncate).
         s.history.push("m1".into());
         s.history.push("m2".into());
