@@ -172,5 +172,6 @@ Done: user can plausibly replace Spotify for daily listening.
 29. Round 18: offline playback (disk-first play on both backends; full download bundle of audio + lyrics + artwork + metadata; disk read-through for covers/lyrics; sidecar heal on online play; 403 retry + direct-download fallback)
 30. Round 19: uniform cards/rows (fixed heights + clip + truncation: 64px home cards single-line, 52px wide rows single-line, 58px queue sidebar with 2-line titles, truncated artists everywhere) + compact search popup rows (32px cover, no inline buttons, row-click plays, right-click menu, `Track.plays` play counts from search mapping, memory-only)
 31. Round 20: overlap-proof rows (clipped text columns + tighter caps: popup 30/28, queue title 40 so the artist line always survives) + Jump Back In horizontal pick strip (140px cover-over-text fixed cards, click plays, right-click menu)
+32. Round 21: slim auto-hiding scrollbars (6px, hover/drag reveal, floating so no layout shift) on all six scrollables + 10px margin under the home strip + vertically centered row content + fixed 2-line title / 1-line artist boxes in the queue (artist can no longer be pushed out)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
