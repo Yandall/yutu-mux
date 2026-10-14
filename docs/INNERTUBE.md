@@ -44,11 +44,38 @@ actionable error. Premium accounts are exempt from PO-token gating.
 ## Cookie safety
 
 - Cookie files are validated locally with `CookieAuth::from_file` before any
-  network; the parsed value is dropped (the real client reads the file
-  itself) and never appears in errors or logs.
+  network: Netscape `cookies.txt` exports (the "Get cookies.txt" shape:
+  tab-separated rows) are normalised to a `name=value; ...` header, raw
+  header files pass through, and files without `SAPISID` fail fast with an
+  actionable message. Cookie material never appears in errors or logs.
+- A successful cookie import stashes the normalised header at
+  `{data_dir}/cookie_session.txt` (0600, same as the OAuth token file), so
+  restarts stay signed in: Settings shows "Signed in with cookies" with
+  one-click re-import plus sign-out (deletes the file). Startup itself
+  still does zero network; the session only reconnects on user action.
 - Connection errors echo server responses only — never request headers.
   (Upstream `BrowserToken::from_str` additionally requires a `SAPISID=`
   entry; a cookie without one fails with a static "header" error.)
+
+## Two-way sync (while signed in)
+
+- Import reads the whole account: library songs + liked ids + every
+  library playlist with its tracks (each list fails open, so one bad
+  endpoint cannot sink the import). Server lists keep their real ids
+  (`PL...`/`VL...`) in the local store; local `u{seq}` shells never
+  collide. An empty account reports honestly ("library is empty: like
+  songs ... then import again") instead of a generic failure.
+- Local edits apply first, then mirror to YouTube Music in the
+  background (OAuth token preferred, cookie session fallback): likes via
+  `rate_song`, playlist creates (private) via `create_playlist` with the
+  local shell migrated to the server id, adds via
+  `add_video_items_to_playlist`, deletes via `delete_playlist`. Only
+  failures surface in the status ("kept locally: ..."); success stays
+  silent because the row already shows the state.
+- Honest gap: single-track playlist removes stay local-only (upstream
+  `remove_playlist_items` needs a per-membership `setVideoId` that
+  playlist listings do not return). The status says "(local only)" on
+  server lists; re-import will bring the track back.
 - `BrowserToken`'s upstream `Debug` impl prints only `"Private BrowserToken"`,
   so `InnertubeBackend` can safely derive `Debug`/`Clone`. Still, never
   `println!`/`log` cookie contents; use `CookieAuth::redacted()`.

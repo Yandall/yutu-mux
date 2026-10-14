@@ -246,6 +246,52 @@ impl LibraryStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Mirror a server playlist exactly: upsert the title (re-imports
+    /// refresh renames instead of keeping the stale one) and replace the
+    /// track rows, so server-side removals disappear locally too. Order
+    /// follows `tracks`.
+    pub fn sync_server_playlist(
+        &self,
+        id: &str,
+        title: &str,
+        tracks: &[Track],
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO playlists(id, title) VALUES (?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET title = excluded.title",
+                params![id, title],
+            )
+            .map_err(|e| e.to_string())?;
+        self.conn
+            .execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+        for (i, t) in tracks.iter().enumerate() {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO playlist_tracks
+                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        id,
+                        i as i64,
+                        t.id,
+                        t.title,
+                        t.artist,
+                        t.album,
+                        t.duration_secs as i64,
+                        t.thumbnail_url,
+                        t.thumbnail_large_url
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn delete_playlist(&self, id: &str) -> Result<(), String> {
         self.conn
             .execute(
@@ -689,6 +735,32 @@ mod tests {
         assert!(s.user_playlists().unwrap()[0].tracks.is_empty());
         s.delete_playlist("u1").unwrap();
         assert!(s.user_playlists().unwrap().is_empty());
+    }
+
+    #[test]
+    fn server_playlist_sync_refreshes_title_and_tracks() {
+        use crate::models::Track;
+        let s = LibraryStore::in_memory().unwrap();
+        let mk = |id: &str| Track {
+            id: id.into(),
+            title: format!("Song {id}"),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: None,
+            thumbnail_large_url: None,
+            plays: None,
+        };
+        s.sync_server_playlist("PL1", "Road Trip", &[mk("a"), mk("b")])
+            .unwrap();
+        // Re-import with a rename plus a server-side removal mirrors both.
+        s.sync_server_playlist("PL1", "Road Trip Renamed", &[mk("b"), mk("c")])
+            .unwrap();
+        let lists = s.user_playlists().unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].title, "Road Trip Renamed");
+        let ids: Vec<&str> = lists[0].tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "c"]);
     }
 
     #[test]

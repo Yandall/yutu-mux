@@ -17,19 +17,26 @@ pub enum AuthState {
 }
 
 /// Opaque cookie header value loaded from a `cookies.txt`-style file.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CookieAuth {
     raw: String,
 }
 
 impl CookieAuth {
+    /// Load a cookie file in either of the two real-world shapes:
+    /// - Netscape `cookies.txt` (what the "Get cookies.txt" browser
+    ///   extension exports: tab-separated `domain, flag, path, secure,
+    ///   expiry, name, value` rows plus `#` comments), converted here to a
+    ///   `name=value; ...` header string.
+    /// - A raw `Cookie` header value (`SID=...; SAPISID=...; ...`), used as is.
+    ///
+    /// Upstream `BrowserToken` needs the header shape (it scans for
+    /// `SAPISID=`), so storing the raw Netscape text would fail later with
+    /// a generic "header" error. Normalising here keeps the failure local
+    /// and actionable. Errors never echo cookie material.
     pub fn from_file(path: &Path) -> Result<Self, String> {
         let raw = std::fs::read_to_string(path).map_err(|e| format!("read cookie file: {e}"))?;
-        let raw = raw.trim().to_string();
-        if raw.is_empty() {
-            return Err("cookie file is empty".into());
-        }
-        Ok(Self { raw })
+        Self::from_header_str(&raw)
     }
 
     pub fn state(&self) -> AuthState {
@@ -41,6 +48,67 @@ impl CookieAuth {
         &self.raw
     }
 
+    /// Build directly from an already-normalised header value (used by
+    /// session restore: the saved file holds exactly what [`from_file`]
+    /// would have produced, so validation is the same).
+    pub fn from_header_str(header: &str) -> Result<Self, String> {
+        let raw = header.trim().to_string();
+        if raw.is_empty() {
+            return Err("cookie file is empty".into());
+        }
+        if looks_like_netscape(&raw) {
+            let header = netscape_to_header(&raw).map_err(|e| format!("cookie file: {e}"))?;
+            return Ok(Self { raw: header });
+        }
+        if !raw.contains('=') {
+            return Err(
+                "cookie file: no cookies found (export Netscape cookies.txt or a Cookie header)"
+                    .into(),
+            );
+        }
+        if !raw.contains("SAPISID=") {
+            return Err(
+                "cookie file: no SAPISID (log into music.youtube.com, then export while logged in)"
+                    .into(),
+            );
+        }
+        Ok(Self { raw })
+    }
+
+    /// Persist the normalised header to `path` with `0600` permissions
+    /// (unix). This is the stay-signed-in session: [`from_file`] reads it
+    /// back (header shape passes through). Errors name the path, never
+    /// the cookie material.
+    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            // Lock permissions down before the secret lands: a
+            // pre-existing file keeps no world-readable window.
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| format!("write cookie session {}: {e}", path.display()))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("chmod cookie session {}: {e}", path.display()))?;
+            {
+                use std::io::Write as _;
+                let mut f = f;
+                f.write_all(self.raw.as_bytes())
+            }
+            .map_err(|e| format!("write cookie session {}: {e}", path.display()))?;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, &self.raw)
+                .map_err(|e| format!("write cookie session {}: {e}", path.display()))
+        }
+    }
+
     /// Redacted for logs.
     pub fn redacted(&self) -> &str {
         "[cookie-redacted]"
@@ -50,6 +118,68 @@ impl CookieAuth {
     pub fn test_value() -> Self {
         Self { raw: "test".into() }
     }
+}
+
+impl std::fmt::Debug for CookieAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CookieAuth")
+            .field("raw", &"[cookie-redacted]")
+            .finish()
+    }
+}
+
+/// True when `raw` looks like a Netscape `cookies.txt` export rather than a
+/// ready-made `Cookie` header (tab-separated rows or the generator banner).
+fn looks_like_netscape(raw: &str) -> bool {
+    raw.contains('\t') || raw.contains("# Netscape") || raw.contains("# HTTP Cookie")
+}
+
+/// Convert Netscape `cookies.txt` text to a `Cookie` header value
+/// (`name=value; ...`). Skips `#` comments (except `#HttpOnly` rows, which
+/// carry a real cookie after the marker). Errors name the problem, never the
+/// cookie material.
+fn netscape_to_header(text: &str) -> Result<String, String> {
+    let mut pairs = Vec::new();
+    for line in text.lines() {
+        let mut line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#HttpOnly") {
+            line = rest.trim();
+            if line.is_empty() {
+                continue;
+            }
+        } else if line.starts_with('#') {
+            continue;
+        }
+        // Standard rows are tab-separated with 7 fields; fall back to
+        // whitespace splitting for exporters that use spaces.
+        let fields: Vec<&str> = if line.contains('\t') {
+            line.split('\t').collect()
+        } else {
+            line.split_whitespace().collect()
+        };
+        if fields.len() < 7 {
+            continue;
+        }
+        let name = fields[5].trim();
+        // Values never contain tabs; if a row has extras, keep the first
+        // value field so a stray column cannot corrupt the header.
+        let value = fields[6].trim();
+        if name.is_empty() || name.starts_with('#') {
+            continue;
+        }
+        pairs.push(format!("{name}={value}"));
+    }
+    if pairs.is_empty() {
+        return Err("no cookies found (empty Netscape file?)".into());
+    }
+    let header = pairs.join("; ");
+    if !header.contains("SAPISID=") {
+        return Err("no SAPISID (log into music.youtube.com, then export while logged in)".into());
+    }
+    Ok(header)
 }
 
 // ---- Google OAuth (device flow, `innertube` only) ---------------------------
@@ -283,5 +413,86 @@ mod tests {
         let p = dir.join("yutu-empty-cookie.txt");
         std::fs::write(&p, "   ").unwrap();
         assert!(CookieAuth::from_file(&p).is_err());
+    }
+
+    #[test]
+    fn netscape_file_converts_to_header() {
+        let dir = std::env::temp_dir();
+        let p = dir.join("yutu-netscape-cookie.txt");
+        std::fs::write(
+            &p,
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc123\n.youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tsecret456\n",
+        )
+        .unwrap();
+        let auth = CookieAuth::from_file(&p).expect("netscape converts");
+        assert_eq!(auth.header_value(), "SID=abc123; SAPISID=secret456");
+    }
+
+    #[test]
+    fn netscape_httponly_rows_convert() {
+        let dir = std::env::temp_dir();
+        let p = dir.join("yutu-httponly-cookie.txt");
+        std::fs::write(
+            &p,
+            "#HttpOnly.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n#HttpOnly.youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tdef\n",
+        )
+        .unwrap();
+        let auth = CookieAuth::from_file(&p).expect("httponly converts");
+        assert!(auth.header_value().contains("SAPISID=def"));
+    }
+
+    #[test]
+    fn header_file_passes_through() {
+        let dir = std::env::temp_dir();
+        let p = dir.join("yutu-header-cookie.txt");
+        std::fs::write(&p, "SID=abc; SAPISID=def").unwrap();
+        let auth = CookieAuth::from_file(&p).expect("header passes");
+        assert_eq!(auth.header_value(), "SID=abc; SAPISID=def");
+    }
+
+    #[test]
+    fn missing_sapisid_fails_fast_without_leaking() {
+        let dir = std::env::temp_dir();
+        let p = dir.join("yutu-no-sapisid-cookie.txt");
+        std::fs::write(
+            &p,
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n",
+        )
+        .unwrap();
+        let err = CookieAuth::from_file(&p).unwrap_err();
+        assert!(err.contains("SAPISID"), "unexpected error: {err}");
+        assert!(!err.contains("abc"), "cookie material leaked: {err}");
+    }
+
+    #[test]
+    fn session_round_trips_without_leaking() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("yutu-session-src-cookie.txt");
+        std::fs::write(
+            &src,
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n.youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tdef\n",
+        )
+        .unwrap();
+        let auth = CookieAuth::from_file(&src).expect("netscape loads");
+        let dst = dir.join("yutu-session-saved-cookie.txt");
+        let _ = std::fs::remove_file(&dst);
+        auth.save_to_file(&dst).expect("session saves");
+        let loaded = CookieAuth::from_file(&dst).expect("session reloads");
+        assert_eq!(loaded.header_value(), "SID=abc; SAPISID=def");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "session file must be owner-only, got {mode:o}");
+        }
+        let _ = std::fs::remove_file(&dst);
+    }
+
+    #[test]
+    fn debug_never_leaks_cookie_material() {
+        let auth = CookieAuth::from_header_str("SID=abc; SAPISID=def").unwrap();
+        let debug = format!("{auth:?}");
+        assert!(!debug.contains("abc"), "SID leaked: {debug}");
+        assert!(!debug.contains("def"), "SAPISID leaked: {debug}");
     }
 }

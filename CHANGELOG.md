@@ -2,6 +2,15 @@
 
 ## 0.2.0 (unreleased)
 
+- Stay signed in with cookies: successful imports stash a 0600 session,
+  restarts show "Signed in with cookies" with one-click re-import plus
+  sign-out; imports now pull songs + liked + every playlist with tracks,
+  and likes/playlist creates/adds/deletes mirror to YouTube Music in the
+  background (single-track removes stay local-only: upstream needs a
+  per-membership id listings do not return)
+- Cookie import accepts Netscape `cookies.txt` (the "Get cookies.txt"
+  export shape): rows convert to a header before login, missing SAPISID
+  fails fast; previously every Netscape file failed as bad/expired
 - Real audio resolution: yt-dlp sidecar first (AAC preferred), 1 MiB
   range-chunked downloads, permanent ignored e2e test
   (`resolve -> fetch -> decode` green in ~7s)
