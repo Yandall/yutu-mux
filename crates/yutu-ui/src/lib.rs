@@ -481,6 +481,16 @@ pub enum RightTab {
     Recent,
 }
 
+/// One library import payload (cookie and OAuth share it): liked/library
+/// tracks plus the account's playlists with their tracks. Playlists carry
+/// real server ids (`PL...`/`VL...`), unlike local `u{seq}` shells.
+#[derive(Debug, Clone, Default)]
+pub struct ImportedLibrary {
+    pub tracks: Vec<Track>,
+    pub liked_ids: Vec<String>,
+    pub playlists: Vec<Playlist>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Navigate(Route),
@@ -639,7 +649,7 @@ pub enum Message {
     CookiePathChanged(String),
     CookieImport,
     CookieImported {
-        result: Result<(Vec<Track>, Vec<String>), String>,
+        result: Result<ImportedLibrary, String>,
     },
     HomeSearchChanged(String),
     SearchStay,
@@ -681,7 +691,36 @@ pub enum Message {
     LibraryImport,
     #[cfg(feature = "innertube")]
     LibraryImported {
-        result: Result<(Vec<Track>, Vec<String>), String>,
+        result: Result<ImportedLibrary, String>,
+    },
+    /// Re-import via the saved cookie session (no file picker needed).
+    #[cfg(feature = "innertube")]
+    CookieSessionImport,
+    /// Delete the saved cookie session (stays out of the account).
+    #[cfg(feature = "innertube")]
+    CookieLogout,
+    /// Best-effort server like/unlike result (local state is already
+    /// applied: only failures report, so the row never lies).
+    #[cfg(feature = "innertube")]
+    LikeSynced {
+        track_id: String,
+        liked: bool,
+        result: Result<(), String>,
+    },
+    /// Server playlist creation result: carries the local shell id so the
+    /// handler can migrate it to the real server id.
+    #[cfg(feature = "innertube")]
+    ServerPlaylistCreated {
+        local_id: String,
+        title: String,
+        result: Result<String, String>,
+    },
+    /// Best-effort server playlist add/delete result (local state is
+    /// already applied: only failures report).
+    #[cfg(feature = "innertube")]
+    ServerPlaylistSynced {
+        detail: String,
+        result: Result<(), String>,
     },
     StreamResolved {
         video_id: String,
@@ -1210,6 +1249,9 @@ pub struct AppState {
     /// A saved OAuth token exists on disk (signed in).
     #[cfg(feature = "innertube")]
     logged_in: bool,
+    /// A saved cookie session exists on disk (stay signed in).
+    #[cfg(feature = "innertube")]
+    cookie_logged_in: bool,
     /// A login/library network task is in flight.
     #[cfg(feature = "innertube")]
     login_busy: bool,
@@ -1725,8 +1767,19 @@ impl AppState {
         &mut self,
         tracks: Vec<Track>,
         liked_ids: Vec<String>,
+        playlists: Vec<Playlist>,
     ) -> Vec<iced::Task<Message>> {
-        let tracks = self.register_tracks(tracks);
+        // Playlist rows widen the catalog: register them alongside the
+        // library tracks so covers and titles survive restarts.
+        let mut every = tracks;
+        for p in &playlists {
+            for t in &p.tracks {
+                if !every.iter().any(|x| x.id == t.id) {
+                    every.push(t.clone());
+                }
+            }
+        }
+        let tracks = self.register_tracks(every);
         // Persist likes with metadata when we have it (the track cache
         // already holds the rows via register_tracks, but `like` alone
         // only stores ids, so upsert explicitly for liked rows).
@@ -1744,12 +1797,46 @@ impl AppState {
                     let _ = store.like(id);
                 }
             }
+            // Server playlists (real ids, not `u{seq}` shells): mirror by
+            // id so re-imports refresh renames and removals instead of
+            // drifting from what is on screen. Local `u{seq}` rows never
+            // collide with server ids.
+            for p in &playlists {
+                let _ = store.sync_server_playlist(&p.id, &p.title, &p.tracks);
+            }
         } else {
             for id in &liked_ids {
                 self.like_id(id);
             }
         }
+        // Re-import refreshes in place (same slot, new rows); new server
+        // lists append after the local ones.
+        for p in playlists {
+            match self.user_playlists.iter().position(|x| x.id == p.id) {
+                Some(i) => self.user_playlists[i] = p,
+                None => self.user_playlists.push(p),
+            }
+        }
         self.artwork_tasks(&tracks)
+    }
+
+    /// True for playlists that live on YouTube Music (real server ids from
+    /// an import or a synced create). Local `u{seq}` shells, the virtual
+    /// Favorites/Downloaded lists, and the `LM` liked-music pseudo-list
+    /// (likes sync via `rate_song`, never playlist edits) never sync.
+    fn is_server_playlist(id: &str) -> bool {
+        if id == Self::FAVORITES_ID || id == Self::DOWNLOADED_ID || id == "LM" {
+            return false;
+        }
+        if id.len() < 6 {
+            return false;
+        }
+        if let Some(rest) = id.strip_prefix('u') {
+            if rest.parse::<u64>().is_ok() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Everything the app has really seen (discovery candidate pool).
@@ -2139,6 +2226,19 @@ pub fn oauth_path() -> String {
     format!("{}/youtube_oauth.json", data_dir())
 }
 
+/// Saved cookie session: the normalised `Cookie` header (0600, written
+/// on every successful cookie import). Restarts reuse it, so the account
+/// stays signed in without another export.
+#[cfg(feature = "innertube")]
+pub fn cookie_session_path() -> String {
+    format!("{}/cookie_session.txt", data_dir())
+}
+
+#[cfg(feature = "innertube")]
+fn cookie_session_exists() -> bool {
+    std::path::Path::new(&cookie_session_path()).exists()
+}
+
 #[cfg(feature = "innertube")]
 fn oauth_path_exists() -> bool {
     #[cfg(feature = "innertube")]
@@ -2348,6 +2448,8 @@ impl AppState {
             google_login: None,
             #[cfg(feature = "innertube")]
             logged_in: oauth_path_exists(),
+            #[cfg(feature = "innertube")]
+            cookie_logged_in: cookie_session_exists(),
             #[cfg(feature = "innertube")]
             login_busy: false,
             end_advanced: false,
@@ -3693,12 +3795,40 @@ impl AppState {
     }
 
     /// Cookie import panel: normal browser login, no OAuth client needed.
+    /// A saved session stays signed in across restarts (re-import refreshes
+    /// without another export); likes and playlist edits mirror to YouTube
+    /// Music while signed in, except single-track removes (local only).
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, text_input};
+        use iced::widget::{button, column, row, text, text_input};
         use iced::Fill;
+        if self.cookie_logged_in {
+            return column![
+                text("Signed in with cookies").size(13).color(SPOT_GREEN),
+                row![
+                    button(
+                        text(if self.login_busy {
+                            "…"
+                        } else {
+                            "Import library"
+                        })
+                        .size(12)
+                    )
+                    .style(green_play)
+                    .on_press(Message::CookieSessionImport)
+                    .padding(7),
+                    button(text("Sign out").size(12))
+                        .style(hover_row)
+                        .on_press(Message::CookieLogout)
+                        .padding(7),
+                ]
+                .spacing(8),
+            ]
+            .spacing(4)
+            .into();
+        }
         column![
-            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path (no Google Cloud client required).")
+            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path (no Google Cloud client required). The session is saved, so restarts stay signed in.")
                 .size(11)
                 .color(MUTED),
             text_input("/path/to/cookies.txt", &self.cookie_path)
@@ -4769,14 +4899,19 @@ impl AppState {
                 }
             }
             Message::Like(id) => {
+                // Local state applies first; the server push (if signed
+                // in) only ever reports failures, so the row never lies.
+                let liked: bool;
                 if self.liked.contains(&id) {
                     self.unlike_id(&id);
                     self.persist_like(&id, false);
                     self.status = format!("Removed from favorites: {id}.");
+                    liked = false;
                 } else {
                     let known = self.find_track(&id).is_some();
                     self.like_id(&id);
                     self.persist_like(&id, true);
+                    liked = true;
                     if known {
                         self.status = format!("Added to favorites: {id}.");
                     } else {
@@ -4785,9 +4920,21 @@ impl AppState {
                         // row appears without a manual search.
                         self.status = format!("Added to favorites: {id} (fetching info…).");
                         self.publish_mpris();
-                        return Self::hydrate_task(vec![id]);
+                        #[cfg(feature = "innertube")]
+                        {
+                            return iced::Task::batch(vec![
+                                Self::hydrate_task(vec![id.clone()]),
+                                Self::like_sync_task(id, true),
+                            ]);
+                        }
+                        #[cfg(not(feature = "innertube"))]
+                        {
+                            return Self::hydrate_task(vec![id]);
+                        }
                     }
                 }
+                self.publish_mpris();
+                return Self::like_sync_task(id, liked);
             }
             Message::SetVolume(v) => {
                 self.volume = v.clamp(0.0, 1.0);
@@ -5025,6 +5172,10 @@ impl AppState {
                     self.persist_playlist_created(&id, &title);
                     self.new_playlist_name.clear();
                     self.status = format!("Created playlist {title} ({id}).");
+                    self.publish_mpris();
+                    // Signed in: mirror on YouTube Music, migrating the
+                    // local shell to the server id on success.
+                    return Self::playlist_create_sync_task(id, title);
                 }
             }
             Message::AddToPlaylist {
@@ -5039,13 +5190,14 @@ impl AppState {
                     if playlist_id == Self::FAVORITES_ID {
                         if self.liked.contains(&track.id) {
                             self.status = format!("Already in Favorites: {}.", track.title);
-                        } else {
-                            self.like_id(&track.id);
-                            self.persist_like_track(&track, true);
-                            self.status = format!("Added {} to Favorites.", track.title);
+                            self.publish_mpris();
+                            return iced::Task::none();
                         }
+                        self.like_id(&track.id);
+                        self.persist_like_track(&track, true);
+                        self.status = format!("Added {} to Favorites.", track.title);
                         self.publish_mpris();
-                        return iced::Task::none();
+                        return Self::like_sync_task(track.id.clone(), true);
                     }
                     // Virtual Downloaded maps to an offline download: the
                     // file must exist, so kick off the download flow.
@@ -5081,6 +5233,10 @@ impl AppState {
                                 self.user_playlists[i].tracks.push(track.clone());
                                 self.persist_playlist_added(&playlist_id, &track);
                                 self.status = format!("Added {} to {}.", track.title, title);
+                                self.publish_mpris();
+                                // Server lists mirror on YouTube Music;
+                                // local shells stay local-only.
+                                return Self::playlist_add_sync_task(playlist_id, track.id.clone());
                             }
                         }
                     }
@@ -5092,15 +5248,16 @@ impl AppState {
             } => {
                 // Virtual Favorites maps to unlikes, never SQLite.
                 if playlist_id == Self::FAVORITES_ID {
-                    if self.liked.contains(&track_id) {
-                        self.unlike_id(&track_id);
-                        self.persist_like(&track_id, false);
-                        self.status = format!("Removed {track_id} from Favorites.");
-                    } else {
+                    if !self.liked.contains(&track_id) {
                         self.status = format!("{track_id} is not in Favorites.");
+                        self.publish_mpris();
+                        return iced::Task::none();
                     }
+                    self.unlike_id(&track_id);
+                    self.persist_like(&track_id, false);
+                    self.status = format!("Removed {track_id} from Favorites.");
                     self.publish_mpris();
-                    return iced::Task::none();
+                    return Self::like_sync_task(track_id, false);
                 }
                 // Virtual Downloaded maps to deleting the offline bundle.
                 if playlist_id == Self::DOWNLOADED_ID {
@@ -5125,7 +5282,14 @@ impl AppState {
                         let title = self.user_playlists[i].title.clone();
                         self.user_playlists[i].tracks.retain(|t| t.id != track_id);
                         self.persist_playlist_removed(&playlist_id, &track_id);
-                        self.status = format!("Removed {track_id} from {title}.");
+                        // Single-track remove has no server call (upstream
+                        // needs a per-membership id listings do not return),
+                        // so server lists say so instead of implying a sync.
+                        self.status = if Self::is_server_playlist(&playlist_id) {
+                            format!("Removed {track_id} from {title} (local only).")
+                        } else {
+                            format!("Removed {track_id} from {title}.")
+                        };
                     }
                 }
             }
@@ -5149,6 +5313,9 @@ impl AppState {
                         self.go(Route::Library);
                     }
                     self.status = format!("Deleted playlist {id}.");
+                    self.publish_mpris();
+                    // Server lists mirror the delete on YouTube Music.
+                    return Self::playlist_delete_sync_task(id);
                 } else {
                     self.status = format!("Playlist {id} is built-in and can't be deleted.");
                 }
@@ -5818,17 +5985,151 @@ impl AppState {
                     self.login_busy = false;
                 }
                 match result {
-                    Ok((tracks, liked_ids)) => {
-                        let n = tracks.len();
-                        let m = liked_ids.len();
-                        let tasks = self.merge_imported(tracks, liked_ids);
-                        self.status = format!("Cookie import: {n} library tracks ({m} liked).");
+                    Ok(imported) => {
+                        #[cfg(feature = "innertube")]
+                        {
+                            self.cookie_logged_in = cookie_session_exists();
+                        }
+                        let n = imported.tracks.len();
+                        let m = imported.liked_ids.len();
+                        let p = imported.playlists.len();
+                        let tasks = self.merge_imported(
+                            imported.tracks,
+                            imported.liked_ids,
+                            imported.playlists,
+                        );
+                        self.status = format!(
+                            "Cookie import: {n} library tracks ({m} liked, {p} playlists)."
+                        );
                         self.publish_mpris();
                         return iced::Task::batch(tasks);
                     }
                     Err(e) => {
+                        #[cfg(feature = "innertube")]
+                        {
+                            // A dead saved session must not keep posing as
+                            // signed in: drop it so the panel goes back to
+                            // the file picker.
+                            if e.contains("saved cookie session") {
+                                let _ = std::fs::remove_file(cookie_session_path());
+                                self.cookie_logged_in = false;
+                            }
+                        }
                         self.status = format!("Cookie import failed: {e}");
                     }
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieSessionImport => {
+                if !cookie_session_exists() {
+                    self.status = "Cookie session is gone: import your cookies file again.".into();
+                } else {
+                    self.login_busy = true;
+                    self.status = "Importing your library…".into();
+                    self.publish_mpris();
+                    return Self::cookie_session_import_task();
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieLogout => {
+                if cookie_session_exists() {
+                    match std::fs::remove_file(cookie_session_path()) {
+                        Ok(()) => {
+                            self.cookie_logged_in = false;
+                            self.status = "Cookie session cleared.".into();
+                        }
+                        Err(e) => {
+                            self.status = format!("Sign-out failed: {e}");
+                        }
+                    }
+                } else {
+                    self.cookie_logged_in = false;
+                    self.status = "Cookie session cleared.".into();
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::LikeSynced {
+                track_id,
+                liked,
+                result,
+            } => {
+                if let Err(e) = result {
+                    let verb = if liked { "like" } else { "unlike" };
+                    self.status =
+                        format!("YouTube {verb} of {track_id} failed (kept locally): {e}");
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::ServerPlaylistCreated {
+                local_id,
+                title,
+                result,
+            } => match result {
+                Ok(server_id) => {
+                    // Migrate the local shell to the real server id, in
+                    // memory and in SQLite, so later edits sync. Tracks
+                    // added while the create was in flight ride along:
+                    // they flush to the server id below.
+                    let Some(pos) = self.user_playlists.iter().position(|p| p.id == local_id)
+                    else {
+                        self.status = format!(
+                            "Created {title} on YouTube ({server_id}): the local list was removed."
+                        );
+                        return iced::Task::none();
+                    };
+                    let pl = self.user_playlists.remove(pos);
+                    if self.route == Route::PlaylistDetail(local_id.clone()) {
+                        self.go(Route::PlaylistDetail(server_id.clone()));
+                    }
+                    // Import race: fold the shell rows into the existing
+                    // server list instead of duplicating it.
+                    let merged = match self.user_playlists.iter().find(|p| p.id == server_id) {
+                        Some(existing) => {
+                            let mut m = existing.clone();
+                            for t in &pl.tracks {
+                                if !m.tracks.iter().any(|x| x.id == t.id) {
+                                    m.tracks.push(t.clone());
+                                }
+                            }
+                            m
+                        }
+                        None => Playlist {
+                            id: server_id.clone(),
+                            title: pl.title.clone(),
+                            tracks: pl.tracks,
+                        },
+                    };
+                    if let Ok(store) = LibraryStore::open(&self.library_path) {
+                        let _ =
+                            store.sync_server_playlist(&server_id, &merged.title, &merged.tracks);
+                        let _ = store.delete_playlist(&local_id);
+                    }
+                    match self.user_playlists.iter().position(|p| p.id == server_id) {
+                        Some(i) => self.user_playlists[i] = merged.clone(),
+                        None => self
+                            .user_playlists
+                            .insert(pos.min(self.user_playlists.len()), merged.clone()),
+                    }
+                    self.status = format!("Created playlist {} (synced to YouTube).", merged.title);
+                    self.publish_mpris();
+                    // Flush any in-flight rows to the server id (failures
+                    // report per track, the local rows are kept).
+                    return iced::Task::batch(
+                        merged
+                            .tracks
+                            .iter()
+                            .map(|t| Self::playlist_add_sync_task(server_id.clone(), t.id.clone()))
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                Err(e) => {
+                    self.status = format!("Created {title} locally (YouTube sync failed: {e})");
+                }
+            },
+            #[cfg(feature = "innertube")]
+            Message::ServerPlaylistSynced { detail, result } => {
+                if let Err(e) = result {
+                    self.status = format!("{detail} (kept locally): {e}");
                 }
             }
             #[cfg(feature = "innertube")]
@@ -5926,11 +6227,17 @@ impl AppState {
             Message::LibraryImported { result } => {
                 self.login_busy = false;
                 match result {
-                    Ok((tracks, liked_ids)) => {
-                        let n = tracks.len();
-                        let m = liked_ids.len();
-                        let tasks = self.merge_imported(tracks, liked_ids);
-                        self.status = format!("Imported {n} library tracks ({m} liked).");
+                    Ok(imported) => {
+                        let n = imported.tracks.len();
+                        let m = imported.liked_ids.len();
+                        let p = imported.playlists.len();
+                        let tasks = self.merge_imported(
+                            imported.tracks,
+                            imported.liked_ids,
+                            imported.playlists,
+                        );
+                        self.status =
+                            format!("Imported {n} library tracks ({m} liked, {p} playlists).");
                         self.publish_mpris();
                         return iced::Task::batch(tasks);
                     }
@@ -6236,7 +6543,7 @@ impl AppState {
         )
     }
 
-    /// Signed-in library import: library songs + liked ids (catalog merge).
+    /// Signed-in library import: songs + liked + server playlists.
     #[cfg(feature = "innertube")]
     fn library_import_task() -> iced::Task<Message> {
         iced::Task::perform(
@@ -6244,22 +6551,196 @@ impl AppState {
                 let persist =
                     yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path()))?;
                 let backend = yutu_core::InnertubeBackend::connect_with_oauth(&persist)?;
-                let lib = backend.library_songs().await.unwrap_or_default();
-                let liked = backend.liked_songs().await.unwrap_or_default();
-                if lib.is_empty() && liked.is_empty() {
-                    return Err("empty library: is this the right Google account?".to_string());
+                let imported = Self::fetch_full_library(&backend).await?;
+                if imported.tracks.is_empty() && imported.playlists.is_empty() {
+                    return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
-                let mut all = lib;
-                for t in liked {
-                    if !all.iter().any(|x| x.id == t.id) {
-                        all.push(t);
-                    }
-                }
-                Ok((all, liked_ids))
+                Ok(imported)
             },
             |result| Message::LibraryImported { result },
         )
+    }
+
+    /// Any saved login: OAuth token first, else the cookie session.
+    /// Powers best-effort server sync (likes, playlist writes) without
+    /// caring which flow signed the user in. A broken OAuth file falls
+    /// back to a valid cookie session instead of failing outright.
+    #[cfg(feature = "innertube")]
+    async fn session_backend() -> Result<yutu_core::InnertubeBackend, String> {
+        if std::path::Path::new(&oauth_path()).exists() {
+            match yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path())) {
+                Ok(persist) => {
+                    return yutu_core::InnertubeBackend::connect_with_oauth(&persist);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[yutu-login] saved OAuth token unusable ({e}): trying cookie session"
+                    );
+                }
+            }
+        }
+        if cookie_session_exists() {
+            return yutu_core::InnertubeBackend::connect_with_cookie_file(std::path::Path::new(
+                &cookie_session_path(),
+            ))
+            .await;
+        }
+        Err("sign in first (cookies or Google)".into())
+    }
+
+    /// True when a like/playlist write can attempt a server sync.
+    #[cfg(feature = "innertube")]
+    fn has_session() -> bool {
+        std::path::Path::new(&oauth_path()).exists() || cookie_session_exists()
+    }
+
+    /// Full account read: library songs + liked ids + every library
+    /// playlist with its tracks. Each list fails open (empty vec), so one
+    /// bad endpoint cannot sink the import; callers reject a fully-empty
+    /// result with an account-specific hint.
+    #[cfg(feature = "innertube")]
+    async fn fetch_full_library(
+        backend: &yutu_core::InnertubeBackend,
+    ) -> Result<ImportedLibrary, String> {
+        let lib = backend.library_songs().await.unwrap_or_default();
+        let liked = backend.liked_songs().await.unwrap_or_default();
+        let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
+        let mut all = lib;
+        for t in liked {
+            if !all.iter().any(|x| x.id == t.id) {
+                all.push(t);
+            }
+        }
+        let mut playlists: Vec<Playlist> = Vec::new();
+        for sp in backend.library_playlists().await.unwrap_or_default() {
+            // A failed track fetch skips the list (fail open): pushing an
+            // empty row would wipe the in-memory tracks on merge.
+            if let Ok(tracks) = backend.playlist_tracks(&sp.id).await {
+                playlists.push(Playlist {
+                    id: sp.id,
+                    title: sp.title,
+                    tracks,
+                });
+            }
+        }
+        Ok(ImportedLibrary {
+            tracks: all,
+            liked_ids,
+            playlists,
+        })
+    }
+
+    /// Push one like/unlike to YouTube Music (best effort: the local
+    /// state is already applied, so only failures report back).
+    #[cfg(feature = "innertube")]
+    fn like_sync_task(track_id: String, liked: bool) -> iced::Task<Message> {
+        if !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let result = match Self::session_backend().await {
+                    Ok(b) => b.rate_like(&track_id, liked).await,
+                    Err(e) => Err(e),
+                };
+                (track_id, liked, result)
+            },
+            |(track_id, liked, result)| Message::LikeSynced {
+                track_id,
+                liked,
+                result,
+            },
+        )
+    }
+
+    /// Create the playlist on YouTube Music (best effort): success
+    /// migrates the local `u{seq}` shell to the real server id.
+    #[cfg(feature = "innertube")]
+    fn playlist_create_sync_task(local_id: String, title: String) -> iced::Task<Message> {
+        if !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let backend = Self::session_backend().await;
+                let result = match backend {
+                    Ok(b) => b.create_server_playlist(&title).await,
+                    Err(e) => Err(e),
+                };
+                (local_id, title, result)
+            },
+            |(local_id, title, result)| Message::ServerPlaylistCreated {
+                local_id,
+                title,
+                result,
+            },
+        )
+    }
+
+    /// Append one track to a server playlist (best effort).
+    #[cfg(feature = "innertube")]
+    fn playlist_add_sync_task(playlist_id: String, track_id: String) -> iced::Task<Message> {
+        if !Self::is_server_playlist(&playlist_id) || !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let result = match Self::session_backend().await {
+                    Ok(b) => b.add_to_server_playlist(&playlist_id, &track_id).await,
+                    Err(e) => Err(e),
+                };
+                (playlist_id, track_id, result)
+            },
+            |(playlist_id, track_id, result)| Message::ServerPlaylistSynced {
+                detail: format!("YouTube add of {track_id} to {playlist_id} failed"),
+                result,
+            },
+        )
+    }
+
+    /// Delete a server playlist (best effort).
+    #[cfg(feature = "innertube")]
+    fn playlist_delete_sync_task(playlist_id: String) -> iced::Task<Message> {
+        if !Self::is_server_playlist(&playlist_id) || !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let result = match Self::session_backend().await {
+                    Ok(b) => b.delete_server_playlist(&playlist_id).await,
+                    Err(e) => Err(e),
+                };
+                (playlist_id, result)
+            },
+            |(playlist_id, result)| Message::ServerPlaylistSynced {
+                detail: format!("YouTube delete of {playlist_id} failed"),
+                result,
+            },
+        )
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn like_sync_task(_track_id: String, _liked: bool) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn playlist_create_sync_task(_local_id: String, _title: String) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn playlist_add_sync_task(_playlist_id: String, _track_id: String) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn playlist_delete_sync_task(_playlist_id: String) -> iced::Task<Message> {
+        iced::Task::none()
     }
 
     /// Suggestion popup: one light query (texts only, no tracks).
@@ -6349,7 +6830,8 @@ impl AppState {
 
     /// Cookie import: normal browser login, no OAuth client needed. The user
     /// logs into music.youtube.com in their own browser, exports cookies to
-    /// a file, and points the app at it: same library/liked merge as OAuth.
+    /// a file, and points the app at it: full library/liked/playlists merge.
+    /// Success also stashes a 0600 session so restarts stay signed in.
     #[cfg(feature = "innertube")]
     fn cookie_import_task(path: String) -> iced::Task<Message> {
         iced::Task::perform(
@@ -6358,19 +6840,41 @@ impl AppState {
                     std::path::Path::new(&path),
                 )
                 .await?;
-                let lib = backend.library_songs().await.unwrap_or_default();
-                let liked = backend.liked_songs().await.unwrap_or_default();
-                if lib.is_empty() && liked.is_empty() {
-                    return Err("empty library: bad cookies file or wrong account?".to_string());
+                let imported = Self::fetch_full_library(&backend).await?;
+                if imported.tracks.is_empty() && imported.playlists.is_empty() {
+                    return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
-                let mut all = lib;
-                for t in liked {
-                    if !all.iter().any(|x| x.id == t.id) {
-                        all.push(t);
+                // Stay signed in: stash the normalised header (0600) only
+                // for a validated import, so failures leave no session.
+                if let Ok(auth) = yutu_core::CookieAuth::from_file(std::path::Path::new(&path)) {
+                    if let Err(e) = auth.save_to_file(std::path::Path::new(&cookie_session_path()))
+                    {
+                        eprintln!("[yutu-login] session stash failed: {e}");
                     }
                 }
-                Ok((all, liked_ids))
+                Ok(imported)
+            },
+            |result| Message::CookieImported { result },
+        )
+    }
+
+    /// Re-import via the saved cookie session (no file picker round trip).
+    #[cfg(feature = "innertube")]
+    fn cookie_session_import_task() -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
+                    std::path::Path::new(&cookie_session_path()),
+                )
+                .await
+                .map_err(|e| {
+                    format!("saved cookie session failed ({e}): import your cookies file again")
+                })?;
+                let imported = Self::fetch_full_library(&backend).await?;
+                if imported.tracks.is_empty() && imported.playlists.is_empty() {
+                    return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
+                }
+                Ok(imported)
             },
             |result| Message::CookieImported { result },
         )
@@ -11091,10 +11595,11 @@ mod tests {
         assert!(s.status.contains("Signed out"));
         // Imported payload merges catalog + likes.
         let _ = s.update(Message::LibraryImported {
-            result: Ok((
-                vec![mk_track("lib1", "Lied", "Someone")],
-                vec!["lib1".into()],
-            )),
+            result: Ok(ImportedLibrary {
+                tracks: vec![mk_track("lib1", "Lied", "Someone")],
+                liked_ids: vec!["lib1".into()],
+                playlists: vec![],
+            }),
         });
         assert!(!s.login_busy);
         assert!(s.find_track("lib1").is_some());
@@ -11396,10 +11901,11 @@ mod tests {
         let _ = s.update(Message::CookiePathChanged("/tmp/x.txt".into()));
         assert_eq!(s.cookie_path, "/tmp/x.txt");
         let _ = s.update(Message::CookieImported {
-            result: Ok((
-                vec![mk_track("c1", "Cookie Song", "Someone")],
-                vec!["c1".into()],
-            )),
+            result: Ok(ImportedLibrary {
+                tracks: vec![mk_track("c1", "Cookie Song", "Someone")],
+                liked_ids: vec!["c1".into()],
+                playlists: vec![],
+            }),
         });
         assert!(s.find_track("c1").is_some());
         assert!(s.liked.contains("c1"));
@@ -11408,6 +11914,121 @@ mod tests {
             result: Err("bad cookies".into()),
         });
         assert!(s.status.contains("bad cookies"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn import_merges_server_playlists_with_real_ids() {
+        use yutu_core::Playlist;
+        let mut s = test_state();
+        let _ = s.update(Message::CookieImported {
+            result: Ok(ImportedLibrary {
+                tracks: vec![],
+                liked_ids: vec![],
+                playlists: vec![Playlist {
+                    id: "PLserver1".into(),
+                    title: "Road Trip".into(),
+                    tracks: vec![mk_track("p1", "Pl Song", "Someone")],
+                }],
+            }),
+        });
+        // Server list lands in memory under its real id (syncable).
+        let pl = s.user_playlists.iter().find(|p| p.id == "PLserver1");
+        assert!(pl.is_some());
+        assert!(AppState::is_server_playlist("PLserver1"));
+        assert!(!AppState::is_server_playlist("u7"));
+        assert!(!AppState::is_server_playlist("LM"));
+        assert!(!AppState::is_server_playlist("u"));
+        assert!(!AppState::is_server_playlist(AppState::FAVORITES_ID));
+        assert!(!AppState::is_server_playlist(AppState::DOWNLOADED_ID));
+        // Tracks register into the catalog + SQLite track cache.
+        assert!(s.find_track("p1").is_some());
+        assert!(s.status.contains("1 playlists"));
+        // Re-import refreshes in place (no duplicate list).
+        let _ = s.update(Message::CookieImported {
+            result: Ok(ImportedLibrary {
+                tracks: vec![],
+                liked_ids: vec![],
+                playlists: vec![Playlist {
+                    id: "PLserver1".into(),
+                    title: "Road Trip Renamed".into(),
+                    tracks: vec![],
+                }],
+            }),
+        });
+        assert_eq!(
+            s.user_playlists
+                .iter()
+                .filter(|p| p.id == "PLserver1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            s.user_playlists
+                .iter()
+                .find(|p| p.id == "PLserver1")
+                .unwrap()
+                .title,
+            "Road Trip Renamed"
+        );
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn server_sync_results_report_honestly() {
+        let mut s = test_state();
+        // Like failure reports but keeps the local state.
+        s.like_id("m1");
+        let _ = s.update(Message::LikeSynced {
+            track_id: "m1".into(),
+            liked: true,
+            result: Err("403".into()),
+        });
+        assert!(s.status.contains("failed"));
+        assert!(s.liked.contains("m1"));
+        // Success stays silent.
+        s.status = "quiet".into();
+        let _ = s.update(Message::LikeSynced {
+            track_id: "m1".into(),
+            liked: true,
+            result: Ok(()),
+        });
+        assert_eq!(s.status, "quiet");
+        // Server create migrates the local shell to the server id.
+        let _ = s.update(Message::CreatePlaylist("Trip".into()));
+        let local = s.user_playlists.last().unwrap().id.clone();
+        assert!(local.starts_with('u'));
+        let _ = s.update(Message::ServerPlaylistCreated {
+            local_id: local.clone(),
+            title: "Trip".into(),
+            result: Ok("PLnew1".into()),
+        });
+        assert!(s.user_playlists.iter().any(|p| p.id == "PLnew1"));
+        assert!(!s.user_playlists.iter().any(|p| p.id == local));
+        assert!(s.status.contains("synced to YouTube"));
+        // Create failure keeps the local shell and says so.
+        let _ = s.update(Message::CreatePlaylist("Local".into()));
+        let local2 = s.user_playlists.last().unwrap().id.clone();
+        let _ = s.update(Message::ServerPlaylistCreated {
+            local_id: local2.clone(),
+            title: "Local".into(),
+            result: Err("500".into()),
+        });
+        assert!(s.user_playlists.iter().any(|p| p.id == local2));
+        assert!(s.status.contains("locally"));
+        // Unknown shell (deleted mid-flight): orphan reports, no panic.
+        let _ = s.update(Message::ServerPlaylistCreated {
+            local_id: "u999".into(),
+            title: "Ghost".into(),
+            result: Ok("PLghost1".into()),
+        });
+        assert!(s.status.contains("PLghost1"));
+        assert!(!s.user_playlists.iter().any(|p| p.id == "PLghost1"));
+        // Failed import never flips the session flag by itself.
+        let _ = s.update(Message::CookieImported {
+            result: Err("boom".into()),
+        });
+        assert!(s.status.contains("Cookie import failed: boom"));
     }
 
     #[test]

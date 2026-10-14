@@ -64,6 +64,24 @@ enum Inner {
     OAuth(YtMusic<OAuthToken>),
 }
 
+/// A YouTube Music library playlist header (id + title). Tracks are fetched
+/// separately with [`InnertubeBackend::playlist_tracks`] so imports can
+/// fail open per playlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPlaylist {
+    pub id: String,
+    pub title: String,
+}
+
+/// Map one `get_library_playlists` row to our [`ServerPlaylist`]
+/// (`id` = raw playlist id for later track/add/delete calls).
+fn server_playlist_of(list: &ytmapi_rs::parse::LibraryPlaylist) -> ServerPlaylist {
+    ServerPlaylist {
+        id: list.playlist_id.get_raw().to_string(),
+        title: list.title.clone(),
+    }
+}
+
 impl InnertubeBackend {
     /// Connect without credentials (fewer queries supported server-side).
     ///
@@ -80,19 +98,25 @@ impl InnertubeBackend {
 
     /// Connect with a browser cookie file.
     ///
-    /// `CookieAuth::from_file` validates the file first (empty/missing file
-    /// fails before any network). The cookie value itself is never logged;
-    /// only the ytmapi error (server response, no request headers) is echoed.
+    /// Accepts Netscape `cookies.txt` or a raw `Cookie` header file (see
+    /// [`CookieAuth::from_file`], which normalises both to a header value).
+    /// The cookie value itself is never logged; only the ytmapi error
+    /// (server response, no request headers) is echoed.
     pub async fn connect_with_cookie_file(path: &Path) -> Result<Self, String> {
-        // Local validation; the parsed value is intentionally dropped: the
-        // real client reads the file itself.
-        let _auth = CookieAuth::from_file(path).map_err(|e| format!("cookie file: {e}"))?;
-        YtMusic::from_cookie_file(path)
+        let auth = CookieAuth::from_file(path).map_err(|e| format!("cookie file: {e}"))?;
+        Self::connect_with_cookie_str(auth.header_value()).await
+    }
+
+    /// Connect with an already-normalised `Cookie` header value (see
+    /// [`CookieAuth::header_value`]). This is the stay-signed-in path: the
+    /// saved session file holds the header, so no re-export is needed.
+    pub async fn connect_with_cookie_str(header: &str) -> Result<Self, String> {
+        YtMusic::from_cookie(header)
             .await
             .map(|client| Self {
                 inner: Inner::Cookie(client),
             })
-            .map_err(|_| "innertube cookie login failed (bad/expired cookie?)".to_string())
+            .map_err(|e| format!("innertube cookie login failed ({e}; bad/expired cookie?)"))
     }
 
     /// Connect with a Google OAuth token bundle (see
@@ -231,7 +255,7 @@ impl InnertubeBackend {
     }
 
     /// The user's liked-music tracks, via the `LM` liked playlist
-    /// (`get_playlist_tracks`: `ytmapi-rs` 0.3 exposes no dedicated
+    /// (see [`Self::playlist_tracks`]: `ytmapi-rs` 0.3 exposes no dedicated
     /// liked-songs query).
     ///
     /// Auth: cookie OR Google OAuth in practice: the query itself is
@@ -239,21 +263,161 @@ impl InnertubeBackend {
     /// there. Song and video items map to [`Track`]; podcast episodes are
     /// skipped (not music).
     pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
+        self.playlist_tracks("LM").await
+    }
+
+    /// Tracks of any playlist by id (`LM` = liked music, `PL...`/`VL...` =
+    /// user playlists). Same mapping as [`Self::liked_songs`]: songs and
+    /// videos become [`Track`], podcast episodes are skipped.
+    ///
+    /// Auth: the query is `impl<A: AuthToken>` upstream, so this runs on
+    /// all backends; private playlists fail server-side without login.
+    pub async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>, String> {
         let items = match &self.inner {
             Inner::Anonymous(client) => client
-                .get_playlist_tracks(PlaylistID::from_raw("LM"))
+                .get_playlist_tracks(PlaylistID::from_raw(playlist_id))
                 .await
-                .map_err(|e| format!("liked songs failed: {e}"))?,
+                .map_err(|e| format!("playlist tracks failed: {e}"))?,
             Inner::Cookie(client) => client
-                .get_playlist_tracks(PlaylistID::from_raw("LM"))
+                .get_playlist_tracks(PlaylistID::from_raw(playlist_id))
                 .await
-                .map_err(|e| format!("liked songs failed: {e}"))?,
+                .map_err(|e| format!("playlist tracks failed: {e}"))?,
             Inner::OAuth(client) => client
-                .get_playlist_tracks(PlaylistID::from_raw("LM"))
+                .get_playlist_tracks(PlaylistID::from_raw(playlist_id))
                 .await
-                .map_err(|e| format!("liked songs failed: {e}"))?,
+                .map_err(|e| format!("playlist tracks failed: {e}"))?,
         };
         Ok(items.iter().filter_map(playlist_item_to_track).collect())
+    }
+
+    /// All playlists in the user's library (id + title; fetch tracks per
+    /// playlist with [`Self::playlist_tracks`]).
+    ///
+    /// Auth: cookie OR Google OAuth (same `LoggedIn` bound as
+    /// [`Self::library_songs`]); anonymous backends get a local error.
+    pub async fn library_playlists(&self) -> Result<Vec<ServerPlaylist>, String> {
+        let lists = match &self.inner {
+            Inner::Anonymous(_) => {
+                return Err("library_playlists requires login (cookie or Google OAuth)".into());
+            }
+            Inner::Cookie(client) => client
+                .get_library_playlists()
+                .await
+                .map_err(|e| format!("library playlists failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_library_playlists()
+                .await
+                .map_err(|e| format!("library playlists failed: {e}"))?,
+        };
+        Ok(lists.iter().map(server_playlist_of).collect())
+    }
+
+    /// Push a like/unlike to YouTube Music (`LM` membership on the web).
+    ///
+    /// Auth: cookie OR Google OAuth (`RateSongQuery` is `LoggedIn`
+    /// upstream); anonymous backends get a local error. Callers apply
+    /// the local state first and treat this as best-effort sync.
+    pub async fn rate_like(&self, video_id: &str, liked: bool) -> Result<(), String> {
+        let rating = if liked {
+            ytmapi_rs::common::LikeStatus::Liked
+        } else {
+            ytmapi_rs::common::LikeStatus::Indifferent
+        };
+        match &self.inner {
+            Inner::Anonymous(_) => Err("rate_like requires login (cookie or Google OAuth)".into()),
+            Inner::Cookie(client) => client
+                .rate_song(VideoID::from_raw(video_id), rating)
+                .await
+                .map_err(|e| format!("rate song failed: {e}")),
+            Inner::OAuth(client) => client
+                .rate_song(VideoID::from_raw(video_id), rating)
+                .await
+                .map_err(|e| format!("rate song failed: {e}")),
+        }
+    }
+
+    /// Create a private playlist on YouTube Music, returning its server id.
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn create_server_playlist(&self, title: &str) -> Result<String, String> {
+        use ytmapi_rs::query::playlist::PrivacyStatus;
+        use ytmapi_rs::query::CreatePlaylistQuery;
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("create_server_playlist requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .create_playlist(CreatePlaylistQuery::new(
+                    title,
+                    None,
+                    PrivacyStatus::Private,
+                ))
+                .await
+                .map(|id| id.get_raw().to_string())
+                .map_err(|e| format!("create playlist failed: {e}")),
+            Inner::OAuth(client) => client
+                .create_playlist(CreatePlaylistQuery::new(
+                    title,
+                    None,
+                    PrivacyStatus::Private,
+                ))
+                .await
+                .map(|id| id.get_raw().to_string())
+                .map_err(|e| format!("create playlist failed: {e}")),
+        }
+    }
+
+    /// Append a video to a YouTube Music playlist you own.
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn add_to_server_playlist(
+        &self,
+        playlist_id: &str,
+        video_id: &str,
+    ) -> Result<(), String> {
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("add_to_server_playlist requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .add_video_items_to_playlist(
+                    PlaylistID::from_raw(playlist_id),
+                    [VideoID::from_raw(video_id)],
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("add to playlist failed: {e}")),
+            Inner::OAuth(client) => client
+                .add_video_items_to_playlist(
+                    PlaylistID::from_raw(playlist_id),
+                    [VideoID::from_raw(video_id)],
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("add to playlist failed: {e}")),
+        }
+    }
+
+    /// Delete a YouTube Music playlist you own.
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    /// Note: removing single tracks is intentionally unsupported (upstream
+    /// needs a per-membership `setVideoId` that playlist listings do not
+    /// return), so track removal stays local-only.
+    pub async fn delete_server_playlist(&self, playlist_id: &str) -> Result<(), String> {
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("delete_server_playlist requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .delete_playlist(PlaylistID::from_raw(playlist_id))
+                .await
+                .map_err(|e| format!("delete playlist failed: {e}")),
+            Inner::OAuth(client) => client
+                .delete_playlist(PlaylistID::from_raw(playlist_id))
+                .await
+                .map_err(|e| format!("delete playlist failed: {e}")),
+        }
     }
 
     /// All albums in the user's library.
@@ -1181,6 +1345,26 @@ mod tests {
         let backend =
             InnertubeBackend::connect_with_oauth(&OAuthPersist::from_token(token)).unwrap();
         assert!(matches!(backend.inner, Inner::OAuth(_)));
+    }
+
+    #[test]
+    fn library_playlist_rows_map_to_server_ids() {
+        let row: ytmapi_rs::parse::LibraryPlaylist = serde_json::from_value(serde_json::json!({
+            "playlist_id": "PLserver123",
+            "title": "Road Trip",
+            "thumbnails": [],
+            "tracks": "10 songs",
+            "author": "Someone",
+            "author_id": null,
+        }))
+        .unwrap();
+        assert_eq!(
+            server_playlist_of(&row),
+            ServerPlaylist {
+                id: "PLserver123".into(),
+                title: "Road Trip".into(),
+            }
+        );
     }
 
     #[tokio::test]

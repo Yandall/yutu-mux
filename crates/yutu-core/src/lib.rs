@@ -22,6 +22,8 @@ pub use discovery::{forgotten_favorites, weekly_mix};
 pub use innertube::InnertubeBackend;
 #[cfg(feature = "innertube")]
 pub use innertube::ResolvedStream;
+#[cfg(feature = "innertube")]
+pub use innertube::ServerPlaylist;
 pub use library::LibraryStore;
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
