@@ -2,6 +2,15 @@
 
 ## 0.2.0 (unreleased)
 
+- Web-to-app sync: Settings "Sync now" plus auto-sync every 15 min while
+  signed in (90 s grace after launch, toggle persisted, "Last synced"
+  label). Pulls replay still-pending local pushes first, then reconcile
+  server-wins: library rows carry their server like status so likes and
+  dislikes replace the local sets, playlist tracks/titles refresh in
+  place, server-deleted lists are pruned, and lists with unpushed edits
+  are never fetched or replaced. Failed pages fail open (no ratings
+  replace, no pruning), so a partial pull never wipes local state;
+  pending pushes persist in SQLite and survive restarts
 - Staged library import with live progress: songs merge first, then one
   task per playlist streams tracks in with per-list status, so big
   imports no longer freeze the window on a single silent future; all

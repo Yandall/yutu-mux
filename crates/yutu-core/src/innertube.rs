@@ -304,6 +304,20 @@ impl InnertubeBackend {
     /// `impl<A: LoggedIn>` upstream, and only those two tokens are
     /// `LoggedIn`). Anonymous backends get a local error, no network.
     pub async fn library_songs(&self) -> Result<Vec<Track>, String> {
+        Ok(self
+            .library_songs_with_status()
+            .await?
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect())
+    }
+
+    /// [`Self::library_songs`] plus each row's server like status, so
+    /// sync can reconcile likes *and* dislikes (the liked `VLLM`
+    /// playlist carries no dislikes).
+    pub async fn library_songs_with_status(
+        &self,
+    ) -> Result<Vec<(Track, ytmapi_rs::common::LikeStatus)>, String> {
         use ytmapi_rs::query::GetLibrarySongsQuery;
         let query = GetLibrarySongsQuery::default();
         let songs: Vec<TableListSong> = match &self.inner {
@@ -313,7 +327,10 @@ impl InnertubeBackend {
             Inner::Cookie(client) => collect_pages(client, &query, "library songs").await?,
             Inner::OAuth(client) => collect_pages(client, &query, "library songs").await?,
         };
-        Ok(songs.iter().map(table_song_to_track).collect())
+        Ok(songs
+            .iter()
+            .map(|s| (table_song_to_track(s), s.like_status.clone()))
+            .collect())
     }
 
     /// The user's liked-music tracks, via the `VLLM` liked playlist
@@ -437,16 +454,28 @@ impl InnertubeBackend {
     /// Auth: cookie OR Google OAuth (same `LoggedIn` bound as
     /// [`Self::library_songs`]); anonymous backends get a local error.
     pub async fn library_playlists(&self) -> Result<Vec<ServerPlaylist>, String> {
+        Ok(self.library_playlists_report().await?.0)
+    }
+
+    /// [`Self::library_playlists`] plus the failed-page count, so sync
+    /// can tell a clean header fetch (safe to prune lists absent from
+    /// it) from a partial one (never prune: absence may be a failed
+    /// page, not a web deletion).
+    pub async fn library_playlists_report(&self) -> Result<(Vec<ServerPlaylist>, u32), String> {
         use ytmapi_rs::query::GetLibraryPlaylistsQuery;
         let query = GetLibraryPlaylistsQuery;
-        let lists: Vec<ytmapi_rs::parse::LibraryPlaylist> = match &self.inner {
+        let (lists, failed): (Vec<ytmapi_rs::parse::LibraryPlaylist>, u32) = match &self.inner {
             Inner::Anonymous(_) => {
                 return Err("library_playlists requires login (cookie or Google OAuth)".into());
             }
-            Inner::Cookie(client) => collect_pages(client, &query, "library playlists").await?,
-            Inner::OAuth(client) => collect_pages(client, &query, "library playlists").await?,
+            Inner::Cookie(client) => {
+                collect_pages_report(client, &query, "library playlists").await?
+            }
+            Inner::OAuth(client) => {
+                collect_pages_report(client, &query, "library playlists").await?
+            }
         };
-        Ok(lists.iter().map(server_playlist_of).collect())
+        Ok((lists.iter().map(server_playlist_of).collect(), failed))
     }
 
     /// Push a like/unlike to YouTube Music (`LM` membership on the web).
@@ -1725,6 +1754,25 @@ pub fn parse_library_songs_fixture(json: &str) -> Vec<Track> {
         .unwrap_or_default()
 }
 
+/// Split library rows (see
+/// [`InnertubeBackend::library_songs_with_status`]) into liked and
+/// disliked id sets for sync reconciliation. `Indifferent` rows land in
+/// neither set.
+pub fn split_library_status(
+    rows: &[(Track, ytmapi_rs::common::LikeStatus)],
+) -> (Vec<String>, Vec<String>) {
+    let mut liked = Vec::new();
+    let mut disliked = Vec::new();
+    for (t, status) in rows {
+        match status {
+            ytmapi_rs::common::LikeStatus::Liked => liked.push(t.id.clone()),
+            ytmapi_rs::common::LikeStatus::Disliked => disliked.push(t.id.clone()),
+            ytmapi_rs::common::LikeStatus::Indifferent => {}
+        }
+    }
+    (liked, disliked)
+}
+
 /// Fixture/test helper: parse a saved `get_watch_playlist_from_video_id`
 /// response (a JSON array of `WatchPlaylistTrack`, see
 /// `fixtures/watch_playlist.json`) with the same [`watch_track_to_track`]
@@ -2099,6 +2147,32 @@ mod tests {
         assert_eq!(tracks[0].duration_secs, 0);
         assert!(tolerant_playlist_rows("not json").is_empty());
         assert!(tolerant_playlist_rows("{}").is_empty());
+    }
+
+    #[test]
+    fn library_status_split_covers_like_dislike_indifferent() {
+        use ytmapi_rs::common::LikeStatus;
+        let mut songs: Vec<TableListSong> =
+            serde_json::from_str(include_str!("../fixtures/library_songs.json")).unwrap();
+        assert!(songs.len() >= 2);
+        songs[0].like_status = LikeStatus::Liked;
+        songs[1].like_status = LikeStatus::Disliked;
+        let rows: Vec<(Track, LikeStatus)> = songs
+            .iter()
+            .map(|s| (table_song_to_track(s), s.like_status.clone()))
+            .collect();
+        let (liked, disliked) = split_library_status(&rows);
+        assert_eq!(liked, vec![songs[0].video_id.get_raw().to_string()]);
+        assert_eq!(disliked, vec![songs[1].video_id.get_raw().to_string()]);
+        // Indifferent rows land in neither set.
+        songs[1].like_status = LikeStatus::Indifferent;
+        let rows: Vec<(Track, LikeStatus)> = songs
+            .iter()
+            .map(|s| (table_song_to_track(s), s.like_status.clone()))
+            .collect();
+        let (liked, disliked) = split_library_status(&rows);
+        assert_eq!(liked.len(), 1);
+        assert!(disliked.is_empty());
     }
 
     #[test]

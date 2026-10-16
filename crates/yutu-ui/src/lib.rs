@@ -518,12 +518,14 @@ pub enum RightTab {
     Recent,
 }
 
-/// Which sign-in started an import (status wording only).
+/// Which sign-in started an import (status wording only). `Sync` is a
+/// manual or scheduled refresh (same pipeline, "Sync" wording).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(feature = "innertube")]
 pub enum ImportKind {
     Cookie,
     Library,
+    Sync,
 }
 
 /// One in-flight playlist fetch for the banner bar: cumulative arrived
@@ -542,6 +544,7 @@ impl ImportKind {
         match self {
             ImportKind::Cookie => "Cookie",
             ImportKind::Library => "Library",
+            ImportKind::Sync => "Sync",
         }
     }
 
@@ -550,21 +553,42 @@ impl ImportKind {
         match self {
             ImportKind::Cookie => "Cookie import",
             ImportKind::Library => "Import",
+            ImportKind::Sync => "Sync",
         }
     }
+}
+
+/// Base pull payload: the staged import plus the flags sync needs to
+/// reconcile safely (see [`StagedImport`]).
+#[derive(Debug, Clone, Default)]
+#[cfg(feature = "innertube")]
+struct BasePull {
+    tracks: Vec<Track>,
+    liked_ids: Vec<String>,
+    disliked_ids: Vec<String>,
+    headers: Vec<yutu_core::ServerPlaylist>,
+    headers_clean: bool,
+    library_ok: bool,
 }
 
 /// First import stage: songs + liked + playlist headers, plus the
 /// connected backend so per-playlist fetches reuse it (no reconnect per
 /// list). Playlists then stream in next, one task each, keeping the
 /// window alive with progress instead of freezing on one long future.
+/// `headers_clean` is false when header pages failed (sync must not
+/// prune then: absence may be a failed page, not a web deletion);
+/// `library_ok` is false when the library fetch failed open (sync must
+/// not replace likes/dislikes then).
 #[derive(Debug, Clone)]
 #[cfg(feature = "innertube")]
 pub struct StagedImport {
     pub backend: yutu_core::InnertubeBackend,
     pub tracks: Vec<Track>,
     pub liked_ids: Vec<String>,
+    pub disliked_ids: Vec<String>,
     pub headers: Vec<yutu_core::ServerPlaylist>,
+    pub headers_clean: bool,
+    pub library_ok: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -798,6 +822,14 @@ pub enum Message {
     /// Delete the saved cookie session (stays out of the account).
     #[cfg(feature = "innertube")]
     CookieLogout,
+    /// Manual refresh from Settings: replays pending pushes, then pulls
+    /// web changes (likes, playlist songs/titles, deletions) via the
+    /// saved session. Same pipeline as imports, "Sync" wording.
+    #[cfg(feature = "innertube")]
+    SyncNow,
+    /// Scheduled-sync master toggle (Settings).
+    #[cfg(feature = "innertube")]
+    AutoSyncToggled(bool),
     /// Best-effort server like/unlike result (local state is already
     /// applied: only failures report, so the row never lies).
     #[cfg(feature = "innertube")]
@@ -822,11 +854,13 @@ pub enum Message {
         title: String,
         result: Result<String, String>,
     },
-    /// Best-effort server playlist add/delete result (local state is
-    /// already applied: only failures report).
+    /// Best-effort server playlist add/remove/delete result (local state
+    /// is already applied: only failures report). `op` identifies the
+    /// push so the handler can clear its pending row on success.
     #[cfg(feature = "innertube")]
     ServerPlaylistSynced {
         detail: String,
+        op: PlaylistSyncOp,
         result: Result<(), String>,
     },
     StreamResolved {
@@ -839,6 +873,25 @@ pub enum Message {
     TracksHydrated {
         requested: Vec<String>,
         tracks: Vec<Track>,
+    },
+}
+
+/// Which playlist push a [`Message::ServerPlaylistSynced`] reports, so
+/// the handler clears exactly that pending row (a stale in-flight task
+/// must never clear a newer intent).
+#[derive(Debug, Clone)]
+#[cfg(feature = "innertube")]
+pub enum PlaylistSyncOp {
+    Add {
+        playlist_id: String,
+        track_id: String,
+    },
+    Remove {
+        playlist_id: String,
+        track_id: String,
+    },
+    Delete {
+        playlist_id: String,
     },
 }
 
@@ -998,6 +1051,52 @@ impl AudioOut {
 fn url_expiry(url: &str) -> Option<u64> {
     url.split(['?', '&'])
         .find_map(|p| p.strip_prefix("expire=").and_then(|v| v.parse().ok()))
+}
+
+/// Scheduled sync cadence + startup grace (see [`sync_due`]): pulls
+/// are cheap (staged, fail-open) but still network, so 15 minutes with
+/// a 90s grace after launch.
+#[cfg(feature = "innertube")]
+const AUTO_SYNC_INTERVAL_SECS: u64 = 15 * 60;
+#[cfg(feature = "innertube")]
+const AUTO_SYNC_STARTUP_GRACE_SECS: u64 = 90;
+
+/// True when a scheduled pull is due (pure time math, unit-tested; the
+/// caller additionally requires a session and an idle pipeline).
+#[cfg(feature = "innertube")]
+fn sync_due(
+    auto_sync: bool,
+    last_sync: Option<std::time::Instant>,
+    started_at: std::time::Instant,
+    now: std::time::Instant,
+) -> bool {
+    if !auto_sync {
+        return false;
+    }
+    match last_sync {
+        Some(t) => now.duration_since(t).as_secs() >= AUTO_SYNC_INTERVAL_SECS,
+        None => now.duration_since(started_at).as_secs() >= AUTO_SYNC_STARTUP_GRACE_SECS,
+    }
+}
+
+/// Relative "Last synced" label for Settings.
+#[cfg(feature = "innertube")]
+fn fmt_sync_ago(last_sync_unix: Option<i64>, now_unix: i64) -> String {
+    match last_sync_unix {
+        None => "never".into(),
+        Some(t) => {
+            let ago = now_unix.saturating_sub(t);
+            if ago < 60 {
+                "just now".into()
+            } else if ago < 3_600 {
+                format!("{}m ago", ago / 60)
+            } else if ago < 86_400 {
+                format!("{}h ago", ago / 3_600)
+            } else {
+                format!("{}d ago", ago / 86_400)
+            }
+        }
+    }
 }
 
 /// Context-menu origin from the last cursor position, clamped so the
@@ -1395,6 +1494,21 @@ pub struct AppState {
     /// every Tick (see [`Self::ease_import_shown`]).
     #[cfg(feature = "innertube")]
     import_shown: usize,
+    /// Scheduled sync: pulls web changes every [`AUTO_SYNC_INTERVAL`]
+    /// while signed in (plus a manual Sync button in Settings).
+    #[cfg(feature = "innertube")]
+    auto_sync: bool,
+    /// Last completed pull (any kind): drives the scheduler and the
+    /// Settings "Last synced" line.
+    #[cfg(feature = "innertube")]
+    last_sync: Option<std::time::Instant>,
+    /// Same, as unix time, persisted so the label survives restarts.
+    #[cfg(feature = "innertube")]
+    last_sync_unix: Option<i64>,
+    /// Launch instant: the first auto-sync waits for a grace period so
+    /// startup stays instant.
+    #[cfg(feature = "innertube")]
+    started_at: std::time::Instant,
     /// End-of-track auto-advance already fired for the current song.
     end_advanced: bool,
     library_path: String,
@@ -1928,8 +2042,13 @@ impl AppState {
             self.like_id(id);
         }
         // Re-import refreshes in place (same slot, new rows); new server
-        // lists append after the local ones.
+        // lists append after the local ones. Lists with unpushed edits
+        // keep their local contents until the pushes land (a replace
+        // would clobber intent the server hasn't seen).
         for p in playlists {
+            if self.playlist_has_pending(&p.id) {
+                continue;
+            }
             match self.user_playlists.iter().position(|x| x.id == p.id) {
                 Some(i) => self.user_playlists[i] = p,
                 None => self.user_playlists.push(p),
@@ -2048,6 +2167,11 @@ impl AppState {
     /// playlist header. Each arrival updates the status line, so a slow
     /// import reads as progress instead of a frozen window. Bumps the run
     /// generation so stragglers from an older run are ignored.
+    ///
+    /// Sync pulls reconcile server-wins (web likes/dislikes replace the
+    /// local sets, absent server lists are pruned, still-pending pushes
+    /// ride over both); headers with pending delete/add/remove rows are
+    /// never fetched, so unpushed intent cannot be clobbered.
     #[cfg(feature = "innertube")]
     fn begin_playlist_stages(
         &mut self,
@@ -2057,9 +2181,20 @@ impl AppState {
         if kind == ImportKind::Cookie {
             self.cookie_logged_in = cookie_session_exists();
         }
+        // Never resurrect lists the user deleted locally but hasn't
+        // pushed yet, and never refresh lists with unpushed edits.
+        let headers: Vec<yutu_core::ServerPlaylist> = staged
+            .headers
+            .iter()
+            .filter(|h| {
+                !self.playlist_has_pending(&h.id)
+                    && !self.has_pending_op("delete", Some(&h.id), None)
+            })
+            .cloned()
+            .collect();
         let n = staged.tracks.len();
         let m = staged.liked_ids.len();
-        let total = staged.headers.len();
+        let total = headers.len();
         self.import_songs = n;
         self.import_likes = m;
         self.import_done = 0;
@@ -2070,10 +2205,11 @@ impl AppState {
         self.import_finished.clear();
         self.import_gen += 1;
         let gen = self.import_gen;
-        let mut tasks = self.merge_imported(staged.tracks, staged.liked_ids, Vec::new());
+        let mut tasks = self.reconcile_base(&staged, &headers);
         if total == 0 {
             self.login_busy = false;
             self.import_active = false;
+            self.mark_synced();
             self.status = format!("{}: {n} library tracks ({m} liked).", kind.done_label());
             self.publish_mpris();
             return iced::Task::batch(tasks);
@@ -2087,7 +2223,7 @@ impl AppState {
         self.publish_mpris();
         let backend = staged.backend;
         let library_path = self.library_path.clone();
-        tasks.extend(staged.headers.into_iter().enumerate().map(|(i, h)| {
+        tasks.extend(headers.into_iter().enumerate().map(|(i, h)| {
             Self::playlist_import_task(
                 backend.clone(),
                 library_path.clone(),
@@ -2099,6 +2235,146 @@ impl AppState {
             )
         }));
         iced::Task::batch(tasks)
+    }
+
+    /// Base-stage reconcile (memory half; the disk half ran in
+    /// [`Self::persist_base_pull`]): catalog register, server-wins
+    /// like/dislike replace with still-pending intent re-applied, and
+    /// pruning of server lists absent from clean headers. `headers` are
+    /// the fetchable subset (pending-op lists filtered out).
+    #[cfg(feature = "innertube")]
+    fn reconcile_base(
+        &mut self,
+        staged: &StagedImport,
+        headers: &[yutu_core::ServerPlaylist],
+    ) -> Vec<iced::Task<Message>> {
+        let tracks = self.register_tracks_mem(staged.tracks.clone());
+        if staged.library_ok {
+            self.liked = staged.liked_ids.iter().cloned().collect();
+            self.liked_order = staged.liked_ids.clone();
+            self.disliked = staged.disliked_ids.iter().cloned().collect();
+            self.disliked_order = staged.disliked_ids.clone();
+            // Still-pending pushes ride over the server sets (the disk
+            // half in `apply_sync_pull` does the same).
+            for (act, id) in self.pending_rate_ops() {
+                match act.as_str() {
+                    "like" => self.like_id(&id),
+                    "unlike" => self.unlike_id(&id),
+                    "dislike" => self.dislike_id(&id),
+                    _ => self.undislike_id(&id),
+                }
+            }
+        }
+        if staged.headers_clean {
+            let present: std::collections::HashSet<&str> =
+                headers.iter().map(|h| h.id.as_str()).collect();
+            let pruned: Vec<String> = self
+                .user_playlists
+                .iter()
+                .filter(|p| {
+                    Self::is_server_playlist(&p.id)
+                        && !present.contains(p.id.as_str())
+                        && !self.playlist_has_pending(&p.id)
+                })
+                .map(|p| p.id.clone())
+                .collect();
+            if !pruned.is_empty() {
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    for id in &pruned {
+                        let _ = store.delete_playlist(id);
+                    }
+                }
+                self.user_playlists.retain(|p| !pruned.contains(&p.id));
+                if let Route::PlaylistDetail(id) = &self.route {
+                    if pruned.contains(id) {
+                        self.go(Route::Library);
+                    }
+                }
+            }
+        }
+        self.artwork_tasks(&tracks)
+    }
+
+    /// Still-pending rate pushes as (op, track id) pairs (sync
+    /// reconciliation re-applies them over server-wins sets).
+    #[cfg(feature = "innertube")]
+    fn pending_rate_ops(&self) -> Vec<(String, String)> {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return Vec::new();
+        };
+        store
+            .pending_ops()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| matches!(o.op.as_str(), "like" | "unlike" | "dislike" | "undislike"))
+            .filter_map(|o| o.track_id.map(|id| (o.op, id)))
+            .collect()
+    }
+
+    /// True when a matching pending row exists (sync skips such lists).
+    #[cfg(feature = "innertube")]
+    fn has_pending_op(&self, op: &str, playlist_id: Option<&str>, track_id: Option<&str>) -> bool {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return false;
+        };
+        store.pending_ops().unwrap_or_default().iter().any(|o| {
+            o.op == op
+                && o.playlist_id.as_deref() == playlist_id
+                && o.track_id.as_deref() == track_id
+        })
+    }
+
+    /// True when a playlist has pending add/remove rows (store-level
+    /// check for background tasks, which have no `&self`).
+    #[cfg(feature = "innertube")]
+    fn playlist_has_pending_store(library_path: &str, playlist_id: &str) -> bool {
+        let Ok(store) = LibraryStore::open(library_path) else {
+            return false;
+        };
+        store.has_playlist_pending(playlist_id).unwrap_or(false)
+    }
+
+    /// True when a playlist has pending add/remove rows.
+    #[cfg(feature = "innertube")]
+    fn playlist_has_pending(&self, playlist_id: &str) -> bool {
+        Self::playlist_has_pending_store(&self.library_path, playlist_id)
+    }
+
+    /// Record a not-yet-confirmed server write (see `PendingOp`).
+    /// Offline builds: local state is the truth, nothing to record.
+    #[cfg(feature = "innertube")]
+    fn record_pending(
+        &self,
+        op: &str,
+        playlist_id: Option<&str>,
+        track_id: Option<&str>,
+        title: Option<&str>,
+    ) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.record_pending(op, playlist_id, track_id, title);
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn record_pending(
+        &self,
+        _op: &str,
+        _playlist_id: Option<&str>,
+        _t: Option<&str>,
+        _ti: Option<&str>,
+    ) {
+    }
+
+    /// Drop one confirmed rate push (exact-op match, so a stale
+    /// in-flight task cannot clear a newer intent).
+    #[cfg(feature = "innertube")]
+    fn clear_pending_rate(&self, op: &str, track_id: &str) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.clear_pending(op, None, Some(track_id));
     }
 }
 
@@ -2506,6 +2782,21 @@ fn oauth_path_exists() -> bool {
     }
 }
 
+/// Sync prefs from SQLite: auto-sync toggle (default on) plus the last
+/// completed pull, so the Settings label survives restarts.
+#[cfg(feature = "innertube")]
+fn load_sync_prefs(path: &str) -> (bool, Option<i64>) {
+    let Ok(store) = LibraryStore::open(path) else {
+        return (true, None);
+    };
+    let auto_sync = store.get_pref("auto_sync").unwrap_or(None).as_deref() != Some("0");
+    let last_sync_unix = store
+        .get_pref("last_sync_unix")
+        .unwrap_or(None)
+        .and_then(|v| v.parse().ok());
+    (auto_sync, last_sync_unix)
+}
+
 #[allow(clippy::type_complexity)]
 fn load_persisted(
     path: &str,
@@ -2778,6 +3069,14 @@ impl AppState {
             import_finished: HashSet::new(),
             #[cfg(feature = "innertube")]
             import_shown: 0,
+            #[cfg(feature = "innertube")]
+            auto_sync: true,
+            #[cfg(feature = "innertube")]
+            last_sync: None,
+            #[cfg(feature = "innertube")]
+            last_sync_unix: None,
+            #[cfg(feature = "innertube")]
+            started_at: std::time::Instant::now(),
             end_advanced: false,
             library_path,
             catalog: HashMap::new(),
@@ -2788,6 +3087,13 @@ impl AppState {
             radio_tracks: Vec::new(),
             mpris: None,
         };
+        // Sync prefs: auto-sync toggle + last-sync label survive restarts.
+        #[cfg(feature = "innertube")]
+        {
+            let (auto_sync, last_sync_unix) = load_sync_prefs(&state.library_path);
+            state.auto_sync = auto_sync;
+            state.last_sync_unix = last_sync_unix;
+        }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
         // on first launch with no search. Memory-only (no SQLite writes,
@@ -4189,6 +4495,56 @@ impl AppState {
         .into()
     }
 
+    /// Sync panel: manual refresh plus the scheduled pull that keeps
+    /// web edits (likes, playlist songs/titles, deletions) flowing into
+    /// the app. Pending local pushes replay first, so unpushed intent is
+    /// never dropped by the pull.
+    #[cfg(feature = "innertube")]
+    fn sync_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, checkbox, column, row, text};
+        if !self.logged_in && !self.cookie_logged_in {
+            return text("Sign in above to sync.").size(12).color(MUTED).into();
+        }
+        column![
+            text(format!(
+                "Last synced: {}",
+                fmt_sync_ago(self.last_sync_unix, now_unix())
+            ))
+            .size(12)
+            .color(MUTED),
+            row![
+                button(
+                    text(if self.login_busy || self.import_active {
+                        "…"
+                    } else {
+                        "Sync now"
+                    })
+                    .size(12)
+                )
+                .style(green_play)
+                .on_press(Message::SyncNow)
+                .padding(7),
+                checkbox(self.auto_sync)
+                    .label("Auto-sync every 15 min")
+                    .on_toggle(Message::AutoSyncToggled),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    /// Offline builds: sync needs the innertube feature.
+    #[cfg(not(feature = "innertube"))]
+    fn sync_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::text;
+        text("Sync needs `--features innertube`.")
+            .size(12)
+            .color(MUTED)
+            .into()
+    }
+
     /// Top import banner (in-flow, pushes content down): live progress
     /// while an import runs (songs/liked counts, playlists done/total,
     /// red bar with %). `None` when idle, so layout is untouched.
@@ -5367,6 +5723,7 @@ impl AppState {
                     }
                 }
                 self.publish_mpris();
+                self.record_pending(if liked { "like" } else { "unlike" }, None, Some(&id), None);
                 return Self::like_sync_task(id, liked);
             }
             Message::Dislike(id) => {
@@ -5388,6 +5745,12 @@ impl AppState {
                     true
                 };
                 self.publish_mpris();
+                self.record_pending(
+                    if disliked { "dislike" } else { "undislike" },
+                    None,
+                    Some(&id),
+                    None,
+                );
                 return Self::dislike_sync_task(id, disliked);
             }
             Message::SetVolume(v) => {
@@ -5630,6 +5993,7 @@ impl AppState {
                         tracks: Vec::new(),
                     });
                     self.persist_playlist_created(&id, &title);
+                    self.record_pending("create", Some(&id), None, Some(&title));
                     self.new_playlist_name.clear();
                     self.status = format!("Created playlist {title} ({id}).");
                     self.publish_mpris();
@@ -5658,6 +6022,7 @@ impl AppState {
                         }
                         self.like_id(&track.id);
                         self.persist_like_track(&track, true);
+                        self.record_pending("like", None, Some(&track.id), None);
                         self.status = format!("Added {} to Favorites.", track.title);
                         self.publish_mpris();
                         return Self::like_sync_task(track.id.clone(), true);
@@ -5695,6 +6060,14 @@ impl AppState {
                                 let title = self.user_playlists[i].title.clone();
                                 self.user_playlists[i].tracks.push(track.clone());
                                 self.persist_playlist_added(&playlist_id, &track);
+                                if Self::is_server_playlist(&playlist_id) {
+                                    self.record_pending(
+                                        "add",
+                                        Some(&playlist_id),
+                                        Some(&track.id),
+                                        None,
+                                    );
+                                }
                                 self.status = format!("Added {} to {}.", track.title, title);
                                 self.publish_mpris();
                                 // Server lists mirror on YouTube Music;
@@ -5720,6 +6093,7 @@ impl AppState {
                     }
                     self.unlike_id(&track_id);
                     self.persist_like(&track_id, false);
+                    self.record_pending("unlike", None, Some(&track_id), None);
                     self.status = format!("Removed {track_id} from Favorites.");
                     self.publish_mpris();
                     return Self::like_sync_task(track_id, false);
@@ -5747,6 +6121,14 @@ impl AppState {
                         let title = self.user_playlists[i].title.clone();
                         self.user_playlists[i].tracks.retain(|t| t.id != track_id);
                         self.persist_playlist_removed(&playlist_id, &track_id);
+                        if Self::is_server_playlist(&playlist_id) {
+                            self.record_pending(
+                                "remove",
+                                Some(&playlist_id),
+                                Some(&track_id),
+                                None,
+                            );
+                        }
                         self.status = format!("Removed {track_id} from {title}.");
                         self.publish_mpris();
                         // Server lists mirror the removal on YouTube Music
@@ -5774,6 +6156,9 @@ impl AppState {
                 self.user_playlists.retain(|p| p.id != id);
                 if self.user_playlists.len() < before {
                     self.persist_playlist_deleted(&id);
+                    if Self::is_server_playlist(&id) {
+                        self.record_pending("delete", Some(&id), None, None);
+                    }
                     if self.route == Route::PlaylistDetail(id.clone()) {
                         self.go(Route::Library);
                     }
@@ -6459,11 +6844,17 @@ impl AppState {
                     self.import_active = false;
                     // A dead saved session must not keep posing as signed
                     // in: drop it so the panel goes back to the file picker.
-                    if kind == ImportKind::Cookie && e.contains("saved cookie session") {
+                    if matches!(kind, ImportKind::Cookie | ImportKind::Sync)
+                        && e.contains("saved cookie session")
+                    {
                         let _ = std::fs::remove_file(cookie_session_path());
                         self.cookie_logged_in = false;
                     }
-                    self.status = format!("{} import failed: {e}", kind.label());
+                    self.status = if kind == ImportKind::Sync {
+                        format!("Sync failed: {e}")
+                    } else {
+                        format!("{} import failed: {e}", kind.label())
+                    };
                 }
             },
             #[cfg(feature = "innertube")]
@@ -6508,6 +6899,7 @@ impl AppState {
                 let finish = |s: &mut Self| {
                     s.login_busy = false;
                     s.import_active = false;
+                    s.mark_synced();
                     if kind == ImportKind::Cookie {
                         s.cookie_logged_in = cookie_session_exists();
                     }
@@ -6624,20 +7016,23 @@ impl AppState {
                 track_id,
                 liked,
                 result,
-            } => {
-                if let Err(e) = result {
+            } => match result {
+                Ok(()) => self.clear_pending_rate(if liked { "like" } else { "unlike" }, &track_id),
+                Err(e) => {
                     let verb = if liked { "like" } else { "unlike" };
                     self.status =
                         format!("YouTube {verb} of {track_id} failed (kept locally): {e}");
                 }
-            }
+            },
             #[cfg(feature = "innertube")]
             Message::DislikeSynced {
                 track_id,
                 disliked,
                 result,
-            } => {
-                if let Err(e) = result {
+            } => match result {
+                Ok(()) => self
+                    .clear_pending_rate(if disliked { "dislike" } else { "undislike" }, &track_id),
+                Err(e) => {
                     let verb = if disliked {
                         "don't-recommend"
                     } else {
@@ -6646,7 +7041,7 @@ impl AppState {
                     self.status =
                         format!("YouTube {verb} of {track_id} failed (kept locally): {e}");
                 }
-            }
+            },
             #[cfg(feature = "innertube")]
             Message::ServerPlaylistCreated {
                 local_id,
@@ -6654,6 +7049,13 @@ impl AppState {
                 result,
             } => match result {
                 Ok(server_id) => {
+                    // The create row clears first (by shell id), then any
+                    // add/remove rows recorded mid-flight move shell id to
+                    // server id for the flush below.
+                    if let Ok(store) = LibraryStore::open(&self.library_path) {
+                        let _ = store.clear_pending("create", Some(&local_id), None);
+                        let _ = store.repoint_pending(&local_id, &server_id);
+                    }
                     // Migrate the local shell to the real server id, in
                     // memory and in SQLite, so later edits sync. Tracks
                     // added while the create was in flight ride along:
@@ -6715,11 +7117,33 @@ impl AppState {
                 }
             },
             #[cfg(feature = "innertube")]
-            Message::ServerPlaylistSynced { detail, result } => {
-                if let Err(e) = result {
+            Message::ServerPlaylistSynced { detail, op, result } => match result {
+                Ok(()) => {
+                    let (op_name, pid, tid) = match &op {
+                        PlaylistSyncOp::Add {
+                            playlist_id,
+                            track_id,
+                        } => ("add", Some(playlist_id.as_str()), Some(track_id.as_str())),
+                        PlaylistSyncOp::Remove {
+                            playlist_id,
+                            track_id,
+                        } => (
+                            "remove",
+                            Some(playlist_id.as_str()),
+                            Some(track_id.as_str()),
+                        ),
+                        PlaylistSyncOp::Delete { playlist_id } => {
+                            ("delete", Some(playlist_id.as_str()), None)
+                        }
+                    };
+                    if let Ok(store) = LibraryStore::open(&self.library_path) {
+                        let _ = store.clear_pending(op_name, pid, tid);
+                    }
+                }
+                Err(e) => {
                     self.status = format!("{detail} (kept locally): {e}");
                 }
-            }
+            },
             #[cfg(feature = "innertube")]
             Message::GoogleLoginStart => {
                 self.login_busy = true;
@@ -6823,6 +7247,22 @@ impl AppState {
                     return Self::library_import_task(self.library_path.clone());
                 }
             }
+            #[cfg(feature = "innertube")]
+            Message::SyncNow => {
+                return self.start_sync(false);
+            }
+            #[cfg(feature = "innertube")]
+            Message::AutoSyncToggled(on) => {
+                self.auto_sync = on;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("auto_sync", if on { "1" } else { "0" });
+                }
+                self.status = if on {
+                    "Auto-sync on (every 15 min while signed in).".into()
+                } else {
+                    "Auto-sync off.".into()
+                };
+            }
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
                 let mut tasks = vec![self.drain_player_commands()];
@@ -6890,6 +7330,17 @@ impl AppState {
                 #[cfg(feature = "innertube")]
                 {
                     self.ease_import_shown();
+                }
+                // Scheduled sync: web changes arrive on their own while
+                // signed in (plus Sync now in Settings). Idle only: never
+                // while a pull is already in flight.
+                #[cfg(feature = "innertube")]
+                {
+                    if sync_due(self.auto_sync, self.last_sync, self.started_at, now)
+                        && Self::has_session()
+                    {
+                        tasks.push(self.start_sync(true));
+                    }
                 }
                 self.publish_mpris();
                 return iced::Task::batch(tasks);
@@ -7134,25 +7585,56 @@ impl AppState {
                 let persist =
                     yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path()))?;
                 let backend = yutu_core::InnertubeBackend::connect_with_oauth(&persist)?;
-                let (tracks, liked_ids, headers) = Self::fetch_base(&backend).await?;
-                if tracks.is_empty() && headers.is_empty() {
+                let base = Self::fetch_base(&backend).await?;
+                if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                // Disk first (off the GUI thread): restarts keep the base
-                // even if playlist stages never finish.
-                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
-                Ok(StagedImport {
-                    backend,
-                    tracks,
-                    liked_ids,
-                    headers,
-                })
+                Self::persist_base_pull(&library_path, &base);
+                Ok(Self::staged_of(backend, base))
             },
             |result| Message::ImportStageReady {
                 kind: ImportKind::Library,
                 result,
             },
         )
+    }
+
+    /// Disk half of a base pull (background): track cache plus the
+    /// server-wins like/dislike replace, so restarts keep the base even
+    /// if playlist stages never finish.
+    #[cfg(feature = "innertube")]
+    fn persist_base_pull(library_path: &str, base: &BasePull) {
+        Self::persist_imported(library_path, &base.tracks, &[], &[]);
+        Self::apply_sync_ratings(library_path, base);
+    }
+
+    /// Server-wins replace of the stored like/dislike sets after a base
+    /// pull (background): still-pending rates ride over the server sets
+    /// so unpushed intent survives. Skipped when the library fetch
+    /// failed open (an empty pull must never wipe local state).
+    #[cfg(feature = "innertube")]
+    fn apply_sync_ratings(library_path: &str, base: &BasePull) {
+        if !base.library_ok {
+            return;
+        }
+        let Ok(store) = LibraryStore::open(library_path) else {
+            return;
+        };
+        let _ = store.apply_sync_pull(&base.liked_ids, &base.disliked_ids, true, &[]);
+    }
+
+    /// [`StagedImport`] from a fetched [`BasePull`] (moves every field).
+    #[cfg(feature = "innertube")]
+    fn staged_of(backend: yutu_core::InnertubeBackend, base: BasePull) -> StagedImport {
+        StagedImport {
+            backend,
+            tracks: base.tracks,
+            liked_ids: base.liked_ids,
+            disliked_ids: base.disliked_ids,
+            headers: base.headers,
+            headers_clean: base.headers_clean,
+            library_ok: base.library_ok,
+        }
     }
 
     /// Any saved login: OAuth token first, else the cookie session.
@@ -7193,20 +7675,45 @@ impl AppState {
     /// (empty vec), so one bad endpoint cannot sink the import; callers
     /// reject a fully-empty result with an account-specific hint.
     #[cfg(feature = "innertube")]
-    async fn fetch_base(
-        backend: &yutu_core::InnertubeBackend,
-    ) -> Result<(Vec<Track>, Vec<String>, Vec<yutu_core::ServerPlaylist>), String> {
-        let lib = backend.library_songs().await.unwrap_or_default();
-        let liked = backend.liked_songs().await.unwrap_or_default();
-        let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
+    async fn fetch_base(backend: &yutu_core::InnertubeBackend) -> Result<BasePull, String> {
+        let (lib, status_liked, status_disliked, library_ok) =
+            match backend.library_songs_with_status().await {
+                Ok(rows) => {
+                    let mut lib = Vec::with_capacity(rows.len());
+                    for (t, _) in &rows {
+                        lib.push(t.clone());
+                    }
+                    let (liked, disliked) = yutu_core::split_library_status(&rows);
+                    (lib, liked, disliked, true)
+                }
+                Err(_) => (Vec::new(), Vec::new(), Vec::new(), false),
+            };
+        // Liked playlist union: either source may miss rows the other has.
+        let liked_songs = backend.liked_songs().await.unwrap_or_default();
+        let mut liked_ids = status_liked;
+        for t in &liked_songs {
+            if !liked_ids.iter().any(|x| x == &t.id) {
+                liked_ids.push(t.id.clone());
+            }
+        }
         let mut all = lib;
-        for t in liked {
+        for t in liked_songs {
             if !all.iter().any(|x| x.id == t.id) {
                 all.push(t);
             }
         }
-        let headers = backend.library_playlists().await.unwrap_or_default();
-        Ok((all, liked_ids, headers))
+        let (headers, failed) = match backend.library_playlists_report().await {
+            Ok((h, f)) => (h, f),
+            Err(_) => (Vec::new(), 1),
+        };
+        Ok(BasePull {
+            tracks: all,
+            liked_ids,
+            disliked_ids: status_disliked,
+            headers,
+            headers_clean: failed == 0,
+            library_ok,
+        })
     }
 
     /// Push one like/unlike to YouTube Music (best effort: the local
@@ -7297,6 +7804,10 @@ impl AppState {
             },
             |(playlist_id, track_id, result)| Message::ServerPlaylistSynced {
                 detail: format!("YouTube add of {track_id} to {playlist_id} failed"),
+                op: PlaylistSyncOp::Add {
+                    playlist_id: playlist_id.clone(),
+                    track_id: track_id.clone(),
+                },
                 result,
             },
         )
@@ -7319,6 +7830,9 @@ impl AppState {
             },
             |(playlist_id, result)| Message::ServerPlaylistSynced {
                 detail: format!("YouTube delete of {playlist_id} failed"),
+                op: PlaylistSyncOp::Delete {
+                    playlist_id: playlist_id.clone(),
+                },
                 result,
             },
         )
@@ -7342,6 +7856,10 @@ impl AppState {
             },
             |(playlist_id, track_id, result)| Message::ServerPlaylistSynced {
                 detail: format!("YouTube remove of {track_id} from {playlist_id} failed"),
+                op: PlaylistSyncOp::Remove {
+                    playlist_id: playlist_id.clone(),
+                    track_id: track_id.clone(),
+                },
                 result,
             },
         )
@@ -7381,6 +7899,110 @@ impl AppState {
     #[cfg(not(feature = "innertube"))]
     fn playlist_remove_sync_task(_playlist_id: String, _track_id: String) -> iced::Task<Message> {
         iced::Task::none()
+    }
+
+    /// Start a sync pull (manual or scheduled): replays pending pushes,
+    /// then pulls web changes through the saved session (OAuth preferred,
+    /// cookie fallback). Silent no-op while busy; honest status when
+    /// signed out.
+    #[cfg(feature = "innertube")]
+    fn start_sync(&mut self, auto: bool) -> iced::Task<Message> {
+        if self.import_active || self.login_busy {
+            return iced::Task::none();
+        }
+        let pull = if std::path::Path::new(&oauth_path()).exists() {
+            Some(Self::sync_oauth_task(self.library_path.clone()))
+        } else if cookie_session_exists() {
+            Some(Self::sync_cookie_task(self.library_path.clone()))
+        } else {
+            None
+        };
+        let Some(pull) = pull else {
+            self.status = "Sync needs sign-in (cookies or Google).".into();
+            self.publish_mpris();
+            return iced::Task::none();
+        };
+        self.login_busy = true;
+        self.import_active = true;
+        self.status = if auto {
+            "Auto-syncing with YouTube Music…".into()
+        } else {
+            "Syncing with YouTube Music…".into()
+        };
+        self.publish_mpris();
+        iced::Task::batch([self.replay_pending_tasks(), pull])
+    }
+
+    /// Re-fire every pending push (sync replays leftovers before the
+    /// pull reads; successes clear their rows, failures stay queued).
+    /// Each task no-ops without a session on its own.
+    #[cfg(feature = "innertube")]
+    fn replay_pending_tasks(&self) -> iced::Task<Message> {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return iced::Task::none();
+        };
+        let ops = store.pending_ops().unwrap_or_default();
+        let mut tasks = Vec::with_capacity(ops.len());
+        for op in ops {
+            match op.op.as_str() {
+                "like" => {
+                    if let Some(id) = op.track_id {
+                        tasks.push(Self::like_sync_task(id, true));
+                    }
+                }
+                "unlike" => {
+                    if let Some(id) = op.track_id {
+                        tasks.push(Self::like_sync_task(id, false));
+                    }
+                }
+                "dislike" => {
+                    if let Some(id) = op.track_id {
+                        tasks.push(Self::dislike_sync_task(id, true));
+                    }
+                }
+                "undislike" => {
+                    if let Some(id) = op.track_id {
+                        tasks.push(Self::dislike_sync_task(id, false));
+                    }
+                }
+                "add" => {
+                    if let (Some(pid), Some(tid)) = (op.playlist_id, op.track_id) {
+                        tasks.push(Self::playlist_add_sync_task(pid, tid));
+                    }
+                }
+                "remove" => {
+                    if let (Some(pid), Some(tid)) = (op.playlist_id, op.track_id) {
+                        tasks.push(Self::playlist_remove_sync_task(pid, tid));
+                    }
+                }
+                "create" => {
+                    // Only while the shell still exists locally.
+                    if let (Some(local), Some(title)) = (op.playlist_id, op.title) {
+                        if self.user_playlists.iter().any(|p| p.id == local) {
+                            tasks.push(Self::playlist_create_sync_task(local, title));
+                        }
+                    }
+                }
+                "delete" => {
+                    if let Some(pid) = op.playlist_id {
+                        tasks.push(Self::playlist_delete_sync_task(pid));
+                    }
+                }
+                _ => {}
+            }
+        }
+        iced::Task::batch(tasks)
+    }
+
+    /// Record a completed pull (any kind) for the scheduler + label.
+    #[cfg(feature = "innertube")]
+    fn mark_synced(&mut self) {
+        self.last_sync = Some(std::time::Instant::now());
+        let unix = now_unix();
+        self.last_sync_unix = Some(unix);
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref("last_sync_unix", &unix.to_string());
+        }
     }
 
     /// Suggestion popup: one light query (texts only, no tracks).
@@ -7481,8 +8103,8 @@ impl AppState {
                     std::path::Path::new(&path),
                 )
                 .await?;
-                let (tracks, liked_ids, headers) = Self::fetch_base(&backend).await?;
-                if tracks.is_empty() && headers.is_empty() {
+                let base = Self::fetch_base(&backend).await?;
+                if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
                 // Stay signed in: stash the normalised header (0600) only
@@ -7493,15 +8115,8 @@ impl AppState {
                         eprintln!("[yutu-login] session stash failed: {e}");
                     }
                 }
-                // Disk first (off the GUI thread): restarts keep the base
-                // even if playlist stages never finish.
-                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
-                Ok(StagedImport {
-                    backend,
-                    tracks,
-                    liked_ids,
-                    headers,
-                })
+                Self::persist_base_pull(&library_path, &base);
+                Ok(Self::staged_of(backend, base))
             },
             |result| Message::ImportStageReady {
                 kind: ImportKind::Cookie,
@@ -7523,20 +8138,61 @@ impl AppState {
                 .map_err(|e| {
                     format!("saved cookie session failed ({e}): import your cookies file again")
                 })?;
-                let (tracks, liked_ids, headers) = Self::fetch_base(&backend).await?;
-                if tracks.is_empty() && headers.is_empty() {
+                let base = Self::fetch_base(&backend).await?;
+                if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
-                Ok(StagedImport {
-                    backend,
-                    tracks,
-                    liked_ids,
-                    headers,
-                })
+                Self::persist_base_pull(&library_path, &base);
+                Ok(Self::staged_of(backend, base))
             },
             |result| Message::ImportStageReady {
                 kind: ImportKind::Cookie,
+                result,
+            },
+        )
+    }
+
+    /// Sync base stage over OAuth (same pull as an import, "Sync"
+    /// wording): replays pending pushes first via [`Self::start_sync`]
+    /// tasks, then reconciles web changes. Empty pulls succeed (an
+    /// empty account has nothing to reconcile; the flags guard wipes).
+    #[cfg(feature = "innertube")]
+    fn sync_oauth_task(library_path: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let persist =
+                    yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path()))?;
+                let backend = yutu_core::InnertubeBackend::connect_with_oauth(&persist)?;
+                let base = Self::fetch_base(&backend).await?;
+                Self::persist_base_pull(&library_path, &base);
+                Ok(Self::staged_of(backend, base))
+            },
+            |result| Message::ImportStageReady {
+                kind: ImportKind::Sync,
+                result,
+            },
+        )
+    }
+
+    /// Sync base stage via the saved cookie session (same pull as an
+    /// import, "Sync" wording). See [`Self::sync_oauth_task`].
+    #[cfg(feature = "innertube")]
+    fn sync_cookie_task(library_path: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
+                    std::path::Path::new(&cookie_session_path()),
+                )
+                .await
+                .map_err(|e| {
+                    format!("saved cookie session failed ({e}): import your cookies file again")
+                })?;
+                let base = Self::fetch_base(&backend).await?;
+                Self::persist_base_pull(&library_path, &base);
+                Ok(Self::staged_of(backend, base))
+            },
+            |result| Message::ImportStageReady {
+                kind: ImportKind::Sync,
                 result,
             },
         )
@@ -7571,17 +8227,21 @@ impl AppState {
                     .map(|tracks| {
                         // Disk first (off the GUI thread): the handler only
                         // touches memory, so arrivals never stall events.
+                        // Lists with unpushed edits are not persisted:
+                        // the server copy predates local intent.
                         let playlist = Playlist {
                             id: header.id,
                             title: header.title.clone(),
                             tracks,
                         };
-                        Self::persist_imported(
-                            &library_path,
-                            &playlist.tracks,
-                            &[],
-                            std::slice::from_ref(&playlist),
-                        );
+                        if !Self::playlist_has_pending_store(&library_path, &playlist.id) {
+                            Self::persist_imported(
+                                &library_path,
+                                &playlist.tracks,
+                                &[],
+                                std::slice::from_ref(&playlist),
+                            );
+                        }
                         playlist
                     });
                 (kind, gen, header.title, index, total, count, result)
@@ -9729,6 +10389,8 @@ impl AppState {
                     self.google_section(),
                     text("Cookie import (no OAuth client needed)").size(17),
                     self.cookie_section(),
+                    text("Sync (web changes into the app)").size(17),
+                    self.sync_section(),
                     self.error_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
@@ -10852,6 +11514,7 @@ mod tests {
             backend: test_backend(),
             tracks,
             liked_ids,
+            disliked_ids: Vec::new(),
             headers: headers
                 .into_iter()
                 .map(|(id, title)| yutu_core::ServerPlaylist {
@@ -10859,6 +11522,8 @@ mod tests {
                     title: title.into(),
                 })
                 .collect(),
+            headers_clean: true,
+            library_ok: true,
         }
     }
 
@@ -11158,6 +11823,228 @@ mod tests {
         });
         assert!(s.status.contains("don't-recommend"));
         assert!(s.status.contains("offline"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_due_math() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        // Disabled never fires.
+        assert!(!sync_due(
+            false,
+            None,
+            start,
+            start + Duration::from_secs(10_000)
+        ));
+        // No completed pull yet: grace period after launch.
+        assert!(!sync_due(
+            true,
+            None,
+            start,
+            start + Duration::from_secs(10)
+        ));
+        assert!(sync_due(
+            true,
+            None,
+            start,
+            start + Duration::from_secs(AUTO_SYNC_STARTUP_GRACE_SECS + 1)
+        ));
+        // Afterwards the interval rules.
+        let last = start + Duration::from_secs(1_000);
+        assert!(!sync_due(
+            true,
+            Some(last),
+            start,
+            last + Duration::from_secs(60)
+        ));
+        assert!(sync_due(
+            true,
+            Some(last),
+            start,
+            last + Duration::from_secs(AUTO_SYNC_INTERVAL_SECS)
+        ));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_ago_labels() {
+        assert_eq!(fmt_sync_ago(None, 1_000), "never");
+        assert_eq!(fmt_sync_ago(Some(999), 1_000), "just now");
+        assert_eq!(fmt_sync_ago(Some(700), 1_000), "5m ago");
+        assert_eq!(fmt_sync_ago(Some(1_000 - 7_200), 1_000), "2h ago");
+        assert_eq!(fmt_sync_ago(Some(1_000 - 3 * 86_400), 1_000), "3d ago");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn like_action_records_pending_and_success_clears() {
+        let mut s = test_state();
+        let _ = s.update(Message::Like("m1".into()));
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        assert_eq!(store.pending_ops().unwrap().len(), 1);
+        let _ = s.update(Message::LikeSynced {
+            track_id: "m1".into(),
+            liked: true,
+            result: Ok(()),
+        });
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        assert!(store.pending_ops().unwrap().is_empty());
+        // A stale success for the older op cannot clear the newer row.
+        let _ = s.update(Message::Like("m2".into()));
+        let _ = s.update(Message::Like("m2".into()));
+        let _ = s.update(Message::LikeSynced {
+            track_id: "m2".into(),
+            liked: true,
+            result: Ok(()),
+        });
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        let ops = store.pending_ops().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op, "unlike");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_reconciles_likes_server_wins_with_pending_override() {
+        let mut s = test_state();
+        s.like_id("stale-local");
+        // Server knows only w1; the user unliked w1 while offline.
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        store.like("w1").unwrap();
+        store
+            .record_pending("unlike", None, Some("w1"), None)
+            .unwrap();
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Sync,
+            result: Ok(StagedImport {
+                backend: test_backend(),
+                tracks: vec![],
+                liked_ids: vec!["w1".into()],
+                disliked_ids: vec![],
+                headers: vec![],
+                headers_clean: true,
+                library_ok: true,
+            }),
+        });
+        // Server-wins dropped the stale id; the pending unlike dropped w1.
+        assert!(!s.liked.contains("stale-local"));
+        assert!(!s.liked.contains("w1"));
+        assert!(s.liked_order.is_empty());
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_prunes_deleted_lists_only_on_clean_headers() {
+        let mut s = test_state();
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "PLgone".into(),
+            title: "Gone".into(),
+            tracks: vec![],
+        });
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "PLkept".into(),
+            title: "Kept".into(),
+            tracks: vec![],
+        });
+        // Clean headers without PLgone: pruned.
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Sync,
+            result: Ok(StagedImport {
+                backend: test_backend(),
+                tracks: vec![],
+                liked_ids: vec![],
+                disliked_ids: vec![],
+                headers: vec![yutu_core::ServerPlaylist {
+                    id: "PLkept".into(),
+                    title: "Kept".into(),
+                }],
+                headers_clean: true,
+                library_ok: false,
+            }),
+        });
+        assert!(s.user_playlists.iter().all(|p| p.id != "PLgone"));
+        assert!(s.user_playlists.iter().any(|p| p.id == "PLkept"));
+        // Dirty headers: nothing pruned even when absent.
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "PLgone2".into(),
+            title: "Gone2".into(),
+            tracks: vec![],
+        });
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Sync,
+            result: Ok(StagedImport {
+                backend: test_backend(),
+                tracks: vec![],
+                liked_ids: vec![],
+                disliked_ids: vec![],
+                headers: vec![],
+                headers_clean: false,
+                library_ok: false,
+            }),
+        });
+        assert!(s.user_playlists.iter().any(|p| p.id == "PLgone2"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_skips_lists_with_unpushed_edits() {
+        let mut s = test_state();
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "PLedit".into(),
+            title: "Edit".into(),
+            tracks: vec![mk_track("m1", "Song", "Someone")],
+        });
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        store
+            .record_pending("add", Some("PLedit"), Some("m2"), None)
+            .unwrap();
+        // The pull carries a depleted server copy: the pending list keeps
+        // its local rows instead of being replaced.
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Sync,
+            gen: s.import_gen,
+            title: "Edit".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PLedit".into(),
+                title: "Edit".into(),
+                tracks: vec![],
+            }),
+        });
+        let pl = s.user_playlists.iter().find(|p| p.id == "PLedit").unwrap();
+        assert!(pl.tracks.iter().any(|t| t.id == "m1"));
+        // Headers with pending deletes never fan out fetches.
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        store
+            .record_pending("delete", Some("PLdel"), None, None)
+            .unwrap();
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Sync,
+            result: Ok(staged(vec![], vec![], vec![("PLa", "A"), ("PLdel", "Del")])),
+        });
+        assert_eq!(s.import_total, 1);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_now_needs_sign_in_and_toggle_persists() {
+        let mut s = test_state();
+        let _ = s.update(Message::SyncNow);
+        assert!(s.status.contains("sign-in") || s.status.contains("Sync"));
+        let _ = s.update(Message::AutoSyncToggled(false));
+        assert!(!s.auto_sync);
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        assert_eq!(store.get_pref("auto_sync").unwrap().as_deref(), Some("0"));
+        let _ = s.update(Message::AutoSyncToggled(true));
+        assert!(s.auto_sync);
+        // Busy pipelines ignore the button silently.
+        s.import_active = true;
+        let before = s.status.clone();
+        let _ = s.update(Message::SyncNow);
+        assert_eq!(s.status, before);
     }
 
     #[test]
