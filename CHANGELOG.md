@@ -2,6 +2,12 @@
 
 ## 0.2.0 (unreleased)
 
+- Playlist click-to-play from the clicked song: the song plus the rest
+  of the playlist from that point replace the queue; playlist pages
+  gain a Shuffle pill; bulk queue ops resolve in memory and persist
+  once in one SQLite transaction (no per-track open + fsync freezes);
+  shuffle play shuffles fully with a random first track and always
+  reshuffles, even when shuffle mode was already on
 - Web-to-app sync: Settings "Sync now" plus auto-sync every 15 min while
   signed in (90 s grace after launch, toggle persisted, "Last synced"
   label). Pulls replay still-pending local pushes first, then reconcile
