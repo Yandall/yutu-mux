@@ -4,7 +4,9 @@
 
 - Staged library import with live progress: songs merge first, then one
   task per playlist streams tracks in with per-list status, so big
-  imports no longer freeze the window on a single silent future
+  imports no longer freeze the window on a single silent future; all
+  SQLite writes run in the background tasks, never on the GUI thread
+  (the OS flagged the window frozen when the event loop stalled)
 - Playlist/library import streams every continuation page (single-shot
   queries stopped at ~100 items) plus a tolerant raw-JSON fallback for
   row shapes the typed parser rejects, so 300-song playlists import
