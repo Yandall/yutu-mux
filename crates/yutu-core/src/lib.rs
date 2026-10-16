@@ -25,6 +25,7 @@ pub use innertube::ResolvedStream;
 #[cfg(feature = "innertube")]
 pub use innertube::ServerPlaylist;
 pub use library::LibraryStore;
+pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id};
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};
