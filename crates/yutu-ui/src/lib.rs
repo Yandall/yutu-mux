@@ -288,6 +288,16 @@ fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widg
     }
 }
 
+/// Import progress bar in theme red: red fill on a dark track.
+#[cfg(feature = "innertube")]
+fn import_bar(_: &iced::Theme) -> iced::widget::progress_bar::Style {
+    iced::widget::progress_bar::Style {
+        background: iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
+        bar: iced::Background::Color(SPOT_GREEN),
+        border: iced::Border::default().rounded(4),
+    }
+}
+
 /// Row action button: transparent at rest, soft card hover with rounded
 /// corners (every clickable row/item gets hover feedback).
 /// Browser arrows: always transparent, softly rounded; the icon (not a
@@ -481,14 +491,53 @@ pub enum RightTab {
     Recent,
 }
 
-/// One library import payload (cookie and OAuth share it): liked/library
-/// tracks plus the account's playlists with their tracks. Playlists carry
-/// real server ids (`PL...`/`VL...`), unlike local `u{seq}` shells.
+/// Which sign-in started an import (status wording only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "innertube")]
+pub enum ImportKind {
+    Cookie,
+    Library,
+}
+
+/// One in-flight playlist fetch for the banner bar: cumulative arrived
+/// songs plus the best-effort total (unknown when details disagrees).
 #[derive(Debug, Clone, Default)]
-pub struct ImportedLibrary {
+#[cfg(feature = "innertube")]
+struct PlaylistLive {
+    arrived: usize,
+    count: Option<usize>,
+}
+
+#[cfg(feature = "innertube")]
+impl ImportKind {
+    /// Short source name for failure lines ("Cookie import failed").
+    fn label(self) -> &'static str {
+        match self {
+            ImportKind::Cookie => "Cookie",
+            ImportKind::Library => "Library",
+        }
+    }
+
+    /// Completion headline ("Cookie import complete").
+    fn done_label(self) -> &'static str {
+        match self {
+            ImportKind::Cookie => "Cookie import",
+            ImportKind::Library => "Import",
+        }
+    }
+}
+
+/// First import stage: songs + liked + playlist headers, plus the
+/// connected backend so per-playlist fetches reuse it (no reconnect per
+/// list). Playlists then stream in next, one task each, keeping the
+/// window alive with progress instead of freezing on one long future.
+#[derive(Debug, Clone)]
+#[cfg(feature = "innertube")]
+pub struct StagedImport {
+    pub backend: yutu_core::InnertubeBackend,
     pub tracks: Vec<Track>,
     pub liked_ids: Vec<String>,
-    pub playlists: Vec<Playlist>,
+    pub headers: Vec<yutu_core::ServerPlaylist>,
 }
 
 #[derive(Debug, Clone)]
@@ -648,8 +697,33 @@ pub enum Message {
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
-    CookieImported {
-        result: Result<ImportedLibrary, String>,
+    /// First import stage done (songs + liked + playlist headers).
+    #[cfg(feature = "innertube")]
+    ImportStageReady {
+        kind: ImportKind,
+        result: Result<StagedImport, String>,
+    },
+    /// One playlist's tracks arrived (or failed); import continues.
+    /// `gen` quarantines stragglers from an older import run.
+    #[cfg(feature = "innertube")]
+    PlaylistImported {
+        kind: ImportKind,
+        gen: u64,
+        title: String,
+        index: usize,
+        total: usize,
+        count: Option<usize>,
+        result: Result<Playlist, String>,
+    },
+    /// One playlist page mapped (cumulative song count plus the
+    /// best-effort total): moves the banner bar song by song. Data
+    /// still merges only on [`Message::PlaylistImported`].
+    #[cfg(feature = "innertube")]
+    PlaylistTick {
+        gen: u64,
+        index: usize,
+        arrived: usize,
+        count: Option<usize>,
     },
     HomeSearchChanged(String),
     SearchStay,
@@ -689,10 +763,6 @@ pub enum Message {
     GoogleLogout,
     #[cfg(feature = "innertube")]
     LibraryImport,
-    #[cfg(feature = "innertube")]
-    LibraryImported {
-        result: Result<ImportedLibrary, String>,
-    },
     /// Re-import via the saved cookie session (no file picker needed).
     #[cfg(feature = "innertube")]
     CookieSessionImport,
@@ -1255,6 +1325,35 @@ pub struct AppState {
     /// A login/library network task is in flight.
     #[cfg(feature = "innertube")]
     login_busy: bool,
+    /// Staged import progress: songs (liked) in the base stage, playlists
+    /// done/total, plus the run generation (stale playlist arrivals from
+    /// an older run are ignored). Powers the per-playlist status line.
+    #[cfg(feature = "innertube")]
+    import_songs: usize,
+    #[cfg(feature = "innertube")]
+    import_likes: usize,
+    #[cfg(feature = "innertube")]
+    import_done: usize,
+    #[cfg(feature = "innertube")]
+    import_total: usize,
+    #[cfg(feature = "innertube")]
+    import_gen: u64,
+    /// An import is in flight: the top banner shows live progress.
+    #[cfg(feature = "innertube")]
+    import_active: bool,
+    /// Expected import songs (base songs plus known playlist totals) and
+    /// playlist songs already finished: banner bar math. Per-list live
+    /// counts arrive via ticks; finished indices quarantine late ticks.
+    #[cfg(feature = "innertube")]
+    import_expected: usize,
+    #[cfg(feature = "innertube")]
+    import_live: HashMap<usize, PlaylistLive>,
+    #[cfg(feature = "innertube")]
+    import_finished: HashSet<usize>,
+    /// Banner display count, eased toward [`Self::import_song_target`]
+    /// every Tick (see [`Self::ease_import_shown`]).
+    #[cfg(feature = "innertube")]
+    import_shown: usize,
     /// End-of-track auto-advance already fired for the current song.
     end_advanced: bool,
     library_path: String,
@@ -1761,8 +1860,12 @@ impl AppState {
         Self::hydrate_task(vec![id.to_string()])
     }
 
-    /// Merge an imported library: catalog + likes (memory + SQLite) +
-    /// artwork tasks for the new tracks.
+    /// Merge an import into memory only (catalog + likes + playlists):
+    /// returns artwork tasks for the new tracks. SQLite writes happen in
+    /// the background tasks via [`Self::persist_imported`], never on the
+    /// GUI thread, so big imports cannot stall the event loop (the OS
+    /// flags the window frozen after seconds without event pumping).
+    #[cfg(feature = "innertube")]
     fn merge_imported(
         &mut self,
         tracks: Vec<Track>,
@@ -1779,35 +1882,9 @@ impl AppState {
                 }
             }
         }
-        let tracks = self.register_tracks(every);
-        // Persist likes with metadata when we have it (the track cache
-        // already holds the rows via register_tracks, but `like` alone
-        // only stores ids, so upsert explicitly for liked rows).
-        let by_id: std::collections::HashMap<&str, &Track> =
-            tracks.iter().map(|t| (t.id.as_str(), t)).collect();
-        if let Ok(store) = LibraryStore::open(&self.library_path) {
-            for id in &liked_ids {
-                self.like_id(id);
-                if let Some(t) = by_id.get(id.as_str()) {
-                    let _ = store.like_track(t);
-                } else if let Some(t) = self.catalog.get(id) {
-                    let t = t.clone();
-                    let _ = store.like_track(&t);
-                } else {
-                    let _ = store.like(id);
-                }
-            }
-            // Server playlists (real ids, not `u{seq}` shells): mirror by
-            // id so re-imports refresh renames and removals instead of
-            // drifting from what is on screen. Local `u{seq}` rows never
-            // collide with server ids.
-            for p in &playlists {
-                let _ = store.sync_server_playlist(&p.id, &p.title, &p.tracks);
-            }
-        } else {
-            for id in &liked_ids {
-                self.like_id(id);
-            }
+        let tracks = self.register_tracks_mem(every);
+        for id in &liked_ids {
+            self.like_id(id);
         }
         // Re-import refreshes in place (same slot, new rows); new server
         // lists append after the local ones.
@@ -1818,6 +1895,50 @@ impl AppState {
             }
         }
         self.artwork_tasks(&tracks)
+    }
+
+    /// Memory-only track registration (no SQLite): the import path
+    /// persists separately in background tasks.
+    #[cfg(feature = "innertube")]
+    fn register_tracks_mem(&mut self, tracks: Vec<Track>) -> Vec<Track> {
+        for t in &tracks {
+            self.catalog.insert(t.id.clone(), t.clone());
+        }
+        tracks
+    }
+
+    /// SQLite half of an import merge (runs inside background tasks, not
+    /// in `update`): track cache upsert, likes with metadata when the
+    /// payload carries it (bare ids otherwise), server playlists mirrored
+    /// by id. Best effort throughout (an unopenable DB just means the
+    /// next launch re-fetches).
+    #[cfg(feature = "innertube")]
+    fn persist_imported(
+        library_path: &str,
+        tracks: &[Track],
+        liked_ids: &[String],
+        playlists: &[Playlist],
+    ) {
+        let Ok(store) = LibraryStore::open(library_path) else {
+            return;
+        };
+        let _ = store.upsert_tracks(tracks);
+        let by_id: std::collections::HashMap<&str, &Track> =
+            tracks.iter().map(|t| (t.id.as_str(), t)).collect();
+        for id in liked_ids {
+            if let Some(t) = by_id.get(id.as_str()) {
+                let _ = store.like_track(t);
+            } else {
+                let _ = store.like(id);
+            }
+        }
+        // Server playlists (real ids, not `u{seq}` shells): mirror by id
+        // so re-imports refresh renames and removals instead of drifting
+        // from what is on screen. Local `u{seq}` rows never collide with
+        // server ids.
+        for p in playlists {
+            let _ = store.sync_server_playlist(&p.id, &p.title, &p.tracks);
+        }
     }
 
     /// True for playlists that live on YouTube Music (real server ids from
@@ -1839,11 +1960,102 @@ impl AppState {
         true
     }
 
+    /// Ease the banner's displayed song count toward the real arrived
+    /// total (halving the gap per Tick): pages land in ~100-song bursts
+    /// microseconds apart, so raw counts would teleport 0 to 100%. The
+    /// display never exceeds the truth and converges exactly; the status
+    /// line always shows real numbers.
+    #[cfg(feature = "innertube")]
+    fn ease_import_shown(&mut self) {
+        if !self.import_active {
+            return;
+        }
+        let target = self.import_song_target();
+        if self.import_shown < target {
+            let gap = target - self.import_shown;
+            self.import_shown += gap.div_ceil(2).max(1);
+        } else {
+            self.import_shown = target;
+        }
+    }
+
+    /// Real arrived songs for the banner: merged songs plus in-flight
+    /// rows from lists with known totals (unknown-total rows join at
+    /// merge, never mid-flight, so the bar never overshoots).
+    #[cfg(feature = "innertube")]
+    fn import_song_target(&self) -> usize {
+        self.import_songs
+            + self
+                .import_live
+                .values()
+                .filter(|e| e.count.is_some())
+                .map(|e| e.arrived)
+                .sum::<usize>()
+    }
+
     /// Everything the app has really seen (discovery candidate pool).
     fn catalog_tracks(&self) -> Vec<Track> {
         let mut v: Vec<Track> = self.catalog.values().cloned().collect();
         v.sort_by(|a, b| a.title.cmp(&b.title));
         v
+    }
+
+    /// Merge the import base stage (songs + liked) immediately so results
+    /// show without waiting for playlists, then fan out one task per
+    /// playlist header. Each arrival updates the status line, so a slow
+    /// import reads as progress instead of a frozen window. Bumps the run
+    /// generation so stragglers from an older run are ignored.
+    #[cfg(feature = "innertube")]
+    fn begin_playlist_stages(
+        &mut self,
+        kind: ImportKind,
+        staged: StagedImport,
+    ) -> iced::Task<Message> {
+        if kind == ImportKind::Cookie {
+            self.cookie_logged_in = cookie_session_exists();
+        }
+        let n = staged.tracks.len();
+        let m = staged.liked_ids.len();
+        let total = staged.headers.len();
+        self.import_songs = n;
+        self.import_likes = m;
+        self.import_done = 0;
+        self.import_total = total;
+        self.import_expected = n;
+        self.import_shown = n;
+        self.import_live.clear();
+        self.import_finished.clear();
+        self.import_gen += 1;
+        let gen = self.import_gen;
+        let mut tasks = self.merge_imported(staged.tracks, staged.liked_ids, Vec::new());
+        if total == 0 {
+            self.login_busy = false;
+            self.import_active = false;
+            self.status = format!("{}: {n} library tracks ({m} liked).", kind.done_label());
+            self.publish_mpris();
+            return iced::Task::batch(tasks);
+        }
+        self.login_busy = true;
+        self.import_active = true;
+        self.status = format!(
+            "{}: {n} songs ({m} liked), fetching {total} playlists…",
+            kind.done_label(),
+        );
+        self.publish_mpris();
+        let backend = staged.backend;
+        let library_path = self.library_path.clone();
+        tasks.extend(staged.headers.into_iter().enumerate().map(|(i, h)| {
+            Self::playlist_import_task(
+                backend.clone(),
+                library_path.clone(),
+                kind,
+                gen,
+                h,
+                i,
+                total,
+            )
+        }));
+        iced::Task::batch(tasks)
     }
 }
 
@@ -2452,6 +2664,26 @@ impl AppState {
             cookie_logged_in: cookie_session_exists(),
             #[cfg(feature = "innertube")]
             login_busy: false,
+            #[cfg(feature = "innertube")]
+            import_songs: 0,
+            #[cfg(feature = "innertube")]
+            import_likes: 0,
+            #[cfg(feature = "innertube")]
+            import_done: 0,
+            #[cfg(feature = "innertube")]
+            import_total: 0,
+            #[cfg(feature = "innertube")]
+            import_gen: 0,
+            #[cfg(feature = "innertube")]
+            import_active: false,
+            #[cfg(feature = "innertube")]
+            import_expected: 0,
+            #[cfg(feature = "innertube")]
+            import_live: HashMap::new(),
+            #[cfg(feature = "innertube")]
+            import_finished: HashSet::new(),
+            #[cfg(feature = "innertube")]
+            import_shown: 0,
             end_advanced: false,
             library_path,
             catalog: HashMap::new(),
@@ -3850,6 +4082,75 @@ impl AppState {
         ]
         .spacing(4)
         .into()
+    }
+
+    /// Top import banner (in-flow, pushes content down): live progress
+    /// while an import runs (songs/liked counts, playlists done/total,
+    /// red bar with %). `None` when idle, so layout is untouched.
+    #[cfg(feature = "innertube")]
+    fn import_banner_view(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{column, container, progress_bar, row, text, Space};
+        use iced::Fill;
+        if !self.import_active {
+            return None;
+        }
+        // Displayed count eases toward the truth (see
+        // `ease_import_shown`); the bar needs a denominator, falling
+        // back to playlists done/total while no total is known.
+        let shown = self.import_shown;
+        let expected = self.import_expected;
+        let song_pct = (expected > 0)
+            .then(|| (shown.min(expected) as f32 / expected as f32 * 100.0).clamp(0.0, 100.0));
+        let list_pct = (self.import_total > 0).then(|| {
+            (self.import_done as f32 / self.import_total as f32 * 100.0).clamp(0.0, 100.0)
+        });
+        let pct = song_pct.or(list_pct).unwrap_or(0.0);
+        let pct_label = if song_pct.or(list_pct).is_some() {
+            format!("{}%", pct.round() as u32)
+        } else {
+            "…".to_string()
+        };
+        let counts = if self.import_total > 0 {
+            // Totals show as soon as details lands, so the target is
+            // visible long before the first page arrives.
+            let songs = if expected > 0 {
+                format!("{shown}/{expected} songs")
+            } else {
+                format!("{shown} songs")
+            };
+            format!(
+                "{songs} · {} liked · {}/{} playlists",
+                self.import_likes, self.import_done, self.import_total
+            )
+        } else {
+            format!(
+                "{} songs · {} liked · reading library…",
+                shown, self.import_likes
+            )
+        };
+        Some(
+            container(
+                column![
+                    row![
+                        text("Importing your library")
+                            .size(13)
+                            .color(iced::Color::WHITE),
+                        Space::new().width(Fill),
+                        text(pct_label).size(13).color(SPOT_GREEN),
+                    ]
+                    .spacing(8)
+                    .width(Fill)
+                    .align_y(iced::alignment::Vertical::Center),
+                    progress_bar(0.0..=100.0, pct).girth(8).style(import_bar),
+                    text(counts).size(11).color(MUTED),
+                ]
+                .spacing(4),
+            )
+            .style(card_bg)
+            .padding(10)
+            .width(Fill)
+            .into(),
+        )
     }
 
     /// In-app error log: the same lines that go to stderr (capped at 30).
@@ -5967,9 +6268,10 @@ impl AppState {
                             "Pick your exported cookies file first (see the note below).".into();
                     } else {
                         self.login_busy = true;
+                        self.import_active = true;
                         self.status = "Reading cookies + contacting YouTube Music…".into();
                         self.publish_mpris();
-                        return Self::cookie_import_task(path);
+                        return Self::cookie_import_task(path, self.library_path.clone());
                     }
                 }
                 #[cfg(not(feature = "innertube"))]
@@ -5979,43 +6281,135 @@ impl AppState {
                         "Cookie import needs `--features innertube` (offline build).".into();
                 }
             }
-            Message::CookieImported { result } => {
-                #[cfg(feature = "innertube")]
-                {
-                    self.login_busy = false;
+            #[cfg(feature = "innertube")]
+            Message::ImportStageReady { kind, result } => match result {
+                Ok(staged) => {
+                    return self.begin_playlist_stages(kind, staged);
                 }
-                match result {
-                    Ok(imported) => {
-                        #[cfg(feature = "innertube")]
-                        {
-                            self.cookie_logged_in = cookie_session_exists();
+                Err(e) => {
+                    self.login_busy = false;
+                    self.import_active = false;
+                    // A dead saved session must not keep posing as signed
+                    // in: drop it so the panel goes back to the file picker.
+                    if kind == ImportKind::Cookie && e.contains("saved cookie session") {
+                        let _ = std::fs::remove_file(cookie_session_path());
+                        self.cookie_logged_in = false;
+                    }
+                    self.status = format!("{} import failed: {e}", kind.label());
+                }
+            },
+            #[cfg(feature = "innertube")]
+            Message::PlaylistImported {
+                kind,
+                gen,
+                title,
+                index,
+                total,
+                count,
+                result,
+            } => {
+                // Stragglers from an older run (re-import, sign-out):
+                // ignore, never merge, never touch the counters.
+                if gen != self.import_gen {
+                    return iced::Task::none();
+                }
+                // A newer run re-staged while this list was in flight:
+                // same treatment (totals belong to the new run).
+                if total != self.import_total {
+                    return iced::Task::none();
+                }
+                let _ = index;
+                self.import_done += 1;
+                let done = self.import_done;
+                // This list leaves the live set: its songs now count via
+                // Completed songs already count via `import_songs`;
+                // failures drop their share out of the expected total
+                // (so the bar can still reach 100%). A Done that
+                // beat its ticks here still carries the details count, so
+                // the expected total stays exact in every ordering.
+                if let Some(live) = self.import_live.remove(&index) {
+                    if result.is_err() {
+                        if let Some(c) = live.count {
+                            self.import_expected = self.import_expected.saturating_sub(c);
                         }
-                        let n = imported.tracks.len();
-                        let m = imported.liked_ids.len();
-                        let p = imported.playlists.len();
-                        let tasks = self.merge_imported(
-                            imported.tracks,
-                            imported.liked_ids,
-                            imported.playlists,
-                        );
-                        self.status = format!(
-                            "Cookie import: {n} library tracks ({m} liked, {p} playlists)."
-                        );
+                    }
+                } else if let Some(c) = count {
+                    self.import_expected += c;
+                }
+                self.import_finished.insert(index);
+                let finish = |s: &mut Self| {
+                    s.login_busy = false;
+                    s.import_active = false;
+                    if kind == ImportKind::Cookie {
+                        s.cookie_logged_in = cookie_session_exists();
+                    }
+                };
+                match result {
+                    Ok(playlist) => {
+                        let n = playlist.tracks.len();
+                        self.import_songs += n;
+                        let tasks = self.merge_imported(Vec::new(), Vec::new(), vec![playlist]);
+                        if done >= total {
+                            finish(self);
+                            self.status = format!(
+                                "{} complete: {} songs ({} liked), {total} playlists.",
+                                kind.done_label(),
+                                self.import_songs,
+                                self.import_likes,
+                            );
+                        } else {
+                            self.status =
+                                format!("Playlist '{title}' done ({n} tracks) - {done}/{total}.");
+                        }
                         self.publish_mpris();
                         return iced::Task::batch(tasks);
                     }
                     Err(e) => {
-                        #[cfg(feature = "innertube")]
-                        {
-                            // A dead saved session must not keep posing as
-                            // signed in: drop it so the panel goes back to
-                            // the file picker.
-                            if e.contains("saved cookie session") {
-                                let _ = std::fs::remove_file(cookie_session_path());
-                                self.cookie_logged_in = false;
-                            }
+                        if done >= total {
+                            finish(self);
+                            // "failures" keeps the release status filter
+                            // (`status_text` shows only lines with "fail").
+                            self.status = format!(
+                                "{} complete with failures: {} songs ({} liked), {done}/{total} playlists.",
+                                kind.done_label(),
+                                self.import_songs,
+                                self.import_likes,
+                            );
+                        } else {
+                            self.status =
+                                format!("Playlist '{title}' failed ({e}) - {done}/{total}.");
                         }
-                        self.status = format!("Cookie import failed: {e}");
+                        self.publish_mpris();
+                    }
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::PlaylistTick {
+                gen,
+                index,
+                arrived,
+                count,
+            } => {
+                // Quarantine stale or already-finished arrivals; ticks only
+                // move banner counters, never merge data (no publish: the
+                // status text is untouched, so widgets see no change).
+                if gen != self.import_gen || self.import_finished.contains(&index) {
+                    return iced::Task::none();
+                }
+                match self.import_live.get_mut(&index) {
+                    Some(live) => {
+                        live.arrived = arrived;
+                        if live.count.is_none() {
+                            live.count = count;
+                        }
+                    }
+                    None => {
+                        eprintln!("[yutu-import] playlist {index}: {arrived} songs arrived");
+                        if let Some(c) = count {
+                            self.import_expected += c;
+                        }
+                        self.import_live
+                            .insert(index, PlaylistLive { arrived, count });
                     }
                 }
             }
@@ -6025,13 +6419,23 @@ impl AppState {
                     self.status = "Cookie session is gone: import your cookies file again.".into();
                 } else {
                     self.login_busy = true;
+                    self.import_active = true;
                     self.status = "Importing your library…".into();
                     self.publish_mpris();
-                    return Self::cookie_session_import_task();
+                    return Self::cookie_session_import_task(self.library_path.clone());
                 }
             }
             #[cfg(feature = "innertube")]
             Message::CookieLogout => {
+                // Orphan in-flight playlist arrivals (generation bump).
+                self.import_gen += 1;
+                self.import_done = 0;
+                self.import_total = 0;
+                self.import_active = false;
+                self.import_expected = 0;
+                self.import_shown = 0;
+                self.import_live.clear();
+                self.import_finished.clear();
                 if cookie_session_exists() {
                     match std::fs::remove_file(cookie_session_path()) {
                         Ok(()) => {
@@ -6180,9 +6584,11 @@ impl AppState {
                             Ok(()) => {
                                 self.logged_in = true;
                                 self.google_login = None;
+                                self.login_busy = true;
+                                self.import_active = true;
                                 self.status = "Signed in: importing your library…".into();
                                 self.publish_mpris();
-                                return Self::library_import_task();
+                                return Self::library_import_task(self.library_path.clone());
                             }
                             Err(e) => {
                                 self.status = format!("Sign-in failed: {e}");
@@ -6208,6 +6614,15 @@ impl AppState {
             #[cfg(feature = "innertube")]
             Message::GoogleLogout => {
                 let _ = std::fs::remove_file(oauth_path());
+                // Orphan in-flight playlist arrivals (generation bump).
+                self.import_gen += 1;
+                self.import_done = 0;
+                self.import_total = 0;
+                self.import_active = false;
+                self.import_expected = 0;
+                self.import_shown = 0;
+                self.import_live.clear();
+                self.import_finished.clear();
                 self.logged_in = false;
                 self.google_login = None;
                 self.status = "Signed out (token file removed).".into();
@@ -6218,32 +6633,10 @@ impl AppState {
                     self.status = "Sign in with Google first.".into();
                 } else {
                     self.login_busy = true;
-                    self.status = "Importing your library…".into();
+                    self.import_active = true;
+                    self.status = "Reading library + contacting YouTube Music…".into();
                     self.publish_mpris();
-                    return Self::library_import_task();
-                }
-            }
-            #[cfg(feature = "innertube")]
-            Message::LibraryImported { result } => {
-                self.login_busy = false;
-                match result {
-                    Ok(imported) => {
-                        let n = imported.tracks.len();
-                        let m = imported.liked_ids.len();
-                        let p = imported.playlists.len();
-                        let tasks = self.merge_imported(
-                            imported.tracks,
-                            imported.liked_ids,
-                            imported.playlists,
-                        );
-                        self.status =
-                            format!("Imported {n} library tracks ({m} liked, {p} playlists).");
-                        self.publish_mpris();
-                        return iced::Task::batch(tasks);
-                    }
-                    Err(e) => {
-                        self.status = format!("Library import failed: {e}");
-                    }
+                    return Self::library_import_task(self.library_path.clone());
                 }
             }
             Message::Tick(now) => {
@@ -6308,6 +6701,11 @@ impl AppState {
                     self.end_advanced = true;
                     self.publish_mpris();
                     tasks.push(self.play_current_task());
+                }
+                // Import banner smoothing toward the true arrived count.
+                #[cfg(feature = "innertube")]
+                {
+                    self.ease_import_shown();
                 }
                 self.publish_mpris();
                 return iced::Task::batch(tasks);
@@ -6543,21 +6941,33 @@ impl AppState {
         )
     }
 
-    /// Signed-in library import: songs + liked + server playlists.
+    /// Signed-in library import, base stage: songs + liked + playlist
+    /// headers over OAuth. Playlist tracks stream in next like cookies.
     #[cfg(feature = "innertube")]
-    fn library_import_task() -> iced::Task<Message> {
+    fn library_import_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let persist =
                     yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path()))?;
                 let backend = yutu_core::InnertubeBackend::connect_with_oauth(&persist)?;
-                let imported = Self::fetch_full_library(&backend).await?;
-                if imported.tracks.is_empty() && imported.playlists.is_empty() {
+                let (tracks, liked_ids, headers) = Self::fetch_base(&backend).await?;
+                if tracks.is_empty() && headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                Ok(imported)
+                // Disk first (off the GUI thread): restarts keep the base
+                // even if playlist stages never finish.
+                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
+                Ok(StagedImport {
+                    backend,
+                    tracks,
+                    liked_ids,
+                    headers,
+                })
             },
-            |result| Message::LibraryImported { result },
+            |result| Message::ImportStageReady {
+                kind: ImportKind::Library,
+                result,
+            },
         )
     }
 
@@ -6594,14 +7004,14 @@ impl AppState {
         std::path::Path::new(&oauth_path()).exists() || cookie_session_exists()
     }
 
-    /// Full account read: library songs + liked ids + every library
-    /// playlist with its tracks. Each list fails open (empty vec), so one
-    /// bad endpoint cannot sink the import; callers reject a fully-empty
-    /// result with an account-specific hint.
+    /// Import base read: library songs + liked ids + playlist headers
+    /// (tracks stream in next, one task per list). Each list fails open
+    /// (empty vec), so one bad endpoint cannot sink the import; callers
+    /// reject a fully-empty result with an account-specific hint.
     #[cfg(feature = "innertube")]
-    async fn fetch_full_library(
+    async fn fetch_base(
         backend: &yutu_core::InnertubeBackend,
-    ) -> Result<ImportedLibrary, String> {
+    ) -> Result<(Vec<Track>, Vec<String>, Vec<yutu_core::ServerPlaylist>), String> {
         let lib = backend.library_songs().await.unwrap_or_default();
         let liked = backend.liked_songs().await.unwrap_or_default();
         let liked_ids: Vec<String> = liked.iter().map(|t| t.id.clone()).collect();
@@ -6611,23 +7021,8 @@ impl AppState {
                 all.push(t);
             }
         }
-        let mut playlists: Vec<Playlist> = Vec::new();
-        for sp in backend.library_playlists().await.unwrap_or_default() {
-            // A failed track fetch skips the list (fail open): pushing an
-            // empty row would wipe the in-memory tracks on merge.
-            if let Ok(tracks) = backend.playlist_tracks(&sp.id).await {
-                playlists.push(Playlist {
-                    id: sp.id,
-                    title: sp.title,
-                    tracks,
-                });
-            }
-        }
-        Ok(ImportedLibrary {
-            tracks: all,
-            liked_ids,
-            playlists,
-        })
+        let headers = backend.library_playlists().await.unwrap_or_default();
+        Ok((all, liked_ids, headers))
     }
 
     /// Push one like/unlike to YouTube Music (best effort: the local
@@ -6828,20 +7223,21 @@ impl AppState {
         )
     }
 
-    /// Cookie import: normal browser login, no OAuth client needed. The user
-    /// logs into music.youtube.com in their own browser, exports cookies to
-    /// a file, and points the app at it: full library/liked/playlists merge.
-    /// Success also stashes a 0600 session so restarts stay signed in.
+    /// Cookie import, base stage: connect, stash the 0600 session, fetch
+    /// songs + liked + playlist headers. The user logs into
+    /// music.youtube.com in their own browser and exports cookies to a
+    /// file (no OAuth client needed). Playlist tracks stream in next, one
+    /// task per list, so progress shows instead of one silent future.
     #[cfg(feature = "innertube")]
-    fn cookie_import_task(path: String) -> iced::Task<Message> {
+    fn cookie_import_task(path: String, library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
                     std::path::Path::new(&path),
                 )
                 .await?;
-                let imported = Self::fetch_full_library(&backend).await?;
-                if imported.tracks.is_empty() && imported.playlists.is_empty() {
+                let (tracks, liked_ids, headers) = Self::fetch_base(&backend).await?;
+                if tracks.is_empty() && headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
                 // Stay signed in: stash the normalised header (0600) only
@@ -6852,15 +7248,27 @@ impl AppState {
                         eprintln!("[yutu-login] session stash failed: {e}");
                     }
                 }
-                Ok(imported)
+                // Disk first (off the GUI thread): restarts keep the base
+                // even if playlist stages never finish.
+                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
+                Ok(StagedImport {
+                    backend,
+                    tracks,
+                    liked_ids,
+                    headers,
+                })
             },
-            |result| Message::CookieImported { result },
+            |result| Message::ImportStageReady {
+                kind: ImportKind::Cookie,
+                result,
+            },
         )
     }
 
-    /// Re-import via the saved cookie session (no file picker round trip).
+    /// Re-import base stage via the saved cookie session (no file picker
+    /// round trip). Playlist tracks stream in next like a fresh import.
     #[cfg(feature = "innertube")]
-    fn cookie_session_import_task() -> iced::Task<Message> {
+    fn cookie_session_import_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
@@ -6870,14 +7278,104 @@ impl AppState {
                 .map_err(|e| {
                     format!("saved cookie session failed ({e}): import your cookies file again")
                 })?;
-                let imported = Self::fetch_full_library(&backend).await?;
-                if imported.tracks.is_empty() && imported.playlists.is_empty() {
+                let (tracks, liked_ids, headers) = Self::fetch_base(&backend).await?;
+                if tracks.is_empty() && headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                Ok(imported)
+                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
+                Ok(StagedImport {
+                    backend,
+                    tracks,
+                    liked_ids,
+                    headers,
+                })
             },
-            |result| Message::CookieImported { result },
+            |result| Message::ImportStageReady {
+                kind: ImportKind::Cookie,
+                result,
+            },
         )
+    }
+
+    /// One playlist's tracks over the stage's reused backend (no
+    /// reconnect per list). Each mapped page sends its cumulative song
+    /// count through a channel (forwarded as [`Message::PlaylistTick`]),
+    /// so the banner bar moves song by song; the full merge still lands
+    /// once via [`Message::PlaylistImported`]. Failures report per list;
+    /// the import continues with the rest.
+    #[cfg(feature = "innertube")]
+    fn playlist_import_task(
+        backend: yutu_core::InnertubeBackend,
+        library_path: String,
+        kind: ImportKind,
+        gen: u64,
+        header: yutu_core::ServerPlaylist,
+        index: usize,
+        total: usize,
+    ) -> iced::Task<Message> {
+        let (tick_tx, tick_rx) = tokio::sync::mpsc::unbounded_channel();
+        let fetch = iced::Task::perform(
+            async move {
+                let count = backend.playlist_details_count(&header.id).await.ok();
+                let _ = tick_tx.send((0usize, count));
+                let result = backend
+                    .playlist_tracks_live(&header.id, |arrived| {
+                        let _ = tick_tx.send((arrived, count));
+                    })
+                    .await
+                    .map(|tracks| {
+                        // Disk first (off the GUI thread): the handler only
+                        // touches memory, so arrivals never stall events.
+                        let playlist = Playlist {
+                            id: header.id,
+                            title: header.title.clone(),
+                            tracks,
+                        };
+                        Self::persist_imported(
+                            &library_path,
+                            &playlist.tracks,
+                            &[],
+                            std::slice::from_ref(&playlist),
+                        );
+                        playlist
+                    });
+                (kind, gen, header.title, index, total, count, result)
+            },
+            |(kind, gen, title, index, total, count, result)| Message::PlaylistImported {
+                kind,
+                gen,
+                title,
+                index,
+                total,
+                count,
+                result,
+            },
+        );
+        // Channel ticks end when the fetch drops its sender; late ticks
+        // after completion are quarantined by generation + finished set.
+        let forward = iced::Task::stream(Self::tick_forward_stream(tick_rx, gen, index));
+        iced::Task::batch([fetch, forward])
+    }
+
+    /// Forward import tick channel items as messages (split out for
+    /// headless testing of the combinator: order preserved, ends when
+    /// the fetch drops its sender).
+    #[cfg(feature = "innertube")]
+    fn tick_forward_stream(
+        mut tick_rx: tokio::sync::mpsc::UnboundedReceiver<(usize, Option<usize>)>,
+        gen: u64,
+        index: usize,
+    ) -> impl futures::Stream<Item = Message> {
+        futures::stream::poll_fn(move |cx| {
+            tick_rx.poll_recv(cx).map(|opt| {
+                opt.map(|(arrived, count)| Message::PlaylistTick {
+                    gen,
+                    index,
+                    arrived,
+                    count,
+                })
+            })
+        })
     }
 
     /// Radio seed: same-artist tracks first, then the rest of the search.
@@ -9351,18 +9849,33 @@ impl AppState {
             main_children.push(self.right_panel_view());
         }
         let main = Row::with_children(main_children).spacing(8).height(Fill);
-        let base: iced::Element<'_, Message> =
-            container(column![main, self.player_view()].spacing(8).height(Fill))
-                .style(app_bg)
-                // Roomier top padding so the header never hugs the window
-                // edge (sides/bottom stay tight).
-                .padding(iced::Padding {
-                    top: 16.0,
-                    left: 8.0,
-                    right: 8.0,
-                    bottom: 8.0,
-                })
-                .into();
+        // Import banner first (in-flow, pushes content down): `None`
+        // when idle, so the layout is untouched outside imports.
+        #[cfg(feature = "innertube")]
+        let banner = self.import_banner_view();
+        #[cfg(not(feature = "innertube"))]
+        let banner: Option<iced::Element<'_, Message>> = None;
+        let mut base_children: Vec<iced::Element<'_, Message>> = Vec::new();
+        if let Some(banner) = banner {
+            base_children.push(banner);
+        }
+        base_children.push(main.into());
+        base_children.push(self.player_view());
+        let base: iced::Element<'_, Message> = container(
+            iced::widget::Column::with_children(base_children)
+                .spacing(8)
+                .height(Fill),
+        )
+        .style(app_bg)
+        // Roomier top padding so the header never hugs the window
+        // edge (sides/bottom stay tight).
+        .padding(iced::Padding {
+            top: 16.0,
+            left: 8.0,
+            right: 8.0,
+            bottom: 8.0,
+        })
+        .into();
         let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
         // Search popup above everything in the center (including the
         // drawer), below the context menu. The scrim leaves a top strip
@@ -10048,6 +10561,39 @@ mod tests {
             s.catalog.insert(t.id.clone(), t);
         }
         s
+    }
+
+    /// Offline backend for staged-import tests: a fabricated OAuth token
+    /// builds the client with no network (mirrors the core fixture).
+    #[cfg(feature = "innertube")]
+    fn test_backend() -> yutu_core::InnertubeBackend {
+        let token: yutu_core::OAuthToken = serde_json::from_str(
+            r#"{"token_type": "Bearer", "access_token": "ya29.test", "refresh_token": "1//test", "expires_in": 3599, "request_time": {"secs_since_epoch": 1790000000, "nanos_since_epoch": 0}, "client_id": "test-id", "client_secret": "test-secret"}"#,
+        )
+        .unwrap();
+        yutu_core::InnertubeBackend::connect_with_oauth(&yutu_core::OAuthPersist::from_token(token))
+            .unwrap()
+    }
+
+    /// Staged base payload for tests (headers as id/title pairs).
+    #[cfg(feature = "innertube")]
+    fn staged(
+        tracks: Vec<Track>,
+        liked_ids: Vec<String>,
+        headers: Vec<(&str, &str)>,
+    ) -> StagedImport {
+        StagedImport {
+            backend: test_backend(),
+            tracks,
+            liked_ids,
+            headers: headers
+                .into_iter()
+                .map(|(id, title)| yutu_core::ServerPlaylist {
+                    id: id.into(),
+                    title: title.into(),
+                })
+                .collect(),
+        }
     }
 
     #[test]
@@ -11593,19 +12139,21 @@ mod tests {
         let _ = s.update(Message::GoogleLogout);
         assert!(!s.logged_in);
         assert!(s.status.contains("Signed out"));
-        // Imported payload merges catalog + likes.
-        let _ = s.update(Message::LibraryImported {
-            result: Ok(ImportedLibrary {
-                tracks: vec![mk_track("lib1", "Lied", "Someone")],
-                liked_ids: vec!["lib1".into()],
-                playlists: vec![],
-            }),
+        // Staged base merges catalog + likes at once (playlists stream next).
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Library,
+            result: Ok(staged(
+                vec![mk_track("lib1", "Lied", "Someone")],
+                vec!["lib1".into()],
+                vec![],
+            )),
         });
         assert!(!s.login_busy);
         assert!(s.find_track("lib1").is_some());
         assert!(s.liked.contains("lib1"));
-        assert!(s.status.contains("Imported 1"));
-        let _ = s.update(Message::LibraryImported {
+        assert!(s.status.contains("Import: 1"));
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Library,
             result: Err("403".into()),
         });
         assert!(s.status.contains("failed: 403"));
@@ -11895,22 +12443,25 @@ mod tests {
         assert_eq!(s.route, Route::Search);
     }
 
+    #[cfg(feature = "innertube")]
     #[test]
     fn cookie_import_validates_and_merges() {
         let mut s = test_state();
         let _ = s.update(Message::CookiePathChanged("/tmp/x.txt".into()));
         assert_eq!(s.cookie_path, "/tmp/x.txt");
-        let _ = s.update(Message::CookieImported {
-            result: Ok(ImportedLibrary {
-                tracks: vec![mk_track("c1", "Cookie Song", "Someone")],
-                liked_ids: vec!["c1".into()],
-                playlists: vec![],
-            }),
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![],
+            )),
         });
         assert!(s.find_track("c1").is_some());
         assert!(s.liked.contains("c1"));
         assert!(s.status.contains("Cookie import"));
-        let _ = s.update(Message::CookieImported {
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
             result: Err("bad cookies".into()),
         });
         assert!(s.status.contains("bad cookies"));
@@ -11918,18 +12469,329 @@ mod tests {
 
     #[cfg(feature = "innertube")]
     #[test]
-    fn import_merges_server_playlists_with_real_ids() {
+    fn staged_import_streams_playlists_with_progress() {
         use yutu_core::Playlist;
         let mut s = test_state();
-        let _ = s.update(Message::CookieImported {
-            result: Ok(ImportedLibrary {
+        // Base stage: songs land immediately, playlists fan out next.
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![("PLserver1", "Road Trip"), ("PLserver2", "Chill")],
+            )),
+        });
+        assert!(s.find_track("c1").is_some());
+        assert!(s.login_busy);
+        assert!(s.status.contains("fetching 2 playlists"));
+        assert_eq!((s.import_done, s.import_total), (0, 2));
+        let gen = s.import_gen;
+        // First playlist arrives: merged under its real id, still busy.
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Road Trip".into(),
+            index: 0,
+            total: 2,
+            count: None,
+            result: Ok(Playlist {
+                id: "PLserver1".into(),
+                title: "Road Trip".into(),
+                tracks: vec![mk_track("p1", "Pl Song", "Someone")],
+            }),
+        });
+        assert!(s.user_playlists.iter().any(|p| p.id == "PLserver1"));
+        assert!(s.find_track("p1").is_some());
+        assert!(s.login_busy);
+        assert!(s.status.contains("1/2"));
+        // A failed list reports but does not stall the import.
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Chill".into(),
+            index: 1,
+            total: 2,
+            count: None,
+            result: Err("400".into()),
+        });
+        assert!(!s.login_busy);
+        // Release builds only surface failures: the terminal line must
+        // carry "fail" (see `status_text`).
+        assert!(s.status.contains("complete with failures"));
+        assert!(s.status.to_lowercase().contains("fail"));
+        assert!(s.status.contains("2/2"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[tokio::test]
+    async fn tick_forward_stream_preserves_order_and_ends() {
+        use futures::StreamExt as _;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send((0usize, Some(248))).unwrap();
+        tx.send((100, Some(248))).unwrap();
+        tx.send((248, Some(248))).unwrap();
+        drop(tx);
+        let out: Vec<Message> = AppState::tick_forward_stream(rx, 7, 0).collect().await;
+        let arrived: Vec<usize> = out
+            .iter()
+            .map(|m| match m {
+                Message::PlaylistTick {
+                    gen,
+                    index,
+                    arrived,
+                    count,
+                } => {
+                    assert_eq!((*gen, *index), (7, 0));
+                    assert_eq!(*count, Some(248));
+                    *arrived
+                }
+                other => panic!("expected PlaylistTick, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(arrived, vec![0, 100, 248]);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn playlist_ticks_move_song_counters() {
+        let mut s = test_state();
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec![],
+                vec![
+                    ("PLbig", "Big"),
+                    ("PLmystery", "Mystery"),
+                    ("PLdoomed", "Doomed"),
+                ],
+            )),
+        });
+        let gen = s.import_gen;
+        // Base songs seed the expected total; nothing arrived yet.
+        assert_eq!(s.import_expected, 1);
+        assert!(s.import_banner_view().is_some());
+        // Page ticks accumulate per list plus the details total.
+        let tick = |index: usize, arrived: usize, count: Option<usize>| Message::PlaylistTick {
+            gen,
+            index,
+            arrived,
+            count,
+        };
+        let _ = s.update(tick(0, 100, Some(248)));
+        assert_eq!(s.import_expected, 1 + 248);
+        let _ = s.update(tick(0, 200, Some(248)));
+        let _ = s.update(tick(1, 50, None));
+        // Unknown-total lists stay out of the bar math (no denominator).
+        assert_eq!(s.import_expected, 1 + 248);
+        // Display eases toward the truth instead of teleporting: pages
+        // land ~100 songs apart microseconds from each other.
+        assert_eq!(s.import_shown, 1);
+        assert_eq!(s.import_song_target(), 1 + 200);
+        s.ease_import_shown();
+        assert_eq!(s.import_shown, 1 + 100);
+        s.ease_import_shown();
+        assert_eq!(s.import_shown, 1 + 150);
+        for _ in 0..20 {
+            s.ease_import_shown();
+        }
+        assert_eq!(s.import_shown, s.import_song_target());
+        // Overshoot snaps back down (failed lists shrink the target).
+        s.import_shown = 9999;
+        s.ease_import_shown();
+        assert_eq!(s.import_shown, s.import_song_target());
+        // Late ticks for finished lists are ignored (channel vs Done race).
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Big".into(),
+            index: 0,
+            total: 3,
+            count: Some(248),
+            result: Ok(yutu_core::Playlist {
+                id: "PLbig".into(),
+                title: "Big".into(),
+                tracks: vec![mk_track("b1", "Big Song", "Someone")],
+            }),
+        });
+        assert!(s.login_busy);
+        assert_eq!(s.import_songs, 2);
+        assert!(!s.import_live.contains_key(&0));
+        let _ = s.update(tick(0, 248, Some(248)));
+        assert!(!s.import_live.contains_key(&0));
+        assert_eq!(s.import_songs, 2);
+        // Failed lists drop their expected share so the bar can still finish.
+        // (Mystery had no known total: nothing was ever added.)
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Mystery".into(),
+            index: 1,
+            total: 3,
+            count: None,
+            result: Err("400".into()),
+        });
+        assert!(s.login_busy);
+        assert_eq!(s.import_expected, 1 + 248);
+        // Known-total failure subtracts its share.
+        let _ = s.update(tick(2, 10, Some(60)));
+        assert_eq!(s.import_expected, 1 + 248 + 60);
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Doomed".into(),
+            index: 2,
+            total: 3,
+            count: Some(60),
+            result: Err("500".into()),
+        });
+        assert!(!s.login_busy);
+        assert!(!s.import_active);
+        assert!(s.import_banner_view().is_none());
+        assert_eq!(s.import_expected, 1 + 248);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn stale_playlist_arrivals_are_ignored() {
+        let mut s = test_state();
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(vec![], vec![], vec![("PLnew", "New")])),
+        });
+        // Straggler from a previous run (old generation): no merge,
+        // no counter movement, no status change.
+        s.status = "steady".into();
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen: s.import_gen.wrapping_sub(1),
+            title: "Ghost".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PLghost".into(),
+                title: "Ghost".into(),
+                tracks: vec![mk_track("g1", "Ghost Song", "No One")],
+            }),
+        });
+        assert!(!s.user_playlists.iter().any(|p| p.id == "PLghost"));
+        assert!(s.find_track("g1").is_none());
+        assert_eq!(s.import_done, 0);
+        assert_eq!(s.status, "steady");
+        assert!(s.login_busy);
+        // Out-of-order arrivals (index 1 before 0) both merge and finish.
+        let gen = s.import_gen;
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "New".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PLnew".into(),
+                title: "New".into(),
                 tracks: vec![],
-                liked_ids: vec![],
-                playlists: vec![Playlist {
-                    id: "PLserver1".into(),
-                    title: "Road Trip".into(),
-                    tracks: vec![mk_track("p1", "Pl Song", "Someone")],
-                }],
+            }),
+        });
+        assert!(!s.login_busy);
+        assert!(s.user_playlists.iter().any(|p| p.id == "PLnew"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn persist_imported_writes_store_without_state() {
+        // The background-task half of an import: needs no AppState, so it
+        // never runs on the GUI thread.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "yutu-persist-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        let tracks = vec![mk_track("w1", "W Song", "Someone")];
+        let liked = vec!["w1".into(), "bare-id".into()];
+        let playlists = vec![yutu_core::Playlist {
+            id: "PLw".into(),
+            title: "W List".into(),
+            tracks: tracks.clone(),
+        }];
+        AppState::persist_imported(&path_str, &tracks, &liked, &playlists);
+        let store = yutu_core::LibraryStore::open(&path_str).unwrap();
+        assert!(store.cached_track("w1").unwrap().is_some());
+        assert!(store.liked_ids().unwrap().contains(&"w1".to_string()));
+        assert!(store.liked_ids().unwrap().contains(&"bare-id".to_string()));
+        let lists = store.user_playlists().unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].tracks.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn import_banner_tracks_active_imports() {
+        let mut s = test_state();
+        // Idle: no banner, layout untouched.
+        assert!(s.import_banner_view().is_none());
+        // Trigger shows the banner in base stage (totals unknown yet).
+        s.cookie_path = "/tmp/x.txt".into();
+        let _ = s.update(Message::CookieImport);
+        assert!(s.import_active);
+        assert!(s.import_banner_view().is_some());
+        // Base stage with playlists keeps it up with counts.
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(vec![], vec![], vec![("PL1", "One")])),
+        });
+        assert!(s.import_active);
+        assert!(s.import_banner_view().is_some());
+        assert_eq!((s.import_done, s.import_total), (0, 1));
+        // Final arrival hides it again.
+        let gen = s.import_gen;
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "One".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PL1".into(),
+                title: "One".into(),
+                tracks: vec![],
+            }),
+        });
+        assert!(!s.import_active);
+        assert!(s.import_banner_view().is_none());
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn import_merges_server_playlists_with_real_ids() {
+        let mut s = test_state();
+        // Base stage first (sets the run generation + totals).
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(vec![], vec![], vec![("PLserver1", "Road Trip")])),
+        });
+        let gen = s.import_gen;
+        // One playlist arriving through the staged flow.
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Road Trip".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PLserver1".into(),
+                title: "Road Trip".into(),
+                tracks: vec![mk_track("p1", "Pl Song", "Someone")],
             }),
         });
         // Server list lands in memory under its real id (syncable).
@@ -11945,15 +12807,17 @@ mod tests {
         assert!(s.find_track("p1").is_some());
         assert!(s.status.contains("1 playlists"));
         // Re-import refreshes in place (no duplicate list).
-        let _ = s.update(Message::CookieImported {
-            result: Ok(ImportedLibrary {
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "Road Trip Renamed".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PLserver1".into(),
+                title: "Road Trip Renamed".into(),
                 tracks: vec![],
-                liked_ids: vec![],
-                playlists: vec![Playlist {
-                    id: "PLserver1".into(),
-                    title: "Road Trip Renamed".into(),
-                    tracks: vec![],
-                }],
             }),
         });
         assert_eq!(
@@ -12025,7 +12889,8 @@ mod tests {
         assert!(s.status.contains("PLghost1"));
         assert!(!s.user_playlists.iter().any(|p| p.id == "PLghost1"));
         // Failed import never flips the session flag by itself.
-        let _ = s.update(Message::CookieImported {
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
             result: Err("boom".into()),
         });
         assert!(s.status.contains("Cookie import failed: boom"));
