@@ -288,6 +288,16 @@ fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widg
     }
 }
 
+/// Import progress bar in theme red: red fill on a dark track.
+#[cfg(feature = "innertube")]
+fn import_bar(_: &iced::Theme) -> iced::widget::progress_bar::Style {
+    iced::widget::progress_bar::Style {
+        background: iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
+        bar: iced::Background::Color(SPOT_GREEN),
+        border: iced::Border::default().rounded(4),
+    }
+}
+
 /// Row action button: transparent at rest, soft card hover with rounded
 /// corners (every clickable row/item gets hover feedback).
 /// Browser arrows: always transparent, softly rounded; the icon (not a
@@ -1308,6 +1318,9 @@ pub struct AppState {
     import_total: usize,
     #[cfg(feature = "innertube")]
     import_gen: u64,
+    /// An import is in flight: the top banner shows live progress.
+    #[cfg(feature = "innertube")]
+    import_active: bool,
     /// End-of-track auto-advance already fired for the current song.
     end_advanced: bool,
     library_path: String,
@@ -1947,11 +1960,13 @@ impl AppState {
         let mut tasks = self.merge_imported(staged.tracks, staged.liked_ids, Vec::new());
         if total == 0 {
             self.login_busy = false;
+            self.import_active = false;
             self.status = format!("{}: {n} library tracks ({m} liked).", kind.done_label());
             self.publish_mpris();
             return iced::Task::batch(tasks);
         }
         self.login_busy = true;
+        self.import_active = true;
         self.status = format!(
             "{}: {n} songs ({m} liked), fetching {total} playlists…",
             kind.done_label(),
@@ -2589,6 +2604,8 @@ impl AppState {
             import_total: 0,
             #[cfg(feature = "innertube")]
             import_gen: 0,
+            #[cfg(feature = "innertube")]
+            import_active: false,
             end_advanced: false,
             library_path,
             catalog: HashMap::new(),
@@ -3987,6 +4004,62 @@ impl AppState {
         ]
         .spacing(4)
         .into()
+    }
+
+    /// Top import banner (in-flow, pushes content down): live progress
+    /// while an import runs (songs/liked counts, playlists done/total,
+    /// red bar with %). `None` when idle, so layout is untouched.
+    #[cfg(feature = "innertube")]
+    fn import_banner_view(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{column, container, progress_bar, row, text, Space};
+        use iced::Fill;
+        if !self.import_active {
+            return None;
+        }
+        let pct = if self.import_total > 0 {
+            (self.import_done as f32 / self.import_total as f32 * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        let pct_label = if self.import_total > 0 {
+            format!("{}%", pct.round() as u32)
+        } else {
+            "…".to_string()
+        };
+        let counts = if self.import_total > 0 {
+            format!(
+                "{} songs · {} liked · {}/{} playlists",
+                self.import_songs, self.import_likes, self.import_done, self.import_total
+            )
+        } else {
+            format!(
+                "{} songs · {} liked · reading library…",
+                self.import_songs, self.import_likes
+            )
+        };
+        Some(
+            container(
+                column![
+                    row![
+                        text("Importing your library")
+                            .size(13)
+                            .color(iced::Color::WHITE),
+                        Space::new().width(Fill),
+                        text(pct_label).size(13).color(SPOT_GREEN),
+                    ]
+                    .spacing(8)
+                    .width(Fill)
+                    .align_y(iced::alignment::Vertical::Center),
+                    progress_bar(0.0..=100.0, pct).girth(8).style(import_bar),
+                    text(counts).size(11).color(MUTED),
+                ]
+                .spacing(4),
+            )
+            .style(card_bg)
+            .padding(10)
+            .width(Fill)
+            .into(),
+        )
     }
 
     /// In-app error log: the same lines that go to stderr (capped at 30).
@@ -6104,6 +6177,7 @@ impl AppState {
                             "Pick your exported cookies file first (see the note below).".into();
                     } else {
                         self.login_busy = true;
+                        self.import_active = true;
                         self.status = "Reading cookies + contacting YouTube Music…".into();
                         self.publish_mpris();
                         return Self::cookie_import_task(path, self.library_path.clone());
@@ -6123,6 +6197,7 @@ impl AppState {
                 }
                 Err(e) => {
                     self.login_busy = false;
+                    self.import_active = false;
                     // A dead saved session must not keep posing as signed
                     // in: drop it so the panel goes back to the file picker.
                     if kind == ImportKind::Cookie && e.contains("saved cookie session") {
@@ -6156,6 +6231,7 @@ impl AppState {
                 let done = self.import_done;
                 let finish = |s: &mut Self| {
                     s.login_busy = false;
+                    s.import_active = false;
                     if kind == ImportKind::Cookie {
                         s.cookie_logged_in = cookie_session_exists();
                     }
@@ -6204,6 +6280,7 @@ impl AppState {
                     self.status = "Cookie session is gone: import your cookies file again.".into();
                 } else {
                     self.login_busy = true;
+                    self.import_active = true;
                     self.status = "Importing your library…".into();
                     self.publish_mpris();
                     return Self::cookie_session_import_task(self.library_path.clone());
@@ -6215,6 +6292,7 @@ impl AppState {
                 self.import_gen += 1;
                 self.import_done = 0;
                 self.import_total = 0;
+                self.import_active = false;
                 if cookie_session_exists() {
                     match std::fs::remove_file(cookie_session_path()) {
                         Ok(()) => {
@@ -6364,6 +6442,7 @@ impl AppState {
                                 self.logged_in = true;
                                 self.google_login = None;
                                 self.login_busy = true;
+                                self.import_active = true;
                                 self.status = "Signed in: importing your library…".into();
                                 self.publish_mpris();
                                 return Self::library_import_task(self.library_path.clone());
@@ -6396,6 +6475,7 @@ impl AppState {
                 self.import_gen += 1;
                 self.import_done = 0;
                 self.import_total = 0;
+                self.import_active = false;
                 self.logged_in = false;
                 self.google_login = None;
                 self.status = "Signed out (token file removed).".into();
@@ -6406,6 +6486,7 @@ impl AppState {
                     self.status = "Sign in with Google first.".into();
                 } else {
                     self.login_busy = true;
+                    self.import_active = true;
                     self.status = "Reading library + contacting YouTube Music…".into();
                     self.publish_mpris();
                     return Self::library_import_task(self.library_path.clone());
@@ -9580,18 +9661,33 @@ impl AppState {
             main_children.push(self.right_panel_view());
         }
         let main = Row::with_children(main_children).spacing(8).height(Fill);
-        let base: iced::Element<'_, Message> =
-            container(column![main, self.player_view()].spacing(8).height(Fill))
-                .style(app_bg)
-                // Roomier top padding so the header never hugs the window
-                // edge (sides/bottom stay tight).
-                .padding(iced::Padding {
-                    top: 16.0,
-                    left: 8.0,
-                    right: 8.0,
-                    bottom: 8.0,
-                })
-                .into();
+        // Import banner first (in-flow, pushes content down): `None`
+        // when idle, so the layout is untouched outside imports.
+        #[cfg(feature = "innertube")]
+        let banner = self.import_banner_view();
+        #[cfg(not(feature = "innertube"))]
+        let banner: Option<iced::Element<'_, Message>> = None;
+        let mut base_children: Vec<iced::Element<'_, Message>> = Vec::new();
+        if let Some(banner) = banner {
+            base_children.push(banner);
+        }
+        base_children.push(main.into());
+        base_children.push(self.player_view());
+        let base: iced::Element<'_, Message> = container(
+            iced::widget::Column::with_children(base_children)
+                .spacing(8)
+                .height(Fill),
+        )
+        .style(app_bg)
+        // Roomier top padding so the header never hugs the window
+        // edge (sides/bottom stay tight).
+        .padding(iced::Padding {
+            top: 16.0,
+            left: 8.0,
+            right: 8.0,
+            bottom: 8.0,
+        })
+        .into();
         let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
         // Search popup above everything in the center (including the
         // drawer), below the context menu. The scrim leaves a top strip
@@ -12313,6 +12409,43 @@ mod tests {
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].tracks.len(), 1);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn import_banner_tracks_active_imports() {
+        let mut s = test_state();
+        // Idle: no banner, layout untouched.
+        assert!(s.import_banner_view().is_none());
+        // Trigger shows the banner in base stage (totals unknown yet).
+        s.cookie_path = "/tmp/x.txt".into();
+        let _ = s.update(Message::CookieImport);
+        assert!(s.import_active);
+        assert!(s.import_banner_view().is_some());
+        // Base stage with playlists keeps it up with counts.
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(vec![], vec![], vec![("PL1", "One")])),
+        });
+        assert!(s.import_active);
+        assert!(s.import_banner_view().is_some());
+        assert_eq!((s.import_done, s.import_total), (0, 1));
+        // Final arrival hides it again.
+        let gen = s.import_gen;
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Cookie,
+            gen,
+            title: "One".into(),
+            index: 0,
+            total: 1,
+            result: Ok(yutu_core::Playlist {
+                id: "PL1".into(),
+                title: "One".into(),
+                tracks: vec![],
+            }),
+        });
+        assert!(!s.import_active);
+        assert!(s.import_banner_view().is_none());
     }
 
     #[cfg(feature = "innertube")]
