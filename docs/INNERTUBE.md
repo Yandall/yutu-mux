@@ -105,6 +105,18 @@ actionable error. Premium accounts are exempt from PO-token gating.
 - `BrowserToken`'s upstream `Debug` impl prints only `"Private BrowserToken"`,
   so `InnertubeBackend` can safely derive `Debug`/`Clone`. Still, never
   `println!`/`log` cookie contents; use `CookieAuth::redacted()`.
+- Web changes flow back into the app via sync (Settings "Sync now" plus
+  auto-sync every 15 min while signed in, 90 s grace after launch):
+  the pull replays still-pending local pushes first, then reconciles
+  server-wins (library rows carry their server like status, so likes
+  *and* dislikes replace the local sets; playlist tracks/titles refresh
+  in place; server lists absent from a clean header fetch are pruned;
+  lists with unpushed edits are never fetched or replaced). A failed
+  library page disables the ratings replace and a failed header page
+  disables pruning, so a partial pull can never wipe local state.
+  Pending pushes persist in SQLite (`pending_ops`, latest intent wins)
+  and clear only on confirmed success, so offline edits survive
+  restarts and reconcile on the next pull.
 - Failing payloads can be saved with `crate::stream::save_report` — callers
   must redact first (strip `Cookie`/`Authorization`/`SAPISIDHASH`).
 
