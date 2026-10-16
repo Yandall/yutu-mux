@@ -37,14 +37,14 @@ use ytmapi_rs::auth::oauth::OAuthToken;
 use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{PlaylistID, Thumbnail, VideoID, YoutubeID};
 use ytmapi_rs::parse::{
-    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong, TableListSong,
-    WatchPlaylistTrack,
+    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultPlaylist, SearchResultSong,
+    TableListSong, WatchPlaylistTrack,
 };
 use ytmapi_rs::query::GetSongTrackingUrlQuery;
 use ytmapi_rs::YtMusic;
 
 use crate::auth::{CookieAuth, OAuthPersist};
-use crate::models::{Album, Artist, Track};
+use crate::models::{Album, Artist, PlaylistHit, Track};
 use crate::stream::{StreamClient, StreamError, StreamRequest};
 
 /// Live YouTube Music handle.
@@ -293,6 +293,30 @@ impl InnertubeBackend {
                 .map_err(|e| format!("search artists failed: {e}"))?,
         };
         Ok(artists.iter().map(artist_to_artist).collect())
+    }
+
+    /// Live community playlist search, same endpoint family as
+    /// [`Self::search_tracks`]. Podcast hits are skipped (no podcast
+    /// support anywhere else in the app); only real playlists map.
+    pub async fn search_community_playlists(
+        &self,
+        query: &str,
+    ) -> Result<Vec<PlaylistHit>, String> {
+        let lists = match &self.inner {
+            Inner::Anonymous(client) => client
+                .search_community_playlists(query)
+                .await
+                .map_err(|e| format!("search playlists failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .search_community_playlists(query)
+                .await
+                .map_err(|e| format!("search playlists failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .search_community_playlists(query)
+                .await
+                .map_err(|e| format!("search playlists failed: {e}"))?,
+        };
+        Ok(lists.iter().filter_map(community_playlist_to_hit).collect())
     }
 
     /// All songs in the user's library (`FEmusic_liked_videos` browse).
@@ -1464,6 +1488,30 @@ fn artist_to_artist(artist: &SearchResultArtist) -> Artist {
     }
 }
 
+/// Map one community playlist hit to our [`PlaylistHit`] (featured and
+/// community variants; podcasts are `None` and skipped by the caller).
+fn community_playlist_to_hit(list: &SearchResultPlaylist) -> Option<PlaylistHit> {
+    match list {
+        SearchResultPlaylist::Featured(f) => Some(PlaylistHit {
+            id: f.playlist_id.get_raw().to_string(),
+            title: f.title.clone(),
+            author: f.author.clone(),
+            detail: f.songs.clone(),
+            thumbnail_url: pick_thumb_url(&f.thumbnails),
+        }),
+        SearchResultPlaylist::Community(c) => Some(PlaylistHit {
+            id: c.playlist_id.get_raw().to_string(),
+            title: c.title.clone(),
+            author: c.author.clone(),
+            detail: c.views.clone(),
+            thumbnail_url: pick_thumb_url(&c.thumbnails),
+        }),
+        SearchResultPlaylist::Podcast(_) => None,
+        // Future variants (the enum is non-exhaustive): skip like podcasts.
+        _ => None,
+    }
+}
+
 /// Map one library/playlist song row to our [`Track`]: artists joined with
 /// `", "` (the search path gets a pre-joined string from the API), album
 /// always present in this row type, duration parsed like search hits.
@@ -2599,6 +2647,44 @@ mod tests {
                 plays: Some("0".into()),
             }
         );
+    }
+
+    #[test]
+    fn community_playlist_mapping_skips_podcasts() {
+        // `SearchResultPlaylist` is `#[non_exhaustive]`; build via serde.
+        let community: SearchResultPlaylist = serde_json::from_value(serde_json::json!({
+            "Community": {
+                "title": "Greatest Rock Workout Songs",
+                "author": "Redlist",
+                "views": "9.6M views",
+                "playlist_id": "PLabc123",
+                "thumbnails": [{"height": 60, "width": 60, "url": "https://example.invalid/p"}]
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            community_playlist_to_hit(&community),
+            Some(PlaylistHit {
+                id: "PLabc123".into(),
+                title: "Greatest Rock Workout Songs".into(),
+                author: "Redlist".into(),
+                detail: "9.6M views".into(),
+                thumbnail_url: Some("https://example.invalid/p".into()),
+            })
+        );
+        let featured: SearchResultPlaylist = serde_json::from_value(serde_json::json!({
+            "Featured": {
+                "title": "New Music Friday",
+                "author": "YouTube Music",
+                "songs": "80 songs",
+                "playlist_id": "PLdef456",
+                "thumbnails": []
+            }
+        }))
+        .unwrap();
+        let hit = community_playlist_to_hit(&featured).expect("featured maps");
+        assert_eq!(hit.detail, "80 songs");
+        assert!(hit.thumbnail_url.is_none());
     }
 
     #[test]

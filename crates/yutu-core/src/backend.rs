@@ -1,6 +1,8 @@
 //! Backend trait + deterministic mock (no network).
 
-use crate::models::{Album, Artist, Lyrics, LyricsLine, Playlist, SearchResults, Track};
+use crate::models::{
+    Album, Artist, Lyrics, LyricsLine, Playlist, PlaylistHit, SearchResults, Track,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -111,6 +113,13 @@ impl MusicBackend for MockBackend {
             artists: vec![Artist {
                 id: "ar1".into(),
                 name: "The Beatles".into(),
+                thumbnail_url: None,
+            }],
+            playlists: vec![PlaylistHit {
+                id: "PLtest".into(),
+                title: "Abbey Road Mix".into(),
+                author: "Beatles Fan".into(),
+                detail: "25 songs".into(),
                 thumbnail_url: None,
             }],
         }
