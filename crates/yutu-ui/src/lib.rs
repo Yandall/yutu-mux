@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
-    LyricsResult, Playlist, PlaylistHit, SearchResults, Track,
+    LyricsResult, Playlist, PlaylistHit, QueueSnapshot, SearchResults, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -1294,6 +1294,17 @@ pub struct AppState {
     suggest: Vec<String>,
     suggest_gen: u64,
     show_suggest: bool,
+    /// Last persisted queue snapshot (changed-identity check for the Tick
+    /// saver: queue writes land within one tick, positions within 30s).
+    queue_saved: Option<QueueSnapshot>,
+    /// Last queue save time (positions refresh at most every 30s).
+    queue_saved_at: Option<std::time::Instant>,
+    /// Saved position to seek after a restored queue starts playing
+    /// (dropped on any other load or failure).
+    pending_resume: Option<f64>,
+    /// A session restore is waiting for its first play (the play button
+    /// loads the saved track instead of resuming an empty backend).
+    restored_pending: bool,
     /// Context menu open for this track id (None = closed).
     context_menu: Option<String>,
     /// Playlist menu open for this playlist id (None = closed).
@@ -2884,6 +2895,10 @@ impl AppState {
             suggest: Vec::new(),
             suggest_gen: 0,
             show_suggest: false,
+            queue_saved: None,
+            queue_saved_at: None,
+            pending_resume: None,
+            restored_pending: false,
             context_menu: None,
             submenu_playlists_for: None,
             pl_menu: None,
@@ -3007,6 +3022,9 @@ impl AppState {
             seed = merged.into_values().collect();
         }
         state.seed_catalog_mem(seed);
+        // Session restore last: the catalog is warm, so saved ids
+        // resolve to full rows with art.
+        state.restore_queue();
         (state, iced::Task::none())
     }
 
@@ -3100,6 +3118,130 @@ impl AppState {
             _ => None,
         });
         iced::Subscription::batch([keys, tick, events, anim])
+    }
+
+    /// Repeat mode as stored in the queue snapshot.
+    fn repeat_label(mode: yutu_player::RepeatMode) -> String {
+        match mode {
+            yutu_player::RepeatMode::Off => "off".into(),
+            yutu_player::RepeatMode::All => "all".into(),
+            yutu_player::RepeatMode::One => "one".into(),
+        }
+    }
+
+    /// Parse a stored repeat mode (unknown falls back to Off).
+    fn repeat_parse(s: &str) -> yutu_player::RepeatMode {
+        match s {
+            "all" => yutu_player::RepeatMode::All,
+            "one" => yutu_player::RepeatMode::One,
+            _ => yutu_player::RepeatMode::Off,
+        }
+    }
+
+    /// Current playback session as a snapshot (queue ids in order plus
+    /// index, position, shuffle/repeat/volume).
+    fn queue_snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            ids: self.queue.items().iter().map(|t| t.id.clone()).collect(),
+            index: self.queue.position(),
+            position_secs: self.position_secs,
+            shuffle: self.queue.shuffle,
+            repeat: Self::repeat_label(self.queue.repeat),
+            volume: self.volume,
+        }
+    }
+
+    /// Write the session snapshot (or clear it when the queue is empty).
+    /// Ids only, one shot: restarts resolve rows via the track cache.
+    fn persist_queue(&mut self) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        if self.queue.is_empty() {
+            let _ = store.clear_queue();
+            self.queue_saved = None;
+        } else {
+            let snap = self.queue_snapshot();
+            if store.save_queue(&snap).is_ok() {
+                self.queue_saved = Some(snap);
+                self.queue_saved_at = Some(std::time::Instant::now());
+            }
+        }
+    }
+
+    /// Tick saver: queue identity changes (ids, index, shuffle, repeat,
+    /// volume) persist on the next tick; the playing position refreshes
+    /// at most every 30s so Ticks stay write-free while paused.
+    fn maybe_persist_queue(&mut self, now: std::time::Instant) {
+        let snap = self.queue_snapshot();
+        let identity_changed = self.queue_saved.as_ref().is_none_or(|s| {
+            s.ids != snap.ids
+                || s.index != snap.index
+                || s.shuffle != snap.shuffle
+                || s.repeat != snap.repeat
+                || (s.volume - snap.volume).abs() > f32::EPSILON
+        });
+        if identity_changed {
+            self.persist_queue();
+            return;
+        }
+        let position_stale = (self
+            .queue_saved
+            .as_ref()
+            .map(|s| s.position_secs)
+            .unwrap_or(0.0)
+            - snap.position_secs)
+            .abs()
+            > 5.0;
+        let due = self
+            .queue_saved_at
+            .is_none_or(|at| now.duration_since(at).as_secs() >= 30);
+        if !self.queue.is_empty() && !self.paused && position_stale && due {
+            self.persist_queue();
+        }
+    }
+
+    /// Rebuild the queue from the persisted snapshot (unknown ids drop:
+    /// the track was never cached). Starts paused at the saved position
+    /// with shuffle/repeat/volume restored.
+    fn restore_queue(&mut self) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let snap = match store.load_queue() {
+            Ok(Some(snap)) => snap,
+            _ => return,
+        };
+        let items: Vec<Track> = snap
+            .ids
+            .iter()
+            .filter_map(|id| self.find_track(id))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let dropped = snap.ids.len() - items.len();
+        self.queue.restore(items, snap.index);
+        self.queue.shuffle = snap.shuffle;
+        self.queue.repeat = Self::repeat_parse(&snap.repeat);
+        self.volume = snap.volume;
+        self.apply_volume();
+        self.position_secs = snap.position_secs;
+        self.paused = true;
+        self.playing_from = "Saved queue".into();
+        self.queue_saved = Some(snap);
+        self.queue_saved_at = Some(std::time::Instant::now());
+        // The next play loads the saved track (never resumes an empty
+        // backend); any other load clears the flag instead.
+        self.restored_pending = true;
+        self.status = if dropped == 0 {
+            format!("Restored queue ({} songs).", self.queue.len())
+        } else {
+            format!(
+                "Restored queue ({} songs, {dropped} not cached).",
+                self.queue.len()
+            )
+        };
     }
 
     fn persist_like(&self, id: &str, liked: bool) {
@@ -3350,6 +3492,10 @@ impl AppState {
         self.paused_seek = false;
         self.seek_hold_until = None;
         self.position_secs = 0.0;
+        // A new load cancels any pending resume seek (it belongs to a
+        // previous track); the resume flow re-arms it afterwards.
+        self.pending_resume = None;
+        self.restored_pending = false;
         // Lyrics page follows playback: swap the id in place (no back-stack
         // spam) and fetch the new song's lyrics unless cached.
         let mut follow_tasks: Vec<iced::Task<Message>> = Vec::new();
@@ -3392,9 +3538,11 @@ impl AppState {
                 Ok(()) => {
                     self.loading_track = None;
                     self.status = format!("Playing: {} · {}.", t.title, t.artist);
+                    self.consume_resume();
                     true
                 }
                 Err(e) => {
+                    self.pending_resume = None;
                     let msg = format!("Playback failed for {}: {e}", t.id);
                     self.log_error(msg.clone());
                     self.status = msg;
@@ -3402,6 +3550,7 @@ impl AppState {
                 }
             },
             None => {
+                self.pending_resume = None;
                 self.status = "Stream ready, but no audio device.".into();
                 false
             }
@@ -3419,6 +3568,7 @@ impl AppState {
                     self.end_advanced = false;
                     self.position_secs = 0.0;
                     self.status = format!("Playing (offline): {} · {}.", t.title, t.artist);
+                    self.consume_resume();
                     true
                 }
                 Err(e) => {
@@ -3650,6 +3800,9 @@ impl AppState {
                 self.paused_seek = false;
                 self.seek_hold_until = None;
                 self.position_secs = 0.0;
+                // New load cancels any pending resume seek (see above).
+                self.pending_resume = None;
+                self.restored_pending = false;
                 let mut tasks = self.track_start_tasks(&t);
                 // Downloaded bytes play with no network (bulk queue paths
                 // like playlist Play-all funnel here, not through
@@ -4803,6 +4956,34 @@ impl AppState {
         self.error_log.push(msg);
     }
 
+    /// Apply a pending resume seek once audio has started (restored
+    /// queue): seeks when past 5s, otherwise starts from the top.
+    fn consume_resume(&mut self) {
+        // Pending resume seek after audio starts (restored queue):
+        // applied once, dropped on failure paths by the callers.
+        if let Some(pos) = self.pending_resume.take() {
+            if pos > 5.0 {
+                self.seek_to_secs(pos);
+            }
+        }
+    }
+
+    /// First play after a session restore: load the saved track and arm
+    /// the saved-position seek. Some(task) when it fired (callers return
+    /// it); any other load clears the flag instead.
+    fn take_restored_play(&mut self) -> Option<iced::Task<Message>> {
+        if self.restored_pending && self.queue.current().is_some() {
+            self.restored_pending = false;
+            let resume = (self.position_secs > 5.0).then_some(self.position_secs);
+            let task = self.play_current_task();
+            self.pending_resume = resume;
+            Some(task)
+        } else {
+            self.restored_pending = false;
+            None
+        }
+    }
+
     /// Seek to an absolute position: backend first, manual clock +
     /// anti-flicker hold on success, logged honest error otherwise.
     fn seek_to_secs(&mut self, pos: f64) {
@@ -4838,6 +5019,9 @@ impl AppState {
         use yutu_desktop::PlayerCommand as C;
         match cmd {
             C::Play => {
+                if let Some(task) = self.take_restored_play() {
+                    return task;
+                }
                 if self.paused {
                     if let Some(a) = &self.audio {
                         a.resume();
@@ -4855,6 +5039,9 @@ impl AppState {
                 self.status = "Paused (desktop).".into();
             }
             C::PlayPause => {
+                if let Some(task) = self.take_restored_play() {
+                    return task;
+                }
                 if self.paused {
                     if let Some(a) = &self.audio {
                         a.resume();
@@ -5573,6 +5760,9 @@ impl AppState {
                 }
             }
             Message::TogglePause => {
+                if let Some(task) = self.take_restored_play() {
+                    return task;
+                }
                 if let Some(a) = &self.audio {
                     if self.paused {
                         a.resume();
@@ -7169,6 +7359,9 @@ impl AppState {
                     .unwrap_or(0.0)
                     .clamp(0.0, 2.0);
                 self.last_tick = Some(now);
+                // Session saver: queue changes land within a tick, the
+                // playing position refreshes every 30s.
+                self.maybe_persist_queue(now);
                 if self.seek_hold_until.is_some_and(|until| now < until) {
                     if !self.paused {
                         self.position_secs = (self.position_secs + dt).max(0.0);
@@ -7235,6 +7428,7 @@ impl AppState {
                 self.loading_track = None;
                 match result {
                     Err(e) => {
+                        self.pending_resume = None;
                         let msg = format!("Playback failed for {track_id}: {e}");
                         self.log_error(msg.clone());
                         self.status = msg;
@@ -7267,6 +7461,7 @@ impl AppState {
                 self.loading_track = None;
                 match result {
                     Err(e) => {
+                        self.pending_resume = None;
                         let msg = format!("Playback failed for {video_id}: {e}");
                         self.log_error(msg.clone());
                         self.status = msg;
@@ -7283,6 +7478,7 @@ impl AppState {
                         }
                         match &self.audio {
                             None => {
+                                self.pending_resume = None;
                                 self.status =
                                     format!("Stream {video_id} fetched, but no audio device.");
                             }
@@ -7295,8 +7491,10 @@ impl AppState {
                                         self.status =
                                             format!("Playing: {} · {}.", t.title, t.artist);
                                     }
+                                    self.consume_resume();
                                 }
                                 Err(e) => {
+                                    self.pending_resume = None;
                                     let msg = format!("Playback failed for {video_id}: {e}");
                                     self.log_error(msg.clone());
                                     self.status = msg;
@@ -12742,6 +12940,96 @@ mod tests {
         assert!(s.paused);
         let _ = s.update(Message::TogglePause);
         assert!(!s.paused);
+    }
+
+    #[test]
+    fn queue_session_persists_and_restores_across_restart() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir()
+            .join(format!("yutu-queue-{}-{}.db", std::process::id(), n))
+            .to_string_lossy()
+            .into_owned();
+        let (mut s, _) = AppState::with_library_path(path.clone());
+        let tracks = yutu_core::MockBackend::fixture_tracks();
+        s.register_tracks(tracks.clone());
+        for t in &tracks {
+            s.queue.push(t.clone());
+        }
+        s.queue.jump_to(2);
+        s.position_secs = 42.0;
+        s.queue.shuffle = true;
+        s.queue.repeat = yutu_player::RepeatMode::All;
+        s.volume = 0.5;
+        s.persist_queue();
+        drop(s);
+        // Reopen: queue, index, position and modes come back paused.
+        let (s2, _) = AppState::with_library_path(path);
+        assert_eq!(s2.queue.len(), 5);
+        assert_eq!(s2.queue.position(), Some(2));
+        assert_eq!(s2.queue.current().map(|t| t.id.as_str()), Some("m3"));
+        assert!((s2.position_secs - 42.0).abs() < 1e-6);
+        assert!(s2.queue.shuffle);
+        assert_eq!(s2.queue.repeat, yutu_player::RepeatMode::All);
+        assert!((s2.volume - 0.5).abs() < f32::EPSILON);
+        assert!(s2.paused);
+        assert!(s2.restored_pending);
+        assert!(s2.status.contains("Restored queue"));
+    }
+
+    #[test]
+    fn queue_restore_drops_unknown_ids() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir()
+            .join(format!("yutu-queue-{}-{}.db", std::process::id(), n))
+            .to_string_lossy()
+            .into_owned();
+        let store = LibraryStore::open(&path).unwrap();
+        store
+            .save_queue(&QueueSnapshot {
+                ids: vec!["ghost".into()],
+                index: Some(0),
+                position_secs: 10.0,
+                shuffle: false,
+                repeat: "off".into(),
+                volume: 0.8,
+            })
+            .unwrap();
+        let (s, _) = AppState::with_library_path(path);
+        assert!(s.queue.is_empty());
+        assert!(!s.restored_pending);
+        assert_eq!(s.status, "Ready: search for music.");
+    }
+
+    #[test]
+    fn restored_play_loads_saved_track_then_seeks() {
+        let mut s = test_state();
+        s.queue.push(mk_track("v1", "Song", "A"));
+        s.position_secs = 42.0;
+        s.restored_pending = true;
+        s.paused = true;
+        // No audio backend in tests: first play loads the saved track and
+        // arms the saved-position seek.
+        let _ = s.update(Message::TogglePause);
+        assert_eq!(s.loading_track.as_deref(), Some("v1"));
+        assert_eq!(s.pending_resume, Some(42.0));
+        assert!(!s.restored_pending);
+        // Failure drops the pending seek instead of firing it later.
+        let _ = s.update(Message::StreamResolved {
+            video_id: "v1".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.pending_resume, None);
+    }
+
+    #[test]
+    fn tick_saver_writes_queue_changes() {
+        let mut s = test_state();
+        s.queue.push(mk_track("v1", "Song", "A"));
+        let _ = s.update(Message::Tick(std::time::Instant::now()));
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        let snap = store.load_queue().unwrap().expect("saved");
+        assert_eq!(snap.ids, vec!["v1".to_string()]);
+        assert_eq!(snap.index, Some(0));
     }
 
     #[test]

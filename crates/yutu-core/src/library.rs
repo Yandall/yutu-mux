@@ -2,7 +2,7 @@
 //! Schema v2: playlists + playlist_tracks added (migrate is additive).
 //! Rusqlite (system sqlite, no bundled build).
 
-use crate::models::{HistoryEntry, Playlist, Track};
+use crate::models::{HistoryEntry, Playlist, QueueSnapshot, Track};
 use rusqlite::{params, Connection};
 
 /// Canonical stored playlist id (edit form, no browse `VL` prefix).
@@ -82,6 +82,16 @@ impl LibraryStore {
                      thumbnail_large_url TEXT,
                      PRIMARY KEY (playlist_id, position));
                  CREATE INDEX IF NOT EXISTS idx_ptracks_pid ON playlist_tracks(playlist_id);",
+            )
+            .map_err(|e| e.to_string())?;
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS queue_items(
+                     position INTEGER PRIMARY KEY,
+                     track_id TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS queue_meta(
+                     key TEXT PRIMARY KEY,
+                     value TEXT NOT NULL);",
             )
             .map_err(|e| e.to_string())?;
         // Additive migration for pre-art databases (no version table).
@@ -383,6 +393,102 @@ impl LibraryStore {
             .map_err(|e| e.to_string())?;
         self.conn
             .execute("DELETE FROM playlists WHERE id = ?1", params![id])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Persist the playback session: queue ids in order plus the current
+    /// index, position, shuffle/repeat/volume. One shot replaces the
+    /// previous snapshot (ids only: rows resolve via the track cache).
+    pub fn save_queue(&self, snap: &QueueSnapshot) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM queue_items", [])
+            .map_err(|e| e.to_string())?;
+        for (i, id) in snap.ids.iter().enumerate() {
+            self.conn
+                .execute(
+                    "INSERT INTO queue_items(position, track_id) VALUES (?1, ?2)",
+                    params![i as i64, id],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let meta = [
+            (
+                "index",
+                snap.index.map(|i| i.to_string()).unwrap_or_default(),
+            ),
+            ("position_secs", snap.position_secs.to_string()),
+            ("shuffle", (snap.shuffle as u8).to_string()),
+            ("repeat", snap.repeat.clone()),
+            ("volume", snap.volume.to_string()),
+        ];
+        for (k, v) in meta {
+            self.conn
+                .execute(
+                    "INSERT INTO queue_meta(key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![k, v],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Load the persisted session (`None` when nothing was ever saved).
+    /// Parsing is lenient: a bad value falls back, never errors.
+    pub fn load_queue(&self) -> Result<Option<QueueSnapshot>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT track_id FROM queue_items ORDER BY position")
+            .map_err(|e| e.to_string())?;
+        let ids: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        let meta = |key: &str| -> String {
+            self.conn
+                .query_row(
+                    "SELECT value FROM queue_meta WHERE key = ?1",
+                    params![key],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default()
+        };
+        Ok(Some(QueueSnapshot {
+            ids,
+            index: meta("index").parse().ok(),
+            position_secs: {
+                let pos: f64 = meta("position_secs").parse().unwrap_or(0.0);
+                if pos.is_finite() {
+                    pos.max(0.0)
+                } else {
+                    0.0
+                }
+            },
+            shuffle: meta("shuffle") == "1",
+            repeat: {
+                let r = meta("repeat");
+                if ["off", "all", "one"].contains(&r.as_str()) {
+                    r
+                } else {
+                    "off".into()
+                }
+            },
+            volume: meta("volume").parse::<f32>().unwrap_or(0.8).clamp(0.0, 1.0),
+        }))
+    }
+
+    /// Drop the persisted session (empty queue stays empty on restart).
+    pub fn clear_queue(&self) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM queue_items", [])
+            .map_err(|e| e.to_string())?;
+        self.conn
+            .execute("DELETE FROM queue_meta", [])
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
@@ -782,6 +888,65 @@ mod tests {
         s.unmark_downloaded("vid-a").unwrap();
         s.mark_downloaded("vid-a").unwrap();
         assert_eq!(s.downloaded_ids().unwrap(), vec!["vid-b", "vid-a"]);
+    }
+
+    #[test]
+    fn queue_snapshot_round_trips() {
+        let s = LibraryStore::in_memory().unwrap();
+        assert!(s.load_queue().unwrap().is_none());
+        s.save_queue(&QueueSnapshot {
+            ids: vec!["m1".into(), "m2".into(), "m3".into()],
+            index: Some(1),
+            position_secs: 42.5,
+            shuffle: true,
+            repeat: "all".into(),
+            volume: 0.5,
+        })
+        .unwrap();
+        let snap = s.load_queue().unwrap().expect("saved");
+        assert_eq!(snap.ids, vec!["m1", "m2", "m3"]);
+        assert_eq!(snap.index, Some(1));
+        assert!((snap.position_secs - 42.5).abs() < 1e-6);
+        assert!(snap.shuffle);
+        assert_eq!(snap.repeat, "all");
+        assert!((snap.volume - 0.5).abs() < 1e-6);
+        // Overwrite replaces wholesale (no stale ids or meta).
+        s.save_queue(&QueueSnapshot {
+            ids: vec!["m9".into()],
+            index: None,
+            position_secs: 0.0,
+            shuffle: false,
+            repeat: "off".into(),
+            volume: 0.8,
+        })
+        .unwrap();
+        let snap = s.load_queue().unwrap().expect("saved");
+        assert_eq!(snap.ids, vec!["m9"]);
+        assert_eq!(snap.index, None);
+        // Clearing reads back as nothing saved.
+        s.clear_queue().unwrap();
+        assert!(s.load_queue().unwrap().is_none());
+    }
+
+    #[test]
+    fn queue_snapshot_parsing_is_lenient() {
+        let s = LibraryStore::in_memory().unwrap();
+        s.save_queue(&QueueSnapshot {
+            ids: vec!["m1".into()],
+            index: Some(99),
+            position_secs: f64::NAN,
+            shuffle: false,
+            repeat: "bogus".into(),
+            volume: 99.0,
+        })
+        .unwrap();
+        // NaN parses to 0, unknown repeat falls back to off, volume clamps.
+        let snap = s.load_queue().unwrap().expect("saved");
+        assert_eq!(snap.position_secs, 0.0);
+        assert_eq!(snap.repeat, "off");
+        assert!((snap.volume - 1.0).abs() < 1e-6);
+        // Index clamping is the caller's job (kept verbatim here).
+        assert_eq!(snap.index, Some(99));
     }
 
     #[test]

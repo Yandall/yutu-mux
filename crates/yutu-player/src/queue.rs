@@ -242,6 +242,17 @@ impl Queue {
         };
         self.repeat
     }
+
+    /// Restore a persisted session: replace the items wholesale and seat
+    /// the index (empty stays indexless, out-of-range clamps to the tail).
+    pub fn restore(&mut self, items: Vec<Track>, index: Option<usize>) {
+        self.items = items;
+        self.index = if self.items.is_empty() {
+            None
+        } else {
+            Some(index.unwrap_or(0).min(self.items.len() - 1))
+        };
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +280,23 @@ mod tests {
         assert_eq!(q.position(), Some(2));
         assert!(Queue::default().position().is_none());
         assert!(!Queue::default().jump_to(0));
+    }
+
+    #[test]
+    fn restore_seats_index_and_clamps() {
+        let tracks = MockBackend::fixture_tracks();
+        let mut q = Queue::default();
+        q.restore(tracks.clone(), Some(2));
+        assert_eq!(q.items().len(), 5);
+        assert_eq!(q.position(), Some(2));
+        assert_eq!(q.current().unwrap().id, "m3");
+        // Out-of-range index clamps to the tail.
+        q.restore(tracks.clone(), Some(99));
+        assert_eq!(q.position(), Some(4));
+        // Empty restore stays indexless.
+        q.restore(Vec::new(), Some(0));
+        assert!(q.items().is_empty());
+        assert_eq!(q.position(), None);
     }
 
     #[test]
