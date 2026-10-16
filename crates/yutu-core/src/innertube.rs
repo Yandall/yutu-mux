@@ -340,45 +340,100 @@ impl InnertubeBackend {
     /// Auth: the query is `impl<A: AuthToken>` upstream, so this runs on
     /// all backends; private playlists fail server-side without login.
     pub async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>, String> {
-        use ytmapi_rs::query::GetPlaylistTracksQuery;
-        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
-        let typed: Result<(Vec<PlaylistItem>, u32), String> = match &self.inner {
-            Inner::Anonymous(client) => {
-                collect_pages_report(client, &query, "playlist tracks").await
-            }
-            Inner::Cookie(client) => collect_pages_report(client, &query, "playlist tracks").await,
-            Inner::OAuth(client) => collect_pages_report(client, &query, "playlist tracks").await,
-        };
-        match typed {
-            Ok((items, 0)) => Ok(items.iter().filter_map(playlist_item_to_track).collect()),
-            // Partial or total typed failure: restart over raw page JSON
-            // with the tolerant per-row parser (the typed stream stops at
-            // the first bad page, so the good pages are redone too).
-            Ok((_, failed)) => {
-                eprintln!(
-                    "[yutu-import] playlist tracks: {failed} typed page(s) failed, retrying tolerantly"
-                );
-                self.raw_playlist_tracks(playlist_id).await
-            }
-            Err(e) => {
-                eprintln!(
-                    "[yutu-import] playlist tracks typed fetch failed ({e}), retrying tolerantly"
-                );
-                self.raw_playlist_tracks(playlist_id).await
-            }
-        }
+        self.playlist_tracks_live(playlist_id, |_| {}).await
     }
 
-    /// Tolerant playlist fetch over raw page JSON (see
-    /// [`Self::playlist_tracks`]): walks first page + continuations with
-    /// [`tolerant_playlist_rows`], skipping unparseable rows. Errors only
-    /// when zero rows survive.
-    async fn raw_playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>, String> {
-        match &self.inner {
-            Inner::Anonymous(client) => raw_playlist_pages(client, playlist_id).await,
-            Inner::Cookie(client) => raw_playlist_pages(client, playlist_id).await,
-            Inner::OAuth(client) => raw_playlist_pages(client, playlist_id).await,
+    /// Playlist tracks with per-page progress (see
+    /// [`Self::playlist_tracks`]): `on_page` runs after each mapped page
+    /// with the cumulative track count, so importers can move a progress
+    /// bar song by song instead of jumping 0 to 100 at the end. Typed
+    /// pages first (exact mapping); any typed failure restarts tolerantly
+    /// over raw page JSON, keeping typed-mapped rows and appending only
+    /// new ids. Errors only when zero tracks survive.
+    pub async fn playlist_tracks_live<F>(
+        &self,
+        playlist_id: &str,
+        mut on_page: F,
+    ) -> Result<Vec<Track>, String>
+    where
+        F: FnMut(usize) + Send,
+    {
+        use ytmapi_rs::query::GetPlaylistTracksQuery;
+        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
+        let mut out: Vec<Track> = Vec::new();
+        let mut failed = false;
+        let typed: Vec<Result<Vec<PlaylistItem>, String>> = match &self.inner {
+            Inner::Anonymous(client) => live_typed_pages(client, &query).await,
+            Inner::Cookie(client) => live_typed_pages(client, &query).await,
+            Inner::OAuth(client) => live_typed_pages(client, &query).await,
+        };
+        for page in typed {
+            match page {
+                Ok(items) => {
+                    out.extend(items.iter().filter_map(playlist_item_to_track));
+                    on_page(out.len());
+                }
+                Err(e) => {
+                    failed = true;
+                    eprintln!("[yutu-import] playlist tracks page failed: {e}");
+                }
+            }
         }
+        if !failed {
+            return Ok(out);
+        }
+        eprintln!("[yutu-import] playlist tracks: typed parse failed, retrying tolerantly");
+        let raw: Vec<Result<String, String>> = match &self.inner {
+            Inner::Anonymous(client) => live_raw_pages(client, &query).await,
+            Inner::Cookie(client) => live_raw_pages(client, &query).await,
+            Inner::OAuth(client) => live_raw_pages(client, &query).await,
+        };
+        for page in raw {
+            match page {
+                Ok(json) => {
+                    for t in tolerant_playlist_rows(&json) {
+                        if !out.iter().any(|x| x.id == t.id) {
+                            out.push(t);
+                        }
+                    }
+                    on_page(out.len());
+                }
+                Err(e) => {
+                    if out.is_empty() {
+                        return Err(format!("playlist tracks failed: {e}"));
+                    }
+                    eprintln!("[yutu-import] playlist tracks raw page failed: {e}");
+                    break;
+                }
+            }
+        }
+        if out.is_empty() {
+            return Err("playlist tracks failed: no rows parsed".to_string());
+        }
+        Ok(out)
+    }
+
+    /// Best-effort total track count for progress bars: leading integer
+    /// of the details `track_count_text` ("248 songs"). Callers fall back
+    /// to list-level progress when this errors (endpoint quirks, odd
+    /// locales); never fatal.
+    pub async fn playlist_details_count(&self, playlist_id: &str) -> Result<usize, String> {
+        let details = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_playlist_details(PlaylistID::from_raw(playlist_id))
+                .await
+                .map_err(|e| format!("playlist details failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_playlist_details(PlaylistID::from_raw(playlist_id))
+                .await
+                .map_err(|e| format!("playlist details failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_playlist_details(PlaylistID::from_raw(playlist_id))
+                .await
+                .map_err(|e| format!("playlist details failed: {e}"))?,
+        };
+        parse_leading_count(&details.track_count_text)
+            .ok_or_else(|| format!("no count in {:?}", details.track_count_text))
     }
 
     /// All playlists in the user's library (id + title; fetch tracks per
@@ -767,35 +822,67 @@ pub struct ResolvedStream {
     pub pot_token: Option<String>,
 }
 
-/// Raw-page walk for [`InnertubeBackend::raw_playlist_tracks`]: unlike the
-/// typed stream (which stops at the first unparseable page), the raw
-/// stream keeps yielding pages, so every row shape can be attempted.
-async fn raw_playlist_pages<A>(client: &YtMusic<A>, playlist_id: &str) -> Result<Vec<Track>, String>
+/// Typed pages for [`InnertubeBackend::playlist_tracks_live`]: collects
+/// each page result (stopping after the first error, like upstream)
+/// without flattening, so the caller can map and report per page.
+async fn live_typed_pages<A>(
+    client: &YtMusic<A>,
+    query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
+) -> Vec<Result<Vec<PlaylistItem>, String>>
 where
     A: ytmapi_rs::auth::AuthToken,
 {
     use futures::StreamExt as _;
-    use ytmapi_rs::query::GetPlaylistTracksQuery;
-    let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
-    let stream = client.raw_json_stream::<GetPlaylistTracksQuery>(&query);
+    let stream = client.stream(query);
     futures::pin_mut!(stream);
-    let mut out = Vec::new();
-    let mut pages = 0u32;
+    let mut pages = Vec::new();
     while let Some(page) = stream.next().await {
-        match page {
-            Ok(raw) => {
-                pages += 1;
-                out.extend(tolerant_playlist_rows(&raw));
-            }
-            Err(e) => return Err(format!("playlist tracks failed: {e}")),
+        let done = page.is_err();
+        pages.push(page.map_err(|e| e.to_string()));
+        if done {
+            break;
         }
     }
-    if out.is_empty() {
-        return Err(format!(
-            "playlist tracks failed: no rows parsed ({pages} pages)"
-        ));
+    pages
+}
+
+/// Raw pages for [`InnertubeBackend::playlist_tracks_live`]: unlike the
+/// typed stream (which stops at the first unparseable page), the raw
+/// stream keeps yielding pages, so every row shape can be attempted.
+async fn live_raw_pages<A>(
+    client: &YtMusic<A>,
+    query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
+) -> Vec<Result<String, String>>
+where
+    A: ytmapi_rs::auth::AuthToken,
+{
+    use futures::StreamExt as _;
+    let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
+    futures::pin_mut!(stream);
+    let mut pages = Vec::new();
+    while let Some(page) = stream.next().await {
+        let done = page.is_err();
+        pages.push(page.map_err(|e| e.to_string()));
+        if done {
+            break;
+        }
     }
-    Ok(out)
+    pages
+}
+
+/// Leading integer of a details count text ("248 songs", "1,234
+/// videos"): `None` when no leading number exists.
+fn parse_leading_count(text: &str) -> Option<usize> {
+    let digits: String = text
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| *c != ',')
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// Raw Innertube `player` POST mirroring `ytmapi-rs` (WEB_REMIX context, same
@@ -1064,8 +1151,8 @@ fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
     }
 }
 
-/// Tolerant playlist rows from raw page JSON (fallback for
-/// [`InnertubeBackend::raw_playlist_tracks`]).
+/// Tolerant playlist rows from raw page JSON (fallback inside
+/// [`InnertubeBackend::playlist_tracks_live`]).
 ///
 /// Upstream's typed parser rejects a whole page on one unknown row shape
 /// (observed live: rows with no `fixedColumns` and no `playlistItemData`,
@@ -1628,6 +1715,15 @@ mod tests {
     }
 
     #[test]
+    fn leading_count_parses_details_totals() {
+        assert_eq!(parse_leading_count("248 songs"), Some(248));
+        assert_eq!(parse_leading_count("1,234 videos"), Some(1234));
+        assert_eq!(parse_leading_count("  7"), Some(7));
+        assert_eq!(parse_leading_count("songs"), None);
+        assert_eq!(parse_leading_count(""), None);
+    }
+
+    #[test]
     fn lyrics_response_splits_into_plain_lines() {
         // `Lyrics` is `#[non_exhaustive]`, so build it via serde.
         let lyrics: ytmapi_rs::parse::Lyrics = serde_json::from_value(serde_json::json!({
@@ -2051,12 +2147,23 @@ mod tests {
         let backend = InnertubeBackend::connect_with_cookie_file(Path::new(&path))
             .await
             .expect("cookie connect");
-        let tracks = backend.playlist_tracks(&playlist_id).await.expect("tracks");
+        let mut calls = Vec::new();
+        let tracks = backend
+            .playlist_tracks_live(&playlist_id, |n| calls.push(n))
+            .await
+            .expect("tracks");
         assert!(
             tracks.len() > 100,
             "expected more than one page of tracks, got {}",
             tracks.len()
         );
+        // Progress hook: per-page cumulative counts ending at the total.
+        assert!(calls.len() >= 2, "expected page ticks, got {calls:?}");
+        assert!(
+            calls.windows(2).all(|w| w[0] < w[1]),
+            "ticks must grow, got {calls:?}"
+        );
+        assert_eq!(*calls.last().unwrap(), tracks.len());
     }
 
     #[tokio::test]
