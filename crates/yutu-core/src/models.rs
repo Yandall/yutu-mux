@@ -144,3 +144,30 @@ pub struct PlaylistHit {
     pub detail: String,
     pub thumbnail_url: Option<String>,
 }
+
+/// Persisted playback session: the queue as track ids in order, the
+/// current index, the position in seconds, shuffle/repeat/volume.
+/// Tracks resolve back through the track cache on launch; unknown ids
+/// are dropped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueueSnapshot {
+    pub ids: Vec<String>,
+    pub index: Option<usize>,
+    pub position_secs: f64,
+    pub shuffle: bool,
+    pub repeat: String,
+    pub volume: f32,
+}
+
+impl Default for QueueSnapshot {
+    fn default() -> Self {
+        Self {
+            ids: Vec::new(),
+            index: None,
+            position_secs: 0.0,
+            shuffle: false,
+            repeat: "off".into(),
+            volume: 0.8,
+        }
+    }
+}

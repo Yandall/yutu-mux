@@ -31,7 +31,7 @@ pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};
 pub use models::{
     hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, PlaylistHit,
-    SearchResults, Track,
+    QueueSnapshot, SearchResults, Track,
 };
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 pub use scrobble::{

@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Saved playback session: the queue, current song, position, shuffle,
+  repeat and volume survive restarts (restored paused, press play to
+  continue from the saved position; unknown ids drop honestly)
 - Unified search page: no per-type placeholder sections (loading text
   with an animated ellipsis while results arrive, then a text-match
   relevance-ordered mixed list with the top hit in a hero card); every
