@@ -13,6 +13,7 @@ rusqlite = "0.32"
 md5 = "0.8"
 ytmapi-rs = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
+futures = { version = "0.3", optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
     "default-tls",
     "json",
@@ -20,7 +21,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ], optional = true }
 
 [features]
-innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest"]
+innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures"]
 lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
 

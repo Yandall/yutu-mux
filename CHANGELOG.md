@@ -2,6 +2,10 @@
 
 ## 0.2.0 (unreleased)
 
+- Playlist/library import streams every continuation page (single-shot
+  queries stopped at ~100 items) plus a tolerant raw-JSON fallback for
+  row shapes the typed parser rejects, so 300-song playlists import
+  whole instead of truncated or failed
 - Stay signed in with cookies: successful imports stash a 0600 session,
   restarts show "Signed in with cookies" with one-click re-import plus
   sign-out; imports now pull songs + liked + every playlist with tracks,

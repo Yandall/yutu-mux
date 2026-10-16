@@ -57,6 +57,67 @@ pub struct InnertubeBackend {
     inner: Inner,
 }
 
+/// Collect every continuation page of a list query (first page plus all
+/// follow-ups): single-shot `query()` stops at about 100 items, which
+/// silently truncated big playlists and libraries. Page failures fail
+/// open (pages already loaded survive, failures go to stderr); only a
+/// total failure errors.
+async fn collect_pages<A, Q, T>(
+    client: &YtMusic<A>,
+    query: &Q,
+    what: &str,
+) -> Result<Vec<T>, String>
+where
+    A: ytmapi_rs::auth::AuthToken,
+    Q: ytmapi_rs::query::Query<A> + ytmapi_rs::query::PostQuery,
+    Q::Output: ytmapi_rs::continuations::ParseFromContinuable<Q> + IntoIterator<Item = T>,
+{
+    collect_pages_report(client, query, what)
+        .await
+        .map(|(out, _)| out)
+}
+
+/// [`collect_pages`] plus the failed-page count, so callers with a
+/// lenient fallback (see [`InnertubeBackend::playlist_tracks`]) can tell
+/// a clean fetch from a partial one. Total failure (pages errored, none
+/// loaded) still errors here.
+async fn collect_pages_report<A, Q, T>(
+    client: &YtMusic<A>,
+    query: &Q,
+    what: &str,
+) -> Result<(Vec<T>, u32), String>
+where
+    A: ytmapi_rs::auth::AuthToken,
+    Q: ytmapi_rs::query::Query<A> + ytmapi_rs::query::PostQuery,
+    Q::Output: ytmapi_rs::continuations::ParseFromContinuable<Q> + IntoIterator<Item = T>,
+{
+    use futures::StreamExt as _;
+    let stream = client.stream(query);
+    futures::pin_mut!(stream);
+    let mut out = Vec::new();
+    let mut pages = 0u32;
+    let mut failed = 0u32;
+    while let Some(page) = stream.next().await {
+        match page {
+            Ok(items) => {
+                pages += 1;
+                out.extend(items);
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("[yutu-import] {what} page failed ({failed} so far): {e}");
+            }
+        }
+    }
+    if out.is_empty() && failed > 0 {
+        return Err(format!("{what} failed: no pages loaded"));
+    }
+    if failed > 0 {
+        eprintln!("[yutu-import] {what}: partial import ({pages} pages, {failed} failed)");
+    }
+    Ok((out, failed))
+}
+
 #[derive(Debug, Clone)]
 enum Inner {
     Anonymous(YtMusic<NoAuthToken>),
@@ -234,22 +295,21 @@ impl InnertubeBackend {
 
     /// All songs in the user's library (`FEmusic_liked_videos` browse).
     ///
+    /// Streams every continuation page: single-shot queries stop at about
+    /// 100 items, which silently truncated big libraries.
+    ///
     /// Auth: cookie OR Google OAuth (`GetLibrarySongsQuery` is
     /// `impl<A: LoggedIn>` upstream, and only those two tokens are
     /// `LoggedIn`). Anonymous backends get a local error, no network.
     pub async fn library_songs(&self) -> Result<Vec<Track>, String> {
+        use ytmapi_rs::query::GetLibrarySongsQuery;
+        let query = GetLibrarySongsQuery::default();
         let songs: Vec<TableListSong> = match &self.inner {
             Inner::Anonymous(_) => {
                 return Err("library_songs requires login (cookie or Google OAuth)".into());
             }
-            Inner::Cookie(client) => client
-                .get_library_songs()
-                .await
-                .map_err(|e| format!("library songs failed: {e}"))?,
-            Inner::OAuth(client) => client
-                .get_library_songs()
-                .await
-                .map_err(|e| format!("library songs failed: {e}"))?,
+            Inner::Cookie(client) => collect_pages(client, &query, "library songs").await?,
+            Inner::OAuth(client) => collect_pages(client, &query, "library songs").await?,
         };
         Ok(songs.iter().map(table_song_to_track).collect())
     }
@@ -270,44 +330,73 @@ impl InnertubeBackend {
     /// user playlists). Same mapping as [`Self::liked_songs`]: songs and
     /// videos become [`Track`], podcast episodes are skipped.
     ///
+    /// Streams every continuation page (about 100 items each): without
+    /// this, playlists over 100 songs import truncated. When a page carries
+    /// a row shape the typed parser rejects (e.g. duration in a flex
+    /// column instead of `fixedColumns`), the whole fetch restarts over
+    /// raw page JSON with a tolerant per-row parser that skips only the
+    /// bad rows instead of failing the playlist.
+    ///
     /// Auth: the query is `impl<A: AuthToken>` upstream, so this runs on
     /// all backends; private playlists fail server-side without login.
     pub async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>, String> {
-        let items = match &self.inner {
-            Inner::Anonymous(client) => client
-                .get_playlist_tracks(PlaylistID::from_raw(playlist_id))
-                .await
-                .map_err(|e| format!("playlist tracks failed: {e}"))?,
-            Inner::Cookie(client) => client
-                .get_playlist_tracks(PlaylistID::from_raw(playlist_id))
-                .await
-                .map_err(|e| format!("playlist tracks failed: {e}"))?,
-            Inner::OAuth(client) => client
-                .get_playlist_tracks(PlaylistID::from_raw(playlist_id))
-                .await
-                .map_err(|e| format!("playlist tracks failed: {e}"))?,
+        use ytmapi_rs::query::GetPlaylistTracksQuery;
+        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
+        let typed: Result<(Vec<PlaylistItem>, u32), String> = match &self.inner {
+            Inner::Anonymous(client) => {
+                collect_pages_report(client, &query, "playlist tracks").await
+            }
+            Inner::Cookie(client) => collect_pages_report(client, &query, "playlist tracks").await,
+            Inner::OAuth(client) => collect_pages_report(client, &query, "playlist tracks").await,
         };
-        Ok(items.iter().filter_map(playlist_item_to_track).collect())
+        match typed {
+            Ok((items, 0)) => Ok(items.iter().filter_map(playlist_item_to_track).collect()),
+            // Partial or total typed failure: restart over raw page JSON
+            // with the tolerant per-row parser (the typed stream stops at
+            // the first bad page, so the good pages are redone too).
+            Ok((_, failed)) => {
+                eprintln!(
+                    "[yutu-import] playlist tracks: {failed} typed page(s) failed, retrying tolerantly"
+                );
+                self.raw_playlist_tracks(playlist_id).await
+            }
+            Err(e) => {
+                eprintln!(
+                    "[yutu-import] playlist tracks typed fetch failed ({e}), retrying tolerantly"
+                );
+                self.raw_playlist_tracks(playlist_id).await
+            }
+        }
+    }
+
+    /// Tolerant playlist fetch over raw page JSON (see
+    /// [`Self::playlist_tracks`]): walks first page + continuations with
+    /// [`tolerant_playlist_rows`], skipping unparseable rows. Errors only
+    /// when zero rows survive.
+    async fn raw_playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>, String> {
+        match &self.inner {
+            Inner::Anonymous(client) => raw_playlist_pages(client, playlist_id).await,
+            Inner::Cookie(client) => raw_playlist_pages(client, playlist_id).await,
+            Inner::OAuth(client) => raw_playlist_pages(client, playlist_id).await,
+        }
     }
 
     /// All playlists in the user's library (id + title; fetch tracks per
     /// playlist with [`Self::playlist_tracks`]).
     ///
+    /// Streams every continuation page like the other list endpoints.
+    ///
     /// Auth: cookie OR Google OAuth (same `LoggedIn` bound as
     /// [`Self::library_songs`]); anonymous backends get a local error.
     pub async fn library_playlists(&self) -> Result<Vec<ServerPlaylist>, String> {
-        let lists = match &self.inner {
+        use ytmapi_rs::query::GetLibraryPlaylistsQuery;
+        let query = GetLibraryPlaylistsQuery;
+        let lists: Vec<ytmapi_rs::parse::LibraryPlaylist> = match &self.inner {
             Inner::Anonymous(_) => {
                 return Err("library_playlists requires login (cookie or Google OAuth)".into());
             }
-            Inner::Cookie(client) => client
-                .get_library_playlists()
-                .await
-                .map_err(|e| format!("library playlists failed: {e}"))?,
-            Inner::OAuth(client) => client
-                .get_library_playlists()
-                .await
-                .map_err(|e| format!("library playlists failed: {e}"))?,
+            Inner::Cookie(client) => collect_pages(client, &query, "library playlists").await?,
+            Inner::OAuth(client) => collect_pages(client, &query, "library playlists").await?,
         };
         Ok(lists.iter().map(server_playlist_of).collect())
     }
@@ -422,22 +511,21 @@ impl InnertubeBackend {
 
     /// All albums in the user's library.
     ///
+    /// Streams every continuation page like the other list endpoints.
+    ///
     /// Auth: cookie OR Google OAuth (same `LoggedIn` bound as
     /// [`Self::library_songs`); anonymous backends get a local error.
     /// Mapping reuses [`album_to_album`].
     pub async fn library_albums(&self) -> Result<Vec<Album>, String> {
-        let albums = match &self.inner {
+        use ytmapi_rs::parse::SearchResultAlbum;
+        use ytmapi_rs::query::GetLibraryAlbumsQuery;
+        let query = GetLibraryAlbumsQuery::default();
+        let albums: Vec<SearchResultAlbum> = match &self.inner {
             Inner::Anonymous(_) => {
                 return Err("library_albums requires login (cookie or Google OAuth)".into());
             }
-            Inner::Cookie(client) => client
-                .get_library_albums()
-                .await
-                .map_err(|e| format!("library albums failed: {e}"))?,
-            Inner::OAuth(client) => client
-                .get_library_albums()
-                .await
-                .map_err(|e| format!("library albums failed: {e}"))?,
+            Inner::Cookie(client) => collect_pages(client, &query, "library albums").await?,
+            Inner::OAuth(client) => collect_pages(client, &query, "library albums").await?,
         };
         Ok(albums.iter().map(album_to_album).collect())
     }
@@ -677,6 +765,37 @@ impl InnertubeBackend {
 pub struct ResolvedStream {
     pub url: String,
     pub pot_token: Option<String>,
+}
+
+/// Raw-page walk for [`InnertubeBackend::raw_playlist_tracks`]: unlike the
+/// typed stream (which stops at the first unparseable page), the raw
+/// stream keeps yielding pages, so every row shape can be attempted.
+async fn raw_playlist_pages<A>(client: &YtMusic<A>, playlist_id: &str) -> Result<Vec<Track>, String>
+where
+    A: ytmapi_rs::auth::AuthToken,
+{
+    use futures::StreamExt as _;
+    use ytmapi_rs::query::GetPlaylistTracksQuery;
+    let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
+    let stream = client.raw_json_stream::<GetPlaylistTracksQuery>(&query);
+    futures::pin_mut!(stream);
+    let mut out = Vec::new();
+    let mut pages = 0u32;
+    while let Some(page) = stream.next().await {
+        match page {
+            Ok(raw) => {
+                pages += 1;
+                out.extend(tolerant_playlist_rows(&raw));
+            }
+            Err(e) => return Err(format!("playlist tracks failed: {e}")),
+        }
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "playlist tracks failed: no rows parsed ({pages} pages)"
+        ));
+    }
+    Ok(out)
 }
 
 /// Raw Innertube `player` POST mirroring `ytmapi-rs` (WEB_REMIX context, same
@@ -943,6 +1062,150 @@ fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
         thumbnail_large_url: pick_large_thumb_url(&track.thumbnails),
         plays: None,
     }
+}
+
+/// Tolerant playlist rows from raw page JSON (fallback for
+/// [`InnertubeBackend::raw_playlist_tracks`]).
+///
+/// Upstream's typed parser rejects a whole page on one unknown row shape
+/// (observed live: rows with no `fixedColumns` and no `playlistItemData`,
+/// duration sitting in a fourth flex column). This maps what it can per
+/// row and skips the rest, so one odd row cannot sink a 300-song import:
+/// - title = flex column 0 run 0; artist = flex column 1 artist runs
+///   (every other run, joined like [`join_names`]); album = flex column
+///   2 run 0 when present.
+/// - duration = `fixedColumns` text when present, else flex column 3 when
+///   it parses as a duration; unparseable becomes 0.
+/// - video id = overlay play-button endpoint, else menu item 0.
+/// - deleted songs, greyed-out unavailable rows, podcast episodes and
+///   continuation markers are skipped (not music or not rows).
+fn tolerant_playlist_rows(raw: &str) -> Vec<Track> {
+    let value: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let rows = value
+        .pointer("/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents")
+        .or_else(|| {
+            value.pointer("/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems")
+        });
+    match rows.and_then(serde_json::Value::as_array) {
+        Some(rows) => rows.iter().filter_map(tolerant_row_to_track).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// One tolerant row (see [`tolerant_playlist_rows`]): `None` means skip.
+fn tolerant_row_to_track(item: &serde_json::Value) -> Option<Track> {
+    let r = item.get("musicResponsiveListItemRenderer")?;
+    let title = flex_run_text(r, 0, 0)?;
+    if title.is_empty() || title == "Song deleted" {
+        return None;
+    }
+    if r.get("musicItemRendererDisplayPolicy")
+        .and_then(|p| p.as_str())
+        == Some("MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT")
+    {
+        return None;
+    }
+    if r
+        .pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoType")
+        .and_then(|t| t.as_str())
+        == Some("MUSIC_VIDEO_TYPE_PODCAST_EPISODE")
+    {
+        return None;
+    }
+    let video_id = r
+        .pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoId")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            r.pointer("/menu/menuRenderer/items/0/menuNavigationItemRenderer/navigationEndpoint/watchEndpoint/videoId")
+                .and_then(|v| v.as_str())
+        })
+        .filter(|v| !v.is_empty())?;
+    let artist_runs = flex_runs(r, 1);
+    let artist = join_names(artist_runs.iter().step_by(2).map(String::as_str));
+    if artist.is_empty() {
+        return None;
+    }
+    let album = flex_run_text(r, 2, 0).filter(|a| !a.is_empty());
+    let duration = fixed_text(r)
+        .or_else(|| flex_run_text(r, 3, 0))
+        .map(|d| parse_duration_secs(&d))
+        .unwrap_or(0);
+    let (small, large) =
+        pick_raw_thumbs(r.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails"));
+    Some(Track {
+        id: video_id.to_string(),
+        title,
+        artist,
+        album,
+        duration_secs: duration,
+        thumbnail_url: small,
+        thumbnail_large_url: large,
+        plays: None,
+    })
+}
+
+/// All run texts of flex column `col` (empty when absent).
+fn flex_runs(r: &serde_json::Value, col: usize) -> Vec<String> {
+    let pointer = format!("/flexColumns/{col}/musicResponsiveListItemFlexColumnRenderer/text/runs");
+    r.pointer(&pointer)
+        .and_then(|v| v.as_array())
+        .map(|runs| {
+            runs.iter()
+                .filter_map(|run| run.get("text")?.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Run `run` text of flex column `col` (`None` when absent).
+fn flex_run_text(r: &serde_json::Value, col: usize, run: usize) -> Option<String> {
+    let pointer = format!(
+        "/flexColumns/{col}/musicResponsiveListItemFlexColumnRenderer/text/runs/{run}/text"
+    );
+    r.pointer(&pointer)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Duration text from `fixedColumns` (`None` when the row has none: some
+/// playlists carry the duration in a fourth flex column instead).
+fn fixed_text(r: &serde_json::Value) -> Option<String> {
+    const BASE: &str = "/fixedColumns/0/musicResponsiveListItemFixedColumnRenderer/text";
+    r.pointer(&format!("{BASE}/simpleText"))
+        .or_else(|| r.pointer(&format!("{BASE}/runs/0/text")))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Smallest/largest thumbnails from a raw `thumbnails` array (`None`
+/// pair on missing input, mirroring [`pick_thumb_url`] pair behavior).
+fn pick_raw_thumbs(thumbs: Option<&serde_json::Value>) -> (Option<String>, Option<String>) {
+    let arr = match thumbs.and_then(|v| v.as_array()) {
+        Some(a) if !a.is_empty() => a,
+        _ => return (None, None),
+    };
+    let mut by_width: Vec<(u64, &str)> = arr
+        .iter()
+        .filter_map(|t| {
+            let url = t.get("url")?.as_str()?;
+            if url.is_empty() {
+                return None;
+            }
+            let width = t.get("width").and_then(|w| w.as_u64()).unwrap_or(0);
+            Some((width.max(1), url))
+        })
+        .collect();
+    if by_width.is_empty() {
+        return (None, None);
+    }
+    by_width.sort_by_key(|(w, _)| *w);
+    (
+        Some(by_width[0].1.to_string()),
+        Some(by_width[by_width.len() - 1].1.to_string()),
+    )
 }
 
 /// Join artist names the way the search API pre-joins them (`, `).
@@ -1222,6 +1485,146 @@ mod tests {
         assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
         assert_eq!(tracks[1].artist, "A Channel");
         assert_eq!(tracks[1].album, None);
+    }
+
+    /// Fabricated first-page JSON with the row shapes seen live: a
+    /// standard row (duration in `fixedColumns`), a flex-duration row
+    /// (no `fixedColumns`, duration in flex column 3), plus rows that
+    /// must be skipped (deleted, greyed-out, episode, continuation).
+    fn fabricated_playlist_page() -> String {
+        // One flex column with a single text run.
+        let col = |text: &str| {
+            format!(
+                r#"{{"musicResponsiveListItemFlexColumnRenderer": {{"text": {{"runs": [{{"text": "{text}"}}]}}}}}}"#
+            )
+        };
+        // One row; empty `fixed`/`policy` strings omit those fields.
+        let row = |cols: String, fixed: &str, video_id: &str, policy: &str, video_type: &str| {
+            let fixed_json = if fixed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    r#""fixedColumns": [{{"musicResponsiveListItemFixedColumnRenderer": {{"text": {{"simpleText": "{fixed}"}}}}}}],"#
+                )
+            };
+            let policy_json = if policy.is_empty() {
+                String::new()
+            } else {
+                format!(r#""musicItemRendererDisplayPolicy": "{policy}","#)
+            };
+            format!(
+                r#"{{"musicResponsiveListItemRenderer": {{{fixed_json}{policy_json}"flexColumns": [{cols}],"overlay": {{"musicItemThumbnailOverlayRenderer": {{"content": {{"musicPlayButtonRenderer": {{"playNavigationEndpoint": {{"watchEndpoint": {{"videoId": "{video_id}", "videoType": "{video_type}"}}}}}}}}}}}},"thumbnail": {{"musicThumbnailRenderer": {{"thumbnail": {{"thumbnails": [{{"url": "https://example.invalid/s", "width": 60}}, {{"url": "https://example.invalid/l", "width": 544}}]}}}}}},"menu": {{"menuRenderer": {{"items": []}}}}}}}}"#
+            )
+        };
+        let multi_artist = format!(
+            "{},{}",
+            col("Song A"),
+            r#"{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Alice"}, {"text": ", "}, {"text": "Bob"}]}}}"#
+        );
+        let rows = [
+            row(
+                format!("{},{},{}", col("Song A"), col("x"), col("y")),
+                "3:20",
+                "vid11111111",
+                "",
+                "MUSIC_VIDEO_TYPE_ATV",
+            ),
+            row(
+                multi_artist,
+                "4:05",
+                "vid22222222",
+                "",
+                "MUSIC_VIDEO_TYPE_ATV",
+            ),
+            row(
+                format!(
+                    "{},{},{},{}",
+                    col("Flex Song"),
+                    col("Solo"),
+                    col("Some Album"),
+                    col("2:30")
+                ),
+                "",
+                "vid33333333",
+                "",
+                "MUSIC_VIDEO_TYPE_ATV",
+            ),
+            row(
+                col("Song deleted"),
+                "1:00",
+                "vid44444444",
+                "",
+                "MUSIC_VIDEO_TYPE_ATV",
+            ),
+            row(
+                format!("{},{}", col("Grey Song"), col("No One")),
+                "1:00",
+                "vid55555555",
+                "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT",
+                "MUSIC_VIDEO_TYPE_ATV",
+            ),
+            row(
+                format!("{},{}", col("Episode One"), col("A Podcast")),
+                "30:00",
+                "vid66666666",
+                "",
+                "MUSIC_VIDEO_TYPE_PODCAST_EPISODE",
+            ),
+            r#"{"continuationItemRenderer": {}}"#.to_string(),
+        ];
+        format!(
+            r#"{{"contents": {{"twoColumnBrowseResultsRenderer": {{"secondaryContents": {{"sectionListRenderer": {{"contents": [{{"musicPlaylistShelfRenderer": {{"contents": [{}]}}}}]}}}}}}}}}}"#,
+            rows.join(",")
+        )
+    }
+
+    #[test]
+    fn tolerant_rows_map_both_shapes_and_skip_junk() {
+        let tracks = tolerant_playlist_rows(&fabricated_playlist_page());
+        assert_eq!(
+            tracks.len(),
+            3,
+            "standard + multi-artist + flex-duration: {tracks:?}"
+        );
+        assert_eq!(tracks[0].id, "vid11111111");
+        assert_eq!(tracks[0].title, "Song A");
+        assert_eq!(tracks[0].duration_secs, 200);
+        assert_eq!(
+            tracks[0].thumbnail_url.as_deref(),
+            Some("https://example.invalid/s")
+        );
+        assert_eq!(
+            tracks[0].thumbnail_large_url.as_deref(),
+            Some("https://example.invalid/l")
+        );
+        assert_eq!(tracks[1].artist, "Alice, Bob");
+        assert_eq!(tracks[1].duration_secs, 245);
+        // Flex-duration row: no fixedColumns, duration in flex column 3.
+        assert_eq!(tracks[2].id, "vid33333333");
+        assert_eq!(tracks[2].title, "Flex Song");
+        assert_eq!(tracks[2].artist, "Solo");
+        assert_eq!(tracks[2].album.as_deref(), Some("Some Album"));
+        assert_eq!(tracks[2].duration_secs, 150);
+    }
+
+    #[test]
+    fn tolerant_rows_parse_continuation_pages_and_reject_garbage() {
+        let cont = serde_json::json!({
+            "onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+                {"musicResponsiveListItemRenderer": {
+                    "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Late Song"}]}}}, {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Late Artist"}]}}}],
+                    "overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer": {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "vid99999999", "videoType": "MUSIC_VIDEO_TYPE_ATV"}}}}}},
+                    "thumbnail": {"musicThumbnailRenderer": {"thumbnail": {"thumbnails": []}}},
+                    "menu": {"menuRenderer": {"items": []}},
+                }},
+            ]}}]
+        });
+        let tracks = tolerant_playlist_rows(&cont.to_string());
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id, "vid99999999");
+        assert_eq!(tracks[0].duration_secs, 0);
+        assert!(tolerant_playlist_rows("not json").is_empty());
+        assert!(tolerant_playlist_rows("{}").is_empty());
     }
 
     #[test]
@@ -1632,6 +2035,28 @@ mod tests {
         );
         // Liked playlist may legitimately be empty; only assert it resolves.
         let _ = backend.liked_songs().await.expect("liked songs");
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: big playlist streams past the 100-item first page"]
+    async fn live_playlist_tracks_stream_all_pages() {
+        let Ok(path) = std::env::var("YUTU_TEST_COOKIE_FILE") else {
+            eprintln!("SKIP: set YUTU_TEST_COOKIE_FILE to a browser cookie file");
+            return;
+        };
+        let Ok(playlist_id) = std::env::var("YUTU_TEST_BIG_PLAYLIST_ID") else {
+            eprintln!("SKIP: set YUTU_TEST_BIG_PLAYLIST_ID to a 100+ song playlist id");
+            return;
+        };
+        let backend = InnertubeBackend::connect_with_cookie_file(Path::new(&path))
+            .await
+            .expect("cookie connect");
+        let tracks = backend.playlist_tracks(&playlist_id).await.expect("tracks");
+        assert!(
+            tracks.len() > 100,
+            "expected more than one page of tracks, got {}",
+            tracks.len()
+        );
     }
 
     #[tokio::test]
