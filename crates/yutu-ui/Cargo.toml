@@ -10,7 +10,8 @@ yutu-core = { path = "../yutu-core" }
 yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
 iced = { version = "0.14", features = ["tokio", "image", "svg"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync"] }
+futures = "0.3"
 serde_json = "1"
 
 [features]
