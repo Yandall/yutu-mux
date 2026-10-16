@@ -666,6 +666,10 @@ pub enum Message {
     PlayAutoplay(usize),
     /// Play-all with shuffle turned on first (hero shuffle buttons).
     PlayAllShuffled,
+    /// Shuffle-play one search hero artist (known catalog tracks).
+    PlayArtistShuffled(String),
+    /// Shuffle-play one search hero album (known catalog tracks).
+    PlayAlbumShuffled(String),
     /// Remove one occurrence from the manual queue (menu / hover remove).
     RemoveFromQueue(String),
     /// Drop an autoplay-tail item by index.
@@ -3761,6 +3765,27 @@ impl AppState {
         .into()
     }
 
+    /// Shuffle pill for hero headers: same red pill as play_pill with a
+    /// shuffle glyph (search heroes).
+    fn shuffle_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
+        use iced::widget::{button, row, text};
+        button(
+            row![
+                icon("shuffle", 16.0, iced::Color::WHITE),
+                text(label).size(13).font(iced::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..iced::Font::default()
+                }),
+            ]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(green_play)
+        .on_press(msg)
+        .padding(9)
+        .into()
+    }
+
     /// Spotify-style numbered row: rank + art + play + title + time + actions.
     fn numbered_track_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
         use iced::widget::{button, container, mouse_area, row, text};
@@ -3995,6 +4020,23 @@ impl AppState {
             // Fresh queue: full shuffle with the just-started track first.
             self.set_shuffle(true);
         }
+        self.publish_mpris();
+        task
+    }
+
+    /// Shuffle-play a known track list (search hero actions): same fresh
+    /// context as play-all, always shuffled, honest empty status.
+    fn shuffle_tracks(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
+        if tracks.is_empty() {
+            self.status = format!("{label}: nothing to play yet.");
+            return iced::Task::none();
+        }
+        self.queue.clear();
+        self.autoplay.clear();
+        self.autoplay_for = None;
+        self.drag = None;
+        let task = self.queue_many(tracks, label);
+        self.set_shuffle(true);
         self.publish_mpris();
         task
     }
@@ -5768,6 +5810,15 @@ impl AppState {
             }
             Message::PlayAll => return self.play_all_tracks(false),
             Message::PlayAllShuffled => return self.play_all_tracks(true),
+            Message::PlayArtistShuffled(name) => {
+                let tracks = self.artist_tracks(&name);
+                return self.shuffle_tracks(tracks, &format!("Artist {name}"));
+            }
+            Message::PlayAlbumShuffled(id) => {
+                let title = self.resolve_album_title(&id);
+                let tracks = self.album_tracks(&id);
+                return self.shuffle_tracks(tracks, &format!("Album {title}"));
+            }
             Message::CreatePlaylist(title) => {
                 let title = title.trim().to_string();
                 if title.is_empty() {
@@ -8047,7 +8098,8 @@ impl AppState {
         .into()
     }
 
-    /// Album hero: cover, type-led subtitle, and an Open button.
+    /// Album hero: clickable cover/title open the album; Shuffle and
+    /// Radio play the known catalog tracks (hidden when none are known).
     fn search_album_hero(&self, a: &Album) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, row, text};
         use iced::Fill;
@@ -8056,19 +8108,44 @@ impl AppState {
             Some(y) => format!("Album · {} · {}", a.artist, y),
             None => format!("Album · {}", a.artist),
         };
+        let tracks = self.album_tracks(&a.id);
+        let actions: iced::Element<'_, Message> = if tracks.is_empty() {
+            text("").size(1).into()
+        } else {
+            let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
+            row![
+                Self::shuffle_pill("SHUFFLE".into(), Message::PlayAlbumShuffled(a.id.clone())),
+                button(
+                    row![
+                        icon("radio", 13.0, iced::Color::WHITE),
+                        text("Radio").size(13),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .style(hover_row)
+                .on_press(Message::StartRadio(seed))
+                .padding(8),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
+        };
         container(
             row![
-                self.art_thumb(cover.as_deref(), 96.0),
+                button(self.art_thumb(cover.as_deref(), 96.0))
+                    .style(row_click)
+                    .on_press(Message::OpenAlbum(a.id.clone()))
+                    .padding(0),
                 column![
                     text("Top result").size(12).color(MUTED),
-                    text(a.title.clone()).size(20),
-                    text(sub).size(13).color(MUTED),
-                    row![button(text("Open").size(13))
-                        .style(hover_row)
+                    button(text(a.title.clone()).size(20))
+                        .style(row_click)
                         .on_press(Message::OpenAlbum(a.id.clone()))
-                        .padding(8),]
-                    .spacing(4)
-                    .align_y(iced::alignment::Vertical::Center),
+                        .padding(0)
+                        .width(Fill),
+                    text(sub).size(13).color(MUTED),
+                    actions,
                 ]
                 .spacing(4)
                 .width(Fill),
@@ -8081,7 +8158,8 @@ impl AppState {
         .into()
     }
 
-    /// Artist hero: photo, type-led subtitle, and an Open button.
+    /// Artist hero: clickable photo/name open the artist; Shuffle and
+    /// Radio play the known catalog tracks (hidden when none are known).
     fn search_artist_hero(&self, a: &Artist) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, row, text};
         use iced::Fill;
@@ -8089,19 +8167,47 @@ impl AppState {
             .thumbnail_url
             .as_deref()
             .map(|u| yutu_core::hires_thumb_url(u, 544));
+        let tracks = self.artist_tracks(&a.name);
+        let actions: iced::Element<'_, Message> = if tracks.is_empty() {
+            text("").size(1).into()
+        } else {
+            let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
+            row![
+                Self::shuffle_pill(
+                    "SHUFFLE".into(),
+                    Message::PlayArtistShuffled(a.name.clone())
+                ),
+                button(
+                    row![
+                        icon("radio", 13.0, iced::Color::WHITE),
+                        text("Radio").size(13),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .style(hover_row)
+                .on_press(Message::StartRadio(seed))
+                .padding(8),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
+        };
         container(
             row![
-                self.art_thumb(photo.as_deref(), 96.0),
+                button(self.art_thumb(photo.as_deref(), 96.0))
+                    .style(row_click)
+                    .on_press(Message::OpenArtist(a.id.clone()))
+                    .padding(0),
                 column![
                     text("Top result").size(12).color(MUTED),
-                    text(a.name.clone()).size(20),
-                    text("Artist").size(13).color(MUTED),
-                    row![button(text("Open").size(13))
-                        .style(hover_row)
+                    button(text(a.name.clone()).size(20))
+                        .style(row_click)
                         .on_press(Message::OpenArtist(a.id.clone()))
-                        .padding(8),]
-                    .spacing(4)
-                    .align_y(iced::alignment::Vertical::Center),
+                        .padding(0)
+                        .width(Fill),
+                    text("Artist").size(13).color(MUTED),
+                    actions,
                 ]
                 .spacing(4)
                 .width(Fill),
@@ -12158,6 +12264,47 @@ mod tests {
         let _ = s.update(Message::PlayAllShuffled);
         assert!(s.queue.shuffle);
         assert_eq!(s.queue.len(), 2);
+    }
+
+    #[test]
+    fn hero_shuffle_plays_known_tracks_shuffled() {
+        use yutu_core::{Album, Artist};
+        let mut s = test_state();
+        assert!(!s.queue.shuffle);
+        // Artist hero shuffle: all known catalog tracks, shuffle on.
+        let _ = s.update(Message::PlayArtistShuffled("The Beatles".into()));
+        assert!(s.queue.shuffle);
+        assert_eq!(s.queue.len(), 5);
+        // Album hero shuffle by title: the Abbey Road tracks.
+        let _ = s.update(Message::PlayAlbumShuffled("Abbey Road".into()));
+        assert!(s.queue.shuffle);
+        assert_eq!(s.queue.len(), 3);
+        // Unknown names report honestly with no queue change.
+        let _ = s.update(Message::PlayArtistShuffled("Nobody".into()));
+        assert_eq!(s.queue.len(), 3);
+        assert!(s.status.contains("nothing to play"));
+        // Heroes render their actions with no panic.
+        s.search_query = "beatles".into();
+        s.results = SearchResults {
+            tracks: vec![mk_track("v1", "Yesterday", "The Beatles")],
+            albums: vec![Album {
+                id: "a1".into(),
+                title: "Abbey Road".into(),
+                artist: "The Beatles".into(),
+                year: Some(1969),
+                thumbnail_url: None,
+            }],
+            artists: vec![Artist {
+                id: "r1".into(),
+                name: "The Beatles".into(),
+                thumbnail_url: None,
+            }],
+        };
+        let _ = s.view();
+        let album = s.results.albums[0].clone();
+        let _ = s.search_album_hero(&album);
+        let artist = s.results.artists[0].clone();
+        let _ = s.search_artist_hero(&artist);
     }
 
     #[test]

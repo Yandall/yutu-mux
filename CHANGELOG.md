@@ -7,6 +7,9 @@
   relevance-ordered mixed list with the top hit in a hero card); every
   row names its type (Song, Album, Artist) and All/Songs/Albums/Artists
   chips filter the list in place
+- Search hero actions: artist/album top results get clickable art and
+  title plus Shuffle and Radio buttons over the known catalog tracks
+  (hidden when none are known yet)
 - Uniform media cards: album/artist cards share the home pick fixed size
   with single-line truncated labels, and card strips wrap onto the next
   line in narrow windows instead of squashing, so every card keeps one
