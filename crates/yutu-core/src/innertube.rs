@@ -10,7 +10,7 @@
 //!   [`InnertubeBackend::search_albums`], [`InnertubeBackend::search_artists`]
 //!   via `YtMusic::search_songs` / `search_albums` / `search_artists`),
 //!   login-gated library queries ([`InnertubeBackend::library_songs`],
-//!   [`InnertubeBackend::liked_songs`] via the `LM` playlist,
+//!   [`InnertubeBackend::liked_songs`] via the `VLLM` playlist,
 //!   [`InnertubeBackend::library_albums`]), radio recommendations
 //!   ([`InnertubeBackend::recommendations_for`]: there is no home query in
 //!   `ytmapi-rs` 0.3, so no `home_feed`), YTM lyrics
@@ -314,19 +314,20 @@ impl InnertubeBackend {
         Ok(songs.iter().map(table_song_to_track).collect())
     }
 
-    /// The user's liked-music tracks, via the `LM` liked playlist
+    /// The user's liked-music tracks, via the `VLLM` liked playlist
     /// (see [`Self::playlist_tracks`]: `ytmapi-rs` 0.3 exposes no dedicated
-    /// liked-songs query).
+    /// liked-songs query). The browse endpoint wants the `VL`-prefixed
+    /// id: bare `LM` 400s (verified live).
     ///
     /// Auth: cookie OR Google OAuth in practice: the query itself is
     /// `impl<A: AuthToken>` so anonymous attempts hit the server and fail
     /// there. Song and video items map to [`Track`]; podcast episodes are
     /// skipped (not music).
     pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
-        self.playlist_tracks("LM").await
+        self.playlist_tracks("VLLM").await
     }
 
-    /// Tracks of any playlist by id (`LM` = liked music, `PL...`/`VL...` =
+    /// Tracks of any playlist by id (`VLLM` = liked music, `PL...`/`VL...` =
     /// user playlists). Same mapping as [`Self::liked_songs`]: songs and
     /// videos become [`Track`], podcast episodes are skipped.
     ///
