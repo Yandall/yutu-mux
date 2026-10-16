@@ -59,9 +59,12 @@ actionable error. Premium accounts are exempt from PO-token gating.
 
 ## Two-way sync (while signed in)
 
-- Import reads the whole account: library songs + liked ids + every
-  library playlist with its tracks (each list fails open, so one bad
-  endpoint cannot sink the import). Every list endpoint streams all
+- Import reads the whole account in stages so the window never
+  freezes on one long silent future: the base stage (library songs +
+  liked ids + playlist headers, each list failing open) merges first
+  and shows at once, then one task per playlist streams its tracks in,
+  each arrival updating the status line (`Playlist 'X' done
+  (123 tracks) - 2/5`). Every list endpoint streams all
   continuation pages (about 100 items each): single-shot queries stop
   at the first page, which truncated big playlists and libraries.
   Server lists keep their real ids
