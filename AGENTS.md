@@ -170,8 +170,12 @@ cargo test -p yutu-ui --no-default-features
   pushing; fix every med+ finding, cheap lows too.
 - Keep `PLAN.md` execution tracker and `CHANGELOG.md` (0.2.0 unreleased
   section) updated with each round.
-- Only committer; `main` is pushed directly. `force-with-lease`
-  acceptable on `main` only for seconds-old broken commits.
+- Only committer. New features go on a branch per feature
+  (`feat/<name>`, `fix/<name>`), pushed for review as a PR; merge to
+  `main` only once the feature is complete (3-config clippy + fmt +
+  workspace tests green, adversarial review med+ findings fixed).
+  Trivial direct-to-`main` pushes are for docs/changelog-only or
+  seconds-old broken commits (`force-with-lease` only there).
 - Run `cargo run` = real app. User verifies GUI/audio on their machine.
 - Commit messages: `feat|fix|docs(scope): ...` with behavior + test
   summary. Verify 3-config clippy + fmt + workspace tests before push.
