@@ -691,6 +691,12 @@ pub enum Message {
     PlayAutoplay(usize),
     /// Play-all with shuffle turned on first (hero shuffle buttons).
     PlayAllShuffled,
+    /// Play one playlist from the clicked row on: the song plus the
+    /// rest of the playlist from that point replace the queue.
+    PlayPlaylistAt {
+        playlist_id: String,
+        index: usize,
+    },
     /// Shuffle-play one search hero artist (known catalog tracks).
     PlayArtistShuffled(String),
     /// Shuffle-play one search hero album (known catalog tracks).
@@ -1740,7 +1746,18 @@ impl AppState {
     /// back into the catalog). Queues then own full Tracks even for
     /// pre-migration rows.
     fn resolve_for_play(&mut self, t: &Track) -> Track {
-        let out = match self.find_track(&t.id) {
+        let out = self.resolve_for_play_mem(t);
+        // Write-through so the healed row survives restarts.
+        self.cache_tracks(std::slice::from_ref(&out));
+        out
+    }
+
+    /// In-memory half of [`Self::resolve_for_play`]: catalog merge with
+    /// no SQLite traffic. Bulk paths resolve everything first, then
+    /// persist once, so long playlists never fsync per track on the GUI
+    /// thread.
+    fn resolve_for_play_mem(&mut self, t: &Track) -> Track {
+        match self.find_track(&t.id) {
             Some(mut full) => {
                 let mut healed = false;
                 if full.thumbnail_url.is_none() && t.thumbnail_url.is_some() {
@@ -1764,10 +1781,7 @@ impl AppState {
                 self.catalog.insert(t.id.clone(), t.clone());
                 t.clone()
             }
-        };
-        // Write-through so the healed row survives restarts.
-        self.cache_tracks(std::slice::from_ref(&out));
-        out
+        }
     }
 
     /// Register freshly fetched tracks; returns them for chaining.
@@ -3969,6 +3983,40 @@ impl AppState {
         }
     }
 
+    /// Shuffle-play order for a freshly built queue: snapshot the
+    /// incoming order (toggle-off restores it), then full Fisher-Yates
+    /// over `items[start..]` so the first track is random too. Always
+    /// reshuffles, even when shuffle mode was already on.
+    fn shuffle_fresh(&mut self, start: usize) {
+        let len = self.queue.len();
+        let start = start.min(len.saturating_sub(1));
+        self.pre_shuffle = Some(self.queue.items().iter().map(|t| t.id.clone()).collect());
+        if len > start + 1 {
+            let mut seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as u64)
+                .unwrap_or(0x2545F491)
+                ^ 0x9E3779B97F4A7C15;
+            if seed == 0 {
+                seed = 0x2545F491;
+            }
+            let mut tail: Vec<usize> = (start..len).collect();
+            for i in (1..tail.len()).rev() {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                tail.swap(i, (seed as usize) % (i + 1));
+            }
+            let mut order: Vec<usize> = (0..start).collect();
+            order.extend(tail);
+            let _ = self.queue.reorder(&order);
+        }
+        self.queue.jump_to(start);
+        // First-occurrence seating if duplicates exist (see restore).
+        self.pre_shuffle_cur = self.queue.current().map(|t| (t.id.clone(), 0));
+        self.queue.shuffle = true;
+    }
+
     /// Restore the pre-shuffle order. Ids added while shuffled keep their
     /// relative order at the end; removed ids vanish with their rows.
     /// Duplicate ids are matched occurrence-by-occurrence (used-index set)
@@ -4489,8 +4537,14 @@ impl AppState {
         // the 12-task cap); the rest paints as the ahead-window reaches
         // them on advance. Deduped, so repeats cost nothing.
         let art_tasks = self.artwork_tasks(&tracks);
-        for t in tracks {
-            let rt = self.resolve_for_play(&t);
+        // Resolve in memory first, persist once: per-track SQLite traffic
+        // (open + fsync each) freezes the GUI on long playlists.
+        let resolved: Vec<Track> = tracks
+            .iter()
+            .map(|t| self.resolve_for_play_mem(t))
+            .collect();
+        self.cache_tracks(&resolved);
+        for rt in resolved {
             self.queue.push(rt);
         }
         self.queue.jump_to(first_new);
@@ -4503,8 +4557,8 @@ impl AppState {
     }
 
     /// Play-all for the current detail view (artist/album/playlist/
-    /// radio/discovery/search). With `shuffle`, shuffle turns on first and
-    /// the fresh queue plays in shuffled order.
+    /// radio/discovery/search). With `shuffle`, the fresh queue plays in
+    /// fully shuffled order (random first track, always reshuffled).
     fn play_all_tracks(&mut self, shuffle: bool) -> iced::Task<Message> {
         let (tracks, label) = match &self.route {
             Route::Artist(id) => {
@@ -4535,8 +4589,9 @@ impl AppState {
         self.drag = None;
         let task = self.queue_many(tracks, &label);
         if shuffle {
-            // Fresh queue: full shuffle with the just-started track first.
-            self.set_shuffle(true);
+            // Fresh queue: fully shuffled with a random first track
+            // (shuffle_fresh always reshuffles, even when already on).
+            self.shuffle_fresh(0);
         }
         self.publish_mpris();
         task
@@ -4554,7 +4609,7 @@ impl AppState {
         self.autoplay_for = None;
         self.drag = None;
         let task = self.queue_many(tracks, label);
-        self.set_shuffle(true);
+        self.shuffle_fresh(0);
         self.publish_mpris();
         task
     }
@@ -6455,6 +6510,25 @@ impl AppState {
             }
             Message::PlayAll => return self.play_all_tracks(false),
             Message::PlayAllShuffled => return self.play_all_tracks(true),
+            Message::PlayPlaylistAt { playlist_id, index } => {
+                let Some(p) = self.find_playlist(&playlist_id) else {
+                    self.status = "Playlist not found.".into();
+                    return iced::Task::none();
+                };
+                let label = format!("Playlist {}", p.title);
+                let tracks: Vec<Track> = p.tracks.into_iter().skip(index).collect();
+                if tracks.is_empty() {
+                    self.status = format!("{label}: nothing to play.");
+                    return iced::Task::none();
+                }
+                // Fresh context like PlayNow: the old queue and tail go
+                // away, then the playlist plays from the clicked song on.
+                self.queue.clear();
+                self.autoplay.clear();
+                self.autoplay_for = None;
+                self.drag = None;
+                return self.queue_many(tracks, &label);
+            }
             Message::PlayArtistShuffled(name) => {
                 let tracks = self.artist_tracks(&name);
                 return self.shuffle_tracks(tracks, &format!("Artist {name}"));
@@ -8867,6 +8941,75 @@ impl AppState {
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
+                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
+                        .style(hover_row)
+                        .on_press(Message::Like(t.id.clone()))
+                        .padding(6),
+                    button(icon("ellipsis", 15.0, MUTED))
+                        .style(hover_row)
+                        .on_press(Message::OpenContext(t.id.clone()))
+                        .padding(6),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(4),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_right_press(Message::OpenContext(t.id.clone()))
+        .on_enter(Message::TrackHover(Some(hover_id)))
+        .on_exit(Message::TrackHover(None))
+        .into()
+    }
+
+    /// Playlist row: same controls as track_row, but art, text and play
+    /// all start the playlist from this song on (the rest of the list
+    /// queues behind it).
+    fn playlist_track_row(
+        &self,
+        playlist_id: &str,
+        t: &Track,
+        index: usize,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{button, container, mouse_area, row, text};
+        use iced::Fill;
+        let heart_color = if self.liked.contains(&t.id) {
+            SPOT_GREEN
+        } else {
+            MUTED
+        };
+        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let hover_id = t.id.clone();
+        let play_here = Message::PlayPlaylistAt {
+            playlist_id: playlist_id.to_string(),
+            index,
+        };
+        let play_here_text = Message::PlayPlaylistAt {
+            playlist_id: playlist_id.to_string(),
+            index,
+        };
+        mouse_area(
+            container(
+                row![
+                    button(self.thumb(t))
+                        .style(row_click)
+                        .on_press(play_here)
+                        .padding(2),
+                    button(Self::track_text_single(
+                        &t.title,
+                        &t.artist,
+                        14,
+                        iced::Color::WHITE
+                    ))
+                    .style(row_click)
+                    .on_press(play_here_text)
+                    .padding(3)
+                    .width(Fill),
                     text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
                     button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                         .style(hover_row)
@@ -11579,8 +11722,13 @@ impl AppState {
                     .spacing(8)
                     .into(),
                 Some(p) => {
-                    let rows: Vec<iced::Element<'_, Message>> =
-                        p.tracks.iter().map(|t| self.track_row(t)).collect();
+                    let pid = p.id.clone();
+                    let rows: Vec<iced::Element<'_, Message>> = p
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| self.playlist_track_row(&pid, t, i))
+                        .collect();
                     column![
                         text(p.title.clone()).size(24),
                         text(format!("Playlist · {} tracks", p.tracks.len()))
@@ -11597,12 +11745,13 @@ impl AppState {
                             .style(green_play)
                             .on_press(Message::PlayAll)
                             .padding(8),
+                            Self::play_pill("SHUFFLE".into(), Message::PlayAllShuffled),
                             button(icon("ellipsis", 15.0, MUTED))
                                 .style(hover_row)
                                 .on_press(Message::OpenPlaylistMenu(p.id.clone()))
                                 .padding(8),
                         ]
-                        .spacing(4)
+                        .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
                         column(rows).spacing(2),
                     ]
@@ -13620,6 +13769,105 @@ mod tests {
         let _ = s.update(Message::PlayAllShuffled);
         assert!(s.queue.shuffle);
         assert_eq!(s.queue.len(), 2);
+    }
+
+    #[test]
+    fn shuffle_play_starts_random_and_always_reshuffles() {
+        let mut s = test_state();
+        let ids: Vec<String> = (0..6).map(|i| format!("v{i}")).collect();
+        s.results.tracks = ids
+            .iter()
+            .map(|id| mk_track(id, "Song", "Artist"))
+            .collect();
+        s.route = Route::Search;
+        // Random first track: 20 plays never start on the same song.
+        let mut firsts = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let _ = s.update(Message::PlayAllShuffled);
+            firsts.insert(s.queue.current().unwrap().id.clone());
+        }
+        assert!(firsts.len() > 1, "shuffle play should start anywhere");
+        // Snapshot is the playlist order (toggle-off restores exactly it).
+        let ordered: Vec<String> = ids.clone();
+        assert_eq!(s.pre_shuffle, Some(ordered.clone()));
+        assert!(s.queue.shuffle);
+        let _ = s.update(Message::ToggleShuffle);
+        assert!(!s.queue.shuffle);
+        assert_eq!(
+            s.queue
+                .items()
+                .iter()
+                .map(|t| t.id.clone())
+                .collect::<Vec<_>>(),
+            ordered
+        );
+        // Shuffle-play while already on reshuffles (no early-return).
+        let _ = s.update(Message::PlayAllShuffled);
+        assert!(s.queue.shuffle);
+        assert_eq!(s.pre_shuffle, Some(ordered));
+    }
+
+    #[test]
+    fn playlist_click_plays_from_clicked_row() {
+        let mut s = test_state();
+        let tracks: Vec<Track> = (0..4)
+            .map(|i| mk_track(&format!("t{i}"), "Song", "Artist"))
+            .collect();
+        s.user_playlists.push(Playlist {
+            id: "u1".into(),
+            title: "Gym".into(),
+            tracks: tracks.clone(),
+        });
+        let _ = s.update(Message::PlayPlaylistAt {
+            playlist_id: "u1".into(),
+            index: 2,
+        });
+        // Clicked song plus the rest from that point replace the queue.
+        assert_eq!(
+            s.queue
+                .items()
+                .iter()
+                .map(|t| t.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["t2".to_string(), "t3".to_string()]
+        );
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("t2"));
+        assert!(s.playing_from.contains("Gym"));
+        // Detail page renders the new rows with no panic.
+        s.route = Route::PlaylistDetail("u1".into());
+        let _ = s.view();
+        // Past-the-end index reports honestly with no queue change.
+        let _ = s.update(Message::PlayPlaylistAt {
+            playlist_id: "u1".into(),
+            index: 9,
+        });
+        assert_eq!(s.queue.len(), 2);
+        assert!(s.status.contains("nothing to play"));
+        // Unknown playlist reports honestly too.
+        let _ = s.update(Message::PlayPlaylistAt {
+            playlist_id: "nope".into(),
+            index: 0,
+        });
+        assert!(s.status.contains("not found"));
+    }
+
+    #[test]
+    fn bulk_queue_caches_everything_in_one_shot() {
+        let mut s = test_state();
+        let tracks: Vec<Track> = (0..250)
+            .map(|i| mk_track(&format!("v{i}"), "Song", "Artist"))
+            .collect();
+        let start = std::time::Instant::now();
+        let _ = s.queue_many(tracks, "Probe");
+        assert!(
+            start.elapsed().as_secs() < 10,
+            "bulk queue must never stall the GUI thread"
+        );
+        assert_eq!(s.queue.len(), 250);
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        let cached = store.all_cached_tracks().unwrap();
+        assert!(cached.iter().any(|t| t.id == "v0"));
+        assert!(cached.iter().any(|t| t.id == "v249"));
     }
 
     #[test]

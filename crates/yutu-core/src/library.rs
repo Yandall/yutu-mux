@@ -827,37 +827,39 @@ impl LibraryStore {
     /// index, position, shuffle/repeat/volume. One shot replaces the
     /// previous snapshot (ids only: rows resolve via the track cache).
     pub fn save_queue(&self, snap: &QueueSnapshot) -> Result<(), String> {
-        self.conn
-            .execute("DELETE FROM queue_items", [])
-            .map_err(|e| e.to_string())?;
-        for (i, id) in snap.ids.iter().enumerate() {
+        self.with_tx(|| {
             self.conn
-                .execute(
-                    "INSERT INTO queue_items(position, track_id) VALUES (?1, ?2)",
-                    params![i as i64, id],
-                )
+                .execute("DELETE FROM queue_items", [])
                 .map_err(|e| e.to_string())?;
-        }
-        let meta = [
-            (
-                "index",
-                snap.index.map(|i| i.to_string()).unwrap_or_default(),
-            ),
-            ("position_secs", snap.position_secs.to_string()),
-            ("shuffle", (snap.shuffle as u8).to_string()),
-            ("repeat", snap.repeat.clone()),
-            ("volume", snap.volume.to_string()),
-        ];
-        for (k, v) in meta {
-            self.conn
-                .execute(
-                    "INSERT INTO queue_meta(key, value) VALUES (?1, ?2)
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    params![k, v],
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            for (i, id) in snap.ids.iter().enumerate() {
+                self.conn
+                    .execute(
+                        "INSERT INTO queue_items(position, track_id) VALUES (?1, ?2)",
+                        params![i as i64, id],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            let meta = [
+                (
+                    "index",
+                    snap.index.map(|i| i.to_string()).unwrap_or_default(),
+                ),
+                ("position_secs", snap.position_secs.to_string()),
+                ("shuffle", (snap.shuffle as u8).to_string()),
+                ("repeat", snap.repeat.clone()),
+                ("volume", snap.volume.to_string()),
+            ];
+            for (k, v) in meta {
+                self.conn
+                    .execute(
+                        "INSERT INTO queue_meta(key, value) VALUES (?1, ?2)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        params![k, v],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     /// Load the persisted session (`None` when nothing was ever saved).
