@@ -25,9 +25,10 @@
   instead of silently failing
 - Stay signed in with cookies: successful imports stash a 0600 session,  restarts show "Signed in with cookies" with one-click re-import plus
   sign-out; imports now pull songs + liked + every playlist with tracks,
-  and likes/playlist creates/adds/deletes mirror to YouTube Music in the
-  background (single-track removes stay local-only: upstream needs a
-  per-membership id listings do not return)
+  and likes/dislikes plus playlist creates/adds/removes/deletes mirror
+  to YouTube Music in the background (removes resolve the per-membership
+  `setVideoId` from raw browse JSON; like/dislike share one server
+  status with local mutual exclusion)
 - Cookie import accepts Netscape `cookies.txt` (the "Get cookies.txt"
   export shape): rows convert to a header before login, missing SAPISID
   fails fast; previously every Netscape file failed as bad/expired
@@ -74,9 +75,22 @@
 - Click-to-play replaces the queue + same-artist autoplay tail; play-next
   insert; suggestion popup under the bar (Enter = full Search page)
 - Context menu (… button, right-click N/A in Iced): play/next/queue/mix/
-  lyrics/like/download/album/artist + add-to-playlist; offline download
-  to disk cache; NowPlaying drawer via ▲; YTM-style slim sidebar
+  lyrics/like/don't-recommend/download/album/artist + add-to-playlist;
+  offline download to disk cache; NowPlaying drawer via ▲; YTM-style
+  slim sidebar
   (Home/Search/Library + filter + inline create + collapse rail)
+- Write ops audited end to end: like (`like/like`), don't-recommend
+  (`like/dislike`), clear (`like/removelike`), playlist create
+  (`playlist/create`, private), add (`browse/edit_playlist`,
+  `ACTION_ADD_VIDEO`), remove (`browse/edit_playlist`,
+  `ACTION_REMOVE_VIDEO` via raw-JSON `setVideoId`), delete
+  (`playlist/delete`), rename (`ACTION_SET_PLAYLIST_NAME`), artist
+  subscribe (`subscription/subscribe` + `unsubscribe`); disliked ids
+  persist locally and stay out of autoplay/radio/mixes
+- Playlist id forms fixed per endpoint: `browse` reads send the
+  `VL`-prefixed id, edits/deletes/playlist-likes send the raw id (a
+  `VL...` id to `browse/edit_playlist` 400s `invalid argument`);
+  imports store canonical ids with a one-time `VL...` migration
 - Honest EQ status (mpv-only filters; rodio reports it); bigger nav
   buttons; cookie-file import (normal browser login, no OAuth client)
 - Real right-click context menu at the cursor (mouse_area +

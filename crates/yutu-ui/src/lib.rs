@@ -215,6 +215,7 @@ fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'sta
         "sparkles" => include_bytes!("../assets/icons/sparkles.svg"),
         "panel-left" => include_bytes!("../assets/icons/panel-left.svg"),
         "panel-right" => include_bytes!("../assets/icons/panel-right.svg"),
+        "thumbs-down" => include_bytes!("../assets/icons/thumbs-down.svg"),
         _ => include_bytes!("../assets/icons/music.svg"),
     };
     svg(svg::Handle::from_memory(bytes))
@@ -242,6 +243,32 @@ fn heart_icon(liked: bool, size: f32, color: iced::Color) -> iced::Element<'stat
         svg::Handle::from_memory(filled)
     });
     svg(FILLED_HEART.clone())
+        .width(size)
+        .height(size)
+        .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
+        .into()
+}
+
+/// Thumbs-down with hollow/filled states (same fill-flip as
+/// [`heart_icon`]): outline when the track is not disliked, solid when
+/// "don't recommend" is active.
+fn thumbs_down_icon(
+    disliked: bool,
+    size: f32,
+    color: iced::Color,
+) -> iced::Element<'static, Message> {
+    use iced::widget::svg;
+    if !disliked {
+        return icon("thumbs-down", size, color);
+    }
+    const THUMBS_DOWN: &str = include_str!("../assets/icons/thumbs-down.svg");
+    static FILLED_THUMBS_DOWN: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+        let filled: Vec<u8> = THUMBS_DOWN
+            .replace("fill=\"none\"", "fill=\"currentColor\"")
+            .into_bytes();
+        svg::Handle::from_memory(filled)
+    });
+    svg(FILLED_THUMBS_DOWN.clone())
         .width(size)
         .height(size)
         .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
@@ -556,6 +583,8 @@ pub enum Message {
     Next,
     Prev,
     Like(String),
+    /// Dislike ("don't recommend"): toggles `like/dislike` server-side.
+    Dislike(String),
     SetVolume(f32),
     QueueRemove(usize),
     QueueUp(usize),
@@ -777,6 +806,14 @@ pub enum Message {
         liked: bool,
         result: Result<(), String>,
     },
+    /// Best-effort server dislike/clear result (same local-first contract
+    /// as [`Message::Like`]).
+    #[cfg(feature = "innertube")]
+    DislikeSynced {
+        track_id: String,
+        disliked: bool,
+        result: Result<(), String>,
+    },
     /// Server playlist creation result: carries the local shell id so the
     /// handler can migrate it to the real server id.
     #[cfg(feature = "innertube")]
@@ -968,7 +1005,7 @@ fn url_expiry(url: &str) -> Option<u64> {
 /// the cursor/window are still unknown (e.g. keyboard-opened).
 fn menu_pos(cursor: Option<iced::Point>, window: Option<iced::Size>) -> (f32, f32) {
     const MENU_W: f32 = 300.0;
-    const MENU_H: f32 = 470.0;
+    const MENU_H: f32 = 510.0;
     let (cx, cy) = cursor.map(|p| (p.x, p.y)).unwrap_or((200.0, 150.0));
     let (ww, hh) = window
         .map(|s| (s.width, s.height))
@@ -1167,6 +1204,10 @@ pub struct AppState {
     pub liked: HashSet<String>,
     /// Liked ids in add order (membership stays in `liked`).
     pub liked_order: Vec<String>,
+    /// Disliked ("don't recommend") ids: membership plus add order below.
+    pub disliked: HashSet<String>,
+    /// Disliked ids in add order (membership stays in `disliked`).
+    pub disliked_order: Vec<String>,
     /// Downloaded ids (offline audio on disk) in add order.
     pub downloaded: HashSet<String>,
     /// Downloaded ids in add order (membership stays in `downloaded`).
@@ -1944,7 +1985,9 @@ impl AppState {
     /// True for playlists that live on YouTube Music (real server ids from
     /// an import or a synced create). Local `u{seq}` shells, the virtual
     /// Favorites/Downloaded lists, and the `LM` liked-music pseudo-list
-    /// (likes sync via `rate_song`, never playlist edits) never sync.
+    /// (likes/dislikes sync via `rate_song`, never playlist edits) never
+    /// sync as playlists.
+    #[cfg_attr(not(feature = "innertube"), allow(dead_code))]
     fn is_server_playlist(id: &str) -> bool {
         if id == Self::FAVORITES_ID || id == Self::DOWNLOADED_ID || id == "LM" {
             return false;
@@ -2469,6 +2512,8 @@ fn load_persisted(
 ) -> (
     HashSet<String>,
     Vec<String>,
+    HashSet<String>,
+    Vec<String>,
     Vec<String>,
     Vec<Playlist>,
     u64,
@@ -2477,6 +2522,8 @@ fn load_persisted(
     Vec<String>,
 ) {
     let empty = (
+        HashSet::new(),
+        Vec::new(),
         HashSet::new(),
         Vec::new(),
         Vec::new(),
@@ -2493,13 +2540,54 @@ fn load_persisted(
     // Likes: every id in SQLite in add order, no catalog probe.
     let order: Vec<String> = store.liked_ids().unwrap_or_default();
     let liked: HashSet<String> = order.iter().cloned().collect();
+    // Dislikes ("don't recommend"): same contract as likes.
+    let disliked_order: Vec<String> = store.disliked_ids().unwrap_or_default();
+    let disliked: HashSet<String> = disliked_order.iter().cloned().collect();
     let history = store
         .history(50)
         .unwrap_or_default()
         .into_iter()
         .map(|e| e.track_id)
         .collect();
-    let user_playlists = store.user_playlists().unwrap_or_default();
+    // One-time migration: older imports stored browse (`VL...`) ids while
+    // creates store edit (`PL...`) ids. Canonicalise to edit form so the
+    // same list never appears twice and writes always send the edit form
+    // (a `VL...` id to `browse/edit_playlist` 400s with invalid argument).
+    // Runs only while stale browse-form rows exist.
+    let mut user_playlists = store.user_playlists().unwrap_or_default();
+    if user_playlists.iter().any(|p| p.id.starts_with("VL")) {
+        let mut merged: Vec<Playlist> = Vec::new();
+        let mut stale: Vec<String> = Vec::new();
+        for p in user_playlists.drain(..) {
+            if p.id.starts_with("VL") {
+                stale.push(p.id.clone());
+            }
+            let id = yutu_core::canonical_playlist_id(&p.id);
+            match merged.iter_mut().find(|m| m.id == id) {
+                Some(m) => {
+                    for t in p.tracks {
+                        if !m.tracks.iter().any(|x| x.id == t.id) {
+                            m.tracks.push(t);
+                        }
+                    }
+                }
+                None => merged.push(Playlist {
+                    id,
+                    title: p.title,
+                    tracks: p.tracks,
+                }),
+            }
+        }
+        for m in &merged {
+            let _ = store.sync_server_playlist(&m.id, &m.title, &m.tracks);
+        }
+        for old in stale {
+            if old.starts_with("VL") {
+                let _ = store.delete_playlist(&old);
+            }
+        }
+        user_playlists = merged;
+    }
     let seq = user_playlists
         .iter()
         .filter_map(|p| p.id.strip_prefix('u')?.parse::<u64>().ok())
@@ -2533,6 +2621,8 @@ fn load_persisted(
     (
         liked,
         order,
+        disliked,
+        disliked_order,
         history,
         user_playlists,
         seq,
@@ -2564,6 +2654,8 @@ impl AppState {
         let (
             liked,
             liked_order,
+            disliked,
+            disliked_order,
             history,
             user_playlists,
             playlist_seq,
@@ -2578,6 +2670,8 @@ impl AppState {
             queue: Queue::default(),
             liked,
             liked_order,
+            disliked,
+            disliked_order,
             downloaded,
             downloaded_order,
             history,
@@ -2856,6 +2950,17 @@ impl AppState {
         } else {
             store.unlike(&track.id)
         };
+    }
+
+    fn persist_dislike(&self, id: &str, disliked: bool) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        if disliked {
+            let _ = store.dislike(id);
+        } else {
+            let _ = store.undislike(id);
+        }
     }
 
     fn persist_downloaded(&self, id: &str, downloaded: bool) {
@@ -4057,8 +4162,8 @@ impl AppState {
 
     /// Cookie import panel: normal browser login, no OAuth client needed.
     /// A saved session stays signed in across restarts (re-import refreshes
-    /// without another export); likes and playlist edits mirror to YouTube
-    /// Music while signed in, except single-track removes (local only).
+    /// without another export); likes, dislikes, and playlist edits mirror
+    /// to YouTube Music while signed in.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, row, text, text_input};
@@ -4727,6 +4832,7 @@ impl AppState {
     }
 
     /// Weekly Mix from persisted history + in-memory likes + real catalog.
+    /// Disliked ("don't recommend") tracks never appear.
     pub fn weekly_mix_tracks(&self) -> Vec<Track> {
         weekly_mix(
             &self.discovery_history(),
@@ -4735,9 +4841,13 @@ impl AppState {
             10,
             now_unix(),
         )
+        .into_iter()
+        .filter(|t| !self.disliked.contains(&t.id))
+        .collect()
     }
 
     /// Forgotten Favorites from in-memory likes + persisted history + catalog.
+    /// Disliked ("don't recommend") tracks never appear.
     pub fn forgotten_tracks(&self) -> Vec<Track> {
         forgotten_favorites(
             &self.liked,
@@ -4745,6 +4855,9 @@ impl AppState {
             &self.catalog_tracks(),
             now_unix(),
         )
+        .into_iter()
+        .filter(|t| !self.disliked.contains(&t.id))
+        .collect()
     }
 
     /// Virtual Favorites id (never persisted, never a `uN` user id).
@@ -4796,6 +4909,19 @@ impl AppState {
     fn unlike_id(&mut self, id: &str) {
         self.liked.remove(id);
         self.liked_order.retain(|x| x != id);
+    }
+
+    /// Dislike helper: membership plus add-order append.
+    fn dislike_id(&mut self, id: &str) {
+        if self.disliked.insert(id.to_string()) {
+            self.disliked_order.push(id.to_string());
+        }
+    }
+
+    /// Undislike helper: membership plus order removal.
+    fn undislike_id(&mut self, id: &str) {
+        self.disliked.remove(id);
+        self.disliked_order.retain(|x| x != id);
     }
 
     /// Download helper: membership plus add-order append.
@@ -5231,6 +5357,8 @@ impl AppState {
             Message::Like(id) => {
                 // Local state applies first; the server push (if signed
                 // in) only ever reports failures, so the row never lies.
+                // Like and dislike are one status server-side: setting one
+                // clears the other locally too.
                 let liked: bool;
                 if self.liked.contains(&id) {
                     self.unlike_id(&id);
@@ -5241,6 +5369,10 @@ impl AppState {
                     let known = self.find_track(&id).is_some();
                     self.like_id(&id);
                     self.persist_like(&id, true);
+                    if self.disliked.contains(&id) {
+                        self.undislike_id(&id);
+                        self.persist_dislike(&id, false);
+                    }
                     liked = true;
                     if known {
                         self.status = format!("Added to favorites: {id}.");
@@ -5265,6 +5397,27 @@ impl AppState {
                 }
                 self.publish_mpris();
                 return Self::like_sync_task(id, liked);
+            }
+            Message::Dislike(id) => {
+                // "Don't recommend": local dislike first, server push only
+                // reports failures. Mutual exclusion with likes (see Like).
+                let disliked: bool = if self.disliked.contains(&id) {
+                    self.undislike_id(&id);
+                    self.persist_dislike(&id, false);
+                    self.status = format!("Removed don't-recommend for {id}.");
+                    false
+                } else {
+                    self.dislike_id(&id);
+                    self.persist_dislike(&id, true);
+                    if self.liked.contains(&id) {
+                        self.unlike_id(&id);
+                        self.persist_like(&id, false);
+                    }
+                    self.status = format!("Won't recommend {id} again.");
+                    true
+                };
+                self.publish_mpris();
+                return Self::dislike_sync_task(id, disliked);
             }
             Message::SetVolume(v) => {
                 self.volume = v.clamp(0.0, 1.0);
@@ -5304,6 +5457,8 @@ impl AppState {
                 return self.ensure_visible_tasks();
             }
             Message::OpenPlaylist(id) => {
+                // Canonicalise: pre-migration sessions may hand a browse id.
+                let id = yutu_core::canonical_playlist_id(&id);
                 self.go(Route::PlaylistDetail(id));
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
@@ -5415,8 +5570,12 @@ impl AppState {
             }
             Message::RadioReady { seed, result } => match result {
                 Ok(tracks) => {
+                    let tracks: Vec<Track> = self
+                        .register_tracks(tracks)
+                        .into_iter()
+                        .filter(|t| !self.disliked.contains(&t.id))
+                        .collect();
                     let n = tracks.len();
-                    let tracks = self.register_tracks(tracks);
                     self.radio_tracks = tracks.clone();
                     self.go(Route::Radio(seed.clone()));
                     let mut tasks = self.artwork_tasks(&tracks);
@@ -5516,6 +5675,9 @@ impl AppState {
                     return self.unknown_track_task(&track_id);
                 }
                 Some(track) => {
+                    // Accept either stored form: older sessions kept browse
+                    // (`VL...`) ids, storage is canonical (edit form) now.
+                    let playlist_id = yutu_core::canonical_playlist_id(&playlist_id);
                     // Virtual Favorites maps to likes, never SQLite.
                     if playlist_id == Self::FAVORITES_ID {
                         if self.liked.contains(&track.id) {
@@ -5576,6 +5738,8 @@ impl AppState {
                 playlist_id,
                 track_id,
             } => {
+                // Same either-form rule as adds (see AddToPlaylist).
+                let playlist_id = yutu_core::canonical_playlist_id(&playlist_id);
                 // Virtual Favorites maps to unlikes, never SQLite.
                 if playlist_id == Self::FAVORITES_ID {
                     if !self.liked.contains(&track_id) {
@@ -5612,19 +5776,19 @@ impl AppState {
                         let title = self.user_playlists[i].title.clone();
                         self.user_playlists[i].tracks.retain(|t| t.id != track_id);
                         self.persist_playlist_removed(&playlist_id, &track_id);
-                        // Single-track remove has no server call (upstream
-                        // needs a per-membership id listings do not return),
-                        // so server lists say so instead of implying a sync.
-                        self.status = if Self::is_server_playlist(&playlist_id) {
-                            format!("Removed {track_id} from {title} (local only).")
-                        } else {
-                            format!("Removed {track_id} from {title}.")
-                        };
+                        self.status = format!("Removed {track_id} from {title}.");
+                        self.publish_mpris();
+                        // Server lists mirror the removal on YouTube Music
+                        // (setVideoId resolved from raw browse JSON);
+                        // local shells stay local-only.
+                        return Self::playlist_remove_sync_task(playlist_id, track_id);
                     }
                 }
             }
             Message::DeletePlaylist(id) => {
                 self.close_menu();
+                // Same either-form rule as adds (see AddToPlaylist).
+                let id = yutu_core::canonical_playlist_id(&id);
                 if id == Self::FAVORITES_ID {
                     self.status = "Favorites is built-in and can't be deleted.".into();
                     self.publish_mpris();
@@ -5753,7 +5917,11 @@ impl AppState {
                             .collect();
                         let fresh: Vec<Track> = tracks
                             .into_iter()
-                            .filter(|t| t.id != seed && !known.contains(&t.id))
+                            .filter(|t| {
+                                t.id != seed
+                                    && !known.contains(&t.id)
+                                    && !self.disliked.contains(&t.id)
+                            })
                             .take(10)
                             .collect();
                         if fresh.is_empty() {
@@ -6493,6 +6661,22 @@ impl AppState {
                 }
             }
             #[cfg(feature = "innertube")]
+            Message::DislikeSynced {
+                track_id,
+                disliked,
+                result,
+            } => {
+                if let Err(e) = result {
+                    let verb = if disliked {
+                        "don't-recommend"
+                    } else {
+                        "clear-dislike"
+                    };
+                    self.status =
+                        format!("YouTube {verb} of {track_id} failed (kept locally): {e}");
+                }
+            }
+            #[cfg(feature = "innertube")]
             Message::ServerPlaylistCreated {
                 local_id,
                 title,
@@ -7056,6 +7240,7 @@ impl AppState {
 
     /// Push one like/unlike to YouTube Music (best effort: the local
     /// state is already applied, so only failures report back).
+    /// Sends `like/like` vs `like/removelike` with a `videoId` target.
     #[cfg(feature = "innertube")]
     fn like_sync_task(track_id: String, liked: bool) -> iced::Task<Message> {
         if !Self::has_session() {
@@ -7072,6 +7257,30 @@ impl AppState {
             |(track_id, liked, result)| Message::LikeSynced {
                 track_id,
                 liked,
+                result,
+            },
+        )
+    }
+
+    /// Push one dislike/clear ("don't recommend") to YouTube Music
+    /// (best effort, same local-first contract as [`Self::like_sync_task`]).
+    /// Sends `like/dislike` vs `like/removelike` with a `videoId` target.
+    #[cfg(feature = "innertube")]
+    fn dislike_sync_task(track_id: String, disliked: bool) -> iced::Task<Message> {
+        if !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let result = match Self::session_backend().await {
+                    Ok(b) => b.rate_dislike(&track_id, disliked).await,
+                    Err(e) => Err(e),
+                };
+                (track_id, disliked, result)
+            },
+            |(track_id, disliked, result)| Message::DislikeSynced {
+                track_id,
+                disliked,
                 result,
             },
         )
@@ -7123,6 +7332,7 @@ impl AppState {
     }
 
     /// Delete a server playlist (best effort).
+    /// Sends `playlist/delete` with the server `playlistId`.
     #[cfg(feature = "innertube")]
     fn playlist_delete_sync_task(playlist_id: String) -> iced::Task<Message> {
         if !Self::is_server_playlist(&playlist_id) || !Self::has_session() {
@@ -7143,9 +7353,38 @@ impl AppState {
         )
     }
 
+    /// Remove one track from a server playlist (best effort).
+    /// Sends `browse/edit_playlist` with `ACTION_REMOVE_VIDEO` after
+    /// resolving the per-membership `setVideoId` from raw browse JSON.
+    #[cfg(feature = "innertube")]
+    fn playlist_remove_sync_task(playlist_id: String, track_id: String) -> iced::Task<Message> {
+        if !Self::is_server_playlist(&playlist_id) || !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let result = match Self::session_backend().await {
+                    Ok(b) => b.remove_from_server_playlist(&playlist_id, &track_id).await,
+                    Err(e) => Err(e),
+                };
+                (playlist_id, track_id, result)
+            },
+            |(playlist_id, track_id, result)| Message::ServerPlaylistSynced {
+                detail: format!("YouTube remove of {track_id} from {playlist_id} failed"),
+                result,
+            },
+        )
+    }
+
     /// Offline builds: server sync is a no-op (local state is the truth).
     #[cfg(not(feature = "innertube"))]
     fn like_sync_task(_track_id: String, _liked: bool) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn dislike_sync_task(_track_id: String, _disliked: bool) -> iced::Task<Message> {
         iced::Task::none()
     }
 
@@ -7164,6 +7403,12 @@ impl AppState {
     /// Offline builds: server sync is a no-op (local state is the truth).
     #[cfg(not(feature = "innertube"))]
     fn playlist_delete_sync_task(_playlist_id: String) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    fn playlist_remove_sync_task(_playlist_id: String, _track_id: String) -> iced::Task<Message> {
         iced::Task::none()
     }
 
@@ -10074,6 +10319,27 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
+                    {
+                        let disliked = self.disliked.contains(&t.id);
+                        let (thumb_color, thumb_label) = if disliked {
+                            (SPOT_GREEN, "Recommend again")
+                        } else {
+                            (MUTED, "Don't recommend")
+                        };
+                        button(
+                            row![
+                                thumbs_down_icon(disliked, 14.0, thumb_color),
+                                text(thumb_label).size(14)
+                            ]
+                            .spacing(8)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::Dislike(t.id.clone()))
+                        .padding(8)
+                        .width(Fill)
+                        .into()
+                    },
                     button(
                         row![
                             icon(dl_icon, 14.0, iced::Color::WHITE),
@@ -10804,6 +11070,136 @@ mod tests {
         assert!(s.liked.contains("m1"));
         let _ = s.update(Message::Like("m1".into()));
         assert!(!s.liked.contains("m1"));
+    }
+
+    #[test]
+    fn dislike_toggles_and_excludes_likes() {
+        let mut s = test_state();
+        let _ = s.update(Message::Dislike("m1".into()));
+        assert!(s.disliked.contains("m1"));
+        assert_eq!(s.disliked_order, vec!["m1".to_string()]);
+        assert!(s.status.contains("Won't recommend"));
+        let _ = s.update(Message::Dislike("m1".into()));
+        assert!(!s.disliked.contains("m1"));
+        assert!(s.disliked_order.is_empty());
+        // Disliking a liked track clears the like (one status server-side).
+        let _ = s.update(Message::Like("m2".into()));
+        assert!(s.liked.contains("m2"));
+        let _ = s.update(Message::Dislike("m2".into()));
+        assert!(s.disliked.contains("m2"));
+        assert!(!s.liked.contains("m2"));
+        // Liking a disliked track clears the dislike.
+        let _ = s.update(Message::Like("m2".into()));
+        assert!(s.liked.contains("m2"));
+        assert!(!s.disliked.contains("m2"));
+    }
+
+    #[test]
+    fn server_playlist_remove_reports_without_local_only() {
+        let mut s = test_state();
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "PLserver1".into(),
+            title: "Road".into(),
+            tracks: vec![mk_track("m1", "Song", "Someone")],
+        });
+        let _ = s.update(Message::RemoveFromPlaylist {
+            playlist_id: "PLserver1".into(),
+            track_id: "m1".into(),
+        });
+        assert!(s.user_playlists[0].tracks.is_empty());
+        assert!(s.status.contains("Removed m1 from Road"));
+        assert!(!s.status.contains("local only"));
+    }
+
+    #[test]
+    fn stored_browse_ids_migrate_to_edit_form() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path =
+            std::env::temp_dir().join(format!("yutu-test-mig-{}-{}.db", std::process::id(), n));
+        let path_s = path.to_string_lossy().into_owned();
+        {
+            let store = LibraryStore::open(&path_s).unwrap();
+            store
+                .sync_server_playlist("VLPLabc123", "Road", &[mk_track("m1", "Song", "Someone")])
+                .unwrap();
+        }
+        let (s, _) = AppState::with_library_path(path_s.clone());
+        assert!(
+            s.user_playlists.iter().any(|p| p.id == "PLabc123"),
+            "browse id must migrate, got {:?}",
+            s.user_playlists.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+        assert!(
+            !s.user_playlists.iter().any(|p| p.id == "VLPLabc123"),
+            "stale browse row must go"
+        );
+        let pl = s
+            .user_playlists
+            .iter()
+            .find(|p| p.id == "PLabc123")
+            .unwrap();
+        assert!(pl.tracks.iter().any(|t| t.id == "m1"));
+        // Reopening does not duplicate or revive the stale row.
+        let (s2, _) = AppState::with_library_path(path_s);
+        assert_eq!(
+            s2.user_playlists
+                .iter()
+                .filter(|p| p.id == "PLabc123")
+                .count(),
+            1
+        );
+        assert!(!s2.user_playlists.iter().any(|p| p.id == "VLPLabc123"));
+    }
+
+    #[test]
+    fn disliked_tracks_stay_out_of_autoplay_and_mixes() {
+        let mut s = test_state();
+        let _ = s.update(Message::Dislike("m1".into()));
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m2".into(),
+            result: Ok(vec![
+                mk_track("m1", "Nope", "Someone"),
+                mk_track("m3", "Yep", "Someone"),
+            ]),
+        });
+        // Seed mismatch: set the seed first via PlayNow-style state.
+        s.autoplay_for = Some("m2".into());
+        let _ = s.update(Message::AutoplayReady {
+            seed: "m2".into(),
+            result: Ok(vec![
+                mk_track("m1", "Nope", "Someone"),
+                mk_track("m3", "Yep", "Someone"),
+            ]),
+        });
+        assert!(!s.autoplay.iter().any(|t| t.id == "m1"));
+        assert!(s.autoplay.iter().any(|t| t.id == "m3"));
+        // Mixes also skip disliked ids (Weekly Mix needs history; at least
+        // the filter composes without panicking on the fixture catalog).
+        for t in s.weekly_mix_tracks() {
+            assert!(!s.disliked.contains(&t.id));
+        }
+        for t in s.forgotten_tracks() {
+            assert!(!s.disliked.contains(&t.id));
+        }
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn dislike_sync_results_report_honestly() {
+        let mut s = test_state();
+        let _ = s.update(Message::DislikeSynced {
+            track_id: "m1".into(),
+            disliked: true,
+            result: Ok(()),
+        });
+        // Success stays silent (row already shows the state).
+        let _ = s.update(Message::DislikeSynced {
+            track_id: "m1".into(),
+            disliked: true,
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("don't-recommend"));
+        assert!(s.status.contains("offline"));
     }
 
     #[test]
@@ -12962,10 +13358,10 @@ mod tests {
             menu_pos(Some(iced::Point::new(100.0, 120.0)), win),
             (100.0, 120.0)
         );
-        // Near the bottom-right: clamped so 300x470 stays visible.
+        // Near the bottom-right: clamped so 300x510 stays visible.
         assert_eq!(
             menu_pos(Some(iced::Point::new(1200.0, 700.0)), win),
-            (980.0, 330.0)
+            (980.0, 290.0)
         );
         // Unknown cursor/window: sane on-screen default.
         assert_eq!(menu_pos(None, None), (200.0, 150.0));

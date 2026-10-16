@@ -67,10 +67,19 @@ actionable error. Premium accounts are exempt from PO-token gating.
   (123 tracks) - 2/5`). Every list endpoint streams all
   continuation pages (about 100 items each): single-shot queries stop
   at the first page, which truncated big playlists and libraries.
-  Server lists keep their real ids
-  (`PL...`/`VL...`) in the local store; local `u{seq}` shells never
-  collide. An empty account reports honestly ("library is empty: like
-  songs ... then import again") instead of a generic failure.
+  Server lists keep their canonical ids (`PL...`, never the browse
+  `VL...` form) in the local store; local `u{seq}` shells never
+  collide. Older installs that stored `VLPL...` browse ids migrate to
+  canonical form on load (duplicates folded). An empty account reports
+  honestly ("library is empty: like songs ... then import again")
+  instead of a generic failure.
+- Playlist id forms per endpoint (a `VL...` browse id sent to an edit
+  endpoint 400s with `invalid argument`, verified live): `browse`
+  reads (tracks, details, `setVideoId` map) send the `VL`-prefixed
+  browse id, while `browse/edit_playlist` (add/remove/rename),
+  `playlist/delete`, and `like/*` playlist targets send the raw edit
+  id. Both stored forms are accepted and converted, so old sessions
+  keep working.
 - Playlist rows with shapes the typed parser rejects (seen live: no
   `fixedColumns`, duration in a fourth flex column) fall back to a
   tolerant raw-JSON pass that maps what it can per row and skips only
@@ -79,15 +88,20 @@ actionable error. Premium accounts are exempt from PO-token gating.
   on the row at all).
 - Local edits apply first, then mirror to YouTube Music in the
   background (OAuth token preferred, cookie session fallback): likes via
-  `rate_song`, playlist creates (private) via `create_playlist` with the
+  `rate_song` (`like/like` vs `like/removelike`), dislikes ("don't
+  recommend") via `rate_song` (`like/dislike` vs `like/removelike`),
+  playlist creates (private) via `create_playlist` with the
   local shell migrated to the server id, adds via
-  `add_video_items_to_playlist`, deletes via `delete_playlist`. Only
+  `add_video_items_to_playlist` (`browse/edit_playlist`,
+  `ACTION_ADD_VIDEO`), single-track removes via
+  `remove_playlist_items` (`browse/edit_playlist`,
+  `ACTION_REMOVE_VIDEO`, with the per-membership `setVideoId` resolved
+  from raw browse JSON), deletes via `delete_playlist`
+  (`playlist/delete`), renames via `edit_playlist`
+  (`ACTION_SET_PLAYLIST_NAME`), and artist subscribe/unsubscribe via
+  `subscription/subscribe` + `subscription/unsubscribe`. Only
   failures surface in the status ("kept locally: ..."); success stays
   silent because the row already shows the state.
-- Honest gap: single-track playlist removes stay local-only (upstream
-  `remove_playlist_items` needs a per-membership `setVideoId` that
-  playlist listings do not return). The status says "(local only)" on
-  server lists; re-import will bring the track back.
 - `BrowserToken`'s upstream `Debug` impl prints only `"Private BrowserToken"`,
   so `InnertubeBackend` can safely derive `Debug`/`Clone`. Still, never
   `println!`/`log` cookie contents; use `CookieAuth::redacted()`.
