@@ -4083,9 +4083,15 @@ impl AppState {
             "…".to_string()
         };
         let counts = if self.import_total > 0 {
+            // In-flight songs count too (even without a known total), so
+            // the line moves on every page, not just per playlist.
+            let streaming: usize = self.import_live.values().map(|e| e.arrived).sum();
             format!(
                 "{} songs · {} liked · {}/{} playlists",
-                self.import_songs, self.import_likes, self.import_done, self.import_total
+                self.import_songs + streaming,
+                self.import_likes,
+                self.import_done,
+                self.import_total
             )
         } else {
             format!(
@@ -6369,6 +6375,7 @@ impl AppState {
                         }
                     }
                     None => {
+                        eprintln!("[yutu-import] playlist {index}: {arrived} songs arrived");
                         if let Some(c) = count {
                             self.import_expected += c;
                         }
@@ -7272,7 +7279,7 @@ impl AppState {
         index: usize,
         total: usize,
     ) -> iced::Task<Message> {
-        let (tick_tx, mut tick_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tick_tx, tick_rx) = tokio::sync::mpsc::unbounded_channel();
         let fetch = iced::Task::perform(
             async move {
                 let count = backend.playlist_details_count(&header.id).await.ok();
@@ -7312,7 +7319,20 @@ impl AppState {
         );
         // Channel ticks end when the fetch drops its sender; late ticks
         // after completion are quarantined by generation + finished set.
-        let forward = iced::Task::stream(futures::stream::poll_fn(move |cx| {
+        let forward = iced::Task::stream(Self::tick_forward_stream(tick_rx, gen, index));
+        iced::Task::batch([fetch, forward])
+    }
+
+    /// Forward import tick channel items as messages (split out for
+    /// headless testing of the combinator: order preserved, ends when
+    /// the fetch drops its sender).
+    #[cfg(feature = "innertube")]
+    fn tick_forward_stream(
+        mut tick_rx: tokio::sync::mpsc::UnboundedReceiver<(usize, Option<usize>)>,
+        gen: u64,
+        index: usize,
+    ) -> impl futures::Stream<Item = Message> {
+        futures::stream::poll_fn(move |cx| {
             tick_rx.poll_recv(cx).map(|opt| {
                 opt.map(|(arrived, count)| Message::PlaylistTick {
                     gen,
@@ -7321,8 +7341,7 @@ impl AppState {
                     count,
                 })
             })
-        }));
-        iced::Task::batch([fetch, forward])
+        })
     }
 
     /// Radio seed: same-artist tracks first, then the rest of the search.
@@ -12467,6 +12486,35 @@ mod tests {
         assert!(s.status.contains("complete with failures"));
         assert!(s.status.to_lowercase().contains("fail"));
         assert!(s.status.contains("2/2"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[tokio::test]
+    async fn tick_forward_stream_preserves_order_and_ends() {
+        use futures::StreamExt as _;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send((0usize, Some(248))).unwrap();
+        tx.send((100, Some(248))).unwrap();
+        tx.send((248, Some(248))).unwrap();
+        drop(tx);
+        let out: Vec<Message> = AppState::tick_forward_stream(rx, 7, 0).collect().await;
+        let arrived: Vec<usize> = out
+            .iter()
+            .map(|m| match m {
+                Message::PlaylistTick {
+                    gen,
+                    index,
+                    arrived,
+                    count,
+                } => {
+                    assert_eq!((*gen, *index), (7, 0));
+                    assert_eq!(*count, Some(248));
+                    *arrived
+                }
+                other => panic!("expected PlaylistTick, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(arrived, vec![0, 100, 248]);
     }
 
     #[cfg(feature = "innertube")]
