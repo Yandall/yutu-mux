@@ -61,10 +61,19 @@ actionable error. Premium accounts are exempt from PO-token gating.
 
 - Import reads the whole account: library songs + liked ids + every
   library playlist with its tracks (each list fails open, so one bad
-  endpoint cannot sink the import). Server lists keep their real ids
+  endpoint cannot sink the import). Every list endpoint streams all
+  continuation pages (about 100 items each): single-shot queries stop
+  at the first page, which truncated big playlists and libraries.
+  Server lists keep their real ids
   (`PL...`/`VL...`) in the local store; local `u{seq}` shells never
   collide. An empty account reports honestly ("library is empty: like
   songs ... then import again") instead of a generic failure.
+- Playlist rows with shapes the typed parser rejects (seen live: no
+  `fixedColumns`, duration in a fourth flex column) fall back to a
+  tolerant raw-JSON pass that maps what it can per row and skips only
+  the bad rows (deleted, greyed-out, episodes), so one odd row cannot
+  sink a whole playlist. Such rows may carry duration 0 (no duration
+  on the row at all).
 - Local edits apply first, then mirror to YouTube Music in the
   background (OAuth token preferred, cookie session fallback): likes via
   `rate_song`, playlist creates (private) via `create_playlist` with the
