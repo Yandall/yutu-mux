@@ -3585,7 +3585,10 @@ impl AppState {
     }
 
     /// Album card with cover art (search grids, artist pages).
+    /// Fixed standard size with single-line truncated labels: long titles
+    /// crop instead of stretching the card, so every card aligns.
     fn album_card(&self, a: &Album) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
         use iced::widget::{button, column, text};
         use iced::Fill;
         let cover = self.album_cover(a);
@@ -3595,23 +3598,39 @@ impl AppState {
         };
         button(
             column![
-                self.art_thumb(cover.as_deref(), 140.0),
-                text(a.title.clone()).size(14).width(Fill),
-                text(sub).size(12).color(MUTED).width(Fill),
+                self.art_thumb(cover.as_deref(), HOME_PICK_ART),
+                column![
+                    text(truncate_title(&a.title, 20))
+                        .size(13)
+                        .width(Fill)
+                        .wrapping(Wrapping::None),
+                    text(truncate_title(&sub, 22))
+                        .size(11)
+                        .color(MUTED)
+                        .width(Fill)
+                        .wrapping(Wrapping::None),
+                ]
+                .spacing(2)
+                .width(Fill)
+                .clip(true),
             ]
-            .spacing(4)
+            .spacing(8)
             .padding(8)
             .width(Fill),
         )
         .style(card_button)
         .on_press(Message::OpenAlbum(a.id.clone()))
         .padding(0)
-        .width(156)
+        .width(iced::Length::Fixed(HOME_CARD_W))
+        .height(iced::Length::Fixed(HOME_CARD_H))
+        .clip(true)
         .into()
     }
 
     /// Artist card with photo (search grids).
+    /// Same fixed standard size as album cards and home picks.
     fn artist_card(&self, a: &Artist) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
         use iced::widget::{button, column, text};
         use iced::Fill;
         // Same hires key stage_search warms (raw would placeholder).
@@ -3621,18 +3640,28 @@ impl AppState {
             .map(|u| yutu_core::hires_thumb_url(u, 544));
         button(
             column![
-                self.art_thumb(photo.as_deref(), 140.0),
-                text(a.name.clone()).size(14).width(Fill),
-                text("Artist").size(12).color(MUTED).width(Fill),
+                self.art_thumb(photo.as_deref(), HOME_PICK_ART),
+                column![
+                    text(truncate_title(&a.name, 20))
+                        .size(13)
+                        .width(Fill)
+                        .wrapping(Wrapping::None),
+                    text("Artist").size(11).color(MUTED).width(Fill),
+                ]
+                .spacing(2)
+                .width(Fill)
+                .clip(true),
             ]
-            .spacing(4)
+            .spacing(8)
             .padding(8)
             .width(Fill),
         )
         .style(card_button)
         .on_press(Message::OpenArtist(a.id.clone()))
         .padding(0)
-        .width(156)
+        .width(iced::Length::Fixed(HOME_CARD_W))
+        .height(iced::Length::Fixed(HOME_CARD_H))
+        .clip(true)
         .into()
     }
 
@@ -7519,6 +7548,19 @@ impl AppState {
         column![text(title).size(19), list,].spacing(6).into()
     }
 
+    /// Wrapping card strip: fixed-size cards flow onto the next line when
+    /// the window is narrow instead of squashing, so every card keeps its
+    /// standard size and height alignment.
+    fn card_strip(cards: Vec<iced::Element<'_, Message>>) -> iced::Element<'_, Message> {
+        use iced::Fill;
+        iced::widget::Row::with_children(cards)
+            .spacing(10)
+            .width(Fill)
+            .wrap()
+            .vertical_spacing(10)
+            .into()
+    }
+
     /// YTM-style sidebar: Home + Search, Library with playlist search,
     /// inline new-playlist creation, and an expand/collapse rail.
     /// Queue/Recent live in the right panel; Settings lives in the header.
@@ -9060,7 +9102,7 @@ impl AppState {
                         if album_cards.is_empty() {
                             vec![]
                         } else {
-                            vec![row(album_cards).spacing(10).into()]
+                            vec![Self::card_strip(album_cards)]
                         }
                     ),
                     Self::section(
@@ -9068,7 +9110,7 @@ impl AppState {
                         if artist_cards.is_empty() {
                             vec![]
                         } else {
-                            vec![row(artist_cards).spacing(10).into()]
+                            vec![Self::card_strip(artist_cards)]
                         }
                     ),
                 ]
@@ -9553,7 +9595,7 @@ impl AppState {
                         if cards.is_empty() {
                             vec![]
                         } else {
-                            vec![row(cards).spacing(10).into()]
+                            vec![Self::card_strip(cards)]
                         }
                     ),
                 ]
