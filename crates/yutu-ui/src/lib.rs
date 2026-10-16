@@ -1814,8 +1814,11 @@ impl AppState {
         Self::hydrate_task(vec![id.to_string()])
     }
 
-    /// Merge an imported library: catalog + likes (memory + SQLite) +
-    /// artwork tasks for the new tracks.
+    /// Merge an import into memory only (catalog + likes + playlists):
+    /// returns artwork tasks for the new tracks. SQLite writes happen in
+    /// the background tasks via [`Self::persist_imported`], never on the
+    /// GUI thread, so big imports cannot stall the event loop (the OS
+    /// flags the window frozen after seconds without event pumping).
     #[cfg(feature = "innertube")]
     fn merge_imported(
         &mut self,
@@ -1833,35 +1836,9 @@ impl AppState {
                 }
             }
         }
-        let tracks = self.register_tracks(every);
-        // Persist likes with metadata when we have it (the track cache
-        // already holds the rows via register_tracks, but `like` alone
-        // only stores ids, so upsert explicitly for liked rows).
-        let by_id: std::collections::HashMap<&str, &Track> =
-            tracks.iter().map(|t| (t.id.as_str(), t)).collect();
-        if let Ok(store) = LibraryStore::open(&self.library_path) {
-            for id in &liked_ids {
-                self.like_id(id);
-                if let Some(t) = by_id.get(id.as_str()) {
-                    let _ = store.like_track(t);
-                } else if let Some(t) = self.catalog.get(id) {
-                    let t = t.clone();
-                    let _ = store.like_track(&t);
-                } else {
-                    let _ = store.like(id);
-                }
-            }
-            // Server playlists (real ids, not `u{seq}` shells): mirror by
-            // id so re-imports refresh renames and removals instead of
-            // drifting from what is on screen. Local `u{seq}` rows never
-            // collide with server ids.
-            for p in &playlists {
-                let _ = store.sync_server_playlist(&p.id, &p.title, &p.tracks);
-            }
-        } else {
-            for id in &liked_ids {
-                self.like_id(id);
-            }
+        let tracks = self.register_tracks_mem(every);
+        for id in &liked_ids {
+            self.like_id(id);
         }
         // Re-import refreshes in place (same slot, new rows); new server
         // lists append after the local ones.
@@ -1872,6 +1849,50 @@ impl AppState {
             }
         }
         self.artwork_tasks(&tracks)
+    }
+
+    /// Memory-only track registration (no SQLite): the import path
+    /// persists separately in background tasks.
+    #[cfg(feature = "innertube")]
+    fn register_tracks_mem(&mut self, tracks: Vec<Track>) -> Vec<Track> {
+        for t in &tracks {
+            self.catalog.insert(t.id.clone(), t.clone());
+        }
+        tracks
+    }
+
+    /// SQLite half of an import merge (runs inside background tasks, not
+    /// in `update`): track cache upsert, likes with metadata when the
+    /// payload carries it (bare ids otherwise), server playlists mirrored
+    /// by id. Best effort throughout (an unopenable DB just means the
+    /// next launch re-fetches).
+    #[cfg(feature = "innertube")]
+    fn persist_imported(
+        library_path: &str,
+        tracks: &[Track],
+        liked_ids: &[String],
+        playlists: &[Playlist],
+    ) {
+        let Ok(store) = LibraryStore::open(library_path) else {
+            return;
+        };
+        let _ = store.upsert_tracks(tracks);
+        let by_id: std::collections::HashMap<&str, &Track> =
+            tracks.iter().map(|t| (t.id.as_str(), t)).collect();
+        for id in liked_ids {
+            if let Some(t) = by_id.get(id.as_str()) {
+                let _ = store.like_track(t);
+            } else {
+                let _ = store.like(id);
+            }
+        }
+        // Server playlists (real ids, not `u{seq}` shells): mirror by id
+        // so re-imports refresh renames and removals instead of drifting
+        // from what is on screen. Local `u{seq}` rows never collide with
+        // server ids.
+        for p in playlists {
+            let _ = store.sync_server_playlist(&p.id, &p.title, &p.tracks);
+        }
     }
 
     /// True for playlists that live on YouTube Music (real server ids from
@@ -1937,8 +1958,17 @@ impl AppState {
         );
         self.publish_mpris();
         let backend = staged.backend;
+        let library_path = self.library_path.clone();
         tasks.extend(staged.headers.into_iter().enumerate().map(|(i, h)| {
-            Self::playlist_import_task(backend.clone(), kind, gen, h.id, h.title, i, total)
+            Self::playlist_import_task(
+                backend.clone(),
+                library_path.clone(),
+                kind,
+                gen,
+                h,
+                i,
+                total,
+            )
         }));
         iced::Task::batch(tasks)
     }
@@ -6076,7 +6106,7 @@ impl AppState {
                         self.login_busy = true;
                         self.status = "Reading cookies + contacting YouTube Music…".into();
                         self.publish_mpris();
-                        return Self::cookie_import_task(path);
+                        return Self::cookie_import_task(path, self.library_path.clone());
                     }
                 }
                 #[cfg(not(feature = "innertube"))]
@@ -6176,7 +6206,7 @@ impl AppState {
                     self.login_busy = true;
                     self.status = "Importing your library…".into();
                     self.publish_mpris();
-                    return Self::cookie_session_import_task();
+                    return Self::cookie_session_import_task(self.library_path.clone());
                 }
             }
             #[cfg(feature = "innertube")]
@@ -6336,7 +6366,7 @@ impl AppState {
                                 self.login_busy = true;
                                 self.status = "Signed in: importing your library…".into();
                                 self.publish_mpris();
-                                return Self::library_import_task();
+                                return Self::library_import_task(self.library_path.clone());
                             }
                             Err(e) => {
                                 self.status = format!("Sign-in failed: {e}");
@@ -6378,7 +6408,7 @@ impl AppState {
                     self.login_busy = true;
                     self.status = "Reading library + contacting YouTube Music…".into();
                     self.publish_mpris();
-                    return Self::library_import_task();
+                    return Self::library_import_task(self.library_path.clone());
                 }
             }
             Message::Tick(now) => {
@@ -6681,7 +6711,7 @@ impl AppState {
     /// Signed-in library import, base stage: songs + liked + playlist
     /// headers over OAuth. Playlist tracks stream in next like cookies.
     #[cfg(feature = "innertube")]
-    fn library_import_task() -> iced::Task<Message> {
+    fn library_import_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let persist =
@@ -6691,6 +6721,9 @@ impl AppState {
                 if tracks.is_empty() && headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
+                // Disk first (off the GUI thread): restarts keep the base
+                // even if playlist stages never finish.
+                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
                 Ok(StagedImport {
                     backend,
                     tracks,
@@ -6963,7 +6996,7 @@ impl AppState {
     /// file (no OAuth client needed). Playlist tracks stream in next, one
     /// task per list, so progress shows instead of one silent future.
     #[cfg(feature = "innertube")]
-    fn cookie_import_task(path: String) -> iced::Task<Message> {
+    fn cookie_import_task(path: String, library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
@@ -6982,6 +7015,9 @@ impl AppState {
                         eprintln!("[yutu-login] session stash failed: {e}");
                     }
                 }
+                // Disk first (off the GUI thread): restarts keep the base
+                // even if playlist stages never finish.
+                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
                 Ok(StagedImport {
                     backend,
                     tracks,
@@ -6999,7 +7035,7 @@ impl AppState {
     /// Re-import base stage via the saved cookie session (no file picker
     /// round trip). Playlist tracks stream in next like a fresh import.
     #[cfg(feature = "innertube")]
-    fn cookie_session_import_task() -> iced::Task<Message> {
+    fn cookie_session_import_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
@@ -7013,6 +7049,7 @@ impl AppState {
                 if tracks.is_empty() && headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
+                Self::persist_imported(&library_path, &tracks, &liked_ids, &[]);
                 Ok(StagedImport {
                     backend,
                     tracks,
@@ -7033,23 +7070,32 @@ impl AppState {
     #[cfg(feature = "innertube")]
     fn playlist_import_task(
         backend: yutu_core::InnertubeBackend,
+        library_path: String,
         kind: ImportKind,
         gen: u64,
-        playlist_id: String,
-        title: String,
+        header: yutu_core::ServerPlaylist,
         index: usize,
         total: usize,
     ) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = backend
-                    .playlist_tracks(&playlist_id)
-                    .await
-                    .map(|tracks| Playlist {
-                        id: playlist_id,
+                let title = header.title.clone();
+                let result = backend.playlist_tracks(&header.id).await.map(|tracks| {
+                    // Disk first (off the GUI thread): the handler only
+                    // touches memory, so arrivals never stall events.
+                    let playlist = Playlist {
+                        id: header.id,
                         title: title.clone(),
                         tracks,
-                    });
+                    };
+                    Self::persist_imported(
+                        &library_path,
+                        &playlist.tracks,
+                        &[],
+                        std::slice::from_ref(&playlist),
+                    );
+                    playlist
+                });
                 (kind, gen, title, index, total, result)
             },
             |(kind, gen, title, index, total, result)| Message::PlaylistImported {
@@ -12234,6 +12280,39 @@ mod tests {
         });
         assert!(!s.login_busy);
         assert!(s.user_playlists.iter().any(|p| p.id == "PLnew"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn persist_imported_writes_store_without_state() {
+        // The background-task half of an import: needs no AppState, so it
+        // never runs on the GUI thread.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "yutu-persist-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        let tracks = vec![mk_track("w1", "W Song", "Someone")];
+        let liked = vec!["w1".into(), "bare-id".into()];
+        let playlists = vec![yutu_core::Playlist {
+            id: "PLw".into(),
+            title: "W List".into(),
+            tracks: tracks.clone(),
+        }];
+        AppState::persist_imported(&path_str, &tracks, &liked, &playlists);
+        let store = yutu_core::LibraryStore::open(&path_str).unwrap();
+        assert!(store.cached_track("w1").unwrap().is_some());
+        assert!(store.liked_ids().unwrap().contains(&"w1".to_string()));
+        assert!(store.liked_ids().unwrap().contains(&"bare-id".to_string()));
+        let lists = store.user_playlists().unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].tracks.len(), 1);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(feature = "innertube")]
