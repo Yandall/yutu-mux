@@ -2120,7 +2120,6 @@ impl AppState {
     }
 }
 
-/// Case-insensitive substring filter over a full search result set.
 /// One ranked search hit across result types. The unified search
 /// list mixes songs, albums and artists, so each row carries its own
 /// value (no per-type sections anymore).
@@ -2131,39 +2130,88 @@ enum SearchHit<'a> {
     Artist(&'a Artist),
 }
 
-/// Mixed relevance order for the unified search list: round-robin over
-/// the per-type backend order (each list arrives most-relevant first),
-/// capped so the page stays fast. The head is the top-result hero:
-/// the first song when songs exist, else the first album or artist.
-fn rank_search_hits(results: &SearchResults) -> Vec<SearchHit<'_>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while out.len() < MIXED_SEARCH_CAP {
-        let mut pushed = false;
-        if let Some(t) = results.tracks.get(i) {
-            out.push(SearchHit::Song(t));
-            pushed = true;
-        }
-        if out.len() >= MIXED_SEARCH_CAP {
-            break;
-        }
-        if let Some(a) = results.albums.get(i) {
-            out.push(SearchHit::Album(a));
-            pushed = true;
-        }
-        if out.len() >= MIXED_SEARCH_CAP {
-            break;
-        }
-        if let Some(a) = results.artists.get(i) {
-            out.push(SearchHit::Artist(a));
-            pushed = true;
-        }
-        if !pushed {
-            break;
-        }
-        i += 1;
+/// Whole-word hit inside an already lowercased field.
+fn contains_word(field: &str, q: &str) -> bool {
+    field.split(|c: char| !c.is_alphanumeric()).any(|w| w == q)
+}
+
+/// Text-match tier of one field for the query (lower is better):
+/// exact, prefix, whole word, substring, no match.
+fn field_tier(field: &str, q: &str) -> u8 {
+    let f = field.to_lowercase();
+    if f == q {
+        0
+    } else if f.starts_with(q) {
+        1
+    } else if contains_word(&f, q) {
+        2
+    } else if f.contains(q) {
+        3
+    } else {
+        4
     }
-    out
+}
+
+/// Relevance tier of one hit for the query (lower is better). Titles
+/// outrank artists: an exact title beats an exact artist, and any text
+/// match beats backend-only leftovers with no text match at all.
+fn hit_tier(q: &str, hit: &SearchHit) -> u8 {
+    let artist_tier = |artist: &str| field_tier(artist, q) + 4;
+    match hit {
+        SearchHit::Song(t) => {
+            let title = field_tier(&t.title, q);
+            if title < 4 {
+                title
+            } else {
+                artist_tier(&t.artist)
+            }
+        }
+        SearchHit::Album(a) => {
+            let title = field_tier(&a.title, q);
+            if title < 4 {
+                title
+            } else {
+                artist_tier(&a.artist)
+            }
+        }
+        SearchHit::Artist(a) => {
+            let name = field_tier(&a.name, q);
+            if name < 4 {
+                name
+            } else {
+                8
+            }
+        }
+    }
+}
+
+/// Relevance order for the unified search list, mixing songs, albums
+/// and artists by text match against the query: exact title, prefix,
+/// whole word, substring, then artist matches in the same ladder, then
+/// backend-only leftovers. Ties keep backend order (per-type index,
+/// then songs before albums before artists), capped so the page stays
+/// fast. The head is the top-result hero.
+fn rank_search_hits<'a>(query: &str, results: &'a SearchResults) -> Vec<SearchHit<'a>> {
+    let q = query.to_lowercase();
+    let mut scored: Vec<(u8, usize, u8, SearchHit)> = Vec::new();
+    for (i, t) in results.tracks.iter().enumerate() {
+        let hit = SearchHit::Song(t);
+        scored.push((hit_tier(&q, &hit), i, 0, hit));
+    }
+    for (i, a) in results.albums.iter().enumerate() {
+        let hit = SearchHit::Album(a);
+        scored.push((hit_tier(&q, &hit), i, 1, hit));
+    }
+    for (i, a) in results.artists.iter().enumerate() {
+        let hit = SearchHit::Artist(a);
+        scored.push((hit_tier(&q, &hit), i, 2, hit));
+    }
+    scored.sort_by_key(|a| (a.0, a.1, a.2));
+    scored
+        .into_iter()
+        .map(|(_, _, _, hit)| hit)
+        .take(MIXED_SEARCH_CAP)
+        .collect()
 }
 
 /// True when every result list is empty (drives the search page
@@ -2172,6 +2220,7 @@ fn results_empty(results: &SearchResults) -> bool {
     results.tracks.is_empty() && results.albums.is_empty() && results.artists.is_empty()
 }
 
+/// Case-insensitive substring filter over a full search result set.
 fn filter_results(base: &SearchResults, query: &str) -> SearchResults {
     let q = query.to_lowercase();
     if q.trim().is_empty() {
@@ -9657,89 +9706,94 @@ impl AppState {
             }
             Route::Search => {
                 let query = self.search_query.trim().to_string();
-                if query.is_empty() {
-                    // No placeholders: blank until the user types.
-                    return iced::widget::Space::new().width(Fill).height(Fill).into();
-                }
-                if self.searching && results_empty(&self.results) {
-                    return Self::search_loading();
-                }
-                let header = text(format!("Results for “{query}”")).size(22);
-                if results_empty(&self.results) {
-                    return column![
+                // Blank until a searchable query: single characters can
+                // never have results (no network fires below 2 chars), so
+                // they blank instead of flashing "no results".
+                // Every branch below is page content only: the header
+                // (search input) and scroll wrapper always render.
+                let content: iced::Element<'_, Message> = if query.len() < 2 {
+                    iced::widget::Space::new().width(Fill).height(Fill).into()
+                } else if self.searching && results_empty(&self.results) {
+                    Self::search_loading()
+                } else if results_empty(&self.results) {
+                    let header = text(format!("Results for “{query}”")).size(22);
+                    column![
                         header,
                         text("No results found: try another spelling.").color(MUTED),
                     ]
                     .spacing(10)
-                    .into();
-                }
-                let chips = self.search_filter_chips();
-                match self.search_filter {
-                    SearchFilter::All => {
-                        // Unified mixed list: top hit in the hero card,
-                        // the rest as type-labelled rows.
-                        let hits = rank_search_hits(&self.results);
-                        let hero: iced::Element<'_, Message> = match hits.first() {
-                            Some(h) => self.search_hero(h),
-                            None => text("").size(1).into(),
-                        };
-                        let rows: Vec<iced::Element<'_, Message>> = hits
-                            .iter()
-                            .skip(1)
-                            .map(|h| self.search_hit_row(h))
-                            .collect();
-                        column![header, chips, hero, column(rows).spacing(2),]
-                            .spacing(10)
-                            .into()
-                    }
-                    SearchFilter::Songs => {
-                        let songs: Vec<iced::Element<'_, Message>> = self
-                            .results
-                            .tracks
-                            .iter()
-                            .enumerate()
-                            .map(|(i, t)| self.numbered_track_row(t, i + 1))
-                            .collect();
-                        let list: iced::Element<'_, Message> = if songs.is_empty() {
-                            text(format!("No songs for “{query}”.")).color(MUTED).into()
-                        } else {
-                            column(songs).spacing(2).into()
-                        };
-                        column![header, chips, list,].spacing(10).into()
-                    }
-                    SearchFilter::Albums => {
-                        let cards: Vec<iced::Element<'_, Message>> = self
-                            .results
-                            .albums
-                            .iter()
-                            .map(|a| self.album_card(a))
-                            .collect();
-                        let list: iced::Element<'_, Message> = if cards.is_empty() {
-                            text(format!("No albums for “{query}”."))
-                                .color(MUTED)
+                    .into()
+                } else {
+                    let header = text(format!("Results for “{query}”")).size(22);
+                    let chips = self.search_filter_chips();
+                    match self.search_filter {
+                        SearchFilter::All => {
+                            // Unified mixed list: top hit in the hero card,
+                            // the rest as type-labelled rows.
+                            let hits = rank_search_hits(&query, &self.results);
+                            let hero: iced::Element<'_, Message> = match hits.first() {
+                                Some(h) => self.search_hero(h),
+                                None => text("").size(1).into(),
+                            };
+                            let rows: Vec<iced::Element<'_, Message>> = hits
+                                .iter()
+                                .skip(1)
+                                .map(|h| self.search_hit_row(h))
+                                .collect();
+                            column![header, chips, hero, column(rows).spacing(2),]
+                                .spacing(10)
                                 .into()
-                        } else {
-                            Self::card_strip(cards)
-                        };
-                        column![header, chips, list,].spacing(10).into()
+                        }
+                        SearchFilter::Songs => {
+                            let songs: Vec<iced::Element<'_, Message>> = self
+                                .results
+                                .tracks
+                                .iter()
+                                .enumerate()
+                                .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                                .collect();
+                            let list: iced::Element<'_, Message> = if songs.is_empty() {
+                                text(format!("No songs for “{query}”.")).color(MUTED).into()
+                            } else {
+                                column(songs).spacing(2).into()
+                            };
+                            column![header, chips, list,].spacing(10).into()
+                        }
+                        SearchFilter::Albums => {
+                            let cards: Vec<iced::Element<'_, Message>> = self
+                                .results
+                                .albums
+                                .iter()
+                                .map(|a| self.album_card(a))
+                                .collect();
+                            let list: iced::Element<'_, Message> = if cards.is_empty() {
+                                text(format!("No albums for “{query}”."))
+                                    .color(MUTED)
+                                    .into()
+                            } else {
+                                Self::card_strip(cards)
+                            };
+                            column![header, chips, list,].spacing(10).into()
+                        }
+                        SearchFilter::Artists => {
+                            let cards: Vec<iced::Element<'_, Message>> = self
+                                .results
+                                .artists
+                                .iter()
+                                .map(|a| self.artist_card(a))
+                                .collect();
+                            let list: iced::Element<'_, Message> = if cards.is_empty() {
+                                text(format!("No artists for “{query}”."))
+                                    .color(MUTED)
+                                    .into()
+                            } else {
+                                Self::card_strip(cards)
+                            };
+                            column![header, chips, list,].spacing(10).into()
+                        }
                     }
-                    SearchFilter::Artists => {
-                        let cards: Vec<iced::Element<'_, Message>> = self
-                            .results
-                            .artists
-                            .iter()
-                            .map(|a| self.artist_card(a))
-                            .collect();
-                        let list: iced::Element<'_, Message> = if cards.is_empty() {
-                            text(format!("No artists for “{query}”."))
-                                .color(MUTED)
-                                .into()
-                        } else {
-                            Self::card_strip(cards)
-                        };
-                        column![header, chips, list,].spacing(10).into()
-                    }
-                }
+                };
+                content
             }
             Route::Queue => {
                 let pos = self.queue.position();
@@ -11374,44 +11428,50 @@ mod tests {
     }
 
     #[test]
-    fn ranked_search_mixes_types_round_robin() {
+    fn ranked_search_orders_by_text_match() {
         use yutu_core::{Album, Artist};
         let results = SearchResults {
-            tracks: vec![mk_track("v1", "Run", "A"), mk_track("v2", "Run", "B")],
+            tracks: vec![
+                mk_track("v1", "Bohemian Rhapsody", "Queen"),
+                mk_track("v2", "Queens", "Ruby Darkrose"),
+                mk_track("v3", "Run", "Queen"),
+            ],
             albums: vec![Album {
                 id: "a1".into(),
-                title: "Running".into(),
-                artist: "C".into(),
-                year: Some(2026),
+                title: "Deep Cuts (Vol. 3 / 1984-1995)".into(),
+                artist: "Queen".into(),
+                year: Some(2011),
                 thumbnail_url: None,
             }],
             artists: vec![
                 Artist {
                     id: "r1".into(),
-                    name: "Runner".into(),
+                    name: "Queen".into(),
                     thumbnail_url: None,
                 },
                 Artist {
                     id: "r2".into(),
-                    name: "Sprinter".into(),
+                    name: "Josiah Queen".into(),
                     thumbnail_url: None,
                 },
             ],
         };
-        let hits = rank_search_hits(&results);
-        // Round-robin over backend order: song, album, artist, song, artist.
-        assert_eq!(hits.len(), 5);
-        assert!(matches!(hits[0], SearchHit::Song(t) if t.id == "v1"));
-        assert!(matches!(hits[1], SearchHit::Album(a) if a.id == "a1"));
-        assert!(matches!(hits[2], SearchHit::Artist(a) if a.id == "r1"));
-        assert!(matches!(hits[3], SearchHit::Song(t) if t.id == "v2"));
-        assert!(matches!(hits[4], SearchHit::Artist(a) if a.id == "r2"));
+        let hits = rank_search_hits("queen", &results);
+        // Exact name first, then title prefix, then whole word, then
+        // artist matches in backend order (no mechanical type cycle).
+        assert_eq!(hits.len(), 6);
+        assert!(matches!(hits[0], SearchHit::Artist(a) if a.id == "r1"));
+        assert!(matches!(hits[1], SearchHit::Song(t) if t.id == "v2"));
+        assert!(matches!(hits[2], SearchHit::Artist(a) if a.id == "r2"));
+        assert!(matches!(hits[3], SearchHit::Song(t) if t.id == "v1"));
+        assert!(matches!(hits[4], SearchHit::Album(a) if a.id == "a1"));
+        assert!(matches!(hits[5], SearchHit::Song(t) if t.id == "v3"));
     }
 
     #[test]
     fn ranked_search_head_is_top_result() {
         use yutu_core::{Album, Artist};
-        // Songs win the hero when present (previous behavior kept).
+        // Exact title match headlines when present.
         let with_songs = SearchResults {
             tracks: vec![mk_track("v1", "Run", "A")],
             albums: vec![Album {
@@ -11423,16 +11483,16 @@ mod tests {
             }],
             artists: vec![],
         };
-        let hits = rank_search_hits(&with_songs);
+        let hits = rank_search_hits("run", &with_songs);
         assert!(matches!(hits[0], SearchHit::Song(_)));
-        // No songs: the first album headlines.
+        // No title match anywhere: the prefix album headlines.
         let no_songs = SearchResults {
             tracks: vec![],
             ..with_songs.clone()
         };
-        let hits = rank_search_hits(&no_songs);
+        let hits = rank_search_hits("run", &no_songs);
         assert!(matches!(hits[0], SearchHit::Album(_)));
-        // Artists only: the first artist headlines.
+        // Artists only: the prefix artist headlines.
         let artists_only = SearchResults {
             tracks: vec![],
             albums: vec![],
@@ -11442,10 +11502,10 @@ mod tests {
                 thumbnail_url: None,
             }],
         };
-        let hits = rank_search_hits(&artists_only);
+        let hits = rank_search_hits("run", &artists_only);
         assert!(matches!(hits[0], SearchHit::Artist(_)));
         // Empty results rank to nothing (loading/empty states own that).
-        assert!(rank_search_hits(&SearchResults::default()).is_empty());
+        assert!(rank_search_hits("run", &SearchResults::default()).is_empty());
         assert!(results_empty(&SearchResults::default()));
         assert!(!results_empty(&with_songs));
     }
@@ -11460,7 +11520,7 @@ mod tests {
             albums: vec![],
             artists: vec![],
         };
-        let hits = rank_search_hits(&results);
+        let hits = rank_search_hits("run", &results);
         assert_eq!(hits.len(), MIXED_SEARCH_CAP);
     }
 
