@@ -130,4 +130,17 @@ pub struct SearchResults {
     pub tracks: Vec<Track>,
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,
+    pub playlists: Vec<PlaylistHit>,
+}
+
+/// One community playlist search hit: id + title + author + a detail
+/// line (view or song count) + art. Tracks stay unfetched until the
+/// user plays it (one live fetch, then it queues like anything else).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistHit {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+    pub detail: String,
+    pub thumbnail_url: Option<String>,
 }

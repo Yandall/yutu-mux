@@ -30,8 +30,8 @@ pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id};
 pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};
 pub use models::{
-    hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, SearchResults,
-    Track,
+    hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, Playlist, PlaylistHit,
+    SearchResults, Track,
 };
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 pub use scrobble::{

@@ -2,6 +2,17 @@
 
 ## 0.2.0 (unreleased)
 
+- Unified search page: no per-type placeholder sections (loading text
+  with an animated ellipsis while results arrive, then a text-match
+  relevance-ordered mixed list with the top hit in a hero card); every
+  row names its type (Song, Album, Artist) and All/Songs/Albums/Artists
+  chips filter the list in place
+- Search hero actions: artist/album top results get clickable art and
+  title plus Shuffle and Radio buttons over the known catalog tracks
+  (hidden when none are known yet)
+- Community playlists in search: live playlist search joins the unified
+  list with a Playlists chip; heroes get Play + Shuffle and rows play
+  on click (tracks fetch live first, verified anonymous: 95 tracks)
 - Uniform media cards: album/artist cards share the home pick fixed size
   with single-line truncated labels, and card strips wrap onto the next
   line in narrow windows instead of squashing, so every card keeps one
