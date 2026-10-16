@@ -5,6 +5,35 @@
 use crate::models::{HistoryEntry, Playlist, Track};
 use rusqlite::{params, Connection};
 
+/// Canonical stored playlist id (edit form, no browse `VL` prefix).
+///
+/// Library browse returns `VL`-prefixed ids (`VLPL...`, `VLLM`) while the
+/// `browse/edit_playlist`, `playlist/create|delete` and `like/*` endpoints
+/// want the raw id (`PL...`, `LM`). Stored ids use this form so imports
+/// (browse) and creates (edit) never duplicate the same list.
+pub fn canonical_playlist_id(id: &str) -> String {
+    id.strip_prefix("VL").unwrap_or(id).to_string()
+}
+
+/// Browse-endpoint id (`browse` with `browseId`): `VL`-prefixed.
+/// Accepts either form, so freshly created (`PL...`) and imported
+/// (`VLPL...`) ids both read.
+pub fn browse_playlist_id(id: &str) -> String {
+    if id.starts_with("VL") {
+        id.to_string()
+    } else {
+        format!("VL{id}")
+    }
+}
+
+/// Edit-endpoint id (`browse/edit_playlist`, `playlist/delete`, `like/*`
+/// playlist target): raw id without the browse `VL` prefix. Accepts
+/// either form, so sending a `VL...` browse id to an edit endpoint (HTTP
+/// 400 `invalid argument`) cannot recur.
+pub fn edit_playlist_id(id: &str) -> String {
+    canonical_playlist_id(id)
+}
+
 pub struct LibraryStore {
     conn: Connection,
 }
@@ -28,6 +57,7 @@ impl LibraryStore {
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS likes(track_id TEXT PRIMARY KEY, liked_at INTEGER);
+                 CREATE TABLE IF NOT EXISTS dislikes(track_id TEXT PRIMARY KEY, disliked_at INTEGER);
                  CREATE TABLE IF NOT EXISTS history(track_id TEXT NOT NULL, played_at_unix INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY, title TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS downloads(track_id TEXT PRIMARY KEY, downloaded_at INTEGER);
@@ -144,6 +174,58 @@ impl LibraryStore {
         let mut stmt = self
             .conn
             .prepare("SELECT track_id FROM likes ORDER BY liked_at, rowid")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Dislike ("don't recommend"): mirrors the likes table so the state
+    /// survives restarts. Like and dislike are mutually exclusive
+    /// server-side; callers clear the other side when setting one.
+    pub fn dislike(&self, track_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO dislikes(track_id, disliked_at) VALUES (?1, ?2)",
+                params![track_id, now],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn undislike(&self, track_id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM dislikes WHERE track_id = ?1",
+                params![track_id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn is_disliked(&self, track_id: &str) -> Result<bool, String> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM dislikes WHERE track_id = ?1",
+                params![track_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// Every disliked track id in add order (no catalog probe needed).
+    pub fn disliked_ids(&self) -> Result<Vec<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT track_id FROM dislikes ORDER BY disliked_at, rowid")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| r.get(0))
@@ -634,6 +716,21 @@ mod tests {
         assert!(s.is_liked("m1").unwrap());
         s.unlike("m1").unwrap();
         assert!(!s.is_liked("m1").unwrap());
+    }
+
+    #[test]
+    fn dislike_round_trip_preserves_order() {
+        let s = LibraryStore::in_memory().unwrap();
+        assert!(!s.is_disliked("m1").unwrap());
+        assert!(s.disliked_ids().unwrap().is_empty());
+        s.dislike("vid-b").unwrap();
+        s.dislike("vid-a").unwrap();
+        s.dislike("vid-a").unwrap();
+        assert!(s.is_disliked("vid-a").unwrap());
+        assert_eq!(s.disliked_ids().unwrap(), vec!["vid-b", "vid-a"]);
+        s.undislike("vid-a").unwrap();
+        assert!(!s.is_disliked("vid-a").unwrap());
+        assert_eq!(s.disliked_ids().unwrap(), vec!["vid-b"]);
     }
 
     #[test]
