@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
-    LyricsResult, Playlist, SearchResults, Track,
+    LyricsResult, Playlist, PlaylistHit, SearchResults, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -519,8 +519,8 @@ pub enum RightTab {
 }
 
 /// Search page type filter (chip row above the results). The backend
-/// only returns songs, albums and artists, so those are the only
-/// chips: no empty categories.
+/// returns songs, albums, artists and community playlists, so those
+/// are the only chips: no empty categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchFilter {
     #[default]
@@ -528,6 +528,7 @@ pub enum SearchFilter {
     Songs,
     Albums,
     Artists,
+    Playlists,
 }
 
 /// Which sign-in started an import (status wording only).
@@ -670,6 +671,18 @@ pub enum Message {
     PlayArtistShuffled(String),
     /// Shuffle-play one search hero album (known catalog tracks).
     PlayAlbumShuffled(String),
+    /// Play one search-result playlist now (tracks fetch live first).
+    PlaySearchPlaylist(String),
+    /// Shuffle-play one search-result playlist (tracks fetch live first).
+    PlaySearchPlaylistShuffled(String),
+    /// A search-result playlist arrived (or failed): queues on success,
+    /// honest status on failure.
+    SearchPlaylistReady {
+        id: String,
+        label: String,
+        shuffle: bool,
+        result: Result<Vec<Track>, String>,
+    },
     /// Remove one occurrence from the manual queue (menu / hover remove).
     RemoveFromQueue(String),
     /// Drop an autoplay-tail item by index.
@@ -1562,6 +1575,12 @@ impl AppState {
                     .iter()
                     .filter_map(|a| a.thumbnail_url.clone()),
             )
+            .chain(
+                search
+                    .playlists
+                    .iter()
+                    .filter_map(|p| p.thumbnail_url.clone()),
+            )
             // Hi-res keys: display sites show the 544px rewrite and
             // art_thumb is an exact-key lookup, so warm what is shown.
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
@@ -1575,13 +1594,18 @@ impl AppState {
     /// completions and cache hits). Returns the artwork batch.
     fn apply_search_hit(&mut self, query: &str, search: SearchResults) -> iced::Task<Message> {
         let n = search.tracks.len();
+        let m = search.playlists.len();
         let (search, tasks) = self.stage_search(search);
         self.search_base = search.clone();
         self.results = filter_results(&search, &self.search_query);
         if self.results.tracks.is_empty() && !search.tracks.is_empty() {
             self.results = search;
         }
-        self.status = format!("{n} songs for “{query}”.");
+        self.status = if m == 0 {
+            format!("{n} songs for “{query}”.")
+        } else {
+            format!("{n} songs + {m} playlists for “{query}”.")
+        };
         self.publish_mpris();
         iced::Task::batch(tasks)
     }
@@ -2125,13 +2149,14 @@ impl AppState {
 }
 
 /// One ranked search hit across result types. The unified search
-/// list mixes songs, albums and artists, so each row carries its own
-/// value (no per-type sections anymore).
+/// list mixes songs, albums, artists and playlists, so each row carries
+/// its own value (no per-type sections anymore).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchHit<'a> {
     Song(&'a Track),
     Album(&'a Album),
     Artist(&'a Artist),
+    Playlist(&'a PlaylistHit),
 }
 
 /// Whole-word hit inside an already lowercased field.
@@ -2186,15 +2211,24 @@ fn hit_tier(q: &str, hit: &SearchHit) -> u8 {
                 8
             }
         }
+        SearchHit::Playlist(p) => {
+            let title = field_tier(&p.title, q);
+            if title < 4 {
+                title
+            } else {
+                artist_tier(&p.author)
+            }
+        }
     }
 }
 
-/// Relevance order for the unified search list, mixing songs, albums
-/// and artists by text match against the query: exact title, prefix,
-/// whole word, substring, then artist matches in the same ladder, then
-/// backend-only leftovers. Ties keep backend order (per-type index,
-/// then songs before albums before artists), capped so the page stays
-/// fast. The head is the top-result hero.
+/// Relevance order for the unified search list, mixing songs, albums,
+/// artists and playlists by text match against the query: exact title,
+/// prefix, whole word, substring, then artist/author matches in the same
+/// ladder, then backend-only leftovers. Ties keep backend order
+/// (per-type index, then songs before albums before artists before
+/// playlists), capped so the page stays fast. The head is the
+/// top-result hero.
 fn rank_search_hits<'a>(query: &str, results: &'a SearchResults) -> Vec<SearchHit<'a>> {
     let q = query.to_lowercase();
     let mut scored: Vec<(u8, usize, u8, SearchHit)> = Vec::new();
@@ -2210,6 +2244,10 @@ fn rank_search_hits<'a>(query: &str, results: &'a SearchResults) -> Vec<SearchHi
         let hit = SearchHit::Artist(a);
         scored.push((hit_tier(&q, &hit), i, 2, hit));
     }
+    for (i, p) in results.playlists.iter().enumerate() {
+        let hit = SearchHit::Playlist(p);
+        scored.push((hit_tier(&q, &hit), i, 3, hit));
+    }
     scored.sort_by_key(|a| (a.0, a.1, a.2));
     scored
         .into_iter()
@@ -2221,7 +2259,10 @@ fn rank_search_hits<'a>(query: &str, results: &'a SearchResults) -> Vec<SearchHi
 /// True when every result list is empty (drives the search page
 /// loading/empty states, never per-type placeholders).
 fn results_empty(results: &SearchResults) -> bool {
-    results.tracks.is_empty() && results.albums.is_empty() && results.artists.is_empty()
+    results.tracks.is_empty()
+        && results.albums.is_empty()
+        && results.artists.is_empty()
+        && results.playlists.is_empty()
 }
 
 /// Case-insensitive substring filter over a full search result set.
@@ -2249,6 +2290,12 @@ fn filter_results(base: &SearchResults, query: &str) -> SearchResults {
             .filter(|a| a.name.to_lowercase().contains(&q))
             .cloned()
             .collect(),
+        playlists: base
+            .playlists
+            .iter()
+            .filter(|p| p.title.to_lowercase().contains(&q) || p.author.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
     }
 }
 
@@ -2269,9 +2316,10 @@ async fn resolve_stream_url(video_id: &str) -> Result<String, String> {
     yutu_core::resolve_audio_url(&bin, video_id).map_err(|e| e.to_string())
 }
 
-/// Real search over the live Innertube API: tracks, albums and artists.
-/// Each category fails open (empty vec) so one bad query cannot sink the
-/// other two; only a failed *connection* or a triple failure errors.
+/// Real search over the live Innertube API: tracks, albums, artists and
+/// community playlists. Each category fails open (empty vec) so one bad
+/// query cannot sink the others; only a failed *connection* or a total
+/// failure errors.
 #[cfg(feature = "innertube")]
 async fn live_search(query: &str) -> Result<SearchResults, String> {
     use yutu_core::InnertubeBackend;
@@ -2279,14 +2327,25 @@ async fn live_search(query: &str) -> Result<SearchResults, String> {
     let tracks = backend.search_tracks(query).await;
     let albums = backend.search_albums(query).await;
     let artists = backend.search_artists(query).await;
-    match (tracks, albums, artists) {
-        (Err(e), Err(_), Err(_)) => Err(e),
-        (tracks, albums, artists) => Ok(SearchResults {
+    let playlists = backend.search_community_playlists(query).await;
+    match (tracks, albums, artists, playlists) {
+        (Err(e), Err(_), Err(_), Err(_)) => Err(e),
+        (tracks, albums, artists, playlists) => Ok(SearchResults {
             tracks: tracks.unwrap_or_default(),
             albums: albums.unwrap_or_default(),
             artists: artists.unwrap_or_default(),
+            playlists: playlists.unwrap_or_default(),
         }),
     }
+}
+
+/// Fetch one search-result playlist (community or featured) into playable
+/// tracks: the click path behind playlist heroes and rows.
+#[cfg(feature = "innertube")]
+async fn live_playlist_tracks(id: &str) -> Result<Vec<Track>, String> {
+    use yutu_core::InnertubeBackend;
+    let backend = InnertubeBackend::connect_anonymous().await?;
+    backend.playlist_tracks(id).await
 }
 
 /// Radio sequence for a seed: the seed first, same-artist tracks next,
@@ -5216,6 +5275,38 @@ impl AppState {
         v
     }
 
+    /// Display label for a search-result playlist id (title when known).
+    /// Live lookup only runs on innertube builds; tests exercise it on
+    /// every configuration.
+    #[cfg(any(feature = "innertube", test))]
+    fn search_playlist_label(&self, id: &str) -> String {
+        self.results
+            .playlists
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.title.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Play one search-result playlist: fetch its tracks live first
+    /// (`shuffle` shuffles the fresh queue like hero actions).
+    fn play_search_playlist(&mut self, id: String, shuffle: bool) -> iced::Task<Message> {
+        #[cfg(feature = "innertube")]
+        {
+            let label = self.search_playlist_label(&id);
+            self.status = format!("Loading playlist {label}…");
+            self.publish_mpris();
+            Self::search_playlist_task(id, label, shuffle)
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            let _ = (id, shuffle);
+            self.status = "Playlists need `--features innertube`.".into();
+            self.publish_mpris();
+            iced::Task::none()
+        }
+    }
+
     /// Dispatcher: actions with async follow-ups (scrobble submits) return
     /// their task directly; everything else goes through `update_sync`.
     /// MPRIS state is published on every path that returns here.
@@ -5322,6 +5413,7 @@ impl AppState {
                         tracks: self.catalog_hits(&trimmed),
                         albums: Vec::new(),
                         artists: Vec::new(),
+                        playlists: Vec::new(),
                     };
                     #[cfg(feature = "innertube")]
                     {
@@ -5819,6 +5911,39 @@ impl AppState {
                 let tracks = self.album_tracks(&id);
                 return self.shuffle_tracks(tracks, &format!("Album {title}"));
             }
+            Message::PlaySearchPlaylist(id) => {
+                return self.play_search_playlist(id, false);
+            }
+            Message::PlaySearchPlaylistShuffled(id) => {
+                return self.play_search_playlist(id, true);
+            }
+            Message::SearchPlaylistReady {
+                id,
+                label,
+                shuffle,
+                result,
+            } => match result {
+                Ok(tracks) => {
+                    let tracks = self.register_tracks(tracks);
+                    if tracks.is_empty() {
+                        self.status = format!("Playlist {label}: nothing playable.");
+                        return iced::Task::none();
+                    }
+                    self.queue.clear();
+                    self.autoplay.clear();
+                    self.autoplay_for = None;
+                    self.drag = None;
+                    let task = self.queue_many(tracks, &format!("Playlist {label}"));
+                    if shuffle {
+                        self.set_shuffle(true);
+                    }
+                    self.publish_mpris();
+                    return task;
+                }
+                Err(e) => {
+                    self.status = format!("Playlist {label} ({id}): {e}.");
+                }
+            },
             Message::CreatePlaylist(title) => {
                 let title = title.trim().to_string();
                 if title.is_empty() {
@@ -7837,6 +7962,24 @@ impl AppState {
         )
     }
 
+    /// Search-result playlist fetch: tracks arrive via
+    /// [`Message::SearchPlaylistReady`], which queues or reports.
+    #[cfg(feature = "innertube")]
+    fn search_playlist_task(id: String, label: String, shuffle: bool) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = live_playlist_tracks(&id).await;
+                (id, label, shuffle, result)
+            },
+            |(id, label, shuffle, result)| Message::SearchPlaylistReady {
+                id,
+                label,
+                shuffle,
+                result,
+            },
+        )
+    }
+
     pub fn theme(&self) -> iced::Theme {
         iced::Theme::Dark
     }
@@ -8002,6 +8145,7 @@ impl AppState {
             chip("Songs", SearchFilter::Songs, active),
             chip("Albums", SearchFilter::Albums, active),
             chip("Artists", SearchFilter::Artists, active),
+            chip("Playlists", SearchFilter::Playlists, active),
         ])
         .spacing(8)
         .width(Fill)
@@ -8035,6 +8179,7 @@ impl AppState {
             SearchHit::Song(t) => self.search_track_hero(t),
             SearchHit::Album(a) => self.search_album_hero(a),
             SearchHit::Artist(a) => self.search_artist_hero(a),
+            SearchHit::Playlist(p) => self.search_playlist_hero(p),
         }
     }
 
@@ -8226,6 +8371,7 @@ impl AppState {
             SearchHit::Song(t) => self.search_song_row(t),
             SearchHit::Album(a) => self.search_album_row(a),
             SearchHit::Artist(a) => self.search_artist_row(a),
+            SearchHit::Playlist(p) => self.search_playlist_row(p),
         }
     }
 
@@ -8362,6 +8508,101 @@ impl AppState {
             )
             .style(row_click)
             .on_press(Message::OpenArtist(a.id.clone()))
+            .padding(0)
+            .width(Fill),
+        )
+        .style(row_bg(false))
+        .width(Fill)
+        .height(iced::Length::Fixed(TRACK_ROW_H))
+        .clip(true)
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
+    }
+
+    /// Playlist art at hero/row sizes (same 544px key the warmer stages).
+    fn playlist_art(&self, p: &PlaylistHit, size: f32) -> iced::Element<'_, Message> {
+        let url = p
+            .thumbnail_url
+            .as_deref()
+            .map(|u| yutu_core::hires_thumb_url(u, 544));
+        self.art_thumb(url.as_deref(), size)
+    }
+
+    /// Playlist hero: art, type-led subtitle, Play + Shuffle pills.
+    /// Clicking the art or title plays it too (there is no playlist
+    /// detail page: playing is the open action).
+    fn search_playlist_hero(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, row, text};
+        use iced::Fill;
+        let sub = format!("Playlist · {} · {}", p.author, p.detail);
+        container(
+            row![
+                button(self.playlist_art(p, 96.0))
+                    .style(row_click)
+                    .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                    .padding(0),
+                column![
+                    text("Top result").size(12).color(MUTED),
+                    button(text(p.title.clone()).size(20))
+                        .style(row_click)
+                        .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                        .padding(0)
+                        .width(Fill),
+                    text(sub).size(13).color(MUTED),
+                    row![
+                        Self::play_pill("PLAY".into(), Message::PlaySearchPlaylist(p.id.clone())),
+                        Self::shuffle_pill(
+                            "SHUFFLE".into(),
+                            Message::PlaySearchPlaylistShuffled(p.id.clone())
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
+                ]
+                .spacing(4)
+                .width(Fill),
+            ]
+            .spacing(14)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(card_bg)
+        .padding(14)
+        .into()
+    }
+
+    /// Playlist row for the unified search list: art, type-led subtitle,
+    /// one fixed row height; the whole row plays the playlist.
+    fn search_playlist_row(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
+        use iced::widget::{button, column, container, row, text};
+        use iced::Fill;
+        let sub = format!("Playlist · {} · {}", p.author, p.detail);
+        container(
+            button(
+                row![
+                    self.playlist_art(p, 40.0),
+                    column![
+                        text(truncate_title(&p.title, 45))
+                            .size(14)
+                            .color(iced::Color::WHITE)
+                            .width(Fill)
+                            .wrapping(Wrapping::None),
+                        text(truncate_title(&sub, 40))
+                            .size(11)
+                            .color(MUTED)
+                            .width(Fill)
+                            .wrapping(Wrapping::None),
+                    ]
+                    .spacing(2)
+                    .width(Fill)
+                    .clip(true),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(4),
+            )
+            .style(row_click)
+            .on_press(Message::PlaySearchPlaylist(p.id.clone()))
             .padding(0)
             .width(Fill),
         )
@@ -9894,6 +10135,22 @@ impl AppState {
                                     .into()
                             } else {
                                 Self::card_strip(cards)
+                            };
+                            column![header, chips, list,].spacing(10).into()
+                        }
+                        SearchFilter::Playlists => {
+                            let rows: Vec<iced::Element<'_, Message>> = self
+                                .results
+                                .playlists
+                                .iter()
+                                .map(|p| self.search_playlist_row(p))
+                                .collect();
+                            let list: iced::Element<'_, Message> = if rows.is_empty() {
+                                text(format!("No playlists for “{query}”."))
+                                    .color(MUTED)
+                                    .into()
+                            } else {
+                                column(rows).spacing(2).into()
                             };
                             column![header, chips, list,].spacing(10).into()
                         }
@@ -11465,6 +11722,7 @@ mod tests {
                 ],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         assert_eq!(s.results.tracks.len(), 2);
@@ -11504,6 +11762,7 @@ mod tests {
                 tracks: vec![hit],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         // Counts survive staging into results + catalog (popup reads them).
@@ -11561,17 +11820,25 @@ mod tests {
                     thumbnail_url: None,
                 },
             ],
+            playlists: vec![PlaylistHit {
+                id: "PL1".into(),
+                title: "Queen: Greatest Hits".into(),
+                author: "Fan Club".into(),
+                detail: "50 songs".into(),
+                thumbnail_url: None,
+            }],
         };
         let hits = rank_search_hits("queen", &results);
-        // Exact name first, then title prefix, then whole word, then
-        // artist matches in backend order (no mechanical type cycle).
-        assert_eq!(hits.len(), 6);
+        // Exact name first, then title prefix (playlist head beats deeper
+        // song), then whole word, then artist matches in backend order.
+        assert_eq!(hits.len(), 7);
         assert!(matches!(hits[0], SearchHit::Artist(a) if a.id == "r1"));
-        assert!(matches!(hits[1], SearchHit::Song(t) if t.id == "v2"));
-        assert!(matches!(hits[2], SearchHit::Artist(a) if a.id == "r2"));
-        assert!(matches!(hits[3], SearchHit::Song(t) if t.id == "v1"));
-        assert!(matches!(hits[4], SearchHit::Album(a) if a.id == "a1"));
-        assert!(matches!(hits[5], SearchHit::Song(t) if t.id == "v3"));
+        assert!(matches!(hits[1], SearchHit::Playlist(p) if p.id == "PL1"));
+        assert!(matches!(hits[2], SearchHit::Song(t) if t.id == "v2"));
+        assert!(matches!(hits[3], SearchHit::Artist(a) if a.id == "r2"));
+        assert!(matches!(hits[4], SearchHit::Song(t) if t.id == "v1"));
+        assert!(matches!(hits[5], SearchHit::Album(a) if a.id == "a1"));
+        assert!(matches!(hits[6], SearchHit::Song(t) if t.id == "v3"));
     }
 
     #[test]
@@ -11588,6 +11855,7 @@ mod tests {
                 thumbnail_url: None,
             }],
             artists: vec![],
+            playlists: vec![],
         };
         let hits = rank_search_hits("run", &with_songs);
         assert!(matches!(hits[0], SearchHit::Song(_)));
@@ -11607,6 +11875,7 @@ mod tests {
                 name: "Runner".into(),
                 thumbnail_url: None,
             }],
+            playlists: vec![],
         };
         let hits = rank_search_hits("run", &artists_only);
         assert!(matches!(hits[0], SearchHit::Artist(_)));
@@ -11625,6 +11894,7 @@ mod tests {
             tracks,
             albums: vec![],
             artists: vec![],
+            playlists: vec![],
         };
         let hits = rank_search_hits("run", &results);
         assert_eq!(hits.len(), MIXED_SEARCH_CAP);
@@ -12258,6 +12528,7 @@ mod tests {
                 ],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         assert!(!s.queue.shuffle);
@@ -12299,12 +12570,72 @@ mod tests {
                 name: "The Beatles".into(),
                 thumbnail_url: None,
             }],
+            playlists: vec![PlaylistHit {
+                id: "PL1".into(),
+                title: "Beatles Mix".into(),
+                author: "Fan".into(),
+                detail: "25 songs".into(),
+                thumbnail_url: None,
+            }],
         };
         let _ = s.view();
         let album = s.results.albums[0].clone();
         let _ = s.search_album_hero(&album);
         let artist = s.results.artists[0].clone();
         let _ = s.search_artist_hero(&artist);
+        let playlist = s.results.playlists[0].clone();
+        let _ = s.search_playlist_hero(&playlist);
+        let _ = s.search_playlist_row(&playlist);
+        let _ = s.update(Message::SetSearchFilter(SearchFilter::Playlists));
+        let _ = s.view();
+    }
+
+    #[test]
+    fn search_playlist_ready_queues_or_reports() {
+        let mut s = test_state();
+        // Success queues the fetched tracks from a fresh context.
+        let _ = s.update(Message::SearchPlaylistReady {
+            id: "PL1".into(),
+            label: "Beatles Mix".into(),
+            shuffle: false,
+            result: Ok(vec![
+                mk_track("v1", "Yesterday", "The Beatles"),
+                mk_track("v2", "Hey Jude", "The Beatles"),
+            ]),
+        });
+        assert_eq!(s.queue.len(), 2);
+        assert!(!s.queue.shuffle);
+        assert!(s.playing_from.contains("Beatles Mix"));
+        // Shuffle variant turns shuffle on.
+        let _ = s.update(Message::SearchPlaylistReady {
+            id: "PL1".into(),
+            label: "Beatles Mix".into(),
+            shuffle: true,
+            result: Ok(vec![mk_track("v1", "Yesterday", "The Beatles")]),
+        });
+        assert!(s.queue.shuffle);
+        assert_eq!(s.queue.len(), 1);
+        // Failures report honestly with no queue change.
+        let _ = s.update(Message::SearchPlaylistReady {
+            id: "PL1".into(),
+            label: "Beatles Mix".into(),
+            shuffle: false,
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.queue.len(), 1);
+        assert!(s.status.contains("offline"));
+        // Play actions label known playlists and fire without panic.
+        s.results.playlists.push(PlaylistHit {
+            id: "PL9".into(),
+            title: "Beatles Mix".into(),
+            author: "Fan".into(),
+            detail: "25 songs".into(),
+            thumbnail_url: None,
+        });
+        assert_eq!(s.search_playlist_label("PL9"), "Beatles Mix");
+        assert_eq!(s.search_playlist_label("unknown"), "unknown");
+        let _ = s.update(Message::PlaySearchPlaylist("PL9".into()));
+        let _ = s.update(Message::PlaySearchPlaylistShuffled("PL9".into()));
     }
 
     #[test]
@@ -12382,6 +12713,7 @@ mod tests {
                 ],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         let _ = s.update(Message::PlayAll);
@@ -13184,6 +13516,7 @@ mod tests {
                 tracks: vec![mk_track("v1", "Yesterday", "The Beatles")],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         assert_eq!(s.route, Route::Home);
@@ -13208,6 +13541,7 @@ mod tests {
                 tracks: vec![mk_track("old", "Old Song", "Someone")],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         assert!(s.find_track("old").is_some());
@@ -13219,6 +13553,7 @@ mod tests {
                 tracks: vec![mk_track("new", "Rosewood", "Bonobo")],
                 albums: vec![],
                 artists: vec![],
+                playlists: vec![],
             }),
         });
         assert_eq!(s.results.tracks.len(), 1);
