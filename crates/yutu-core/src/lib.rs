@@ -19,13 +19,15 @@ pub use auth::{AuthState, CookieAuth};
 pub use backend::{MockBackend, MusicBackend};
 pub use discovery::{forgotten_favorites, weekly_mix};
 #[cfg(feature = "innertube")]
+pub use innertube::split_library_status;
+#[cfg(feature = "innertube")]
 pub use innertube::InnertubeBackend;
 #[cfg(feature = "innertube")]
 pub use innertube::ResolvedStream;
 #[cfg(feature = "innertube")]
 pub use innertube::ServerPlaylist;
 pub use library::LibraryStore;
-pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id};
+pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id, PendingOp};
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};

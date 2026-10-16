@@ -34,6 +34,20 @@ pub fn edit_playlist_id(id: &str) -> String {
     canonical_playlist_id(id)
 }
 
+/// One not-yet-confirmed server write, recorded at action time and
+/// cleared when its push succeeds. Sync replays leftovers before
+/// pulling, so web changes reconcile without dropping local intent.
+/// Op names: `like`, `unlike`, `dislike`, `undislike` (track_id),
+/// `add`, `remove` (playlist_id + track_id), `create` (playlist_id is
+/// the local shell id, title set), `delete` (playlist_id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingOp {
+    pub op: String,
+    pub playlist_id: Option<String>,
+    pub track_id: Option<String>,
+    pub title: Option<String>,
+}
+
 pub struct LibraryStore {
     conn: Connection,
 }
@@ -41,6 +55,8 @@ pub struct LibraryStore {
 impl LibraryStore {
     pub fn in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
         let s = Self { conn };
         s.migrate()?;
         Ok(s)
@@ -48,9 +64,37 @@ impl LibraryStore {
 
     pub fn open(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        // GUI-thread writes (likes, playlist edits) share the file with
+        // background import tasks: wait briefly on a locked database
+        // instead of failing the write silently.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
         let s = Self { conn };
         s.migrate()?;
         Ok(s)
+    }
+
+    /// Run `f` inside a single write transaction: one journal flush
+    /// instead of one per statement. Multi-row playlist writes ran one
+    /// transaction per row on the event thread, stalling it long enough
+    /// on large lists that the app looked frozen. Rolls back on error.
+    fn with_tx(&self, f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        match f() {
+            Ok(()) => match self.conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e.to_string())
+                }
+            },
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     fn migrate(&self) -> Result<(), String> {
@@ -58,6 +102,14 @@ impl LibraryStore {
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS likes(track_id TEXT PRIMARY KEY, liked_at INTEGER);
                  CREATE TABLE IF NOT EXISTS dislikes(track_id TEXT PRIMARY KEY, disliked_at INTEGER);
+                 CREATE TABLE IF NOT EXISTS prefs(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE IF NOT EXISTS pending_ops(
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     op TEXT NOT NULL,
+                     playlist_id TEXT,
+                     track_id TEXT,
+                     title TEXT,
+                     created_at INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS history(track_id TEXT NOT NULL, played_at_unix INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY, title TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS downloads(track_id TEXT PRIMARY KEY, downloaded_at INTEGER);
@@ -244,6 +296,376 @@ impl LibraryStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Replace the whole liked set with the server set (sync pull):
+    /// rows the server no longer likes disappear, new ones append.
+    /// Runs in one transaction.
+    pub fn sync_likes(&self, liked_ids: &[String]) -> Result<(), String> {
+        self.with_tx(|| self.sync_likes_in_tx(liked_ids))
+    }
+
+    /// Replace the whole disliked set with the server set (sync pull).
+    /// Same single-transaction contract as [`Self::sync_likes`].
+    pub fn sync_dislikes(&self, disliked_ids: &[String]) -> Result<(), String> {
+        self.with_tx(|| self.sync_dislikes_in_tx(disliked_ids))
+    }
+
+    /// Small string preference (sync settings, last-sync time).
+    pub fn get_pref(&self, key: &str) -> Result<Option<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM prefs WHERE key = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![key], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => r.map(Some).map_err(|e| e.to_string()),
+        }
+    }
+
+    pub fn set_pref(&self, key: &str, value: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO prefs(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Record a pending server write (see [`PendingOp`]). Latest intent
+    /// wins: recording a track rate drops older rate rows for that
+    /// track, recording add/remove drops the older row for that pair,
+    /// and recording a delete drops add/remove rows for that playlist
+    /// (the list is gone locally either way).
+    pub fn record_pending(
+        &self,
+        op: &str,
+        playlist_id: Option<&str>,
+        track_id: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.with_tx(|| {
+            match op {
+                "like" | "unlike" | "dislike" | "undislike" => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM pending_ops WHERE op IN ('like','unlike','dislike','undislike')
+                             AND IFNULL(track_id,'') = IFNULL(?1,'')",
+                            params![track_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                "add" | "remove" => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM pending_ops WHERE op IN ('add','remove')
+                             AND IFNULL(playlist_id,'') = IFNULL(?1,'')
+                             AND IFNULL(track_id,'') = IFNULL(?2,'')",
+                            params![playlist_id, track_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                "create" => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM pending_ops WHERE op = 'create'
+                             AND IFNULL(playlist_id,'') = IFNULL(?1,'')",
+                            params![playlist_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                "delete" => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM pending_ops WHERE op IN ('add','remove','delete')
+                             AND IFNULL(playlist_id,'') = IFNULL(?1,'')",
+                            params![playlist_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => {}
+            }
+            self.conn
+                .execute(
+                    "INSERT INTO pending_ops(op, playlist_id, track_id, title, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![op, playlist_id, track_id, title, now],
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// Drop the pending row for one confirmed push (exact-op match, so a
+    /// stale in-flight task cannot clear a newer intent).
+    pub fn clear_pending(
+        &self,
+        op: &str,
+        playlist_id: Option<&str>,
+        track_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM pending_ops WHERE op = ?1
+                 AND IFNULL(playlist_id,'') = IFNULL(?2,'')
+                 AND IFNULL(track_id,'') = IFNULL(?3,'')",
+                params![op, playlist_id, track_id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Every pending write in record order.
+    pub fn pending_ops(&self) -> Result<Vec<PendingOp>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT op, playlist_id, track_id, title FROM pending_ops ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PendingOp {
+                    op: r.get(0)?,
+                    playlist_id: r.get(1).unwrap_or(None),
+                    track_id: r.get(2).unwrap_or(None),
+                    title: r.get(3).unwrap_or(None),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Move pending rows from a local shell id to its server id (after a
+    /// playlist create migrates the shell).
+    pub fn repoint_pending(
+        &self,
+        old_playlist_id: &str,
+        new_playlist_id: &str,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE pending_ops SET playlist_id = ?1 WHERE IFNULL(playlist_id,'') = ?2",
+                params![new_playlist_id, old_playlist_id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// True when a playlist has pending add/remove rows (sync skips
+    /// replacing its contents until the pushes land).
+    pub fn has_playlist_pending(&self, playlist_id: &str) -> Result<bool, String> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_ops WHERE op IN ('add','remove')
+                 AND IFNULL(playlist_id,'') = ?1",
+                params![playlist_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// Apply one sync pull to the stored sets (single transaction):
+    /// replace likes/dislikes when `apply_ratings`, re-apply still
+    /// pending rate rows so unpushed intent survives the replace, and
+    /// delete `prune_ids` playlists outright. Callers compute
+    /// `prune_ids` (server lists absent from clean headers); local
+    /// `u{seq}` shells are never pruned here.
+    pub fn apply_sync_pull(
+        &self,
+        liked_ids: &[String],
+        disliked_ids: &[String],
+        apply_ratings: bool,
+        prune_ids: &[String],
+    ) -> Result<(), String> {
+        self.with_tx(|| {
+            if apply_ratings {
+                self.sync_likes_in_tx(liked_ids)?;
+                self.sync_dislikes_in_tx(disliked_ids)?;
+                // Still-pending rates ride over the server sets.
+                let pendings = self.pending_ops_in_tx()?;
+                for p in &pendings {
+                    match p.op.as_str() {
+                        "like" => {
+                            if let Some(id) = p.track_id.as_deref() {
+                                self.like_in_tx(id)?;
+                            }
+                        }
+                        "unlike" => {
+                            if let Some(id) = p.track_id.as_deref() {
+                                self.unlike_in_tx(id)?;
+                            }
+                        }
+                        "dislike" => {
+                            if let Some(id) = p.track_id.as_deref() {
+                                self.dislike_in_tx(id)?;
+                            }
+                        }
+                        "undislike" => {
+                            if let Some(id) = p.track_id.as_deref() {
+                                self.undislike_in_tx(id)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for id in prune_ids {
+                self.delete_playlist_in_tx(id)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Transaction-free variants for use inside [`Self::apply_sync_pull`]
+    /// (a nested `BEGIN` would fail).
+    fn pending_ops_in_tx(&self) -> Result<Vec<PendingOp>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT op, playlist_id, track_id, title FROM pending_ops ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PendingOp {
+                    op: r.get(0)?,
+                    playlist_id: r.get(1).unwrap_or(None),
+                    track_id: r.get(2).unwrap_or(None),
+                    title: r.get(3).unwrap_or(None),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    fn like_in_tx(&self, track_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO likes(track_id, liked_at) VALUES (?1, ?2)",
+                params![track_id, now],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn unlike_in_tx(&self, track_id: &str) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM likes WHERE track_id = ?1", params![track_id])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn dislike_in_tx(&self, track_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO dislikes(track_id, disliked_at) VALUES (?1, ?2)",
+                params![track_id, now],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn undislike_in_tx(&self, track_id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM dislikes WHERE track_id = ?1",
+                params![track_id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn sync_likes_in_tx(&self, liked_ids: &[String]) -> Result<(), String> {
+        if liked_ids.is_empty() {
+            self.conn
+                .execute("DELETE FROM likes", [])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let placeholders = liked_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            self.conn
+                .execute(
+                    &format!("DELETE FROM likes WHERE track_id NOT IN ({placeholders})"),
+                    rusqlite::params_from_iter(liked_ids.iter()),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        for id in liked_ids {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO likes(track_id, liked_at) VALUES (?1, ?2)",
+                    params![id, now],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn sync_dislikes_in_tx(&self, disliked_ids: &[String]) -> Result<(), String> {
+        if disliked_ids.is_empty() {
+            self.conn
+                .execute("DELETE FROM dislikes", [])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let placeholders = disliked_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            self.conn
+                .execute(
+                    &format!("DELETE FROM dislikes WHERE track_id NOT IN ({placeholders})"),
+                    rusqlite::params_from_iter(disliked_ids.iter()),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        for id in disliked_ids {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO dislikes(track_id, disliked_at) VALUES (?1, ?2)",
+                    params![id, now],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn delete_playlist_in_tx(&self, id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+        self.conn
+            .execute("DELETE FROM playlists WHERE id = ?1", params![id])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     pub fn mark_downloaded(&self, track_id: &str) -> Result<(), String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -348,53 +770,57 @@ impl LibraryStore {
         title: &str,
         tracks: &[Track],
     ) -> Result<(), String> {
-        self.conn
-            .execute(
-                "INSERT INTO playlists(id, title) VALUES (?1, ?2)
-                 ON CONFLICT(id) DO UPDATE SET title = excluded.title",
-                params![id, title],
-            )
-            .map_err(|e| e.to_string())?;
-        self.conn
-            .execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                params![id],
-            )
-            .map_err(|e| e.to_string())?;
-        for (i, t) in tracks.iter().enumerate() {
+        self.with_tx(|| {
             self.conn
                 .execute(
-                    "INSERT OR IGNORE INTO playlist_tracks
-                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        id,
-                        i as i64,
-                        t.id,
-                        t.title,
-                        t.artist,
-                        t.album,
-                        t.duration_secs as i64,
-                        t.thumbnail_url,
-                        t.thumbnail_large_url
-                    ],
+                    "INSERT INTO playlists(id, title) VALUES (?1, ?2)
+                     ON CONFLICT(id) DO UPDATE SET title = excluded.title",
+                    params![id, title],
                 )
                 .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            self.conn
+                .execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+            for (i, t) in tracks.iter().enumerate() {
+                self.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO playlist_tracks
+                         (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            id,
+                            i as i64,
+                            t.id,
+                            t.title,
+                            t.artist,
+                            t.album,
+                            t.duration_secs as i64,
+                            t.thumbnail_url,
+                            t.thumbnail_large_url
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     pub fn delete_playlist(&self, id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                params![id],
-            )
-            .map_err(|e| e.to_string())?;
-        self.conn
-            .execute("DELETE FROM playlists WHERE id = ?1", params![id])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.with_tx(|| {
+            self.conn
+                .execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn
+                .execute("DELETE FROM playlists WHERE id = ?1", params![id])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     /// Persist the playback session: queue ids in order plus the current
@@ -543,68 +969,78 @@ impl LibraryStore {
     }
 
     pub fn add_to_playlist(&self, playlist_id: &str, track: &Track) -> Result<(), String> {
-        let existing: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
-                params![playlist_id, track.id],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if existing > 0 {
-            return Ok(());
-        }
-        let pos: i64 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
-                params![playlist_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        self.conn
-            .execute(
-                "INSERT OR IGNORE INTO playlist_tracks
-                 (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    playlist_id,
-                    pos,
-                    track.id,
-                    track.title,
-                    track.artist,
-                    track.album,
-                    track.duration_secs as i64,
-                    track.thumbnail_url,
-                    track.thumbnail_large_url
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.with_tx(|| {
+            let existing: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                    params![playlist_id, track.id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if existing > 0 {
+                return Ok(());
+            }
+            let pos: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![playlist_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO playlist_tracks
+                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        playlist_id,
+                        pos,
+                        track.id,
+                        track.title,
+                        track.artist,
+                        track.album,
+                        track.duration_secs as i64,
+                        track.thumbnail_url,
+                        track.thumbnail_large_url
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     pub fn remove_from_playlist(&self, playlist_id: &str, track_id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
-                params![playlist_id, track_id],
-            )
-            .map_err(|e| e.to_string())?;
-        // Renumber positions to keep the (playlist_id, position) PK dense.
-        let ids: Vec<String> = self
-            .playlist_tracks(playlist_id)?
-            .into_iter()
-            .map(|t| t.id)
-            .collect();
-        for (i, tid) in ids.iter().enumerate() {
-            self.conn
-                .execute(
-                    "UPDATE playlist_tracks SET position = ?1 WHERE playlist_id = ?2 AND track_id = ?3",
-                    params![i as i64, playlist_id, tid],
+        self.with_tx(|| {
+            // Lowest position of a removed row, if any: rows after it
+            // shift down by one in a single UPDATE instead of one per
+            // track (the old per-row loop stalled the event thread on
+            // large playlists, freezing the app).
+            let pos: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT MIN(position) FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                    params![playlist_id, track_id],
+                    |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            self.conn
+                .execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                    params![playlist_id, track_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if let Some(p) = pos {
+                self.conn
+                    .execute(
+                        "UPDATE playlist_tracks SET position = position - 1 WHERE playlist_id = ?1 AND position > ?2",
+                        params![playlist_id, p],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     /// Upsert one track into the metadata cache, preserving existing art
@@ -619,11 +1055,12 @@ impl LibraryStore {
     /// with its cached row (incoming wins, but `None` art never clobbers
     /// cached art, and empty titles never clobber cached titles).
     pub fn upsert_tracks(&self, tracks: &[Track]) -> Result<(), String> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        for t in tracks {
+        self.with_tx(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            for t in tracks {
             let cached = self.cached_track(&t.id).unwrap_or(None);
             let (title, artist, album, duration_secs, thumb, large) = match cached {
                 Some(c) => {
@@ -687,11 +1124,12 @@ impl LibraryStore {
                 )
                 .map_err(|e| e.to_string())?;
         }
-        // Heal playlist rows that predate the art columns (or were stored
-        // before art arrived): fill missing thumbs from the fresh rows so
-        // old installs regain covers without re-adding songs.
-        self.heal_playlist_art(tracks)?;
-        Ok(())
+            // Heal playlist rows that predate the art columns (or were stored
+            // before art arrived): fill missing thumbs from the fresh rows so
+            // old installs regain covers without re-adding songs.
+            self.heal_playlist_art(tracks)?;
+            Ok(())
+        })
     }
 
     /// Like plus metadata cache in one call: the liked row stays an id,
@@ -837,6 +1275,103 @@ mod tests {
         s.undislike("vid-a").unwrap();
         assert!(!s.is_disliked("vid-a").unwrap());
         assert_eq!(s.disliked_ids().unwrap(), vec!["vid-b"]);
+    }
+
+    #[test]
+    fn prefs_round_trip() {
+        let s = LibraryStore::in_memory().unwrap();
+        assert!(s.get_pref("auto_sync").unwrap().is_none());
+        s.set_pref("auto_sync", "0").unwrap();
+        assert_eq!(s.get_pref("auto_sync").unwrap().as_deref(), Some("0"));
+        s.set_pref("auto_sync", "1").unwrap();
+        assert_eq!(s.get_pref("auto_sync").unwrap().as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn pending_collapses_to_latest_intent() {
+        let s = LibraryStore::in_memory().unwrap();
+        assert!(s.pending_ops().unwrap().is_empty());
+        s.record_pending("like", None, Some("m1"), None).unwrap();
+        s.record_pending("unlike", None, Some("m1"), None).unwrap();
+        // Only the latest rate row for the track survives.
+        assert_eq!(
+            s.pending_ops().unwrap(),
+            vec![PendingOp {
+                op: "unlike".into(),
+                playlist_id: None,
+                track_id: Some("m1".into()),
+                title: None,
+            }]
+        );
+        s.record_pending("add", Some("PL1"), Some("m1"), None)
+            .unwrap();
+        s.record_pending("remove", Some("PL1"), Some("m1"), None)
+            .unwrap();
+        let ops = s.pending_ops().unwrap();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[1].op, "remove");
+        // Recording a delete drops add/remove rows for that playlist.
+        s.record_pending("delete", Some("PL1"), None, None).unwrap();
+        let ops = s.pending_ops().unwrap();
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().any(|o| o.op == "unlike"));
+        assert!(ops.iter().any(|o| o.op == "delete"));
+        // Exact-op clear leaves newer rows alone.
+        s.clear_pending("like", None, Some("m1")).unwrap();
+        assert_eq!(s.pending_ops().unwrap().len(), 2);
+        s.clear_pending("unlike", None, Some("m1")).unwrap();
+        assert_eq!(s.pending_ops().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pending_repoint_moves_shell_rows_to_server_id() {
+        let s = LibraryStore::in_memory().unwrap();
+        s.record_pending("add", Some("u7"), Some("m1"), None)
+            .unwrap();
+        s.record_pending("create", Some("u7"), None, Some("Gym"))
+            .unwrap();
+        s.repoint_pending("u7", "PLsrv").unwrap();
+        for o in s.pending_ops().unwrap() {
+            assert_eq!(o.playlist_id.as_deref(), Some("PLsrv"));
+        }
+        assert!(s.has_playlist_pending("PLsrv").unwrap());
+        assert!(!s.has_playlist_pending("u7").unwrap());
+    }
+
+    #[test]
+    fn sync_pull_replaces_sets_and_prunes() {
+        let s = LibraryStore::in_memory().unwrap();
+        s.like("stale").unwrap();
+        s.dislike("stale-dislike").unwrap();
+        // A still-pending unlike must survive the server-wins replace.
+        s.like("srv").unwrap();
+        s.record_pending("unlike", None, Some("srv"), None).unwrap();
+        s.apply_sync_pull(&["srv".to_string()], &[], true, &[])
+            .unwrap();
+        // Server-dropped rows are gone; the pending unlike removed `srv`.
+        assert!(s.liked_ids().unwrap().is_empty());
+        assert!(s.disliked_ids().unwrap().is_empty());
+        // A pending like rides over the replace instead of being lost.
+        s.clear_pending("unlike", None, Some("srv")).unwrap();
+        s.record_pending("like", None, Some("fresh"), None).unwrap();
+        s.apply_sync_pull(&["srv".to_string()], &[], true, &[])
+            .unwrap();
+        assert_eq!(s.liked_ids().unwrap(), vec!["srv", "fresh"]);
+        // Prune deletes listed playlists (and only those).
+        s.create_playlist("PLgone", "Gone").unwrap();
+        s.create_playlist("PLkept", "Kept").unwrap();
+        s.create_playlist("u9", "Local").unwrap();
+        s.apply_sync_pull(&[], &[], false, &["PLgone".to_string()])
+            .unwrap();
+        let ids: Vec<String> = s
+            .user_playlists()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert!(!ids.contains(&"PLgone".to_string()));
+        assert!(ids.contains(&"PLkept".to_string()));
+        assert!(ids.contains(&"u9".to_string()));
     }
 
     #[test]
@@ -1023,6 +1558,75 @@ mod tests {
         assert_eq!(lists[0].title, "Road Trip Renamed");
         let ids: Vec<&str> = lists[0].tracks.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn remove_from_middle_keeps_order() {
+        use crate::models::Track;
+        let s = LibraryStore::in_memory().unwrap();
+        let mk = |id: &str| Track {
+            id: id.into(),
+            title: format!("Song {id}"),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: None,
+            thumbnail_large_url: None,
+            plays: None,
+        };
+        s.create_playlist("u1", "Gym").unwrap();
+        for id in ["a", "b", "c", "d"] {
+            s.add_to_playlist("u1", &mk(id)).unwrap();
+        }
+        s.remove_from_playlist("u1", "b").unwrap();
+        let ids: Vec<String> = s.user_playlists().unwrap()[0]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a", "c", "d"]);
+        // Removing a missing track is a no-op, never an error.
+        s.remove_from_playlist("u1", "ghost").unwrap();
+        let ids: Vec<String> = s.user_playlists().unwrap()[0]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a", "c", "d"]);
+        // Head and tail removals keep the rest in order too.
+        s.remove_from_playlist("u1", "a").unwrap();
+        s.remove_from_playlist("u1", "d").unwrap();
+        let ids: Vec<String> = s.user_playlists().unwrap()[0]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["c"]);
+    }
+
+    #[test]
+    fn big_playlist_sync_and_remove_round_trips() {
+        use crate::models::Track;
+        let s = LibraryStore::in_memory().unwrap();
+        let tracks: Vec<Track> = (0..500)
+            .map(|i| Track {
+                id: format!("t{i:04}"),
+                title: format!("Song {i}"),
+                artist: "Someone".into(),
+                album: None,
+                duration_secs: 200,
+                thumbnail_url: None,
+                thumbnail_large_url: None,
+                plays: None,
+            })
+            .collect();
+        s.sync_server_playlist("PLbig", "Big", &tracks).unwrap();
+        assert_eq!(s.user_playlists().unwrap()[0].tracks.len(), 500);
+        s.remove_from_playlist("PLbig", "t0000").unwrap();
+        let lists = s.user_playlists().unwrap();
+        assert_eq!(lists[0].tracks.len(), 499);
+        assert_eq!(lists[0].tracks[0].id, "t0001");
+        assert_eq!(lists[0].tracks[498].id, "t0499");
     }
 
     #[test]

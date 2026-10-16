@@ -2,6 +2,15 @@
 
 ## 0.2.0 (unreleased)
 
+- Web-to-app sync: Settings "Sync now" plus auto-sync every 15 min while
+  signed in (90 s grace after launch, toggle persisted, "Last synced"
+  label). Pulls replay still-pending local pushes first, then reconcile
+  server-wins: library rows carry their server like status so likes and
+  dislikes replace the local sets, playlist tracks/titles refresh in
+  place, server-deleted lists are pruned, and lists with unpushed edits
+  are never fetched or replaced. Failed pages fail open (no ratings
+  replace, no pruning), so a partial pull never wipes local state;
+  pending pushes persist in SQLite and survive restarts
 - Saved playback session: the queue, current song, position, shuffle,
   repeat and volume survive restarts (restored paused, press play to
   continue from the saved position; unknown ids drop honestly)
@@ -20,6 +29,15 @@
   with single-line truncated labels, and card strips wrap onto the next
   line in narrow windows instead of squashing, so every card keeps one
   height and alignment
+- Web-to-app sync: Settings "Sync now" plus auto-sync every 15 min while
+  signed in (90 s grace after launch, toggle persisted, "Last synced"
+  label). Pulls replay still-pending local pushes first, then reconcile
+  server-wins: library rows carry their server like status so likes and
+  dislikes replace the local sets, playlist tracks/titles refresh in
+  place, server-deleted lists are pruned, and lists with unpushed edits
+  are never fetched or replaced. Failed pages fail open (no ratings
+  replace, no pruning), so a partial pull never wipes local state;
+  pending pushes persist in SQLite and survive restarts
 - Staged library import with live progress: songs merge first, then one
   task per playlist streams tracks in with per-list status, so big
   imports no longer freeze the window on a single silent future; all
@@ -105,6 +123,9 @@
   `VL`-prefixed id, edits/deletes/playlist-likes send the raw id (a
   `VL...` id to `browse/edit_playlist` 400s `invalid argument`);
   imports store canonical ids with a one-time `VL...` migration
+- Playlist SQLite writes run in one transaction each (plus a 5s busy
+  timeout): removing a track from a large list no longer stalls the
+  event thread with one fsync per row; renumber is a single UPDATE
 - Honest EQ status (mpv-only filters; rodio reports it); bigger nav
   buttons; cookie-file import (normal browser login, no OAuth client)
 - Real right-click context menu at the cursor (mouse_area +
