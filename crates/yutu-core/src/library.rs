@@ -41,6 +41,8 @@ pub struct LibraryStore {
 impl LibraryStore {
     pub fn in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
         let s = Self { conn };
         s.migrate()?;
         Ok(s)
@@ -48,9 +50,37 @@ impl LibraryStore {
 
     pub fn open(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        // GUI-thread writes (likes, playlist edits) share the file with
+        // background import tasks: wait briefly on a locked database
+        // instead of failing the write silently.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
         let s = Self { conn };
         s.migrate()?;
         Ok(s)
+    }
+
+    /// Run `f` inside a single write transaction: one journal flush
+    /// instead of one per statement. Multi-row playlist writes ran one
+    /// transaction per row on the event thread, stalling it long enough
+    /// on large lists that the app looked frozen. Rolls back on error.
+    fn with_tx(&self, f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        match f() {
+            Ok(()) => match self.conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e.to_string())
+                }
+            },
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     fn migrate(&self) -> Result<(), String> {
@@ -348,53 +378,57 @@ impl LibraryStore {
         title: &str,
         tracks: &[Track],
     ) -> Result<(), String> {
-        self.conn
-            .execute(
-                "INSERT INTO playlists(id, title) VALUES (?1, ?2)
-                 ON CONFLICT(id) DO UPDATE SET title = excluded.title",
-                params![id, title],
-            )
-            .map_err(|e| e.to_string())?;
-        self.conn
-            .execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                params![id],
-            )
-            .map_err(|e| e.to_string())?;
-        for (i, t) in tracks.iter().enumerate() {
+        self.with_tx(|| {
             self.conn
                 .execute(
-                    "INSERT OR IGNORE INTO playlist_tracks
-                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        id,
-                        i as i64,
-                        t.id,
-                        t.title,
-                        t.artist,
-                        t.album,
-                        t.duration_secs as i64,
-                        t.thumbnail_url,
-                        t.thumbnail_large_url
-                    ],
+                    "INSERT INTO playlists(id, title) VALUES (?1, ?2)
+                     ON CONFLICT(id) DO UPDATE SET title = excluded.title",
+                    params![id, title],
                 )
                 .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            self.conn
+                .execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+            for (i, t) in tracks.iter().enumerate() {
+                self.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO playlist_tracks
+                         (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            id,
+                            i as i64,
+                            t.id,
+                            t.title,
+                            t.artist,
+                            t.album,
+                            t.duration_secs as i64,
+                            t.thumbnail_url,
+                            t.thumbnail_large_url
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     pub fn delete_playlist(&self, id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                params![id],
-            )
-            .map_err(|e| e.to_string())?;
-        self.conn
-            .execute("DELETE FROM playlists WHERE id = ?1", params![id])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.with_tx(|| {
+            self.conn
+                .execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn
+                .execute("DELETE FROM playlists WHERE id = ?1", params![id])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     /// Persist the playback session: queue ids in order plus the current
@@ -543,68 +577,78 @@ impl LibraryStore {
     }
 
     pub fn add_to_playlist(&self, playlist_id: &str, track: &Track) -> Result<(), String> {
-        let existing: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
-                params![playlist_id, track.id],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if existing > 0 {
-            return Ok(());
-        }
-        let pos: i64 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
-                params![playlist_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        self.conn
-            .execute(
-                "INSERT OR IGNORE INTO playlist_tracks
-                 (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    playlist_id,
-                    pos,
-                    track.id,
-                    track.title,
-                    track.artist,
-                    track.album,
-                    track.duration_secs as i64,
-                    track.thumbnail_url,
-                    track.thumbnail_large_url
-                ],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.with_tx(|| {
+            let existing: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                    params![playlist_id, track.id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if existing > 0 {
+                return Ok(());
+            }
+            let pos: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![playlist_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO playlist_tracks
+                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        playlist_id,
+                        pos,
+                        track.id,
+                        track.title,
+                        track.artist,
+                        track.album,
+                        track.duration_secs as i64,
+                        track.thumbnail_url,
+                        track.thumbnail_large_url
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     pub fn remove_from_playlist(&self, playlist_id: &str, track_id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
-                params![playlist_id, track_id],
-            )
-            .map_err(|e| e.to_string())?;
-        // Renumber positions to keep the (playlist_id, position) PK dense.
-        let ids: Vec<String> = self
-            .playlist_tracks(playlist_id)?
-            .into_iter()
-            .map(|t| t.id)
-            .collect();
-        for (i, tid) in ids.iter().enumerate() {
-            self.conn
-                .execute(
-                    "UPDATE playlist_tracks SET position = ?1 WHERE playlist_id = ?2 AND track_id = ?3",
-                    params![i as i64, playlist_id, tid],
+        self.with_tx(|| {
+            // Lowest position of a removed row, if any: rows after it
+            // shift down by one in a single UPDATE instead of one per
+            // track (the old per-row loop stalled the event thread on
+            // large playlists, freezing the app).
+            let pos: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT MIN(position) FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                    params![playlist_id, track_id],
+                    |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            self.conn
+                .execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                    params![playlist_id, track_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if let Some(p) = pos {
+                self.conn
+                    .execute(
+                        "UPDATE playlist_tracks SET position = position - 1 WHERE playlist_id = ?1 AND position > ?2",
+                        params![playlist_id, p],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     }
 
     /// Upsert one track into the metadata cache, preserving existing art
@@ -619,11 +663,12 @@ impl LibraryStore {
     /// with its cached row (incoming wins, but `None` art never clobbers
     /// cached art, and empty titles never clobber cached titles).
     pub fn upsert_tracks(&self, tracks: &[Track]) -> Result<(), String> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        for t in tracks {
+        self.with_tx(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            for t in tracks {
             let cached = self.cached_track(&t.id).unwrap_or(None);
             let (title, artist, album, duration_secs, thumb, large) = match cached {
                 Some(c) => {
@@ -687,11 +732,12 @@ impl LibraryStore {
                 )
                 .map_err(|e| e.to_string())?;
         }
-        // Heal playlist rows that predate the art columns (or were stored
-        // before art arrived): fill missing thumbs from the fresh rows so
-        // old installs regain covers without re-adding songs.
-        self.heal_playlist_art(tracks)?;
-        Ok(())
+            // Heal playlist rows that predate the art columns (or were stored
+            // before art arrived): fill missing thumbs from the fresh rows so
+            // old installs regain covers without re-adding songs.
+            self.heal_playlist_art(tracks)?;
+            Ok(())
+        })
     }
 
     /// Like plus metadata cache in one call: the liked row stays an id,
@@ -1023,6 +1069,75 @@ mod tests {
         assert_eq!(lists[0].title, "Road Trip Renamed");
         let ids: Vec<&str> = lists[0].tracks.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn remove_from_middle_keeps_order() {
+        use crate::models::Track;
+        let s = LibraryStore::in_memory().unwrap();
+        let mk = |id: &str| Track {
+            id: id.into(),
+            title: format!("Song {id}"),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: None,
+            thumbnail_large_url: None,
+            plays: None,
+        };
+        s.create_playlist("u1", "Gym").unwrap();
+        for id in ["a", "b", "c", "d"] {
+            s.add_to_playlist("u1", &mk(id)).unwrap();
+        }
+        s.remove_from_playlist("u1", "b").unwrap();
+        let ids: Vec<String> = s.user_playlists().unwrap()[0]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a", "c", "d"]);
+        // Removing a missing track is a no-op, never an error.
+        s.remove_from_playlist("u1", "ghost").unwrap();
+        let ids: Vec<String> = s.user_playlists().unwrap()[0]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["a", "c", "d"]);
+        // Head and tail removals keep the rest in order too.
+        s.remove_from_playlist("u1", "a").unwrap();
+        s.remove_from_playlist("u1", "d").unwrap();
+        let ids: Vec<String> = s.user_playlists().unwrap()[0]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["c"]);
+    }
+
+    #[test]
+    fn big_playlist_sync_and_remove_round_trips() {
+        use crate::models::Track;
+        let s = LibraryStore::in_memory().unwrap();
+        let tracks: Vec<Track> = (0..500)
+            .map(|i| Track {
+                id: format!("t{i:04}"),
+                title: format!("Song {i}"),
+                artist: "Someone".into(),
+                album: None,
+                duration_secs: 200,
+                thumbnail_url: None,
+                thumbnail_large_url: None,
+                plays: None,
+            })
+            .collect();
+        s.sync_server_playlist("PLbig", "Big", &tracks).unwrap();
+        assert_eq!(s.user_playlists().unwrap()[0].tracks.len(), 500);
+        s.remove_from_playlist("PLbig", "t0000").unwrap();
+        let lists = s.user_playlists().unwrap();
+        assert_eq!(lists[0].tracks.len(), 499);
+        assert_eq!(lists[0].tracks[0].id, "t0001");
+        assert_eq!(lists[0].tracks[498].id, "t0499");
     }
 
     #[test]

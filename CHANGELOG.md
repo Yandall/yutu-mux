@@ -105,6 +105,9 @@
   `VL`-prefixed id, edits/deletes/playlist-likes send the raw id (a
   `VL...` id to `browse/edit_playlist` 400s `invalid argument`);
   imports store canonical ids with a one-time `VL...` migration
+- Playlist SQLite writes run in one transaction each (plus a 5s busy
+  timeout): removing a track from a large list no longer stalls the
+  event thread with one fsync per row; renumber is a single UPDATE
 - Honest EQ status (mpv-only filters; rodio reports it); bigger nav
   buttons; cookie-file import (normal browser login, no OAuth client)
 - Real right-click context menu at the cursor (mouse_area +
