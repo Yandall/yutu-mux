@@ -174,6 +174,9 @@ cargo test -p yutu-ui --no-default-features
   (`feat/<name>`, `fix/<name>`), pushed for review as a PR; merge to
   `main` only once the feature is complete (3-config clippy + fmt +
   workspace tests green, adversarial review med+ findings fixed).
+  When working on a feature/fix, create a new branch and open a PR
+  using the gh CLI (e.g. `gh pr create --base main --head <branch>
+  --title ... --body ...`).
   Trivial direct-to-`main` pushes are for docs/changelog-only or
   seconds-old broken commits (`force-with-lease` only there).
 - Run `cargo run` = real app. User verifies GUI/audio on their machine.
