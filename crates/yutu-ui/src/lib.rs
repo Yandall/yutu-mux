@@ -1347,11 +1347,13 @@ pub struct AppState {
     #[cfg(feature = "innertube")]
     import_expected: usize,
     #[cfg(feature = "innertube")]
-    import_got: usize,
-    #[cfg(feature = "innertube")]
     import_live: HashMap<usize, PlaylistLive>,
     #[cfg(feature = "innertube")]
     import_finished: HashSet<usize>,
+    /// Banner display count, eased toward [`Self::import_song_target`]
+    /// every Tick (see [`Self::ease_import_shown`]).
+    #[cfg(feature = "innertube")]
+    import_shown: usize,
     /// End-of-track auto-advance already fired for the current song.
     end_advanced: bool,
     library_path: String,
@@ -1958,6 +1960,39 @@ impl AppState {
         true
     }
 
+    /// Ease the banner's displayed song count toward the real arrived
+    /// total (halving the gap per Tick): pages land in ~100-song bursts
+    /// microseconds apart, so raw counts would teleport 0 to 100%. The
+    /// display never exceeds the truth and converges exactly; the status
+    /// line always shows real numbers.
+    #[cfg(feature = "innertube")]
+    fn ease_import_shown(&mut self) {
+        if !self.import_active {
+            return;
+        }
+        let target = self.import_song_target();
+        if self.import_shown < target {
+            let gap = target - self.import_shown;
+            self.import_shown += gap.div_ceil(2).max(1);
+        } else {
+            self.import_shown = target;
+        }
+    }
+
+    /// Real arrived songs for the banner: merged songs plus in-flight
+    /// rows from lists with known totals (unknown-total rows join at
+    /// merge, never mid-flight, so the bar never overshoots).
+    #[cfg(feature = "innertube")]
+    fn import_song_target(&self) -> usize {
+        self.import_songs
+            + self
+                .import_live
+                .values()
+                .filter(|e| e.count.is_some())
+                .map(|e| e.arrived)
+                .sum::<usize>()
+    }
+
     /// Everything the app has really seen (discovery candidate pool).
     fn catalog_tracks(&self) -> Vec<Track> {
         let mut v: Vec<Track> = self.catalog.values().cloned().collect();
@@ -1987,7 +2022,7 @@ impl AppState {
         self.import_done = 0;
         self.import_total = total;
         self.import_expected = n;
-        self.import_got = 0;
+        self.import_shown = n;
         self.import_live.clear();
         self.import_finished.clear();
         self.import_gen += 1;
@@ -2644,11 +2679,11 @@ impl AppState {
             #[cfg(feature = "innertube")]
             import_expected: 0,
             #[cfg(feature = "innertube")]
-            import_got: 0,
-            #[cfg(feature = "innertube")]
             import_live: HashMap::new(),
             #[cfg(feature = "innertube")]
             import_finished: HashSet::new(),
+            #[cfg(feature = "innertube")]
+            import_shown: 0,
             end_advanced: false,
             library_path,
             catalog: HashMap::new(),
@@ -4059,20 +4094,13 @@ impl AppState {
         if !self.import_active {
             return None;
         }
-        // Song-level progress while totals are known (ticks report
-        // arrived songs plus the details total); otherwise fall back to
-        // playlists done/total. Only lists with a known total feed the
-        // song math, so the bar never exceeds 100%.
-        let live_arrived: usize = self
-            .import_live
-            .values()
-            .filter(|e| e.count.is_some())
-            .map(|e| e.arrived)
-            .sum();
-        let arrived = self.import_got + live_arrived;
+        // Displayed count eases toward the truth (see
+        // `ease_import_shown`); the bar needs a denominator, falling
+        // back to playlists done/total while no total is known.
+        let shown = self.import_shown;
         let expected = self.import_expected;
         let song_pct = (expected > 0)
-            .then(|| (arrived.min(expected) as f32 / expected as f32 * 100.0).clamp(0.0, 100.0));
+            .then(|| (shown.min(expected) as f32 / expected as f32 * 100.0).clamp(0.0, 100.0));
         let list_pct = (self.import_total > 0).then(|| {
             (self.import_done as f32 / self.import_total as f32 * 100.0).clamp(0.0, 100.0)
         });
@@ -4083,20 +4111,21 @@ impl AppState {
             "…".to_string()
         };
         let counts = if self.import_total > 0 {
-            // In-flight songs count too (even without a known total), so
-            // the line moves on every page, not just per playlist.
-            let streaming: usize = self.import_live.values().map(|e| e.arrived).sum();
+            // Totals show as soon as details lands, so the target is
+            // visible long before the first page arrives.
+            let songs = if expected > 0 {
+                format!("{shown}/{expected} songs")
+            } else {
+                format!("{shown} songs")
+            };
             format!(
-                "{} songs · {} liked · {}/{} playlists",
-                self.import_songs + streaming,
-                self.import_likes,
-                self.import_done,
-                self.import_total
+                "{songs} · {} liked · {}/{} playlists",
+                self.import_likes, self.import_done, self.import_total
             )
         } else {
             format!(
                 "{} songs · {} liked · reading library…",
-                self.import_songs, self.import_likes
+                shown, self.import_likes
             )
         };
         Some(
@@ -6293,8 +6322,9 @@ impl AppState {
                 self.import_done += 1;
                 let done = self.import_done;
                 // This list leaves the live set: its songs now count via
-                // `import_got` (success) or drop out of the expected total
-                // (failure, so the bar can still reach 100%). A Done that
+                // Completed songs already count via `import_songs`;
+                // failures drop their share out of the expected total
+                // (so the bar can still reach 100%). A Done that
                 // beat its ticks here still carries the details count, so
                 // the expected total stays exact in every ordering.
                 if let Some(live) = self.import_live.remove(&index) {
@@ -6317,7 +6347,6 @@ impl AppState {
                 match result {
                     Ok(playlist) => {
                         let n = playlist.tracks.len();
-                        self.import_got += n;
                         self.import_songs += n;
                         let tasks = self.merge_imported(Vec::new(), Vec::new(), vec![playlist]);
                         if done >= total {
@@ -6404,7 +6433,7 @@ impl AppState {
                 self.import_total = 0;
                 self.import_active = false;
                 self.import_expected = 0;
-                self.import_got = 0;
+                self.import_shown = 0;
                 self.import_live.clear();
                 self.import_finished.clear();
                 if cookie_session_exists() {
@@ -6591,7 +6620,7 @@ impl AppState {
                 self.import_total = 0;
                 self.import_active = false;
                 self.import_expected = 0;
-                self.import_got = 0;
+                self.import_shown = 0;
                 self.import_live.clear();
                 self.import_finished.clear();
                 self.logged_in = false;
@@ -6672,6 +6701,11 @@ impl AppState {
                     self.end_advanced = true;
                     self.publish_mpris();
                     tasks.push(self.play_current_task());
+                }
+                // Import banner smoothing toward the true arrived count.
+                #[cfg(feature = "innertube")]
+                {
+                    self.ease_import_shown();
                 }
                 self.publish_mpris();
                 return iced::Task::batch(tasks);
@@ -12535,7 +12569,7 @@ mod tests {
         });
         let gen = s.import_gen;
         // Base songs seed the expected total; nothing arrived yet.
-        assert_eq!((s.import_expected, s.import_got), (1, 0));
+        assert_eq!(s.import_expected, 1);
         assert!(s.import_banner_view().is_some());
         // Page ticks accumulate per list plus the details total.
         let tick = |index: usize, arrived: usize, count: Option<usize>| Message::PlaylistTick {
@@ -12550,6 +12584,22 @@ mod tests {
         let _ = s.update(tick(1, 50, None));
         // Unknown-total lists stay out of the bar math (no denominator).
         assert_eq!(s.import_expected, 1 + 248);
+        // Display eases toward the truth instead of teleporting: pages
+        // land ~100 songs apart microseconds from each other.
+        assert_eq!(s.import_shown, 1);
+        assert_eq!(s.import_song_target(), 1 + 200);
+        s.ease_import_shown();
+        assert_eq!(s.import_shown, 1 + 100);
+        s.ease_import_shown();
+        assert_eq!(s.import_shown, 1 + 150);
+        for _ in 0..20 {
+            s.ease_import_shown();
+        }
+        assert_eq!(s.import_shown, s.import_song_target());
+        // Overshoot snaps back down (failed lists shrink the target).
+        s.import_shown = 9999;
+        s.ease_import_shown();
+        assert_eq!(s.import_shown, s.import_song_target());
         // Late ticks for finished lists are ignored (channel vs Done race).
         let _ = s.update(Message::PlaylistImported {
             kind: ImportKind::Cookie,
@@ -12565,11 +12615,11 @@ mod tests {
             }),
         });
         assert!(s.login_busy);
-        assert_eq!(s.import_got, 1);
+        assert_eq!(s.import_songs, 2);
         assert!(!s.import_live.contains_key(&0));
         let _ = s.update(tick(0, 248, Some(248)));
         assert!(!s.import_live.contains_key(&0));
-        assert_eq!(s.import_got, 1);
+        assert_eq!(s.import_songs, 2);
         // Failed lists drop their expected share so the bar can still finish.
         // (Mystery had no known total: nothing was ever added.)
         let _ = s.update(Message::PlaylistImported {
