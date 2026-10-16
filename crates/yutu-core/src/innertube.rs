@@ -361,54 +361,40 @@ impl InnertubeBackend {
         use ytmapi_rs::query::GetPlaylistTracksQuery;
         let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
         let mut out: Vec<Track> = Vec::new();
-        let mut failed = false;
-        let typed: Vec<Result<Vec<PlaylistItem>, String>> = match &self.inner {
-            Inner::Anonymous(client) => live_typed_pages(client, &query).await,
-            Inner::Cookie(client) => live_typed_pages(client, &query).await,
-            Inner::OAuth(client) => live_typed_pages(client, &query).await,
-        };
-        for page in typed {
-            match page {
-                Ok(items) => {
-                    out.extend(items.iter().filter_map(playlist_item_to_track));
-                    on_page(out.len());
-                }
-                Err(e) => {
-                    failed = true;
-                    eprintln!("[yutu-import] playlist tracks page failed: {e}");
-                }
+        // Typed pages first (exact mapping), reporting each page the
+        // moment it arrives: buffering all pages before reporting
+        // bunches every tick microseconds before completion, so the bar
+        // would still teleport 0 to 100%.
+        let mut failed = match &self.inner {
+            Inner::Anonymous(client) => {
+                stream_typed_tracks(client, &query, &mut on_page, &mut out).await
             }
-        }
+            Inner::Cookie(client) => {
+                stream_typed_tracks(client, &query, &mut on_page, &mut out).await
+            }
+            Inner::OAuth(client) => {
+                stream_typed_tracks(client, &query, &mut on_page, &mut out).await
+            }
+        };
         if !failed {
             return Ok(out);
         }
         eprintln!("[yutu-import] playlist tracks: typed parse failed, retrying tolerantly");
-        let raw: Vec<Result<String, String>> = match &self.inner {
-            Inner::Anonymous(client) => live_raw_pages(client, &query).await,
-            Inner::Cookie(client) => live_raw_pages(client, &query).await,
-            Inner::OAuth(client) => live_raw_pages(client, &query).await,
-        };
-        for page in raw {
-            match page {
-                Ok(json) => {
-                    for t in tolerant_playlist_rows(&json) {
-                        if !out.iter().any(|x| x.id == t.id) {
-                            out.push(t);
-                        }
-                    }
-                    on_page(out.len());
-                }
-                Err(e) => {
-                    if out.is_empty() {
-                        return Err(format!("playlist tracks failed: {e}"));
-                    }
-                    eprintln!("[yutu-import] playlist tracks raw page failed: {e}");
-                    break;
-                }
+        failed = match &self.inner {
+            Inner::Anonymous(client) => {
+                stream_raw_tracks(client, &query, &mut on_page, &mut out).await
             }
-        }
+            Inner::Cookie(client) => {
+                stream_raw_tracks(client, &query, &mut on_page, &mut out).await
+            }
+            Inner::OAuth(client) => stream_raw_tracks(client, &query, &mut on_page, &mut out).await,
+        };
         if out.is_empty() {
-            return Err("playlist tracks failed: no rows parsed".to_string());
+            return Err(if failed {
+                "playlist tracks failed: no rows parsed".to_string()
+            } else {
+                "playlist tracks failed: empty playlist".to_string()
+            });
         }
         Ok(out)
     }
@@ -822,52 +808,74 @@ pub struct ResolvedStream {
     pub pot_token: Option<String>,
 }
 
-/// Typed pages for [`InnertubeBackend::playlist_tracks_live`]: collects
-/// each page result (stopping after the first error, like upstream)
-/// without flattening, so the caller can map and report per page.
-async fn live_typed_pages<A>(
+/// Typed pages mapped + reported as each arrives (see
+/// [`InnertubeBackend::playlist_tracks_live`]). Returns true when a
+/// page failed (upstream stops the stream there).
+async fn stream_typed_tracks<A, F>(
     client: &YtMusic<A>,
     query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
-) -> Vec<Result<Vec<PlaylistItem>, String>>
+    on_page: &mut F,
+    out: &mut Vec<Track>,
+) -> bool
 where
     A: ytmapi_rs::auth::AuthToken,
+    F: FnMut(usize) + Send,
 {
     use futures::StreamExt as _;
     let stream = client.stream(query);
     futures::pin_mut!(stream);
-    let mut pages = Vec::new();
+    let mut failed = false;
     while let Some(page) = stream.next().await {
-        let done = page.is_err();
-        pages.push(page.map_err(|e| e.to_string()));
-        if done {
-            break;
+        match page {
+            Ok(items) => {
+                out.extend(items.iter().filter_map(playlist_item_to_track));
+                on_page(out.len());
+            }
+            Err(e) => {
+                failed = true;
+                eprintln!("[yutu-import] playlist tracks page failed: {e}");
+                break;
+            }
         }
     }
-    pages
+    failed
 }
 
-/// Raw pages for [`InnertubeBackend::playlist_tracks_live`]: unlike the
-/// typed stream (which stops at the first unparseable page), the raw
-/// stream keeps yielding pages, so every row shape can be attempted.
-async fn live_raw_pages<A>(
+/// Raw pages mapped tolerantly + reported as each arrives, deduping
+/// against typed-mapped rows kept from the failed pass. Returns true on
+/// transport error (the caller errors only when nothing survived).
+async fn stream_raw_tracks<A, F>(
     client: &YtMusic<A>,
     query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
-) -> Vec<Result<String, String>>
+    on_page: &mut F,
+    out: &mut Vec<Track>,
+) -> bool
 where
     A: ytmapi_rs::auth::AuthToken,
+    F: FnMut(usize) + Send,
 {
     use futures::StreamExt as _;
     let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
     futures::pin_mut!(stream);
-    let mut pages = Vec::new();
+    let mut failed = false;
     while let Some(page) = stream.next().await {
-        let done = page.is_err();
-        pages.push(page.map_err(|e| e.to_string()));
-        if done {
-            break;
+        match page {
+            Ok(json) => {
+                for t in tolerant_playlist_rows(&json) {
+                    if !out.iter().any(|x| x.id == t.id) {
+                        out.push(t);
+                    }
+                }
+                on_page(out.len());
+            }
+            Err(e) => {
+                failed = true;
+                eprintln!("[yutu-import] playlist tracks raw page failed: {e}");
+                break;
+            }
         }
     }
-    pages
+    failed
 }
 
 /// Leading integer of a details count text ("248 songs", "1,234

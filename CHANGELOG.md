@@ -13,8 +13,9 @@
   row shapes the typed parser rejects, so 300-song playlists import
   whole instead of truncated or failed; per-page song ticks drive the
   banner bar song by song against the details total, even for a single
-  playlist; the displayed count eases toward the truth each Tick so
-  ~100-song page bursts sweep visibly instead of teleporting 0 to 100%
+  playlist; pages report the moment they arrive (not buffered to the
+  end) and the displayed count eases toward the truth each Tick so
+  bursts sweep visibly instead of teleporting 0 to 100%
 - Stay signed in with cookies: successful imports stash a 0600 session,
   restarts show "Signed in with cookies" with one-click re-import plus
   sign-out; imports now pull songs + liked + every playlist with tracks,
