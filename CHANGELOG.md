@@ -16,8 +16,10 @@
   playlist; pages report the moment they arrive (not buffered to the
   end) and the displayed count eases toward the truth each Tick so
   bursts sweep visibly instead of teleporting 0 to 100%
-- Stay signed in with cookies: successful imports stash a 0600 session,
-  restarts show "Signed in with cookies" with one-click re-import plus
+- Liked songs import for real: the browse endpoint wants the
+  `VL`-prefixed `VLLM` id (bare `LM` 400s), so likes land in Favorites
+  instead of silently failing
+- Stay signed in with cookies: successful imports stash a 0600 session,  restarts show "Signed in with cookies" with one-click re-import plus
   sign-out; imports now pull songs + liked + every playlist with tracks,
   and likes/playlist creates/adds/deletes mirror to YouTube Music in the
   background (single-track removes stay local-only: upstream needs a
