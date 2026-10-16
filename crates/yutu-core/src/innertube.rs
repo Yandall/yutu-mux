@@ -134,11 +134,13 @@ pub struct ServerPlaylist {
     pub title: String,
 }
 
-/// Map one `get_library_playlists` row to our [`ServerPlaylist`]
-/// (`id` = raw playlist id for later track/add/delete calls).
+/// Map one `get_library_playlists` row to our [`ServerPlaylist`].
+/// The browse `playlist_id` arrives `VL`-prefixed (`VLPL...`); it is
+/// stored canonicalised (see [`crate::library::canonical_playlist_id`])
+/// so later track/add/delete calls send the per-endpoint form.
 fn server_playlist_of(list: &ytmapi_rs::parse::LibraryPlaylist) -> ServerPlaylist {
     ServerPlaylist {
-        id: list.playlist_id.get_raw().to_string(),
+        id: crate::library::canonical_playlist_id(list.playlist_id.get_raw()),
         title: list.title.clone(),
     }
 }
@@ -360,7 +362,9 @@ impl InnertubeBackend {
         F: FnMut(usize) + Send,
     {
         use ytmapi_rs::query::GetPlaylistTracksQuery;
-        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(playlist_id));
+        // Reads go to `browse`, which wants the `VL`-prefixed browse id.
+        let browse = crate::library::browse_playlist_id(playlist_id);
+        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(browse.as_str()));
         let mut out: Vec<Track> = Vec::new();
         // Typed pages first (exact mapping), reporting each page the
         // moment it arrives: buffering all pages before reporting
@@ -405,17 +409,19 @@ impl InnertubeBackend {
     /// to list-level progress when this errors (endpoint quirks, odd
     /// locales); never fatal.
     pub async fn playlist_details_count(&self, playlist_id: &str) -> Result<usize, String> {
+        // Same `browse` endpoint as track reads: `VL`-prefixed id.
+        let browse = crate::library::browse_playlist_id(playlist_id);
         let details = match &self.inner {
             Inner::Anonymous(client) => client
-                .get_playlist_details(PlaylistID::from_raw(playlist_id))
+                .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
                 .map_err(|e| format!("playlist details failed: {e}"))?,
             Inner::Cookie(client) => client
-                .get_playlist_details(PlaylistID::from_raw(playlist_id))
+                .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
                 .map_err(|e| format!("playlist details failed: {e}"))?,
             Inner::OAuth(client) => client
-                .get_playlist_details(PlaylistID::from_raw(playlist_id))
+                .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
                 .map_err(|e| format!("playlist details failed: {e}"))?,
         };
@@ -448,6 +454,7 @@ impl InnertubeBackend {
     /// Auth: cookie OR Google OAuth (`RateSongQuery` is `LoggedIn`
     /// upstream); anonymous backends get a local error. Callers apply
     /// the local state first and treat this as best-effort sync.
+    /// Sends `like/like` for likes, `like/removelike` for unlikes.
     pub async fn rate_like(&self, video_id: &str, liked: bool) -> Result<(), String> {
         let rating = if liked {
             ytmapi_rs::common::LikeStatus::Liked
@@ -467,7 +474,257 @@ impl InnertubeBackend {
         }
     }
 
-    /// Create a private playlist on YouTube Music, returning its server id.
+    /// Push a dislike ("don't recommend") to YouTube Music.
+    ///
+    /// Sends `like/dislike` for dislikes, `like/removelike` to clear.
+    /// Like and dislike are one status server-side: callers clear the
+    /// local like when disliking and vice versa.
+    ///
+    /// Auth: cookie OR Google OAuth, same as [`Self::rate_like`].
+    pub async fn rate_dislike(&self, video_id: &str, disliked: bool) -> Result<(), String> {
+        let rating = if disliked {
+            ytmapi_rs::common::LikeStatus::Disliked
+        } else {
+            ytmapi_rs::common::LikeStatus::Indifferent
+        };
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("rate_dislike requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .rate_song(VideoID::from_raw(video_id), rating)
+                .await
+                .map_err(|e| format!("rate dislike failed: {e}")),
+            Inner::OAuth(client) => client
+                .rate_song(VideoID::from_raw(video_id), rating)
+                .await
+                .map_err(|e| format!("rate dislike failed: {e}")),
+        }
+    }
+
+    /// Push a playlist like/unlike (`like/like` vs `like/removelike`
+    /// with a `playlistId` target). A liked playlist joins the library.
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn rate_playlist_like(&self, playlist_id: &str, liked: bool) -> Result<(), String> {
+        let rating = if liked {
+            ytmapi_rs::common::LikeStatus::Liked
+        } else {
+            ytmapi_rs::common::LikeStatus::Indifferent
+        };
+        // Playlist targets go to `like/*` in edit (raw) form: a `VL...`
+        // browse id 400s with `invalid argument`.
+        let edit = crate::library::edit_playlist_id(playlist_id);
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("rate_playlist_like requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .rate_playlist(PlaylistID::from_raw(edit.as_str()), rating)
+                .await
+                .map_err(|e| format!("rate playlist failed: {e}")),
+            Inner::OAuth(client) => client
+                .rate_playlist(PlaylistID::from_raw(edit.as_str()), rating)
+                .await
+                .map_err(|e| format!("rate playlist failed: {e}")),
+        }
+    }
+
+    /// Push a playlist dislike (`like/dislike` with a `playlistId`
+    /// target): reduces its recommendations. `false` clears via
+    /// `like/removelike`.
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn rate_playlist_dislike(
+        &self,
+        playlist_id: &str,
+        disliked: bool,
+    ) -> Result<(), String> {
+        let rating = if disliked {
+            ytmapi_rs::common::LikeStatus::Disliked
+        } else {
+            ytmapi_rs::common::LikeStatus::Indifferent
+        };
+        // Same edit-form rule as [`Self::rate_playlist_like`].
+        let edit = crate::library::edit_playlist_id(playlist_id);
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("rate_playlist_dislike requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .rate_playlist(PlaylistID::from_raw(edit.as_str()), rating)
+                .await
+                .map_err(|e| format!("rate playlist dislike failed: {e}")),
+            Inner::OAuth(client) => client
+                .rate_playlist(PlaylistID::from_raw(edit.as_str()), rating)
+                .await
+                .map_err(|e| format!("rate playlist dislike failed: {e}")),
+        }
+    }
+
+    /// Rename a YouTube Music playlist you own (`browse/edit_playlist`
+    /// with `ACTION_SET_PLAYLIST_NAME`).
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn rename_server_playlist(
+        &self,
+        playlist_id: &str,
+        new_title: &str,
+    ) -> Result<(), String> {
+        use ytmapi_rs::query::EditPlaylistQuery;
+        // `browse/edit_playlist` wants the raw id (see edit-form rule).
+        let edit = crate::library::edit_playlist_id(playlist_id);
+        let outcome = match &self.inner {
+            Inner::Anonymous(_) => {
+                return Err(
+                    "rename_server_playlist requires login (cookie or Google OAuth)".into(),
+                );
+            }
+            Inner::Cookie(client) => client
+                .edit_playlist(EditPlaylistQuery::new_title(
+                    PlaylistID::from_raw(edit.as_str()),
+                    new_title,
+                ))
+                .await
+                .map_err(|e| format!("rename playlist failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .edit_playlist(EditPlaylistQuery::new_title(
+                    PlaylistID::from_raw(edit.as_str()),
+                    new_title,
+                ))
+                .await
+                .map_err(|e| format!("rename playlist failed: {e}"))?,
+        };
+        match outcome {
+            ytmapi_rs::common::ApiOutcome::Success => Ok(()),
+            ytmapi_rs::common::ApiOutcome::Failure => {
+                Err("rename playlist failed: server returned failure".into())
+            }
+        }
+    }
+
+    /// Subscribe to an artist (adds to the library artist list).
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn subscribe_artist(&self, channel_id: &str) -> Result<(), String> {
+        use ytmapi_rs::common::ArtistChannelID;
+        use ytmapi_rs::common::YoutubeID as _;
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("subscribe_artist requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .subscribe_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("subscribe artist failed: {e}")),
+            Inner::OAuth(client) => client
+                .subscribe_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("subscribe artist failed: {e}")),
+        }
+    }
+
+    /// Unsubscribe from one or more artists.
+    ///
+    /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
+    pub async fn unsubscribe_artists(&self, channel_ids: &[String]) -> Result<(), String> {
+        use ytmapi_rs::common::ArtistChannelID;
+        use ytmapi_rs::common::YoutubeID as _;
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("unsubscribe_artists requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .unsubscribe_artists(
+                    channel_ids
+                        .iter()
+                        .map(|c| ArtistChannelID::from_raw(c.as_str())),
+                )
+                .await
+                .map_err(|e| format!("unsubscribe artists failed: {e}")),
+            Inner::OAuth(client) => client
+                .unsubscribe_artists(
+                    channel_ids
+                        .iter()
+                        .map(|c| ArtistChannelID::from_raw(c.as_str())),
+                )
+                .await
+                .map_err(|e| format!("unsubscribe artists failed: {e}")),
+        }
+    }
+
+    /// Per-membership ids for one playlist: every `(video_id,
+    /// set_video_id)` pair found in the raw browse JSON. `set_video_id`
+    /// is what `browse/edit_playlist` removals need; the typed
+    /// `PlaylistItem` parse drops it, so this raw pass recovers it.
+    ///
+    /// Auth: all backends attempt it (private lists fail server-side).
+    /// Errors only when zero pairs survive.
+    pub async fn playlist_set_video_map(
+        &self,
+        playlist_id: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        use ytmapi_rs::query::GetPlaylistTracksQuery;
+        // Read path: `browse` wants the `VL`-prefixed id.
+        let browse = crate::library::browse_playlist_id(playlist_id);
+        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(browse.as_str()));
+        let mut out: Vec<(String, String)> = Vec::new();
+        let failed: bool = match &self.inner {
+            Inner::Anonymous(client) => collect_set_video_pairs(client, &query, &mut out).await,
+            Inner::Cookie(client) => collect_set_video_pairs(client, &query, &mut out).await,
+            Inner::OAuth(client) => collect_set_video_pairs(client, &query, &mut out).await,
+        };
+        if out.is_empty() {
+            return Err(if failed {
+                "playlist setVideoIds failed: no rows parsed".to_string()
+            } else {
+                "playlist setVideoIds failed: empty playlist".to_string()
+            });
+        }
+        Ok(out)
+    }
+
+    /// Remove every occurrence of a video from a YouTube Music playlist
+    /// you own (`browse/edit_playlist` with `ACTION_REMOVE_VIDEO`).
+    ///
+    /// Resolves the per-membership `setVideoId` first via
+    /// [`Self::playlist_set_video_map`], then removes all matching
+    /// memberships. Auth: cookie OR Google OAuth.
+    pub async fn remove_from_server_playlist(
+        &self,
+        playlist_id: &str,
+        video_id: &str,
+    ) -> Result<(), String> {
+        use ytmapi_rs::common::SetVideoID;
+        use ytmapi_rs::common::YoutubeID as _;
+        let map = self.playlist_set_video_map(playlist_id).await?;
+        let targets: Vec<SetVideoID<'_>> = map
+            .iter()
+            .filter(|(vid, _)| vid == video_id)
+            .map(|(_, set)| SetVideoID::from_raw(set.as_str()))
+            .collect();
+        if targets.is_empty() {
+            return Err(format!("video {video_id} is not on playlist {playlist_id}"));
+        }
+        // Removal posts to `browse/edit_playlist`: edit (raw) form.
+        let edit = crate::library::edit_playlist_id(playlist_id);
+        match &self.inner {
+            Inner::Anonymous(_) => {
+                Err("remove_from_server_playlist requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => client
+                .remove_playlist_items(PlaylistID::from_raw(edit.as_str()), targets)
+                .await
+                .map_err(|e| format!("remove from playlist failed: {e}")),
+            Inner::OAuth(client) => client
+                .remove_playlist_items(PlaylistID::from_raw(edit.as_str()), targets)
+                .await
+                .map_err(|e| format!("remove from playlist failed: {e}")),
+        }
+    }
+
+    /// Create a private playlist on YouTube Music, returning its server id
+    /// in canonical (edit-form) storage form.
     ///
     /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
     pub async fn create_server_playlist(&self, title: &str) -> Result<String, String> {
@@ -484,7 +741,7 @@ impl InnertubeBackend {
                     PrivacyStatus::Private,
                 ))
                 .await
-                .map(|id| id.get_raw().to_string())
+                .map(|id| crate::library::canonical_playlist_id(id.get_raw()))
                 .map_err(|e| format!("create playlist failed: {e}")),
             Inner::OAuth(client) => client
                 .create_playlist(CreatePlaylistQuery::new(
@@ -493,12 +750,16 @@ impl InnertubeBackend {
                     PrivacyStatus::Private,
                 ))
                 .await
-                .map(|id| id.get_raw().to_string())
+                .map(|id| crate::library::canonical_playlist_id(id.get_raw()))
                 .map_err(|e| format!("create playlist failed: {e}")),
         }
     }
 
     /// Append a video to a YouTube Music playlist you own.
+    ///
+    /// Posts to `browse/edit_playlist` (`ACTION_ADD_VIDEO`), which wants
+    /// the raw id: a `VL...` browse id 400s with `invalid argument`, so
+    /// both stored forms are accepted and converted.
     ///
     /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
     pub async fn add_to_server_playlist(
@@ -506,13 +767,14 @@ impl InnertubeBackend {
         playlist_id: &str,
         video_id: &str,
     ) -> Result<(), String> {
+        let edit = crate::library::edit_playlist_id(playlist_id);
         match &self.inner {
             Inner::Anonymous(_) => {
                 Err("add_to_server_playlist requires login (cookie or Google OAuth)".into())
             }
             Inner::Cookie(client) => client
                 .add_video_items_to_playlist(
-                    PlaylistID::from_raw(playlist_id),
+                    PlaylistID::from_raw(edit.as_str()),
                     [VideoID::from_raw(video_id)],
                 )
                 .await
@@ -520,7 +782,7 @@ impl InnertubeBackend {
                 .map_err(|e| format!("add to playlist failed: {e}")),
             Inner::OAuth(client) => client
                 .add_video_items_to_playlist(
-                    PlaylistID::from_raw(playlist_id),
+                    PlaylistID::from_raw(edit.as_str()),
                     [VideoID::from_raw(video_id)],
                 )
                 .await
@@ -529,23 +791,26 @@ impl InnertubeBackend {
         }
     }
 
-    /// Delete a YouTube Music playlist you own.
+    /// Delete a YouTube Music playlist you own (`playlist/delete`).
+    ///
+    /// Same edit-form rule as [`Self::add_to_server_playlist`]: accepts
+    /// either stored form.
     ///
     /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
-    /// Note: removing single tracks is intentionally unsupported (upstream
-    /// needs a per-membership `setVideoId` that playlist listings do not
-    /// return), so track removal stays local-only.
+    /// Single-track removal uses [`Self::remove_from_server_playlist`]
+    /// (setVideoId resolved from raw browse JSON).
     pub async fn delete_server_playlist(&self, playlist_id: &str) -> Result<(), String> {
+        let edit = crate::library::edit_playlist_id(playlist_id);
         match &self.inner {
             Inner::Anonymous(_) => {
                 Err("delete_server_playlist requires login (cookie or Google OAuth)".into())
             }
             Inner::Cookie(client) => client
-                .delete_playlist(PlaylistID::from_raw(playlist_id))
+                .delete_playlist(PlaylistID::from_raw(edit.as_str()))
                 .await
                 .map_err(|e| format!("delete playlist failed: {e}")),
             Inner::OAuth(client) => client
-                .delete_playlist(PlaylistID::from_raw(playlist_id))
+                .delete_playlist(PlaylistID::from_raw(edit.as_str()))
                 .await
                 .map_err(|e| format!("delete playlist failed: {e}")),
         }
@@ -877,6 +1142,119 @@ where
         }
     }
     failed
+}
+
+/// Raw pages scanned for `(video_id, set_video_id)` pairs (see
+/// [`InnertubeBackend::playlist_set_video_map`]). Returns true when a
+/// page failed to load (the caller errors only when nothing survived).
+async fn collect_set_video_pairs<A>(
+    client: &YtMusic<A>,
+    query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
+    out: &mut Vec<(String, String)>,
+) -> bool
+where
+    A: ytmapi_rs::auth::AuthToken,
+{
+    use futures::StreamExt as _;
+    let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
+    futures::pin_mut!(stream);
+    let mut failed = false;
+    while let Some(page) = stream.next().await {
+        match page {
+            Ok(json) => {
+                for pair in extract_set_video_pairs(&json) {
+                    if !out.contains(&pair) {
+                        out.push(pair);
+                    }
+                }
+            }
+            Err(e) => {
+                failed = true;
+                eprintln!("[yutu-playlist] setVideoId page failed: {e}");
+                break;
+            }
+        }
+    }
+    failed
+}
+
+/// Every `(video_id, set_video_id)` pair in one raw playlist page.
+///
+/// Walks every `musicResponsiveListItemRenderer` row and deep-searches
+/// inside it for a `videoId` (the track) and a `setVideoId` (the
+/// per-membership removal handle). Rows missing either are skipped
+/// (deleted, greyed-out, episodes). Unparseable JSON yields no pairs.
+pub fn extract_set_video_pairs(raw: &str) -> Vec<(String, String)> {
+    let value: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut renderers = Vec::new();
+    collect_renderers(&value, &mut renderers);
+    renderers
+        .iter()
+        .filter_map(|r| {
+            let video = deep_find_first_string(r, &["videoId"])?;
+            let set = deep_find_first_string(r, &["setVideoId", "playlistSetVideoId"])?;
+            if video.is_empty() || set.is_empty() {
+                return None;
+            }
+            Some((video, set))
+        })
+        .collect()
+}
+
+/// All `musicResponsiveListItemRenderer` subtrees in a page (both the
+/// first-page shelf and continuation items share this row shape).
+fn collect_renderers<'v>(value: &'v serde_json::Value, out: &mut Vec<&'v serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(r) = map.get("musicResponsiveListItemRenderer") {
+                out.push(r);
+            }
+            for v in map.values() {
+                collect_renderers(v, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items {
+                collect_renderers(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// First non-empty string under any of `keys`, depth-first. Finds
+/// `videoId` inside `watchEndpoint` as well as top-level `setVideoId`
+/// without depending on the exact nesting upstream uses.
+fn deep_find_first_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(serde_json::Value::String(s)) = map.get(*key) {
+                    if !s.is_empty() {
+                        return Some(s.clone());
+                    }
+                }
+            }
+            for v in map.values() {
+                if let Some(hit) = deep_find_first_string(v, keys) {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for v in items {
+                if let Some(hit) = deep_find_first_string(v, keys) {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Leading integer of a details count text ("248 songs", "1,234
@@ -1730,6 +2108,190 @@ mod tests {
         assert_eq!(parse_leading_count("  7"), Some(7));
         assert_eq!(parse_leading_count("songs"), None);
         assert_eq!(parse_leading_count(""), None);
+    }
+
+    // ---- Write-operation HTTP shapes (offline: query construction only) ----
+
+    #[test]
+    fn rate_song_queries_hit_like_endpoints_with_video_target() {
+        use ytmapi_rs::common::PlaylistID;
+        use ytmapi_rs::common::{LikeStatus, VideoID, YoutubeID as _};
+        use ytmapi_rs::query::{PostQuery, RatePlaylistQuery, RateSongQuery};
+
+        let like = RateSongQuery::new(VideoID::from_raw("vid123"), LikeStatus::Liked);
+        assert_eq!(like.path(), "like/like");
+        assert_eq!(
+            like.header()["target"],
+            serde_json::json!({"videoId": "vid123"})
+        );
+        let dislike = RateSongQuery::new(VideoID::from_raw("vid123"), LikeStatus::Disliked);
+        assert_eq!(dislike.path(), "like/dislike");
+        let clear = RateSongQuery::new(VideoID::from_raw("vid123"), LikeStatus::Indifferent);
+        assert_eq!(clear.path(), "like/removelike");
+
+        let pl_like = RatePlaylistQuery::new(PlaylistID::from_raw("PLabc"), LikeStatus::Liked);
+        assert_eq!(pl_like.path(), "like/like");
+        assert_eq!(
+            pl_like.header()["target"],
+            serde_json::json!({"playlistId": "PLabc"})
+        );
+        let pl_dislike =
+            RatePlaylistQuery::new(PlaylistID::from_raw("PLabc"), LikeStatus::Disliked);
+        assert_eq!(pl_dislike.path(), "like/dislike");
+    }
+
+    #[test]
+    fn playlist_write_queries_hit_expected_paths_and_ids() {
+        use ytmapi_rs::common::{PlaylistID, SetVideoID, VideoID, YoutubeID as _};
+        use ytmapi_rs::query::{playlist::PrivacyStatus, AddPlaylistItemsQuery};
+        use ytmapi_rs::query::{
+            CreatePlaylistQuery, DeletePlaylistQuery, EditPlaylistQuery, PostQuery,
+            RemovePlaylistItemsQuery,
+        };
+
+        let create = CreatePlaylistQuery::new("Road Trip", None, PrivacyStatus::Private);
+        assert_eq!(create.path(), "playlist/create");
+        let header = create.header();
+        assert_eq!(header["title"], "Road Trip");
+        assert_eq!(header["privacyStatus"], "PRIVATE");
+
+        let delete = DeletePlaylistQuery::new(PlaylistID::from_raw("PLabc123"));
+        assert_eq!(delete.path(), "playlist/delete");
+        assert_eq!(delete.header()["playlistId"], "PLabc123");
+
+        let add = AddPlaylistItemsQuery::new_from_videos(
+            PlaylistID::from_raw("PLabc123"),
+            [VideoID::from_raw("vid999")],
+            Default::default(),
+        );
+        assert_eq!(add.path(), "browse/edit_playlist");
+        assert_eq!(add.header()["playlistId"], "PLabc123");
+        let actions = add.header()["actions"].clone();
+        let actions = actions.as_array().expect("actions array");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["action"], "ACTION_ADD_VIDEO");
+        assert_eq!(actions[0]["addedVideoId"], "vid999");
+
+        let remove = RemovePlaylistItemsQuery::new(
+            PlaylistID::from_raw("PLabc123"),
+            [SetVideoID::from_raw("set123")],
+        );
+        assert_eq!(remove.path(), "browse/edit_playlist");
+        assert_eq!(remove.header()["playlistId"], "PLabc123");
+        let actions = remove.header()["actions"].clone();
+        let actions = actions.as_array().expect("remove actions array");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["action"], "ACTION_REMOVE_VIDEO");
+        assert_eq!(actions[0]["setVideoId"], "set123");
+
+        let rename = EditPlaylistQuery::new_title(PlaylistID::from_raw("PLabc123"), "New Name");
+        assert_eq!(rename.path(), "browse/edit_playlist");
+        assert_eq!(rename.header()["playlistId"], "PLabc123");
+        let actions = rename.header()["actions"].clone();
+        let actions = actions.as_array().expect("rename actions array");
+        assert!(
+            actions
+                .iter()
+                .any(|a| a["action"] == "ACTION_SET_PLAYLIST_NAME"
+                    && a["playlistName"] == "New Name"),
+            "rename must carry ACTION_SET_PLAYLIST_NAME, got {actions:?}"
+        );
+    }
+
+    #[test]
+    fn subscribe_queries_hit_expected_paths() {
+        use ytmapi_rs::common::{ArtistChannelID, YoutubeID as _};
+        use ytmapi_rs::query::{PostQuery, SubscribeArtistQuery, UnsubscribeArtistsQuery};
+
+        let sub = SubscribeArtistQuery::new(ArtistChannelID::from_raw("UCabc"));
+        assert_eq!(sub.path(), "subscription/subscribe");
+
+        let unsub = UnsubscribeArtistsQuery::new([ArtistChannelID::from_raw("UCabc")]);
+        assert_eq!(unsub.path(), "subscription/unsubscribe");
+    }
+
+    #[test]
+    fn set_video_pairs_extract_from_both_page_shapes() {
+        let page = serde_json::json!({
+            "contents": {"twoColumnBrowseResultsRenderer": {"secondaryContents": {"sectionListRenderer": {"contents": [
+                {"musicPlaylistShelfRenderer": {"contents": [
+                    {"musicResponsiveListItemRenderer": {
+                        "overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer": {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "vidAAA"}}}}}},
+                        "playlistItemData": {"playlistSetVideoId": "setAAA", "videoId": "vidAAA"},
+                    }},
+                    {"musicResponsiveListItemRenderer": {
+                        "overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer": {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "vidBBB"}}}}}},
+                        "menu": {"menuRenderer": {"items": [{"menuServiceItemRenderer": {"serviceEndpoint": {"playlistEditEndpoint": {"actions": [{"setVideoId": "setBBB"}]}}}}]}},
+                    }},
+                    {"musicResponsiveListItemRenderer": {
+                        "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Song deleted"}]}}}],
+                    }},
+                ]}}
+            ]}}}}
+        });
+        let pairs = extract_set_video_pairs(&page.to_string());
+        assert_eq!(
+            pairs,
+            vec![
+                ("vidAAA".to_string(), "setAAA".to_string()),
+                ("vidBBB".to_string(), "setBBB".to_string()),
+            ]
+        );
+        let cont = serde_json::json!({
+            "onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+                {"musicResponsiveListItemRenderer": {
+                    "overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer": {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "vidCCC"}}}}}},
+                    "playlistItemData": {"videoId": "vidCCC", "setVideoId": "setCCC"},
+                }},
+            ]}}]
+        });
+        assert_eq!(
+            extract_set_video_pairs(&cont.to_string()),
+            vec![("vidCCC".to_string(), "setCCC".to_string())]
+        );
+        assert!(extract_set_video_pairs("not json").is_empty());
+        assert!(extract_set_video_pairs("{}").is_empty());
+    }
+
+    #[test]
+    fn playlist_ids_convert_between_browse_and_edit_forms() {
+        use crate::library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id};
+
+        // Library browse returns VL-prefixed ids; storage is edit form.
+        assert_eq!(canonical_playlist_id("VLPLabc123"), "PLabc123");
+        assert_eq!(canonical_playlist_id("VLLM"), "LM");
+        assert_eq!(canonical_playlist_id("PLabc123"), "PLabc123");
+        assert_eq!(canonical_playlist_id("LM"), "LM");
+        // Reads accept either form.
+        assert_eq!(browse_playlist_id("PLabc123"), "VLPLabc123");
+        assert_eq!(browse_playlist_id("VLPLabc123"), "VLPLabc123");
+        assert_eq!(browse_playlist_id("LM"), "VLLM");
+        assert_eq!(browse_playlist_id("VLLM"), "VLLM");
+        // Writes accept either form (the reported 400 came from sending
+        // a VL browse id to browse/edit_playlist).
+        assert_eq!(edit_playlist_id("VLPLabc123"), "PLabc123");
+        assert_eq!(edit_playlist_id("PLabc123"), "PLabc123");
+        assert_eq!(edit_playlist_id("VLLM"), "LM");
+    }
+
+    #[test]
+    fn library_playlist_rows_store_canonical_ids() {
+        let row: ytmapi_rs::parse::LibraryPlaylist = serde_json::from_value(serde_json::json!({
+            "playlist_id": "VLPLserver123",
+            "title": "Road Trip",
+            "thumbnails": [],
+            "tracks": "10 songs",
+            "author": "Someone",
+            "author_id": null,
+        }))
+        .unwrap();
+        assert_eq!(
+            server_playlist_of(&row),
+            ServerPlaylist {
+                id: "PLserver123".into(),
+                title: "Road Trip".into(),
+            }
+        );
     }
 
     #[test]
