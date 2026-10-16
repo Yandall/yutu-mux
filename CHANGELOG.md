@@ -2,6 +2,10 @@
 
 ## 0.2.0 (unreleased)
 
+- Uniform media cards: album/artist cards share the home pick fixed size
+  with single-line truncated labels, and card strips wrap onto the next
+  line in narrow windows instead of squashing, so every card keeps one
+  height and alignment
 - Staged library import with live progress: songs merge first, then one
   task per playlist streams tracks in with per-list status, so big
   imports no longer freeze the window on a single silent future; all
