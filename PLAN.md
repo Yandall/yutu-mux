@@ -188,5 +188,6 @@ Done: user can plausibly replace Spotify for daily listening.
 49. Round 38: lazy image component (one cache-first view for all art sites; visibility via scroll-offset math per list plus overscan with throttled sweeps and on-open warming; disk cache holds every cover with LRU prune to 150MB; adversarial review highs fixed)
 50. Round 39: quiet background sync (top banner is imports-only; sync pulls surface through a spinning loader beside the sidebar title with a reserved slot so the pin button never hops; sync/error/logout paths all clear the paired flag; adversarial review lows fixed)
 51. Round 40: animated loading states (sidebar spinner rotates one frame per Animate tick via runtime-transformed loader frames; busy buttons keep their label with the spinner beside it and identical idle geometry, replacing the dots; adversarial review lows fixed)
+52. Round 41: bolder buttons (Medium labels via btn_text plus 2.5-stroke icons via btn_icon across all 138 button spans, including track rows, like states, and lyrics seeks; verbatim assets untouched; adversarial review meds fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

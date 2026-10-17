@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Bolder buttons: labels render one weight up (Medium) and icons draw
+  a slightly heavier stroke, everywhere a button is (pills, rows,
+  menus, tabs, seeks); artwork and decorations are untouched
 - Animated loading states: the sidebar sync loader spins (one frame per
   tick), and busy buttons keep their label with the spinner beside it
   instead of collapsing to dots (same width idle and busy)
