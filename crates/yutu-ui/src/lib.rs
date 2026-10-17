@@ -194,6 +194,7 @@ fn icon_bytes(name: &str) -> &'static [u8] {
         "plus" => include_bytes!("../assets/icons/plus.svg"),
         "x" => include_bytes!("../assets/icons/x.svg"),
         "volume" => include_bytes!("../assets/icons/volume-2.svg"),
+        "volume-x" => include_bytes!("../assets/icons/volume-x.svg"),
         "mic" => include_bytes!("../assets/icons/mic.svg"),
         "user-round" => include_bytes!("../assets/icons/user-round.svg"),
         "radio" => include_bytes!("../assets/icons/radio.svg"),
@@ -737,6 +738,7 @@ pub enum Message {
     /// Dislike ("don't recommend"): toggles `like/dislike` server-side.
     Dislike(String),
     SetVolume(f32),
+    ToggleMute,
     QueueRemove(usize),
     QueueUp(usize),
     QueueDown(usize),
@@ -1568,6 +1570,9 @@ pub struct AppState {
     pub downloaded_order: Vec<String>,
     pub history: Vec<String>,
     pub volume: f32,
+    /// Muted: the backend plays silence while `volume` (slider, session)
+    /// stays untouched, so unmuting restores the exact level.
+    pub muted: bool,
     pub status: String,
     pub user_playlists: Vec<Playlist>,
     pub new_playlist_name: String,
@@ -3806,6 +3811,7 @@ impl AppState {
             downloaded_order,
             history,
             volume: 0.8,
+            muted: false,
             status: "Ready: search for music.".into(),
             user_playlists,
             new_playlist_name: String::new(),
@@ -4141,7 +4147,7 @@ impl AppState {
     }
 
     /// Current playback session as a snapshot (queue ids in order plus
-    /// index, position, shuffle/repeat/volume).
+    /// index, position, shuffle/repeat/volume/mute).
     fn queue_snapshot(&self) -> QueueSnapshot {
         QueueSnapshot {
             ids: self.queue.items().iter().map(|t| t.id.clone()).collect(),
@@ -4150,6 +4156,7 @@ impl AppState {
             shuffle: self.queue.shuffle,
             repeat: Self::repeat_label(self.queue.repeat),
             volume: self.volume,
+            muted: self.muted,
         }
     }
 
@@ -4172,7 +4179,7 @@ impl AppState {
     }
 
     /// Tick saver: queue identity changes (ids, index, shuffle, repeat,
-    /// volume) persist on the next tick; the playing position refreshes
+    /// volume, mute) persist on the next tick; the playing position refreshes
     /// at most every 30s so Ticks stay write-free while paused.
     fn maybe_persist_queue(&mut self, now: std::time::Instant) {
         let snap = self.queue_snapshot();
@@ -4181,6 +4188,7 @@ impl AppState {
                 || s.index != snap.index
                 || s.shuffle != snap.shuffle
                 || s.repeat != snap.repeat
+                || s.muted != snap.muted
                 || (s.volume - snap.volume).abs() > f32::EPSILON
         });
         if identity_changed {
@@ -4205,7 +4213,7 @@ impl AppState {
 
     /// Rebuild the queue from the persisted snapshot (unknown ids drop:
     /// the track was never cached). Starts paused at the saved position
-    /// with shuffle/repeat/volume restored.
+    /// with shuffle/repeat/volume/mute restored.
     fn restore_queue(&mut self) {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
             return;
@@ -4227,6 +4235,7 @@ impl AppState {
         self.queue.shuffle = snap.shuffle;
         self.queue.repeat = Self::repeat_parse(&snap.repeat);
         self.volume = snap.volume;
+        self.muted = snap.muted;
         self.apply_volume();
         self.position_secs = snap.position_secs;
         self.paused = true;
@@ -4957,7 +4966,9 @@ impl AppState {
 
     fn apply_volume(&self) {
         if let Some(a) = &self.audio {
-            a.set_volume(self.volume);
+            // Muted plays silence; the slider level is untouched so
+            // unmuting restores it exactly.
+            a.set_volume(if self.muted { 0.0 } else { self.volume });
         }
     }
 
@@ -6823,9 +6834,8 @@ impl AppState {
             }
             C::SetVolume(v) => {
                 self.volume = (v as f32).clamp(0.0, 1.0);
-                if let Some(a) = &self.audio {
-                    a.set_volume(self.volume);
-                }
+                self.muted = false;
+                self.apply_volume();
             }
             C::SetShuffle(shuffle) => {
                 if self.queue.shuffle != shuffle {
@@ -6922,7 +6932,7 @@ impl AppState {
         } else {
             yutu_desktop::PlaybackStatus::Playing
         });
-        player.set_volume(f64::from(self.volume));
+        player.set_volume(f64::from(if self.muted { 0.0 } else { self.volume }));
         player.set_position(self.position_secs);
     }
 
@@ -7599,9 +7609,15 @@ impl AppState {
             }
             Message::SetVolume(v) => {
                 self.volume = v.clamp(0.0, 1.0);
-                if let Some(a) = &self.audio {
-                    a.set_volume(self.volume);
-                }
+                // Dragging the slider always unmutes (standard mixer
+                // behavior); the mute button owns the muted flag.
+                self.muted = false;
+                self.apply_volume();
+            }
+            Message::ToggleMute => {
+                self.muted = !self.muted;
+                self.apply_volume();
+                self.publish_mpris();
             }
             Message::QueueRemove(i) => {
                 self.cancel_drag();
@@ -11956,6 +11972,21 @@ impl AppState {
         .into()
     }
 
+    /// Mute toggle beside the volume slider: speaker glyph, crossed
+    /// when muted. Level untouched, so unmuting restores exactly.
+    fn mute_button(&self) -> iced::Element<'_, Message> {
+        use iced::widget::button;
+        button(btn_icon(
+            if self.muted { "volume-x" } else { "volume" },
+            14.0,
+            MUTED,
+        ))
+        .style(hover_row)
+        .on_press(Message::ToggleMute)
+        .padding(6)
+        .into()
+    }
+
     fn player_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, slider, text, tooltip};
         use iced::Fill;
@@ -12137,7 +12168,7 @@ impl AppState {
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center),
                     row![
-                        icon("volume", 14.0, MUTED),
+                        self.mute_button(),
                         slider(0.0..=1.0, self.volume, Message::SetVolume)
                             .step(0.01_f32)
                             .style(themed_slider)
@@ -12235,12 +12266,18 @@ impl AppState {
                     .width(iced::Length::FillPortion(center_part)),
                     row![
                         iced::widget::Space::new().width(Fill),
+                        self.mute_button(),
                         tooltip(
                             slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(volume_w),
-                            text(format!("Volume {:.0}%", self.volume * 100.0)).size(12),
+                            text(if self.muted {
+                                format!("Volume {:.0}% (muted)", self.volume * 100.0)
+                            } else {
+                                format!("Volume {:.0}%", self.volume * 100.0)
+                            })
+                            .size(12),
                             tooltip::Position::Top,
                         )
                         .gap(8),
@@ -13375,11 +13412,21 @@ impl AppState {
                     text("Settings").size(22),
                     text("Playback").size(17),
                     column![
-                        text(format!("Volume {:.0}%", self.volume * 100.0)).size(13),
-                        slider(0.0..=1.0, self.volume, Message::SetVolume)
-                            .step(0.01_f32)
-                            .style(themed_slider)
-                            .width(Fill),
+                        text(if self.muted {
+                            format!("Volume {:.0}% (muted)", self.volume * 100.0)
+                        } else {
+                            format!("Volume {:.0}%", self.volume * 100.0)
+                        })
+                        .size(13),
+                        row![
+                            slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                .step(0.01_f32)
+                                .style(themed_slider)
+                                .width(Fill),
+                            self.mute_button(),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center),
                     ]
                     .spacing(4),
                     row(eq_buttons).spacing(4),
@@ -16423,6 +16470,30 @@ mod tests {
     }
 
     #[test]
+    fn muted_session_restores_silenced() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir()
+            .join(format!("yutu-queue-{}-{}.db", std::process::id(), n))
+            .to_string_lossy()
+            .into_owned();
+        let (mut s, _) = AppState::with_library_path(path.clone());
+        let tracks = yutu_core::MockBackend::fixture_tracks();
+        s.register_tracks(tracks.clone());
+        for t in &tracks {
+            s.queue.push(t.clone());
+        }
+        s.volume = 0.5;
+        s.muted = true;
+        s.persist_queue();
+        drop(s);
+        // Reopen: the level comes back with output still silenced.
+        let (s2, _) = AppState::with_library_path(path);
+        assert!((s2.volume - 0.5).abs() < f32::EPSILON);
+        assert!(s2.muted);
+        let _ = s2.mute_button();
+    }
+
+    #[test]
     fn queue_restore_drops_unknown_ids() {
         let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir()
@@ -16438,6 +16509,7 @@ mod tests {
                 shuffle: false,
                 repeat: "off".into(),
                 volume: 0.8,
+                muted: false,
             })
             .unwrap();
         let (s, _) = AppState::with_library_path(path);
@@ -19423,6 +19495,38 @@ mod tests {
         let _ = s.update(Message::ToggleShuffle);
         assert!(s.queue.shuffle);
         let _ = s.view();
+    }
+
+    #[test]
+    fn mute_toggle_keeps_level_and_persists() {
+        let mut s = test_state();
+        assert!(!s.muted);
+        // Muting keeps the slider level (backend output goes silent).
+        let _ = s.update(Message::SetVolume(0.6));
+        let _ = s.update(Message::ToggleMute);
+        assert!(s.muted);
+        assert_eq!(s.volume, 0.6);
+        let _ = s.update(Message::ToggleMute);
+        assert!(!s.muted);
+        assert_eq!(s.volume, 0.6);
+        // Dragging the slider always unmutes.
+        let _ = s.update(Message::ToggleMute);
+        let _ = s.update(Message::SetVolume(0.3));
+        assert!(!s.muted);
+        assert_eq!(s.volume, 0.3);
+        // The flag survives in the session snapshot.
+        let snap = s.queue_snapshot();
+        assert!(!snap.muted);
+        s.muted = true;
+        let snap = s.queue_snapshot();
+        assert!(snap.muted);
+        assert_eq!(snap.volume, 0.3);
+        // Both player layouts build with the button in place.
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        let _ = s.view();
+        let _ = s.update(Message::WindowResized(iced::Size::new(400.0, 800.0)));
+        let _ = s.view();
+        let _ = s.mute_button();
     }
 
     #[test]

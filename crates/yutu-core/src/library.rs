@@ -848,6 +848,7 @@ impl LibraryStore {
                 ("shuffle", (snap.shuffle as u8).to_string()),
                 ("repeat", snap.repeat.clone()),
                 ("volume", snap.volume.to_string()),
+                ("muted", (snap.muted as u8).to_string()),
             ];
             for (k, v) in meta {
                 self.conn
@@ -907,6 +908,8 @@ impl LibraryStore {
                 }
             },
             volume: meta("volume").parse::<f32>().unwrap_or(0.8).clamp(0.0, 1.0),
+            // Missing on pre-mute snapshots: restarts unmuted.
+            muted: meta("muted") == "1",
         }))
     }
 
@@ -1438,6 +1441,7 @@ mod tests {
             shuffle: true,
             repeat: "all".into(),
             volume: 0.5,
+            muted: true,
         })
         .unwrap();
         let snap = s.load_queue().unwrap().expect("saved");
@@ -1447,6 +1451,7 @@ mod tests {
         assert!(snap.shuffle);
         assert_eq!(snap.repeat, "all");
         assert!((snap.volume - 0.5).abs() < 1e-6);
+        assert!(snap.muted);
         // Overwrite replaces wholesale (no stale ids or meta).
         s.save_queue(&QueueSnapshot {
             ids: vec!["m9".into()],
@@ -1455,6 +1460,7 @@ mod tests {
             shuffle: false,
             repeat: "off".into(),
             volume: 0.8,
+            muted: false,
         })
         .unwrap();
         let snap = s.load_queue().unwrap().expect("saved");
@@ -1475,6 +1481,7 @@ mod tests {
             shuffle: false,
             repeat: "bogus".into(),
             volume: 99.0,
+            muted: false,
         })
         .unwrap();
         // NaN parses to 0, unknown repeat falls back to off, volume clamps.
