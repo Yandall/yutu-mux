@@ -2,6 +2,10 @@
 
 ## 0.2.0 (unreleased)
 
+- Search rows gain hover states and menus everywhere: the Songs filter
+  matches the hover-reveal plus art play overlay, album/artist/playlist
+  rows highlight on hover with a hover ellipsis and right-click menus
+  (Open, Shuffle play, Start mix, Go to artist, Play)
 - Silent test suite: the 440Hz rodio test tone is gone, control and
   clock tests emit no audio
 - Playlist menu Shuffle play uses the fixed fresh-play path (same as
