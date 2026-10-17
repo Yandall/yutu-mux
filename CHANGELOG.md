@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Lyrics follow: the Now Playing drawer auto-scrolls so the current
+  verse stays centered; scrolling manually pauses it until you scroll
+  back, seek, or change tracks
 - Day-long image cache: covers older than 24 hours refetch on demand
   instead of pinning disk forever (expired files survive reads and are
   swept by the pruner, so offline viewing keeps its bytes)
