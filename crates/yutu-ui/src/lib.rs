@@ -3957,6 +3957,17 @@ impl AppState {
             state.auto_sync = auto_sync;
             state.last_sync_unix = last_sync_unix;
         }
+        // Animation duration survives restarts (garbage falls back to
+        // the default; the slider clamps, so stored values are in range).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(ms) = store
+                .get_pref("anim_ms")
+                .unwrap_or(None)
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+            }
+        }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
         // on first launch with no search. Memory-only (no SQLite writes,
@@ -8848,7 +8859,11 @@ impl AppState {
                 }
             }
             Message::AnimMsChanged(ms) => {
-                self.anim_ms = (ms as u64).clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+                let ms = (ms as u64).clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+                self.anim_ms = ms;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("anim_ms", &ms.to_string());
+                }
             }
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
@@ -19492,6 +19507,18 @@ mod tests {
         assert_eq!(s.anim_ms, ANIM_MAX_MS);
         let _ = s.update(Message::AnimMsChanged(0.0));
         assert_eq!(s.anim_ms, ANIM_MIN_MS);
+        // The choice persists: a fresh state on the same library path
+        // reopens with it (garbage falls back to the default).
+        let _ = s.update(Message::AnimMsChanged(250.0));
+        assert_eq!(s.anim_ms, 250);
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.anim_ms, 250);
+        let Ok(store) = LibraryStore::open(&s.library_path) else {
+            panic!("test library must open");
+        };
+        let _ = store.set_pref("anim_ms", "junk");
+        let (fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(fallback.anim_ms, ANIM_DEFAULT_MS);
     }
 
     #[test]
