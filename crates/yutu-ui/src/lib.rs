@@ -1376,6 +1376,11 @@ const ART_MEM_CAP: usize = 500;
 /// On-disk art cache cap (LRU by mtime, pruned at most every interval).
 const ART_CACHE_MAX_BYTES: u64 = 150 * 1024 * 1024;
 const ART_PRUNE_MIN_SECS: u64 = 300;
+/// Image cache time-to-live, both tiers: covers older than a day read
+/// as missing and are refetched on demand, so browsing history never
+/// pins disk (or memory) past a day. Absolute from fetch time: hits
+/// do not extend it (wall-clock mtimes are unreliable for atime).
+const ART_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Divider pitch between uniform rows (1px hairline + 2px breathing
 /// room each side, never trailing): row height + 5.
 const DIVIDER_PX: f32 = 5.0;
@@ -1679,7 +1684,10 @@ pub struct AppState {
     /// Where the queue is playing from (playlist/artist/radio label).
     playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
-    artwork: HashMap<String, iced::widget::image::Handle>,
+    /// In-memory artwork handles with their fetch time: entries older
+    /// than the TTL read as missing (see [`art_mem`]); the count cap
+    /// still bounds the map, expiry only decides what renders.
+    artwork: HashMap<String, (iced::widget::image::Handle, std::time::Instant)>,
     artwork_loading: HashSet<String>,
     /// Failed artwork URLs with the failure instant: sketchy or removed
     /// covers are not refetched for a cooldown (stops retry loops when
@@ -3324,22 +3332,56 @@ fn artwork_ext(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// True for an observed cache age within the TTL (shared by the
+/// memory and disk tiers; hermetic under test, unlike `Instant` or
+/// file-mtime math).
+fn art_age_fresh(age: std::time::Duration) -> bool {
+    age.as_secs() <= ART_CACHE_TTL_SECS
+}
+
+/// True for a file mtime within the art TTL. Missing mtimes read as
+/// fresh (absence is already handled by the caller), and future
+/// mtimes are clock skew, never expiry.
+fn art_mtime_fresh(modified: Option<std::time::SystemTime>) -> bool {
+    match modified.and_then(|t| std::time::SystemTime::now().duration_since(t).ok()) {
+        Some(age) => art_age_fresh(age),
+        None => true,
+    }
+}
+
+/// True when the file at `path` is older than the art cache TTL.
+fn artwork_expired(path: &std::path::Path) -> bool {
+    !art_mtime_fresh(std::fs::metadata(path).ok().and_then(|m| m.modified().ok()))
+}
+
 /// Candidate extensions for a saved artwork stem, in lookup order.
 const ARTWORK_EXTS: [&str; 4] = ["jpg", "png", "webp", "gif"];
 
 /// Saved artwork path for `url`, if any: tries the sniffed-extension
 /// names, then migrates a legacy extensionless `.bin` file (sniff +
 /// rename, best-effort) so early downloads regain their covers.
+/// Covers older than the TTL read as missing (never deleted here:
+/// an offline viewer keeps its files until a successful fetch lets
+/// the prune sweep them). One metadata call per candidate, so rows
+/// stat once, not twice.
 fn artwork_path_in(dir: &str, url: &str) -> Option<String> {
     let stem = artwork_stem_in(dir, url);
     for ext in ARTWORK_EXTS {
         let path = format!("{stem}.{ext}");
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
+        match std::fs::metadata(&path).ok().filter(|m| m.is_file()) {
+            None => continue,
+            Some(m) if art_mtime_fresh(m.modified().ok()) => return Some(path),
+            // Expired: a miss (the prune sweep deletes it).
+            Some(_) => continue,
         }
     }
     let legacy = format!("{stem}.bin");
     if std::path::Path::new(&legacy).exists() {
+        // Expired legacy files are a miss, never migrated (the prune
+        // sweep deletes them like any other expired cover).
+        if artwork_expired(std::path::Path::new(&legacy)) {
+            return None;
+        }
         if let Ok(bytes) = std::fs::read(&legacy) {
             let migrated = format!("{stem}.{}", artwork_ext(&bytes));
             if std::fs::rename(&legacy, &migrated).is_ok() {
@@ -3397,9 +3439,11 @@ fn save_artwork(url: &str, bytes: &[u8]) {
     save_artwork_in(&artwork_dir(), url, bytes);
 }
 
-/// Prune an artwork dir to `max_bytes` (LRU by mtime, best-effort):
-/// the disk cache holds every fetched cover, so browsing history
-/// cannot grow it without bound.
+/// Prune an artwork dir (best-effort): day-old covers are swept no
+/// matter the size, then the survivors are capped to `max_bytes`
+/// (LRU by mtime). The disk cache holds every fetched cover, so
+/// browsing history cannot grow it without bound or pin it past
+/// the TTL.
 fn prune_artwork_dir_in(dir: &str, max_bytes: u64) {
     let entries: Vec<(u64, u64, std::path::PathBuf)> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
@@ -3409,10 +3453,13 @@ fn prune_artwork_dir_in(dir: &str, max_bytes: u64) {
                 if !meta.is_file() {
                     return None;
                 }
+                // Unknown mtimes read as fresh (matching the lookup
+                // path): uncounted files must never dodge the cap, so
+                // they still sort oldest-first below.
                 let mtime = meta
                     .modified()
-                    .ok()?
-                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
                 Some((mtime, meta.len(), e.path()))
@@ -3420,15 +3467,28 @@ fn prune_artwork_dir_in(dir: &str, max_bytes: u64) {
             .collect(),
         Err(_) => return,
     };
-    let total: u64 = entries.iter().map(|(_, len, _)| len).sum();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Expired covers go first, regardless of size (unknown mtimes
+    // read as fresh, matching the lookup path).
+    let mut fresh = Vec::with_capacity(entries.len());
+    for (mtime, len, path) in entries {
+        if mtime > 0 && now.saturating_sub(mtime) > ART_CACHE_TTL_SECS {
+            let _ = std::fs::remove_file(&path);
+        } else {
+            fresh.push((mtime, len, path));
+        }
+    }
+    let total: u64 = fresh.iter().map(|(_, len, _)| len).sum();
     if total <= max_bytes {
         return;
     }
-    let mut entries = entries;
-    entries.sort_by_key(|(mtime, _, _)| *mtime);
+    fresh.sort_by_key(|(mtime, _, _)| *mtime);
     let mut freed = 0u64;
     let need = total - max_bytes;
-    for (_, len, path) in entries {
+    for (_, len, path) in fresh {
         if freed >= need {
             break;
         }
@@ -3442,6 +3502,11 @@ fn prune_artwork_dir_in(dir: &str, max_bytes: u64) {
 /// Sibling extensions for the same stem are removed first: a changed
 /// content type must not hide behind a stale file (lookup tries
 /// extensions in order and would keep serving the old one).
+/// Same-path rewrite note: iced keys decoded art by path hash, so a
+/// rewritten file can paint stale pixels after an in-memory miss
+/// (fresh fetches render from the memory handle; restarts decode the
+/// file anew). Same-URL byte changes are rare upstream, so the stable
+/// name stays: versioning per fetch would orphan a file per refresh.
 fn save_artwork_in(dir: &str, url: &str, bytes: &[u8]) {
     if std::fs::create_dir_all(dir).is_err() {
         return;
@@ -4293,7 +4358,7 @@ impl AppState {
     /// Catalog-aware so stale rows warm the same key they display.
     fn large_art_task(&mut self, t: &Track) -> Option<iced::Task<Message>> {
         let url = self.hero_art_for(t)?;
-        if self.artwork.contains_key(&url)
+        if self.art_mem(&url).is_some()
             || self.artwork_loading.contains(&url)
             || artwork_file_exists(&url)
         {
@@ -5257,9 +5322,10 @@ impl AppState {
         self.artwork_tasks_for_urls(&urls)
     }
 
-    /// Prune the on-disk art cache to the size cap (LRU by mtime),
-    /// at most every interval: keeps browsing history from growing
-    /// the cache without bound.
+    /// Prune the on-disk art cache (day-old covers swept, survivors
+    /// LRU-capped by size), at most every interval: keeps browsing
+    /// history from growing the cache without bound or pinning it
+    /// past the TTL.
     fn maybe_prune_artwork(&mut self) {
         let now = std::time::Instant::now();
         if self
@@ -5277,7 +5343,7 @@ impl AppState {
     fn artwork_tasks_for_urls(&mut self, urls: &[String]) -> Vec<iced::Task<Message>> {
         let mut tasks = Vec::new();
         for url in urls {
-            if !self.artwork.contains_key(url)
+            if self.art_mem(url).is_none()
                 && !self.artwork_loading.contains(url)
                 && tasks.len() < 12
                 && !artwork_file_exists(url)
@@ -5298,12 +5364,22 @@ impl AppState {
         tasks
     }
 
+    /// Fresh in-memory handle for `url`, if any: entries older than
+    /// the TTL read as missing (stale handles linger until the count
+    /// cap clears them, but nothing renders them).
+    fn art_mem(&self, url: &str) -> Option<iced::widget::image::Handle> {
+        self.artwork
+            .get(url)
+            .filter(|(_, at)| art_age_fresh(at.elapsed()))
+            .map(|(handle, _)| handle.clone())
+    }
+
     /// Cover/photo art by URL at any size (albums, artists).
     /// Memory first, then the on-disk art cache (`Handle::from_path`
     /// stays cached by iced, so repeated rows decode once).
     fn art_handle(&self, url: &str) -> Option<iced::widget::image::Handle> {
-        if let Some(handle) = self.artwork.get(url) {
-            return Some(handle.clone());
+        if let Some(handle) = self.art_mem(url) {
+            return Some(handle);
         }
         artwork_path_for(url).map(iced::widget::image::Handle::from_path)
     }
@@ -7487,16 +7563,28 @@ impl AppState {
                 }
                 if let Ok(bytes) = result {
                     if bytes.len() > 512 {
-                        // The disk cache holds every fetched cover (LRU
-                        // pruned, capped), so rows render from disk when
-                        // the in-memory handle is gone, online or off.
+                        // The disk cache holds every fetched cover (TTL
+                        // swept, size capped), so rows render from disk
+                        // when the in-memory handle is gone, online or off.
                         self.maybe_prune_artwork();
                         save_artwork(&url, &bytes);
                         if self.artwork.len() >= ART_MEM_CAP {
-                            self.artwork.clear();
+                            // Drop expired covers first: a browsing burst
+                            // must not nuke hot entries while stale ones
+                            // linger.
+                            self.artwork
+                                .retain(|_, (_, at)| art_age_fresh(at.elapsed()));
+                            if self.artwork.len() >= ART_MEM_CAP {
+                                self.artwork.clear();
+                            }
                         }
-                        self.artwork
-                            .insert(url, iced::widget::image::Handle::from_bytes(bytes));
+                        self.artwork.insert(
+                            url,
+                            (
+                                iced::widget::image::Handle::from_bytes(bytes),
+                                std::time::Instant::now(),
+                            ),
+                        );
                     }
                 }
                 // Cover the rest of the screenful: the batch cap (12 tasks
@@ -16731,7 +16819,10 @@ mod tests {
         let mut s = s;
         s.artwork.insert(
             "https://example.invalid/cached.jpg".into(),
-            iced::widget::image::Handle::from_bytes(vec![0u8; 600]),
+            (
+                iced::widget::image::Handle::from_bytes(vec![0u8; 600]),
+                std::time::Instant::now(),
+            ),
         );
         let _ = s.lazy_image(Some("https://example.invalid/cached.jpg"), 40.0);
         assert!(s.artwork_loading.is_empty());
@@ -16753,6 +16844,102 @@ mod tests {
             artwork_path_in(&dir, &url).is_some(),
             "fetched covers persist even when not downloaded"
         );
+    }
+
+    /// Backdate a file's mtime by `secs` (wall-clock: hermetic no
+    /// matter the machine uptime, unlike `Instant` arithmetic).
+    fn backdate(path: &std::path::Path, secs: u64) {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
+    #[test]
+    fn art_age_fresh_spans_the_ttl() {
+        assert!(art_age_fresh(std::time::Duration::from_secs(60)));
+        assert!(art_age_fresh(std::time::Duration::from_secs(
+            ART_CACHE_TTL_SECS
+        )));
+        assert!(!art_age_fresh(std::time::Duration::from_secs(
+            ART_CACHE_TTL_SECS + 1
+        )));
+    }
+
+    #[test]
+    fn expired_artwork_reads_as_missing() {
+        let base = std::env::temp_dir().join(format!(
+            "yutu-test-ttl-{}-{}",
+            std::process::id(),
+            TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let dir = base.to_string_lossy().into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        let fresh_url = "https://example.invalid/ttl-fresh";
+        let old_url = "https://example.invalid/ttl-old";
+        save_artwork_in(&dir, fresh_url, &[0xFF, 0xD8, 0xFF, 0xE0]);
+        save_artwork_in(&dir, old_url, &[0xFF, 0xD8, 0xFF, 0xE0]);
+        // Age one cover past the TTL: it reads as missing (the file
+        // itself stays until a prune sweep: offline viewers keep
+        // their bytes until a fetch can replace them).
+        let old_path = artwork_path_in(&dir, old_url).expect("present before ageing");
+        backdate(std::path::Path::new(&old_path), ART_CACHE_TTL_SECS + 3600);
+        assert!(
+            artwork_path_in(&dir, old_url).is_none(),
+            "day-old covers refetch"
+        );
+        assert!(
+            std::path::Path::new(&old_path).exists(),
+            "expired files survive reads; prune sweeps them"
+        );
+        assert!(artwork_path_in(&dir, fresh_url).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_sweeps_expired_before_size_cap() {
+        let base = std::env::temp_dir().join(format!(
+            "yutu-test-ttl-prune-{}-{}",
+            std::process::id(),
+            TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let dir = base.to_string_lossy().into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(base.join("fresh.bin"), vec![0u8; 8]).unwrap();
+        std::fs::write(base.join("old.bin"), vec![0u8; 8]).unwrap();
+        backdate(&base.join("old.bin"), ART_CACHE_TTL_SECS + 3600);
+        // No size pressure at all: expiry alone sweeps.
+        prune_artwork_dir_in(&dir, u64::MAX);
+        assert!(!base.join("old.bin").exists());
+        assert!(base.join("fresh.bin").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memory_art_expires_after_ttl() {
+        redirect_art_cache();
+        let mut s = test_state();
+        // Fresh entries render from memory with no fetch.
+        s.artwork.insert(
+            "https://example.invalid/mem-fresh".into(),
+            (
+                iced::widget::image::Handle::from_bytes(vec![0u8; 600]),
+                std::time::Instant::now(),
+            ),
+        );
+        assert!(s.art_mem("https://example.invalid/mem-fresh").is_some());
+        // Unknown urls miss memory (and the empty test dir): the view
+        // holds the placeholder and never fetches itself.
+        assert!(s.art_mem("https://example.invalid/mem-ghost").is_none());
+        let _ = s.lazy_image(Some("https://example.invalid/mem-ghost"), 40.0);
+        assert!(s.artwork_loading.is_empty());
+        // The TTL comparison itself is pinned by
+        // `art_age_fresh_spans_the_ttl` (past `Instant`s cannot be
+        // fabricated hermetically: `Instant` is uptime, not wall time).
     }
 
     #[test]
