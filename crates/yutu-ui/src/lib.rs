@@ -195,6 +195,7 @@ fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'sta
         "x" => include_bytes!("../assets/icons/x.svg"),
         "volume" => include_bytes!("../assets/icons/volume-2.svg"),
         "mic" => include_bytes!("../assets/icons/mic.svg"),
+        "user-round" => include_bytes!("../assets/icons/user-round.svg"),
         "radio" => include_bytes!("../assets/icons/radio.svg"),
         "settings" => include_bytes!("../assets/icons/settings.svg"),
         "queue" => include_bytes!("../assets/icons/list-music.svg"),
@@ -12510,7 +12511,7 @@ impl AppState {
                     .into(),
                     button(
                         row![
-                            icon("mic", 14.0, iced::Color::WHITE),
+                            icon("user-round", 14.0, iced::Color::WHITE),
                             text("Go to artist").size(14)
                         ]
                         .spacing(8)
@@ -12942,7 +12943,7 @@ impl AppState {
                         }
                         if !artist.is_empty() {
                             items.push(menu_item(
-                                "mic",
+                                "user-round",
                                 "Go to artist".to_string(),
                                 Message::OpenArtist(artist),
                             ));
