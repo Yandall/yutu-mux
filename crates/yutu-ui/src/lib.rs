@@ -195,6 +195,7 @@ fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'sta
         "x" => include_bytes!("../assets/icons/x.svg"),
         "volume" => include_bytes!("../assets/icons/volume-2.svg"),
         "mic" => include_bytes!("../assets/icons/mic.svg"),
+        "user-round" => include_bytes!("../assets/icons/user-round.svg"),
         "radio" => include_bytes!("../assets/icons/radio.svg"),
         "settings" => include_bytes!("../assets/icons/settings.svg"),
         "queue" => include_bytes!("../assets/icons/list-music.svg"),
@@ -454,6 +455,48 @@ fn row_bg(hovered: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::St
         ..Default::default()
     }
 }
+/// One context-menu row: icon + label, full-width hover press target.
+fn menu_item(
+    icon_name: &'static str,
+    label: String,
+    msg: Message,
+) -> iced::Element<'static, Message> {
+    use iced::widget::{button, row, text};
+    use iced::Fill;
+    button(
+        row![
+            icon(icon_name, 14.0, iced::Color::WHITE),
+            text(label).size(14),
+        ]
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center)
+        .width(Fill),
+    )
+    .style(hover_row)
+    .on_press(msg)
+    .padding(8)
+    .width(Fill)
+    .into()
+}
+
+/// Dim backdrop over art for the hover play overlay: darkens the
+/// image so the white play icon reads on top.
+fn art_dim(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.45,
+        })),
+        ..Default::default()
+    }
+}
+
+/// Row art size (matches `thumb`) + hidden action width (icon 15 +
+/// padding 6 each side): spacers keep rows steady when actions hide.
+const ROW_ART: f32 = 40.0;
+const ROW_ACTION_W: f32 = 27.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Route {
@@ -604,6 +647,16 @@ pub struct StagedImport {
     pub library_ok: bool,
 }
 
+/// Search collection menu target: which album/artist hit or
+/// community playlist the open menu belongs to (track menus and user
+/// playlist menus keep their own id-keyed state).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionMenu {
+    Album(String),
+    Artist(String),
+    Playlist(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Navigate(Route),
@@ -725,6 +778,10 @@ pub enum Message {
     PlaylistHover(Option<String>),
     /// Autoplay hover tracking (reveals the row remove).
     AutoHover(Option<usize>),
+    /// Search collection hover (reveals the row highlight + menu).
+    AlbumHover(Option<String>),
+    ArtistHover(Option<String>),
+    SearchPlaylistHover(Option<String>),
     /// Right-panel drag reorder (row press, slot hover, release anywhere).
     DragStart(usize),
     /// Global left press: arms a drag when the cursor is over a queue
@@ -758,6 +815,12 @@ pub enum Message {
     ClearHovers,
     /// Playlist context menu open/close (sidebar rows, detail header).
     OpenPlaylistMenu(String),
+    /// Search collection menu open (album/artist/community-playlist
+    /// rows): right-click or the hover `…` button, same frozen anchor
+    /// as the track and playlist menus.
+    OpenAlbumMenu(String),
+    OpenArtistMenu(String),
+    OpenSearchPlaylistMenu(String),
     /// Play a playlist from the top (clears the queue first).
     PlayPlaylist(String),
     /// Append a whole playlist to the queue (never interrupts).
@@ -1414,6 +1477,8 @@ pub struct AppState {
     context_menu: Option<String>,
     /// Playlist menu open for this playlist id (None = closed).
     pl_menu: Option<String>,
+    /// Search collection menu open (None = closed).
+    coll_menu: Option<CollectionMenu>,
     /// Playlist flyout open for this track id (side panel, menu stays).
     submenu_playlists_for: Option<String>,
     /// Cursor position frozen when the menu opened (the menu must not
@@ -1460,6 +1525,10 @@ pub struct AppState {
     /// Track-row hover by id (reveals full-row highlight where lists are
     /// not index-stable: search/library/discovery rows + recent).
     hovered_track: Option<String>,
+    /// Search collection hover by id (album/artist/playlist rows).
+    hovered_album: Option<String>,
+    hovered_artist: Option<String>,
+    hovered_search_playlist: Option<String>,
     /// Autoplay row under the cursor (same reveal, separate index space).
     hovered_auto: Option<usize>,
     /// Right-panel drag in progress (row press to slot hover to release).
@@ -1732,6 +1801,7 @@ impl AppState {
         if self.results.tracks.is_empty() && !search.tracks.is_empty() {
             self.results = search;
         }
+        self.prune_coll_menu();
         self.status = if m == 0 {
             format!("{n} songs for “{query}”.")
         } else {
@@ -3207,6 +3277,7 @@ impl AppState {
             context_menu: None,
             submenu_playlists_for: None,
             pl_menu: None,
+            coll_menu: None,
             menu_at: None,
             cursor: None,
             window: None,
@@ -3228,6 +3299,9 @@ impl AppState {
             hovered_queue: None,
             hover_remove: None,
             hovered_track: None,
+            hovered_album: None,
+            hovered_artist: None,
+            hovered_search_playlist: None,
             hovered_auto: None,
             drag: None,
             press_snap: None,
@@ -4374,35 +4448,109 @@ impl AppState {
     }
 
     /// Spotify-style numbered row: rank + art + play + title + time + actions.
-    fn numbered_track_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
-        use iced::widget::{button, container, mouse_area, row, text};
-        use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            SPOT_GREEN
+    /// Row art wrapped in a click-to-play button: on hover the art
+    /// dims behind a backdrop with a white play icon on top.
+    fn art_play_button(
+        &self,
+        t: &Track,
+        hovered: bool,
+        play: Message,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{button, container, stack};
+        let art: iced::Element<'_, Message> = if hovered {
+            stack![
+                self.thumb(t),
+                container(
+                    container(icon("play", 14.0, iced::Color::WHITE))
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(iced::Length::Fixed(ROW_ART))
+                        .height(iced::Length::Fixed(ROW_ART))
+                )
+                .style(art_dim)
+                .width(iced::Length::Fixed(ROW_ART))
+                .height(iced::Length::Fixed(ROW_ART))
+            ]
+            .into()
         } else {
-            MUTED
+            self.thumb(t)
         };
+        button(art)
+            .style(row_click)
+            .on_press(play)
+            .padding(0)
+            .into()
+    }
+
+    /// Fixed box standing in for a hidden row action (rows never jump).
+    fn action_spacer() -> iced::Element<'static, Message> {
+        iced::widget::Space::new()
+            .width(iced::Length::Fixed(ROW_ACTION_W))
+            .height(iced::Length::Shrink)
+            .into()
+    }
+
+    /// Like + more buttons for song rows: hidden until hover (spacers
+    /// keep the width); the liked heart stays visible as state.
+    fn song_actions(
+        &self,
+        t: &Track,
+        hovered: bool,
+    ) -> (iced::Element<'_, Message>, iced::Element<'_, Message>) {
+        use iced::widget::button;
+        let liked = self.liked.contains(&t.id);
+        let heart_color = if liked { SPOT_GREEN } else { MUTED };
+        let heart: iced::Element<'_, Message> = if hovered || liked {
+            button(heart_icon(liked, 15.0, heart_color))
+                .style(hover_row)
+                .on_press(Message::Like(t.id.clone()))
+                .padding(6)
+                .into()
+        } else {
+            Self::action_spacer()
+        };
+        let more: iced::Element<'_, Message> = if hovered {
+            button(icon("ellipsis", 15.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::OpenContext(t.id.clone()))
+                .padding(6)
+                .into()
+        } else {
+            Self::action_spacer()
+        };
+        (heart, more)
+    }
+
+    /// Hover `…` button for collection rows (opens the row's menu),
+    /// or a spacer at rest.
+    fn coll_more(hovered: bool, open: Message) -> iced::Element<'static, Message> {
+        use iced::widget::button;
+        if hovered {
+            button(icon("ellipsis", 15.0, MUTED))
+                .style(hover_row)
+                .on_press(open)
+                .padding(6)
+                .into()
+        } else {
+            Self::action_spacer()
+        }
+    }
+
+    fn numbered_track_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area, row, text};
+        use iced::Fill;
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
+        let (heart, more) = self.song_actions(t, hovered);
         mouse_area(
             container(
                 row![
                     text(format!("{n}")).size(13).color(MUTED).width(28),
-                    self.thumb(t),
-                    button(icon("play", 13.0, iced::Color::WHITE))
-                        .style(green_play)
-                        .on_press(Message::PlayNow(t.id.clone()))
-                        .padding(6),
+                    self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
                     text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
-                    button(icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
-                        .on_press(Message::OpenContext(t.id.clone()))
-                        .padding(6),
+                    heart,
+                    more,
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
@@ -5131,6 +5279,7 @@ impl AppState {
         self.context_menu = Some(id);
         self.submenu_playlists_for = None;
         self.pl_menu = None;
+        self.coll_menu = None;
     }
 
     /// Sidebar visibility with hover hysteresis: unpinned, the panel expands
@@ -5234,6 +5383,7 @@ impl AppState {
         self.menu_at = None;
         self.submenu_playlists_for = None;
         self.pl_menu = None;
+        self.coll_menu = None;
     }
 
     /// Open the playlist menu, freezing the cursor like the track menu.
@@ -5242,7 +5392,66 @@ impl AppState {
         self.pl_menu = Some(id);
         self.context_menu = None;
         self.submenu_playlists_for = None;
+        self.coll_menu = None;
         self.show_suggest = false;
+    }
+
+    /// Open the search collection menu, same frozen anchor (only one
+    /// menu kind is ever open).
+    fn open_coll_menu(&mut self, menu: CollectionMenu) {
+        self.menu_at = self.cursor;
+        self.coll_menu = Some(menu);
+        self.context_menu = None;
+        self.submenu_playlists_for = None;
+        self.pl_menu = None;
+        self.show_suggest = false;
+    }
+
+    /// Collection hover with the same modal freeze as track rows: rows
+    /// behind scrims never highlight.
+    fn coll_hover(&self, h: Option<String>) -> Option<String> {
+        if self.context_menu.is_some()
+            || self.pl_menu.is_some()
+            || self.coll_menu.is_some()
+            || self.show_suggest
+        {
+            None
+        } else {
+            h
+        }
+    }
+
+    /// The collection menu's hit is still in results (stale rows never
+    /// open a scrim-less modal, and fresh results prune a dead menu).
+    fn coll_hit_present(&self, menu: &CollectionMenu) -> bool {
+        match menu {
+            CollectionMenu::Album(id) => self.results.albums.iter().any(|a| &a.id == id),
+            CollectionMenu::Artist(id) => self.results.artists.iter().any(|a| &a.id == id),
+            CollectionMenu::Playlist(id) => self.results.playlists.iter().any(|p| &p.id == id),
+        }
+    }
+
+    /// Open a collection menu only when its hit is still in results.
+    fn open_coll_for(&mut self, menu: CollectionMenu) {
+        if self.coll_hit_present(&menu) {
+            self.show_suggest = false;
+            self.open_coll_menu(menu);
+        } else {
+            self.status = "That result is gone: search again.".into();
+        }
+    }
+
+    /// Drop the collection menu when fresh results no longer contain
+    /// its hit (nothing would render, but the modal freeze would
+    /// linger and swallow hovers).
+    fn prune_coll_menu(&mut self) {
+        if self
+            .coll_menu
+            .as_ref()
+            .is_some_and(|m| !self.coll_hit_present(m))
+        {
+            self.coll_menu = None;
+        }
     }
 
     /// Stored-row URL at a display size (shared threshold, one place).
@@ -5893,6 +6102,7 @@ impl AppState {
     /// Play one search-result playlist: fetch its tracks live first
     /// (`shuffle` shuffles the fresh queue like hero actions).
     fn play_search_playlist(&mut self, id: String, shuffle: bool) -> iced::Task<Message> {
+        self.close_menu();
         #[cfg(feature = "innertube")]
         {
             let label = self.search_playlist_label(&id);
@@ -5964,7 +6174,8 @@ impl AppState {
                 if self.drag.is_some() {
                     return iced::Task::none();
                 }
-                if self.context_menu.is_some() || self.pl_menu.is_some() {
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
+                {
                     self.close_menu();
                     return iced::Task::none();
                 }
@@ -5980,7 +6191,8 @@ impl AppState {
                 if self.drag.is_some() {
                     return iced::Task::none();
                 }
-                if self.context_menu.is_some() || self.pl_menu.is_some() {
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
+                {
                     self.close_menu();
                     return iced::Task::none();
                 }
@@ -6315,11 +6527,13 @@ impl AppState {
                 };
             }
             Message::OpenArtist(id) => {
+                self.close_menu();
                 self.go(Route::Artist(id));
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
             }
             Message::OpenAlbum(id) => {
+                self.close_menu();
                 self.go(Route::Album(id));
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
@@ -6534,10 +6748,12 @@ impl AppState {
                 return self.queue_many(tracks, &label);
             }
             Message::PlayArtistShuffled(name) => {
+                self.close_menu();
                 let tracks = self.artist_tracks(&name);
                 return self.shuffle_tracks(tracks, &format!("Artist {name}"));
             }
             Message::PlayAlbumShuffled(id) => {
+                self.close_menu();
                 let title = self.resolve_album_title(&id);
                 let tracks = self.album_tracks(&id);
                 return self.shuffle_tracks(tracks, &format!("Album {title}"));
@@ -6950,15 +7166,26 @@ impl AppState {
             }
             Message::QueueHover(h) => {
                 // Modal open: rows behind scrims never highlight.
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
                     self.hovered_queue = None;
                 } else {
                     self.hovered_queue = h;
                 }
                 self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
             }
             Message::TrackHover(h) => {
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
                     self.hovered_track = None;
                 } else {
                     self.hovered_track = h;
@@ -6967,9 +7194,45 @@ impl AppState {
                 // press there never arms a drag off old state.
                 self.hovered_queue = None;
                 self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
+            }
+            Message::AlbumHover(h) => {
+                self.hovered_album = self.coll_hover(h);
+                self.hovered_track = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
+                self.hovered_playlist = None;
+                self.hovered_queue = None;
+                self.hovered_auto = None;
+                self.hover_remove = None;
+            }
+            Message::ArtistHover(h) => {
+                self.hovered_artist = self.coll_hover(h);
+                self.hovered_track = None;
+                self.hovered_album = None;
+                self.hovered_search_playlist = None;
+                self.hovered_playlist = None;
+                self.hovered_queue = None;
+                self.hovered_auto = None;
+                self.hover_remove = None;
+            }
+            Message::SearchPlaylistHover(h) => {
+                self.hovered_search_playlist = self.coll_hover(h);
+                self.hovered_track = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_playlist = None;
+                self.hovered_queue = None;
+                self.hovered_auto = None;
+                self.hover_remove = None;
             }
             Message::ClearHovers => {
                 self.hovered_track = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
                 self.hovered_queue = None;
                 self.hovered_auto = None;
@@ -6979,29 +7242,50 @@ impl AppState {
                 self.hover_remove = h;
             }
             Message::PlaylistHover(h) => {
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
                     self.hovered_playlist = None;
                 } else {
                     self.hovered_playlist = h;
                 }
                 self.hovered_queue = None;
                 self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
             }
             Message::AutoHover(h) => {
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
                     self.hovered_auto = None;
                 } else {
                     self.hovered_auto = h;
                 }
                 self.hovered_queue = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
             }
             Message::PanelHover(i) => {
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
                     self.hovered_queue = None;
                 } else {
                     self.hovered_queue = Some(i);
                 }
                 self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
             }
             Message::DragStart(from) => {
                 // Two-row lists reorder via the trailing edge slot, so
@@ -7086,8 +7370,10 @@ impl AppState {
                             }
                         }
                     }
-                    let modal =
-                        self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest;
+                    let modal = self.context_menu.is_some()
+                        || self.pl_menu.is_some()
+                        || self.coll_menu.is_some()
+                        || self.show_suggest;
                     let click = !committed
                         && !modal
                         && snap.as_ref().is_some_and(|s| {
@@ -7182,6 +7468,15 @@ impl AppState {
             Message::OpenPlaylistMenu(id) => {
                 self.open_pl_menu(id);
             }
+            Message::OpenAlbumMenu(id) => {
+                self.open_coll_for(CollectionMenu::Album(id));
+            }
+            Message::OpenArtistMenu(id) => {
+                self.open_coll_for(CollectionMenu::Artist(id));
+            }
+            Message::OpenSearchPlaylistMenu(id) => {
+                self.open_coll_for(CollectionMenu::Playlist(id));
+            }
             Message::PlayPlaylist(id) => {
                 self.close_menu();
                 self.show_suggest = false;
@@ -7260,8 +7555,10 @@ impl AppState {
             Message::CursorMoved(p) => {
                 self.cursor = Some(p);
                 // Modal freeze: hover latch never glides behind menus.
-                let modal =
-                    self.context_menu.is_some() || self.pl_menu.is_some() || self.show_suggest;
+                let modal = self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest;
                 // Latched hover hysteresis: expand on rail/edge entry, stay
                 // open anywhere inside panel + grace, collapse only outside.
                 // Y-gated above the player zone so the bottom strip never
@@ -7292,7 +7589,8 @@ impl AppState {
             Message::CloseContext => {
                 // Topmost first: menus, popup, drag, drawer. Menus sit
                 // above the popup in the layer stack.
-                if self.context_menu.is_some() || self.pl_menu.is_some() {
+                if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
+                {
                     self.close_menu();
                 } else if self.show_suggest {
                     self.show_suggest = false;
@@ -9374,27 +9672,21 @@ impl AppState {
         }
     }
 
-    /// Song row for the unified search list: same controls as
-    /// track_row, but the subtitle names the result type (the mixed
-    /// list has no per-type sections anymore).
+    /// Song row for the unified search list: art with a hover play
+    /// overlay (dim backdrop + white icon on top, whole art plays),
+    /// type-led subtitle, and actions (like, more) that only appear on
+    /// hover. Hidden actions keep same-size spacers so rows never jump.
+    /// The liked heart stays visible: it is state, not just an action.
     fn search_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
-        use iced::widget::{button, container, mouse_area, row, text};
+        use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            SPOT_GREEN
-        } else {
-            MUTED
-        };
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
+        let (heart, more) = self.song_actions(t, hovered);
         mouse_area(
             container(
                 row![
-                    self.thumb(t),
-                    button(icon("play", 13.0, iced::Color::WHITE))
-                        .style(green_play)
-                        .on_press(Message::PlayNow(t.id.clone()))
-                        .padding(6),
+                    self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
                     Self::track_text_single(
                         &t.title,
                         &format!("Song · {}", t.artist),
@@ -9402,14 +9694,8 @@ impl AppState {
                         iced::Color::WHITE
                     ),
                     text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
-                    button(icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
-                        .on_press(Message::OpenContext(t.id.clone()))
-                        .padding(6),
+                    heart,
+                    more,
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
@@ -9428,93 +9714,115 @@ impl AppState {
     }
 
     /// Album row for the unified search list: cover, type-led subtitle,
-    /// one fixed row height; the whole row opens the album.
+    /// one fixed row height, hover highlight + menu. Art and text open
+    /// the album; the hover `…` (or right-click) opens its menu.
     fn search_album_row(&self, a: &Album) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let cover = self.album_cover(a);
         let sub = match a.year {
             Some(y) => format!("Album · {} · {}", a.artist, y),
             None => format!("Album · {}", a.artist),
         };
-        container(
-            button(
+        let hovered = self.hovered_album.as_deref() == Some(a.id.as_str());
+        mouse_area(
+            container(
                 row![
-                    self.art_thumb(cover.as_deref(), 40.0),
-                    column![
-                        text(truncate_title(&a.title, 45))
-                            .size(14)
-                            .color(iced::Color::WHITE)
-                            .width(Fill)
-                            .wrapping(Wrapping::None),
-                        text(truncate_title(&sub, 40))
-                            .size(11)
-                            .color(MUTED)
-                            .width(Fill)
-                            .wrapping(Wrapping::None),
-                    ]
-                    .spacing(2)
-                    .width(Fill)
-                    .clip(true),
+                    button(self.art_thumb(cover.as_deref(), 40.0))
+                        .style(row_click)
+                        .on_press(Message::OpenAlbum(a.id.clone()))
+                        .padding(0),
+                    button(
+                        column![
+                            text(truncate_title(&a.title, 45))
+                                .size(14)
+                                .color(iced::Color::WHITE)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                            text(truncate_title(&sub, 40))
+                                .size(11)
+                                .color(MUTED)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .width(Fill)
+                        .clip(true),
+                    )
+                    .style(row_click)
+                    .on_press(Message::OpenAlbum(a.id.clone()))
+                    .padding(3)
+                    .width(Fill),
+                    Self::coll_more(hovered, Message::OpenAlbumMenu(a.id.clone())),
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
                 .padding(4),
             )
-            .style(row_click)
-            .on_press(Message::OpenAlbum(a.id.clone()))
-            .padding(0)
-            .width(Fill),
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
         )
-        .style(row_bg(false))
-        .width(Fill)
-        .height(iced::Length::Fixed(TRACK_ROW_H))
-        .clip(true)
-        .align_y(iced::alignment::Vertical::Center)
+        .on_right_press(Message::OpenAlbumMenu(a.id.clone()))
+        .on_enter(Message::AlbumHover(Some(a.id.clone())))
+        .on_exit(Message::AlbumHover(None))
         .into()
     }
 
     /// Artist row for the unified search list: photo, type-led subtitle,
-    /// one fixed row height; the whole row opens the artist.
+    /// one fixed row height, hover highlight + menu. Photo and name open
+    /// the artist; the hover `…` (or right-click) opens its menu.
     fn search_artist_row(&self, a: &Artist) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let photo = a
             .thumbnail_url
             .as_deref()
             .map(|u| yutu_core::hires_thumb_url(u, 544));
-        container(
-            button(
+        let hovered = self.hovered_artist.as_deref() == Some(a.id.as_str());
+        mouse_area(
+            container(
                 row![
-                    self.art_thumb(photo.as_deref(), 40.0),
-                    column![
-                        text(truncate_title(&a.name, 45))
-                            .size(14)
-                            .color(iced::Color::WHITE)
-                            .width(Fill)
-                            .wrapping(Wrapping::None),
-                        text("Artist").size(11).color(MUTED).width(Fill),
-                    ]
-                    .spacing(2)
-                    .width(Fill)
-                    .clip(true),
+                    button(self.art_thumb(photo.as_deref(), 40.0))
+                        .style(row_click)
+                        .on_press(Message::OpenArtist(a.id.clone()))
+                        .padding(0),
+                    button(
+                        column![
+                            text(truncate_title(&a.name, 45))
+                                .size(14)
+                                .color(iced::Color::WHITE)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                            text("Artist").size(11).color(MUTED).width(Fill),
+                        ]
+                        .spacing(2)
+                        .width(Fill)
+                        .clip(true),
+                    )
+                    .style(row_click)
+                    .on_press(Message::OpenArtist(a.id.clone()))
+                    .padding(3)
+                    .width(Fill),
+                    Self::coll_more(hovered, Message::OpenArtistMenu(a.id.clone())),
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
                 .padding(4),
             )
-            .style(row_click)
-            .on_press(Message::OpenArtist(a.id.clone()))
-            .padding(0)
-            .width(Fill),
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
         )
-        .style(row_bg(false))
-        .width(Fill)
-        .height(iced::Length::Fixed(TRACK_ROW_H))
-        .clip(true)
-        .align_y(iced::alignment::Vertical::Center)
+        .on_right_press(Message::OpenArtistMenu(a.id.clone()))
+        .on_enter(Message::ArtistHover(Some(a.id.clone())))
+        .on_exit(Message::ArtistHover(None))
         .into()
     }
 
@@ -9570,46 +9878,57 @@ impl AppState {
     }
 
     /// Playlist row for the unified search list: art, type-led subtitle,
-    /// one fixed row height; the whole row plays the playlist.
+    /// one fixed row height, hover highlight + menu. Art and text play
+    /// the playlist; the hover `…` (or right-click) opens its menu.
     fn search_playlist_row(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let sub = format!("Playlist · {} · {}", p.author, p.detail);
-        container(
-            button(
+        let hovered = self.hovered_search_playlist.as_deref() == Some(p.id.as_str());
+        mouse_area(
+            container(
                 row![
-                    self.playlist_art(p, 40.0),
-                    column![
-                        text(truncate_title(&p.title, 45))
-                            .size(14)
-                            .color(iced::Color::WHITE)
-                            .width(Fill)
-                            .wrapping(Wrapping::None),
-                        text(truncate_title(&sub, 40))
-                            .size(11)
-                            .color(MUTED)
-                            .width(Fill)
-                            .wrapping(Wrapping::None),
-                    ]
-                    .spacing(2)
-                    .width(Fill)
-                    .clip(true),
+                    button(self.playlist_art(p, 40.0))
+                        .style(row_click)
+                        .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                        .padding(0),
+                    button(
+                        column![
+                            text(truncate_title(&p.title, 45))
+                                .size(14)
+                                .color(iced::Color::WHITE)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                            text(truncate_title(&sub, 40))
+                                .size(11)
+                                .color(MUTED)
+                                .width(Fill)
+                                .wrapping(Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .width(Fill)
+                        .clip(true),
+                    )
+                    .style(row_click)
+                    .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                    .padding(3)
+                    .width(Fill),
+                    Self::coll_more(hovered, Message::OpenSearchPlaylistMenu(p.id.clone())),
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
                 .padding(4),
             )
-            .style(row_click)
-            .on_press(Message::PlaySearchPlaylist(p.id.clone()))
-            .padding(0)
-            .width(Fill),
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
         )
-        .style(row_bg(false))
-        .width(Fill)
-        .height(iced::Length::Fixed(TRACK_ROW_H))
-        .clip(true)
-        .align_y(iced::alignment::Vertical::Center)
+        .on_right_press(Message::OpenSearchPlaylistMenu(p.id.clone()))
+        .on_enter(Message::SearchPlaylistHover(Some(p.id.clone())))
+        .on_exit(Message::SearchPlaylistHover(None))
         .into()
     }
 
@@ -11110,7 +11429,12 @@ impl AppState {
                                 .results
                                 .albums
                                 .iter()
-                                .map(|a| self.album_card(a))
+                                .map(|a| {
+                                    let id = a.id.clone();
+                                    iced::widget::mouse_area(self.album_card(a))
+                                        .on_right_press(Message::OpenAlbumMenu(id))
+                                        .into()
+                                })
                                 .collect();
                             let list: iced::Element<'_, Message> = if cards.is_empty() {
                                 text(format!("No albums for “{query}”."))
@@ -11126,7 +11450,12 @@ impl AppState {
                                 .results
                                 .artists
                                 .iter()
-                                .map(|a| self.artist_card(a))
+                                .map(|a| {
+                                    let id = a.id.clone();
+                                    iced::widget::mouse_area(self.artist_card(a))
+                                        .on_right_press(Message::OpenArtistMenu(id))
+                                        .into()
+                                })
                                 .collect();
                             let list: iced::Element<'_, Message> = if cards.is_empty() {
                                 text(format!("No artists for “{query}”."))
@@ -12182,7 +12511,7 @@ impl AppState {
                     .into(),
                     button(
                         row![
-                            icon("mic", 14.0, iced::Color::WHITE),
+                            icon("user-round", 14.0, iced::Color::WHITE),
                             text("Go to artist").size(14)
                         ]
                         .spacing(8)
@@ -12542,6 +12871,156 @@ impl AppState {
                 .into();
                 layers.push(pl_scrim);
                 layers.push(pl_placed);
+            }
+        }
+        // Search collection menu: same frozen-anchor scrim pattern, no
+        // flyout. The hit resolves live: results may have moved on since
+        // the menu opened, and then nothing renders.
+        if let Some(menu) = self.coll_menu.clone() {
+            let hit: Option<(iced::Element<'_, Message>, String, String)> = match &menu {
+                CollectionMenu::Album(id) => {
+                    self.results.albums.iter().find(|a| &a.id == id).map(|a| {
+                        let sub = match a.year {
+                            Some(y) => format!("Album · {} · {}", a.artist, y),
+                            None => format!("Album · {}", a.artist),
+                        };
+                        (
+                            self.art_thumb(self.album_cover(a).as_deref(), 56.0),
+                            a.title.clone(),
+                            sub,
+                        )
+                    })
+                }
+                CollectionMenu::Artist(id) => {
+                    self.results.artists.iter().find(|a| &a.id == id).map(|a| {
+                        let photo = a
+                            .thumbnail_url
+                            .as_deref()
+                            .map(|u| yutu_core::hires_thumb_url(u, 544));
+                        (
+                            self.art_thumb(photo.as_deref(), 56.0),
+                            a.name.clone(),
+                            "Artist".to_string(),
+                        )
+                    })
+                }
+                CollectionMenu::Playlist(id) => self
+                    .results
+                    .playlists
+                    .iter()
+                    .find(|p| &p.id == id)
+                    .map(|p| {
+                        (
+                            self.playlist_art(p, 56.0),
+                            p.title.clone(),
+                            format!("Playlist · {} · {}", p.author, p.detail),
+                        )
+                    }),
+            };
+            if let Some((art, title, sub)) = hit {
+                let mut items: Vec<iced::Element<'_, Message>> = Vec::new();
+                match menu {
+                    CollectionMenu::Album(id) => {
+                        let artist = self
+                            .results
+                            .albums
+                            .iter()
+                            .find(|a| a.id == id)
+                            .map(|a| a.artist.clone())
+                            .unwrap_or_default();
+                        let tracks = self.album_tracks(&id);
+                        if let Some(seed) = tracks.first().map(|t| t.id.clone()) {
+                            items.push(menu_item(
+                                "shuffle",
+                                "Shuffle play".to_string(),
+                                Message::PlayAlbumShuffled(id.clone()),
+                            ));
+                            items.push(menu_item(
+                                "radio",
+                                "Start mix".to_string(),
+                                Message::StartRadio(seed),
+                            ));
+                        }
+                        if !artist.is_empty() {
+                            items.push(menu_item(
+                                "user-round",
+                                "Go to artist".to_string(),
+                                Message::OpenArtist(artist),
+                            ));
+                        }
+                    }
+                    CollectionMenu::Artist(id) => {
+                        let name = self
+                            .results
+                            .artists
+                            .iter()
+                            .find(|a| a.id == id)
+                            .map(|a| a.name.clone())
+                            .unwrap_or_default();
+                        let tracks = self.artist_tracks(&name);
+                        if let Some(seed) = tracks.first().map(|t| t.id.clone()) {
+                            items.push(menu_item(
+                                "shuffle",
+                                "Shuffle play".to_string(),
+                                Message::PlayArtistShuffled(name),
+                            ));
+                            items.push(menu_item(
+                                "radio",
+                                "Start mix".to_string(),
+                                Message::StartRadio(seed),
+                            ));
+                        }
+                    }
+                    CollectionMenu::Playlist(id) => {
+                        items.push(menu_item(
+                            "play",
+                            "Play".to_string(),
+                            Message::PlaySearchPlaylist(id.clone()),
+                        ));
+                        items.push(menu_item(
+                            "shuffle",
+                            "Shuffle play".to_string(),
+                            Message::PlaySearchPlaylistShuffled(id),
+                        ));
+                    }
+                }
+                let coll_menu = container(
+                    column![
+                        row![
+                            art,
+                            column![text(title).size(16), text(sub).size(12).color(MUTED),]
+                                .spacing(2)
+                                .width(Fill),
+                        ]
+                        .spacing(10)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                        column(items).spacing(0),
+                    ]
+                    .spacing(8),
+                )
+                .style(card_bg)
+                .padding(14)
+                .width(300);
+                let coll_scrim: iced::Element<'_, Message> =
+                    mouse_area(container(text("").size(1)).width(Fill).height(Fill))
+                        .on_press(Message::CloseContext)
+                        .on_enter(Message::ClearHovers)
+                        .on_exit(Message::ClearHovers)
+                        .into();
+                let (mx, my) = menu_pos(self.menu_at, self.window);
+                let coll_placed: iced::Element<'_, Message> = container(column![
+                    iced::widget::Space::new().height(iced::Length::Fixed(my)),
+                    row![
+                        iced::widget::Space::new().width(iced::Length::Fixed(mx)),
+                        coll_menu,
+                    ],
+                ])
+                .width(Fill)
+                .height(Fill)
+                .into();
+                layers.push(coll_scrim);
+                layers.push(coll_placed);
             }
         }
         // Always a Stack (even with one layer): flipping between bare
@@ -13980,6 +14459,132 @@ mod tests {
         assert_eq!(s.search_playlist_label("unknown"), "unknown");
         let _ = s.update(Message::PlaySearchPlaylist("PL9".into()));
         let _ = s.update(Message::PlaySearchPlaylistShuffled("PL9".into()));
+    }
+
+    #[test]
+    fn search_rows_hover_and_collection_menus() {
+        use yutu_core::{Album, Artist};
+        let mut s = test_state();
+        s.results.albums.push(Album {
+            id: "al1".into(),
+            title: "Toxicity".into(),
+            artist: "System of a Down".into(),
+            year: Some(2001),
+            thumbnail_url: None,
+        });
+        s.results.artists.push(Artist {
+            id: "ar1".into(),
+            name: "System of a Down".into(),
+            thumbnail_url: None,
+        });
+        s.results.playlists.push(PlaylistHit {
+            id: "PL1".into(),
+            title: "Mix".into(),
+            author: "Fan".into(),
+            detail: "25 songs".into(),
+            thumbnail_url: None,
+        });
+        // Every row shape builds plain and hovered with no panic.
+        let album = s.results.albums[0].clone();
+        let artist = s.results.artists[0].clone();
+        let pl = s.results.playlists[0].clone();
+        let t = mk_track("v1", "Chop Suey!", "System of a Down");
+        let _ = s.search_album_row(&album);
+        let _ = s.search_artist_row(&artist);
+        let _ = s.search_playlist_row(&pl);
+        let _ = s.search_song_row(&t);
+        let _ = s.numbered_track_row(&t, 1);
+        s.hovered_album = Some("al1".into());
+        s.hovered_artist = Some("ar1".into());
+        s.hovered_search_playlist = Some("PL1".into());
+        s.hovered_track = Some("v1".into());
+        let _ = s.search_album_row(&album);
+        let _ = s.search_artist_row(&artist);
+        let _ = s.search_playlist_row(&pl);
+        let _ = s.search_song_row(&t);
+        let _ = s.numbered_track_row(&t, 1);
+        // Liked heart stays on the row at rest.
+        s.liked.insert("v1".into());
+        s.hovered_track = None;
+        let _ = s.search_song_row(&t);
+        // Hover messages latch, clear, and freeze behind menus.
+        let _ = s.update(Message::AlbumHover(Some("al1".into())));
+        assert_eq!(s.hovered_album.as_deref(), Some("al1"));
+        let _ = s.update(Message::ArtistHover(Some("ar1".into())));
+        assert_eq!(s.hovered_artist.as_deref(), Some("ar1"));
+        let _ = s.update(Message::SearchPlaylistHover(Some("PL1".into())));
+        assert_eq!(s.hovered_search_playlist.as_deref(), Some("PL1"));
+        let _ = s.update(Message::ClearHovers);
+        assert!(
+            s.hovered_album.is_none()
+                && s.hovered_artist.is_none()
+                && s.hovered_search_playlist.is_none()
+        );
+        // Menus open, freeze hovers, render, and close.
+        let _ = s.update(Message::OpenAlbumMenu("al1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Album("al1".into())));
+        let _ = s.update(Message::AlbumHover(Some("al1".into())));
+        assert!(s.hovered_album.is_none());
+        let _ = s.update(Message::ArtistHover(Some("ar1".into())));
+        assert!(s.hovered_artist.is_none());
+        let _ = s.update(Message::SearchPlaylistHover(Some("PL1".into())));
+        assert!(s.hovered_search_playlist.is_none());
+        let _ = s.view();
+        let _ = s.update(Message::OpenArtistMenu("ar1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Artist("ar1".into())));
+        let _ = s.view();
+        let _ = s.update(Message::OpenSearchPlaylistMenu("PL1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Playlist("PL1".into())));
+        let _ = s.view();
+        // Menu actions dismiss the menu.
+        let _ = s.update(Message::OpenAlbum("al1".into()));
+        assert!(s.coll_menu.is_none());
+        let _ = s.update(Message::OpenSearchPlaylistMenu("PL1".into()));
+        let _ = s.update(Message::PlaySearchPlaylistShuffled("PL1".into()));
+        assert!(s.coll_menu.is_none());
+        let _ = s.update(Message::OpenAlbumMenu("al1".into()));
+        let _ = s.update(Message::CloseContext);
+        assert!(s.coll_menu.is_none());
+        // Unknown ids never open a scrim-less modal.
+        let _ = s.update(Message::OpenArtistMenu("ghost".into()));
+        assert!(s.coll_menu.is_none());
+        assert!(s.status.contains("gone"));
+        let _ = s.view();
+        // One menu kind at a time, either direction.
+        let _ = s.update(Message::OpenAlbumMenu("al1".into()));
+        let _ = s.update(Message::OpenContext("v1".into()));
+        assert!(s.coll_menu.is_none());
+        assert_eq!(s.context_menu.as_deref(), Some("v1"));
+        let _ = s.update(Message::OpenAlbumMenu("al1".into()));
+        assert!(s.context_menu.is_none());
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Album("al1".into())));
+        let _ = s.update(Message::CloseContext);
+        // Filter cards build and right-click through to the same menus.
+        s.route = Route::Search;
+        s.search_query = "system of a down".into();
+        s.search_filter = SearchFilter::Albums;
+        let _ = s.view();
+        let _ = s.update(Message::OpenAlbumMenu("al1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Album("al1".into())));
+        let _ = s.update(Message::CloseContext);
+        s.search_filter = SearchFilter::Artists;
+        let _ = s.view();
+        let _ = s.update(Message::OpenArtistMenu("ar1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Artist("ar1".into())));
+        let _ = s.update(Message::CloseContext);
+        // Fresh results without the hit prune the open menu.
+        let _ = s.update(Message::OpenArtistMenu("ar1".into()));
+        s.results.artists.clear();
+        let _ = s.update(Message::SearchCompleted {
+            query: "system of a down".into(),
+            result: Ok(SearchResults {
+                tracks: vec![],
+                albums: vec![],
+                artists: vec![],
+                playlists: vec![],
+            }),
+        });
+        assert!(s.coll_menu.is_none());
     }
 
     #[test]
