@@ -193,5 +193,6 @@ Done: user can plausibly replace Spotify for daily listening.
 54. Round 43: lyrics follow (drawer eased glide centers the current verse, 25%/tick on the Animate ticker with exact-echo takeover detection; manual scroll disengages with proximity/seek/track-change resume; adversarial review highs fixed)
 55. Round 44: advance retry (3 resolve attempts then skip-or-hold, stale arrivals never orphan a load, 2s prefetch window, 15s/300s resolve timeouts; adversarial review highs fixed)
 56. Round 45: mute button (level-preserving toggle beside every volume slider, slider/MPRIS drags unmute, effective volume to MPRIS, flag persisted in the session; adversarial review meds fixed)
+57. Round 46: song-version preference (search drops video rows duplicating a song row with duration guard, server order kept, top hit untouched; libraries/playlists/radio out of scope; adversarial review highs fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
