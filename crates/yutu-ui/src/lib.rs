@@ -216,6 +216,7 @@ fn icon(name: &'static str, size: f32, color: iced::Color) -> iced::Element<'sta
         "sparkles" => include_bytes!("../assets/icons/sparkles.svg"),
         "panel-left" => include_bytes!("../assets/icons/panel-left.svg"),
         "panel-right" => include_bytes!("../assets/icons/panel-right.svg"),
+        "loader" => include_bytes!("../assets/icons/loader-circle.svg"),
         "thumbs-down" => include_bytes!("../assets/icons/thumbs-down.svg"),
         _ => include_bytes!("../assets/icons/music.svg"),
     };
@@ -1657,8 +1658,17 @@ pub struct AppState {
     #[cfg(feature = "innertube")]
     import_gen: u64,
     /// An import is in flight: the top banner shows live progress.
+    /// Sync pulls set this too (the pipeline is shared), but the banner
+    /// stays down for them via `sync_active`: they surface only through
+    /// the sidebar spinner.
     #[cfg(feature = "innertube")]
     import_active: bool,
+    /// A sync pull (manual or scheduled) is in flight: no top banner,
+    /// the sidebar title carries the spinner instead. Always paired
+    /// with `import_active` (the pipeline is shared); cleared on every
+    /// path that clears `import_active`.
+    #[cfg(feature = "innertube")]
+    sync_active: bool,
     /// Expected import songs (base songs plus known playlist totals) and
     /// playlist songs already finished: banner bar math. Per-list live
     /// counts arrive via ticks; finished indices quarantine late ticks.
@@ -2474,6 +2484,7 @@ impl AppState {
         if total == 0 {
             self.login_busy = false;
             self.import_active = false;
+            self.sync_active = false;
             self.mark_synced();
             self.status = format!("{}: {n} library tracks ({m} liked).", kind.done_label());
             self.publish_mpris();
@@ -2481,6 +2492,7 @@ impl AppState {
         }
         self.login_busy = true;
         self.import_active = true;
+        self.sync_active = kind == ImportKind::Sync;
         self.status = format!(
             "{}: {n} songs ({m} liked), fetching {total} playlists…",
             kind.done_label(),
@@ -3710,6 +3722,8 @@ impl AppState {
             import_gen: 0,
             #[cfg(feature = "innertube")]
             import_active: false,
+            #[cfg(feature = "innertube")]
+            sync_active: false,
             #[cfg(feature = "innertube")]
             import_expected: 0,
             #[cfg(feature = "innertube")]
@@ -5933,14 +5947,50 @@ impl AppState {
             .into()
     }
 
+    /// True while a background sync pull runs (shared pipeline, quiet
+    /// UI): the top banner stays down, the sidebar title spins instead.
+    #[cfg(feature = "innertube")]
+    fn syncing(&self) -> bool {
+        self.import_active && self.sync_active
+    }
+
+    /// Sidebar sync spinner: the Lucide loader glyph while a sync runs,
+    /// a same-width empty box otherwise (the pin button never hops when
+    /// a sync starts or stops). Static frame: iced svg has no rotation,
+    /// so this reads as a busy badge, not an animated spinner.
+    #[cfg(feature = "innertube")]
+    fn sync_spinner(&self) -> iced::Element<'_, Message> {
+        if self.syncing() {
+            icon("loader", 14.0, SPOT_GREEN)
+        } else {
+            iced::widget::Space::new()
+                .width(iced::Length::Fixed(14.0))
+                .height(iced::Length::Shrink)
+                .into()
+        }
+    }
+
+    /// Offline builds never sync: no spinner, no layout shift.
+    #[cfg(not(feature = "innertube"))]
+    fn sync_spinner(&self) -> iced::Element<'_, Message> {
+        iced::widget::Space::new()
+            .width(iced::Length::Shrink)
+            .height(iced::Length::Shrink)
+            .into()
+    }
+
     /// Top import banner (in-flow, pushes content down): live progress
     /// while an import runs (songs/liked counts, playlists done/total,
-    /// red bar with %). `None` when idle, so layout is untouched.
+    /// red bar with %). Imports only: sync pulls stay quiet (sidebar
+    /// spinner) so background refreshes never shove the layout.
+    /// `None` when idle or syncing, so layout is untouched then.
     #[cfg(feature = "innertube")]
     fn import_banner_view(&self) -> Option<iced::Element<'_, Message>> {
         use iced::widget::{column, container, progress_bar, row, text, Space};
         use iced::Fill;
-        if !self.import_active {
+        // Same predicate both sides (see `syncing`): the banner is up
+        // exactly when an import runs and no sync does.
+        if !self.import_active || self.syncing() {
             return None;
         }
         // Displayed count eases toward the truth (see
@@ -8425,6 +8475,7 @@ impl AppState {
                     } else {
                         self.login_busy = true;
                         self.import_active = true;
+                        self.sync_active = false;
                         self.status = "Reading cookies + contacting YouTube Music…".into();
                         self.publish_mpris();
                         return Self::cookie_import_task(path, self.library_path.clone());
@@ -8445,6 +8496,7 @@ impl AppState {
                 Err(e) => {
                     self.login_busy = false;
                     self.import_active = false;
+                    self.sync_active = false;
                     // A dead saved session must not keep posing as signed
                     // in: drop it so the panel goes back to the file picker.
                     if matches!(kind, ImportKind::Cookie | ImportKind::Sync)
@@ -8502,6 +8554,7 @@ impl AppState {
                 let finish = |s: &mut Self| {
                     s.login_busy = false;
                     s.import_active = false;
+                    s.sync_active = false;
                     s.mark_synced();
                     if kind == ImportKind::Cookie {
                         s.cookie_logged_in = cookie_session_exists();
@@ -8583,6 +8636,7 @@ impl AppState {
                 } else {
                     self.login_busy = true;
                     self.import_active = true;
+                    self.sync_active = false;
                     self.status = "Importing your library…".into();
                     self.publish_mpris();
                     return Self::cookie_session_import_task(self.library_path.clone());
@@ -8595,6 +8649,7 @@ impl AppState {
                 self.import_done = 0;
                 self.import_total = 0;
                 self.import_active = false;
+                self.sync_active = false;
                 self.import_expected = 0;
                 self.import_shown = 0;
                 self.import_live.clear();
@@ -8797,6 +8852,7 @@ impl AppState {
                                 self.google_login = None;
                                 self.login_busy = true;
                                 self.import_active = true;
+                                self.sync_active = false;
                                 self.status = "Signed in: importing your library…".into();
                                 self.publish_mpris();
                                 return Self::library_import_task(self.library_path.clone());
@@ -8830,6 +8886,7 @@ impl AppState {
                 self.import_done = 0;
                 self.import_total = 0;
                 self.import_active = false;
+                self.sync_active = false;
                 self.import_expected = 0;
                 self.import_shown = 0;
                 self.import_live.clear();
@@ -8845,6 +8902,7 @@ impl AppState {
                 } else {
                     self.login_busy = true;
                     self.import_active = true;
+                    self.sync_active = false;
                     self.status = "Reading library + contacting YouTube Music…".into();
                     self.publish_mpris();
                     return Self::library_import_task(self.library_path.clone());
@@ -9561,6 +9619,7 @@ impl AppState {
         };
         self.login_busy = true;
         self.import_active = true;
+        self.sync_active = true;
         self.status = if auto {
             "Auto-syncing with YouTube Music…".into()
         } else {
@@ -10960,6 +11019,7 @@ impl AppState {
                         .size(22)
                         .color(iced::Color::WHITE)
                         .width(Fill),
+                    self.sync_spinner(),
                     pin_btn,
                 ]
                 .align_y(iced::alignment::Vertical::Center),
@@ -17633,6 +17693,54 @@ mod tests {
             }),
         });
         assert!(!s.import_active);
+        assert!(s.import_banner_view().is_none());
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn sync_stays_quiet_with_spinner_state() {
+        let mut s = test_state();
+        // A sync pull stages through the same pipeline as an import,
+        // but stays quiet: no top banner. Spinner visibility is exactly
+        // `syncing()` (Elements are not comparable, so the state bit is
+        // the assertion; building the element locks the render path).
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Sync,
+            result: Ok(staged(vec![], vec![], vec![("PL1", "One")])),
+        });
+        assert!(s.import_active);
+        assert!(s.syncing());
+        assert!(s.import_banner_view().is_none());
+        let _ = s.sync_spinner();
+        // Final arrival ends the sync (spinner drops, still no banner).
+        let gen = s.import_gen;
+        let _ = s.update(Message::PlaylistImported {
+            kind: ImportKind::Sync,
+            gen,
+            title: "One".into(),
+            index: 0,
+            total: 1,
+            count: None,
+            result: Ok(yutu_core::Playlist {
+                id: "PL1".into(),
+                title: "One".into(),
+                tracks: vec![],
+            }),
+        });
+        assert!(!s.import_active);
+        assert!(!s.syncing());
+        assert!(s.import_banner_view().is_none());
+        let _ = s.sync_spinner();
+        // Error paths clear the pair too: a failed stage must never
+        // wedge the UI into a silent stuck sync.
+        s.import_active = true;
+        s.sync_active = true;
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Sync,
+            result: Err("boom".into()),
+        });
+        assert!(!s.import_active);
+        assert!(!s.syncing());
         assert!(s.import_banner_view().is_none());
     }
 
