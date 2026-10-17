@@ -11588,11 +11588,6 @@ impl AppState {
                 .padding(6)
                 .into()
         };
-        let search_state: iced::Element<'_, Message> = if self.searching {
-            text("…").size(14).color(MUTED).into()
-        } else {
-            text("").size(1).into()
-        };
         // Pill width comes from the shared geometry (same number the
         // popup and scrim use, so edges always match).
         let (_, pill_w) = self.search_pill_geom();
@@ -11608,7 +11603,6 @@ impl AppState {
                     .width(Fill)
                     .padding(10),
                 clear_btn,
-                search_state,
             ]
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center),
