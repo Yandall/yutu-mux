@@ -1406,9 +1406,9 @@ const LYRIC_BTN_PAD: f32 = 8.0;
 const LYRIC_ROW_CHROME: f32 = 33.0;
 /// Window chrome above the drawer viewport (header + player).
 const LYRIC_VIEWPORT_PAD: f32 = 260.0;
-/// Manual scroll disengages follow past this distance from our snap;
-/// proximity re-engages within this distance of the live target.
-const LYRIC_TAKEOVER_PX: f32 = 40.0;
+/// Any user scroll disengages follow (glide echoes match the command
+/// exactly, so they never trip it); scrolling back near the live
+/// target re-engages.
 const LYRIC_RESUME_PX: f32 = 120.0;
 /// Sidebar sync spinner frames (verbatim loader glyph, one rotation
 /// step each): 60 steps at the ~60fps `Animate` tick is one turn/sec.
@@ -1597,6 +1597,12 @@ pub struct AppState {
     /// Last issued follow target (drawer y): tells manual scrolls apart
     /// from our own snaps (snaps land exactly, so they never trip it).
     lyrics_target: f32,
+    /// Last commanded scroll offsets, newest first (NaN = none yet):
+    /// glide echoes match one of these exactly, so only real user
+    /// scrolls disengage follow. A ring (not just the latest) because
+    /// echoes can lag commands under load; a user scroll bit-exactly
+    /// equal to a recent command is negligible.
+    lyrics_cmds: [f32; 3],
     /// Browser-style back/forward stacks (Route history, capped).
     nav_back: Vec<Route>,
     nav_forward: Vec<Route>,
@@ -3808,6 +3814,7 @@ impl AppState {
             lyrics_follow: true,
             lyrics_follow_at: None,
             lyrics_target: 0.0,
+            lyrics_cmds: [f32::NAN; 3],
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             right_tab: RightTab::Queue,
@@ -6392,6 +6399,7 @@ impl AppState {
 
     /// True while any transition is still converging (drives the ticker).
     /// A running pipeline counts: spinners advance one frame per tick.
+    /// So does a lyrics follow glide (it settles on its own).
     fn animating(&self) -> bool {
         self.sidebar_w != self.sidebar_target()
             || self.right_w != self.right_target()
@@ -6399,6 +6407,7 @@ impl AppState {
             || self.drag_gap != self.drag_gap_target()
             || self.scroll_fading()
             || self.pipeline_busy()
+            || self.lyrics_gliding()
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -6623,9 +6632,6 @@ impl AppState {
     /// anti-flicker hold on success, logged honest error otherwise.
     fn seek_to_secs(&mut self, pos: f64) {
         let pos = pos.max(0.0);
-        // Any seek re-engages lyrics follow (slider, verse tap,
-        // widget, media keys): the snap lands on the new verse.
-        self.lyrics_follow = true;
         match &self.audio {
             None => {
                 self.status = "No audio device.".into();
@@ -6633,6 +6639,10 @@ impl AppState {
             Some(audio) => match audio.seek_secs(pos) {
                 Ok(()) => {
                     self.position_secs = pos;
+                    // A landed seek re-engages lyrics follow (slider,
+                    // verse tap, widget, media keys): the glide lands
+                    // on the new verse. Failed seeks leave follow alone.
+                    self.lyrics_follow = true;
                     // Hold the manual clock ~1.2s: the backend still
                     // reports the pre-seek position for a tick or two.
                     self.seek_hold_until =
@@ -8441,6 +8451,12 @@ impl AppState {
                     if self.pipeline_busy() {
                         self.spin_frame = self.spin_frame.wrapping_add(1);
                     }
+                    // Lyrics follow glide: ease toward the verse target
+                    // one step per tick (smooth follow instead of a jump).
+                    if let Some(glide) = self.lyrics_glide_task() {
+                        self.publish_mpris();
+                        return glide;
+                    }
                 }
             }
             Message::ToggleDrawer => {
@@ -8448,9 +8464,11 @@ impl AppState {
                 if self.drawer_open {
                     self.drawer_scroll = 0.0;
                     // Fresh follow run: the next tick centers the verse
-                    // as the drawer glides open.
+                    // as the drawer glides open (no commands yet, so the
+                    // initial echo cannot trip the takeover check).
                     self.lyrics_follow = true;
                     self.lyrics_follow_at = None;
+                    self.lyrics_cmds = [f32::NAN; 3];
                 }
                 // Warm the hi-res hero and the lyrics on open: the drawer
                 // is the lyrics home, but no fetch trigger fires for it.
@@ -8466,12 +8484,11 @@ impl AppState {
             Message::DrawerScrolled(y) => {
                 self.drawer_scroll = y.max(0.0);
                 self.lit_scroll("drawer");
-                // Follow takeover: a real scroll away from our last snap
-                // disengages (snaps land exactly, so they never trip it;
-                // end-of-song clamping may, which is harmless).
-                if self.lyrics_follow
-                    && (self.drawer_scroll - self.lyrics_target).abs() > LYRIC_TAKEOVER_PX
-                {
+                // Follow takeover: anything but a recent command echo
+                // is a real user scroll (echoes match the ring exactly,
+                // even lagged ones; end-of-song clamping may trip this,
+                // which is harmless).
+                if self.lyrics_follow && !self.lyrics_cmds.contains(&self.drawer_scroll) {
                     self.lyrics_follow = false;
                 }
             }
@@ -8733,6 +8750,22 @@ impl AppState {
             }
             Message::AnimationsToggled(on) => {
                 self.animations_enabled = on;
+                // Killing animations mid-glide would strand the verse:
+                // snap to the live target instead of waiting for a change.
+                if !on && self.drawer_open && self.lyrics_follow {
+                    if let Some(t) = self.queue.current() {
+                        let id = t.id.clone();
+                        if let Some(at) = self.lyric_cursor_at(&id) {
+                            if let Some(y) = self.lyric_follow_y(&id, at) {
+                                self.lyrics_target = y;
+                                self.lyrics_follow_at = Some((id, at));
+                                self.lyrics_cmds = [y, f32::NAN, f32::NAN];
+                                self.publish_mpris();
+                                return Self::lyrics_scroll_task(y);
+                            }
+                        }
+                    }
+                }
             }
             Message::AnimMsChanged(ms) => {
                 self.anim_ms = (ms as u64).clamp(ANIM_MIN_MS, ANIM_MAX_MS);
@@ -9291,6 +9324,8 @@ impl AppState {
             }
             Message::SeekTo(pos) => {
                 self.seek_to_secs(pos as f64);
+                // Retarget like a verse tap (the ticker glides there).
+                self.lyrics_follow_at = None;
             }
             Message::SeekToMs(ms) => {
                 self.seek_to_secs(ms as f64 / 1000.0);
@@ -12182,10 +12217,11 @@ impl AppState {
     }
 
     /// Lyrics follow step (drawer only): on verse or track change with
-    /// follow engaged, snap the lyrics scrollable so the verse
-    /// centers. Snaps fire once per change, never per tick. Manual
-    /// scrolls disengage (proximity re-engages); closed drawer and
-    /// unsynced lyrics are always a no-op.
+    /// follow engaged, record the verse target (the Animate ticker
+    /// glides there, see [`lyrics_glide_task`]). Snaps fire once per
+    /// change, never per tick. Manual scrolls disengage (proximity
+    /// re-engages); closed drawer and unsynced lyrics are no-ops.
+    /// With animations off, snaps instantly instead of gliding.
     fn lyric_follow_task(&mut self) -> iced::Task<Message> {
         let Some(t) = self.queue.current() else {
             return iced::Task::none();
@@ -12222,18 +12258,60 @@ impl AppState {
         match self.lyric_follow_y(&id, at) {
             Some(y) => {
                 self.lyrics_target = y;
-                iced::advanced::widget::operate(
-                    iced::advanced::widget::operation::scrollable::scroll_to::<Message>(
-                        iced::widget::Id::new(LYRICS_SCROLL_ID),
-                        iced::advanced::widget::operation::scrollable::AbsoluteOffset {
-                            x: None,
-                            y: Some(y),
-                        },
-                    ),
-                )
+                if self.animations_enabled {
+                    // The ticker glides there (smooth follow).
+                    iced::Task::none()
+                } else {
+                    self.lyrics_cmds = [y, f32::NAN, f32::NAN];
+                    Self::lyrics_scroll_task(y)
+                }
             }
             None => iced::Task::none(),
         }
+    }
+
+    /// Command the drawer lyrics scrollable to an absolute y (single
+    /// jump; the glide chains these per tick).
+    fn lyrics_scroll_task(y: f32) -> iced::Task<Message> {
+        iced::advanced::widget::operate(iced::advanced::widget::operation::scrollable::scroll_to::<
+            Message,
+        >(
+            iced::widget::Id::new(LYRICS_SCROLL_ID),
+            iced::advanced::widget::operation::scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        ))
+    }
+
+    /// One follow-glide step: ease the drawer toward the verse target
+    /// (ease-out: 25% of the remaining gap per tick, 2px floor) and
+    /// command the scrollable there. `None` when settled, closed,
+    /// disengaged, or unfollowed. The commanded offset is recorded so
+    /// its echo never trips the manual-takeover check (snaps land
+    /// exactly: only real user scrolls differ).
+    fn lyrics_glide_task(&mut self) -> Option<iced::Task<Message>> {
+        if !self.drawer_open || !self.lyrics_follow || self.lyrics_follow_at.is_none() {
+            return None;
+        }
+        let gap = self.lyrics_target - self.drawer_scroll;
+        if gap.abs() <= 1.0 {
+            return None;
+        }
+        let step = (gap.abs() * 0.25).max(2.0);
+        let y = ease_toward(self.drawer_scroll, self.lyrics_target, step);
+        self.lyrics_cmds = [y, self.lyrics_cmds[0], self.lyrics_cmds[1]];
+        Some(Self::lyrics_scroll_task(y))
+    }
+
+    /// True while a follow glide is converging (runs the ticker; off
+    /// with animations disabled, where snaps are instant instead).
+    fn lyrics_gliding(&self) -> bool {
+        self.animations_enabled
+            && self.drawer_open
+            && self.lyrics_follow
+            && self.lyrics_follow_at.is_some()
+            && (self.drawer_scroll - self.lyrics_target).abs() > 1.0
     }
 
     /// Shared synced-lyrics body (lyrics page + Now Playing drawer):
@@ -17258,26 +17336,45 @@ mod tests {
         assert!(s.drawer_open);
         assert!(s.lyrics_follow);
         assert!(s.lyrics_follow_at.is_none());
-        // First verse snaps once (task content is runtime-only: the
-        // recorded target is the assertion).
+        // First verse records its target (the ticker glides there).
         let _ = s.lyric_follow_task();
         assert_eq!(s.lyrics_follow_at, Some(("m1".into(), 0)));
         let y0 = s.lyrics_target;
         assert!(y0 > 0.0);
-        // Our own snap arrival never disengages.
-        let _ = s.update(Message::DrawerScrolled(y0));
+        assert!(s.lyrics_gliding());
+        // Glide the way the runtime would: each tick commands a step,
+        // each echo lands it exactly (never a takeover).
+        for _ in 0..80 {
+            let _ = s.update(Message::Animate);
+            let cmd = s.lyrics_cmds[0];
+            let _ = s.update(Message::DrawerScrolled(cmd));
+            if (s.drawer_scroll - s.lyrics_target).abs() <= 1.0 {
+                break;
+            }
+        }
+        assert!((s.drawer_scroll - y0).abs() <= 1.5);
         assert!(s.lyrics_follow);
-        // Same verse next tick: no re-snap, target holds.
+        assert!(!s.lyrics_gliding());
+        // Stale echoes never disengage either: commands outpacing
+        // echoes under load still match the ring.
+        let _ = s.update(Message::Animate);
+        let _ = s.update(Message::Animate);
+        let stale = s.lyrics_cmds[2];
+        let _ = s.update(Message::DrawerScrolled(stale));
+        assert!(s.lyrics_follow);
+        // Same verse next tick: target holds.
         let _ = s.lyric_follow_task();
         assert!((s.lyrics_target - y0).abs() < 0.01);
-        // Verse change snaps forward.
+        // Verse change retargets and glides forward.
         s.position_secs = 11.0;
         let _ = s.lyric_follow_task();
         assert_eq!(s.lyrics_follow_at, Some(("m1".into(), 2)));
         assert!(s.lyrics_target > y0);
+        assert!(s.lyrics_gliding());
         // A real scroll away disengages...
         let _ = s.update(Message::DrawerScrolled(900.0));
         assert!(!s.lyrics_follow);
+        assert!(!s.lyrics_gliding());
         // ...and scrolling back near the verse resumes silently.
         let back = s.lyrics_target - 50.0;
         let _ = s.update(Message::DrawerScrolled(back));
@@ -17292,6 +17389,18 @@ mod tests {
         s.lyrics_cache.get_mut("m1").unwrap().synced.clear();
         let _ = s.lyric_follow_task();
         assert!(s.lyrics_follow_at.is_none());
+    }
+
+    #[test]
+    fn lyric_follow_snaps_instantly_without_animations() {
+        let mut s = synced_state(1.0);
+        s.animations_enabled = false;
+        let _ = s.lyric_follow_task();
+        assert_eq!(s.lyrics_follow_at, Some(("m1".into(), 0)));
+        // No glide: the command is the target, and no ticker runs.
+        assert_eq!(s.lyrics_cmds[0], s.lyrics_target);
+        assert!(s.lyrics_target > 0.0);
+        assert!(!s.lyrics_gliding());
     }
 
     #[test]
