@@ -6080,90 +6080,24 @@ impl AppState {
             .into()
     }
 
-    /// Settings login panel: states are signed-in, code-pending, idle.
-    /// The URL is also printed to stderr (clickable in the terminal).
-    #[cfg(feature = "innertube")]
-    fn google_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, row, text};
-        if self.logged_in {
-            return column![
-                text("Signed in ✓").size(13).color(SPOT_GREEN),
-                row![
-                    button(self.busy_content("Import library", 12.0))
-                        .style(green_play)
-                        .on_press(Message::LibraryImport)
-                        .padding(7),
-                    button(btn_text("Sign out", 12))
-                        .style(hover_row)
-                        .on_press(Message::GoogleLogout)
-                        .padding(7),
-                ]
-                .spacing(8),
-            ]
-            .spacing(4)
-            .into();
-        }
-        if let Some(login) = self.google_login.clone() {
-            return column![
-                text("1. Open this URL in your browser:")
-                    .size(12)
-                    .color(MUTED),
-                text(login.verification_url.clone()).size(12),
-                text(format!("2. Enter the code: {}", login.user_code)).size(13),
-                row![
-                    button(self.busy_content("I’ve approved: check", 13.0))
-                        .style(green_play)
-                        .on_press(Message::GoogleLoginPoll)
-                        .padding(8),
-                    button(btn_text("Cancel", 12))
-                        .style(hover_row)
-                        .on_press(Message::GoogleLogout)
-                        .padding(7),
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-            ]
-            .spacing(4)
-            .into();
-        }
-        column![
-            text("Your liked songs + library, imported from YouTube Music.")
-                .size(12)
-                .color(MUTED),
-            text("Needs a free Google OAuth client: set YUTU_OAUTH_CLIENT_ID + YUTU_OAUTH_CLIENT_SECRET (same as youtui: register a desktop client).")
-                .size(11)
-                .color(MUTED),
-            button(self.busy_content("Sign in with Google", 13.0))
-            .style(green_play)
-            .on_press(Message::GoogleLoginStart)
-            .padding(8),
-        ]
-        .spacing(4)
-        .into()
-    }
-
     /// Cookie import panel: normal browser login, no OAuth client needed.
     /// A saved session stays signed in across restarts (re-import refreshes
     /// without another export); likes, dislikes, and playlist edits mirror
-    /// to YouTube Music while signed in.
+    /// to YouTube Music while signed in. Syncing (not a separate import)
+    /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, row, text, text_input};
+        use iced::widget::{button, column, text, text_input};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
                 text("Signed in with cookies").size(13).color(SPOT_GREEN),
-                row![
-                    button(self.busy_content("Import library", 12.0))
-                        .style(green_play)
-                        .on_press(Message::CookieSessionImport)
-                        .padding(7),
-                    button(btn_text("Sign out", 12))
-                        .style(hover_row)
-                        .on_press(Message::CookieLogout)
-                        .padding(7),
-                ]
-                .spacing(8),
+                // No separate import action: Sync now (below) is the one
+                // refresh, so the two buttons never coexist.
+                button(btn_text("Sign out", 12))
+                    .style(hover_row)
+                    .on_press(Message::CookieLogout)
+                    .padding(7),
             ]
             .spacing(4)
             .into();
@@ -6434,16 +6368,6 @@ impl AppState {
     fn cookie_section(&self) -> iced::Element<'_, Message> {
         use iced::widget::text;
         text("Cookie import needs `--features innertube`.")
-            .size(12)
-            .color(MUTED)
-            .into()
-    }
-
-    /// Offline builds: login needs the innertube feature.
-    #[cfg(not(feature = "innertube"))]
-    fn google_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::text;
-        text("Google login needs `--features innertube`.")
             .size(12)
             .color(MUTED)
             .into()
@@ -13476,8 +13400,6 @@ impl AppState {
                         .on_input(Message::ScrobbleFmSkChanged)
                         .secure(true)
                         .padding(10),
-                    text("Google account (import your library)").size(17),
-                    self.google_section(),
                     text("Cookie import (no OAuth client needed)").size(17),
                     self.cookie_section(),
                     text("Sync (web changes into the app)").size(17),
