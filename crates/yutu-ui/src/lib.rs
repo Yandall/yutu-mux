@@ -1492,7 +1492,7 @@ impl AppState {
 const ANIM_TICK_MS: u64 = 16;
 const ANIM_MIN_MS: u64 = 20;
 const ANIM_MAX_MS: u64 = 400;
-const ANIM_DEFAULT_MS: u64 = 100;
+const ANIM_DEFAULT_MS: u64 = 130;
 /// Total travels used to derive per-tick steps for a target duration.
 const SIDEBAR_TRAVEL: f32 = 179.0;
 /// Right worst case (285 to 0 when the rail is empty) so every right
