@@ -2,6 +2,8 @@
 
 ## 0.2.0 (unreleased)
 
+- Silent test suite: the 440Hz rodio test tone is gone, control and
+  clock tests emit no audio
 - Playlist menu Shuffle play uses the fixed fresh-play path (same as
   the page pill); playlist Shuffle button matches the Play all size
   with the shuffle icon, and artist/album Shuffle pills use it too
