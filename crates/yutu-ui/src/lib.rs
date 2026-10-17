@@ -455,6 +455,20 @@ fn row_bg(hovered: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::St
     }
 }
 
+/// Dim backdrop over art for the hover play overlay: darkens the
+/// image so the white play icon reads on top.
+fn art_dim(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.45,
+        })),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Route {
     #[default]
@@ -9374,27 +9388,71 @@ impl AppState {
         }
     }
 
-    /// Song row for the unified search list: same controls as
-    /// track_row, but the subtitle names the result type (the mixed
-    /// list has no per-type sections anymore).
+    /// Song row for the unified search list: art with a hover play
+    /// overlay (dim backdrop + white icon on top, whole art plays),
+    /// type-led subtitle, and actions (like, more) that only appear on
+    /// hover. Hidden actions keep same-size spacers so rows never jump.
+    /// The liked heart stays visible: it is state, not just an action.
     fn search_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
-        use iced::widget::{button, container, mouse_area, row, text};
+        use iced::widget::{button, container, mouse_area, row, stack, text};
         use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            SPOT_GREEN
-        } else {
-            MUTED
-        };
+        const ART: f32 = 40.0;
+        // Icon 15 + padding 6 each side: the spacer that stands in for
+        // a hidden action button.
+        const ACTION_W: f32 = 27.0;
+        let liked = self.liked.contains(&t.id);
+        let heart_color = if liked { SPOT_GREEN } else { MUTED };
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
+        let art: iced::Element<'_, Message> = if hovered {
+            stack![
+                self.thumb(t),
+                container(
+                    container(icon("play", 14.0, iced::Color::WHITE))
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(iced::Length::Fixed(ART))
+                        .height(iced::Length::Fixed(ART))
+                )
+                .style(art_dim)
+                .width(iced::Length::Fixed(ART))
+                .height(iced::Length::Fixed(ART))
+            ]
+            .into()
+        } else {
+            self.thumb(t)
+        };
+        let heart: iced::Element<'_, Message> = if hovered || liked {
+            button(heart_icon(liked, 15.0, heart_color))
+                .style(hover_row)
+                .on_press(Message::Like(t.id.clone()))
+                .padding(6)
+                .into()
+        } else {
+            iced::widget::Space::new()
+                .width(iced::Length::Fixed(ACTION_W))
+                .height(iced::Length::Shrink)
+                .into()
+        };
+        let more: iced::Element<'_, Message> = if hovered {
+            button(icon("ellipsis", 15.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::OpenContext(t.id.clone()))
+                .padding(6)
+                .into()
+        } else {
+            iced::widget::Space::new()
+                .width(iced::Length::Fixed(ACTION_W))
+                .height(iced::Length::Shrink)
+                .into()
+        };
         mouse_area(
             container(
                 row![
-                    self.thumb(t),
-                    button(icon("play", 13.0, iced::Color::WHITE))
-                        .style(green_play)
+                    button(art)
+                        .style(row_click)
                         .on_press(Message::PlayNow(t.id.clone()))
-                        .padding(6),
+                        .padding(0),
                     Self::track_text_single(
                         &t.title,
                         &format!("Song · {}", t.artist),
@@ -9402,14 +9460,8 @@ impl AppState {
                         iced::Color::WHITE
                     ),
                     text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
-                    button(icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
-                        .on_press(Message::OpenContext(t.id.clone()))
-                        .padding(6),
+                    heart,
+                    more,
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
@@ -12809,6 +12861,19 @@ mod tests {
         s.history.push("m1".into());
         s.history.push("m2".into());
         let _ = s.view();
+    }
+
+    #[test]
+    fn search_song_row_builds_hovered_and_plain() {
+        let mut s = test_state();
+        let t = mk_track("v1", "Toxicity", "System of a Down");
+        // Plain, hovered (overlay + actions), and liked states.
+        let _ = s.search_song_row(&t);
+        s.hovered_track = Some("v1".into());
+        let _ = s.search_song_row(&t);
+        s.liked.insert("v1".into());
+        s.hovered_track = None;
+        let _ = s.search_song_row(&t);
     }
 
     #[test]

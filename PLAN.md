@@ -183,5 +183,6 @@ Done: user can plausibly replace Spotify for daily listening.
 44. Round 33: playlist click-to-play from the clicked song on (song + rest replace the queue) plus a Shuffle pill on playlist pages; bulk queue ops resolve in memory and persist once in one transaction (82ms to 4ms for 250 tracks on tmpfs, HDD fsync storms gone); shuffle play shuffles fully with a random first track and always reshuffles via a fresh snapshot
 45. Round 34: shuffle play fetches the shuffled head (permute the source list before queueing through one shared fresh-play path, so the single resolve targets the random first track instead of dropping stale; regression test pins loading id to current id; menu Shuffle play routed to the same path; Shuffle buttons sized like their Play siblings with the shuffle icon)
 46. Round 35: silent test suite (removed the 440Hz rodio test tone; control ops test appends no source, clock test drives ClockState directly with no device)
+47. Round 36: search song rows reveal actions on hover (like/more hidden until hover with same-size spacers, play overlay on the art with a dim backdrop + white icon, liked heart always visible as state)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

@@ -2,6 +2,10 @@
 
 ## 0.2.0 (unreleased)
 
+- Search song rows reveal actions on hover: like and more hide until
+  hover (same-size spacers keep rows steady), play moves onto the art
+  as a dimmed overlay with a white icon, and the liked heart stays
+  visible as state
 - Silent test suite: the 440Hz rodio test tone is gone, control and
   clock tests emit no audio
 - Playlist menu Shuffle play uses the fixed fresh-play path (same as
