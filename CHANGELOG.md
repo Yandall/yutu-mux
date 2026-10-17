@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Cookies-only sign-in: the Google sign-in section is gone and the
+  signed-in cookie row no longer carries Import library (Sync now is
+  the one refresh); saved OAuth sessions keep syncing untouched
 - Song versions win in search: video rows duplicating a song row are
   hidden (streams and art resolve to the song), survivors keep server
   order; libraries, playlists, and radio play as listed
