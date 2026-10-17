@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Song versions win in search: video rows duplicating a song row are
+  hidden (streams and art resolve to the song), survivors keep server
+  order; libraries, playlists, and radio play as listed
 - Mute button beside every volume slider: silences output without
   touching the level (unmuting restores it exactly), survives restarts
 - Reliable advances: failed stream fetches retry twice, then skip to
