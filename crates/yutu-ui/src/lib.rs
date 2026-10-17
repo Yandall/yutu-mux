@@ -12962,7 +12962,7 @@ impl AppState {
                             .map(|a| a.name.clone())
                             .unwrap_or_default();
                         items.push(menu_item(
-                            "mic",
+                            "folder",
                             "Open".to_string(),
                             Message::OpenArtist(id),
                         ));
