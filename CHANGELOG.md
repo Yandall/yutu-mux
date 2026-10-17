@@ -12,7 +12,8 @@
   own raw filtered search with the web params (songs carry artists,
   albums and durations again), signed-in sessions get personalized
   ranking like the web client, and failed categories fall back instead
-  of vanishing
+  of vanishing. The suggestion popup closes on pick and outside click
+  (either button) and supports arrow-key navigation with Enter to play
 - Silent test suite: the 440Hz rodio test tone is gone, control and
   clock tests emit no audio
 - Playlist menu Shuffle play uses the fixed fresh-play path (same as

@@ -878,6 +878,15 @@ pub enum Message {
         count: Option<usize>,
     },
     HomeSearchChanged(String),
+    /// Suggestion picked (click or keyboard): same flow as a keystroke
+    /// but the popup closes instead of staying open.
+    PickSuggestion(String),
+    /// Arrow-key navigation over the open suggest popup (wraps).
+    SuggestMoveUp,
+    SuggestMoveDown,
+    /// Enter with the popup open: plays/picks the highlighted row, or
+    /// submits the query when nothing is highlighted.
+    SuggestPick,
     SearchStay,
     SearchDebounced {
         gen: u64,
@@ -1476,6 +1485,10 @@ pub struct AppState {
     suggest: Vec<String>,
     suggest_gen: u64,
     show_suggest: bool,
+    /// Keyboard highlight into the open suggest popup (`None` = the
+    /// query itself submits on Enter). Indexes text suggestions first,
+    /// then the top-track rows; reset on every query change.
+    suggest_idx: Option<usize>,
     /// Last persisted queue snapshot (changed-identity check for the Tick
     /// saver: queue writes land within one tick, positions within 30s).
     queue_saved: Option<QueueSnapshot>,
@@ -3503,6 +3516,7 @@ impl AppState {
             suggest: Vec::new(),
             suggest_gen: 0,
             show_suggest: false,
+            suggest_idx: None,
             queue_saved: None,
             queue_saved_at: None,
             pending_resume: None,
@@ -3711,6 +3725,25 @@ impl AppState {
             },
             _ => None,
         });
+        // Suggest navigation lives on its own subscription so it only
+        // exists while the popup is open: arrows never hijack other
+        // views, and Enter stays on the input submit (single path).
+        let suggest_keys = if self.suggest_open() {
+            iced::keyboard::listen().filter_map(|event| match event {
+                iced::keyboard::Event::KeyPressed { key, .. } => match key.as_ref() {
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                        Some(Message::SuggestMoveUp)
+                    }
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                        Some(Message::SuggestMoveDown)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+        } else {
+            iced::Subscription::none()
+        };
         let tick = iced::time::every(std::time::Duration::from_millis(500)).map(Message::Tick);
         let anim = if self.animating() {
             iced::time::every(std::time::Duration::from_millis(ANIM_TICK_MS))
@@ -3745,7 +3778,7 @@ impl AppState {
             }
             _ => None,
         });
-        iced::Subscription::batch([keys, tick, events, anim])
+        iced::Subscription::batch([keys, suggest_keys, tick, events, anim])
     }
 
     /// Repeat mode as stored in the queue snapshot.
@@ -6445,58 +6478,19 @@ impl AppState {
                 self.search_filter = f;
             }
             Message::HomeSearchChanged(q) => {
-                self.search_query = q.clone();
-                let trimmed = q.trim().to_string();
-                self.search_gen = self.search_gen.wrapping_add(1);
-                self.suggest_gen = self.suggest_gen.wrapping_add(1);
-                if trimmed.is_empty() {
-                    self.results = SearchResults::default();
-                    self.all_results = SearchAll::default();
-                    self.suggest.clear();
-                    self.show_suggest = false;
-                    self.searching = false;
-                } else if trimmed.len() >= 2 {
-                    self.show_suggest = true;
-                    // Premature results: known tracks paint instantly.
-                    let premature = self.catalog_hits(&trimmed);
-                    self.results = SearchResults {
-                        tracks: premature.clone(),
-                        albums: Vec::new(),
-                        artists: Vec::new(),
-                        playlists: Vec::new(),
-                    };
-                    // Premature All mirrors the tracks with matching refs
-                    // (hero + rows, same as a real response).
-                    self.all_results = SearchAll {
-                        tracks: premature.clone(),
-                        mixed: premature
-                            .iter()
-                            .map(|t| yutu_core::MixedRef {
-                                kind: 0,
-                                id: t.id.clone(),
-                            })
-                            .collect(),
-                        ..SearchAll::default()
-                    };
-                    #[cfg(feature = "innertube")]
-                    {
-                        let gen = self.search_gen;
-                        let sgen = self.suggest_gen;
-                        let q2 = trimmed.clone();
-                        self.searching = true;
-                        self.publish_mpris();
-                        return iced::Task::batch([
-                            Self::search_debounce_task(gen, trimmed),
-                            Self::suggest_debounce_task(sgen, q2),
-                        ]);
-                    }
-                } else {
-                    // Single character: no stale results, no network yet.
-                    self.results = SearchResults::default();
-                    self.all_results = SearchAll::default();
-                    self.suggest.clear();
-                    self.searching = false;
-                }
+                return self.apply_search_input(q, true);
+            }
+            Message::PickSuggestion(q) => {
+                return self.apply_search_input(q, false);
+            }
+            Message::SuggestMoveUp => {
+                self.move_suggest(false);
+            }
+            Message::SuggestMoveDown => {
+                self.move_suggest(true);
+            }
+            Message::SuggestPick => {
+                return self.pick_suggest();
             }
             Message::SuggestCompleted { gen, result } => {
                 if gen != self.suggest_gen {
@@ -6510,6 +6504,7 @@ impl AppState {
                         self.suggest.clear();
                     }
                 }
+                self.clamp_suggest();
             }
             Message::SearchDebounced { gen, query } => {
                 // Stale keystroke (user kept typing): drop silently.
@@ -6606,6 +6601,7 @@ impl AppState {
             }
             Message::SearchCompleted { query, result } => {
                 self.searching = false;
+                self.clamp_suggest();
                 match result {
                     Ok(search) => {
                         self.search_cache_put(&query, (*search).clone());
@@ -7845,6 +7841,7 @@ impl AppState {
                     self.close_menu();
                 } else if self.show_suggest {
                     self.show_suggest = false;
+                    self.suggest_idx = None;
                 } else if self.drag.is_some() {
                     // Esc cancels an in-progress drag first (it owns the
                     // pointer); the drawer goes on the next Esc.
@@ -7855,6 +7852,7 @@ impl AppState {
             }
             Message::CloseSuggest => {
                 self.show_suggest = false;
+                self.suggest_idx = None;
             }
             Message::OpenTrackAlbum(id) => {
                 self.close_menu();
@@ -9198,6 +9196,146 @@ impl AppState {
         )
     }
 
+    /// Shared keystroke/pick flow for the search input: keystrokes keep
+    /// the popup open, picks close it. Either way the highlight resets
+    /// (it indexes the previous suggestion list).
+    fn apply_search_input(&mut self, q: String, popup_open: bool) -> iced::Task<Message> {
+        self.search_query = q.clone();
+        let trimmed = q.trim().to_string();
+        self.search_gen = self.search_gen.wrapping_add(1);
+        self.suggest_gen = self.suggest_gen.wrapping_add(1);
+        self.suggest_idx = None;
+        if trimmed.is_empty() {
+            self.results = SearchResults::default();
+            self.all_results = SearchAll::default();
+            self.suggest.clear();
+            self.show_suggest = false;
+            self.searching = false;
+        } else if trimmed.len() >= 2 {
+            self.show_suggest = popup_open;
+            // Premature results: known tracks paint instantly.
+            let premature = self.catalog_hits(&trimmed);
+            self.results = SearchResults {
+                tracks: premature.clone(),
+                albums: Vec::new(),
+                artists: Vec::new(),
+                playlists: Vec::new(),
+            };
+            // Premature All mirrors the tracks with matching refs
+            // (hero + rows, same as a real response).
+            self.all_results = SearchAll {
+                tracks: premature.clone(),
+                mixed: premature
+                    .iter()
+                    .map(|t| yutu_core::MixedRef {
+                        kind: 0,
+                        id: t.id.clone(),
+                    })
+                    .collect(),
+                ..SearchAll::default()
+            };
+            #[cfg(feature = "innertube")]
+            {
+                let gen = self.search_gen;
+                let sgen = self.suggest_gen;
+                let q2 = trimmed.clone();
+                self.searching = true;
+                self.publish_mpris();
+                return iced::Task::batch([
+                    Self::search_debounce_task(gen, trimmed),
+                    Self::suggest_debounce_task(sgen, q2),
+                ]);
+            }
+        } else {
+            // Single character: no stale results, no network yet.
+            self.results = SearchResults::default();
+            self.all_results = SearchAll::default();
+            self.suggest.clear();
+            self.searching = false;
+        }
+        iced::Task::none()
+    }
+
+    /// Rows behind the open suggest popup: text suggestions first,
+    /// then the top-track rows. Zero when the popup is closed.
+    fn suggest_count(&self) -> usize {
+        if !self.suggest_open() {
+            return 0;
+        }
+        self.suggest.len() + self.results.tracks.iter().take(5).count()
+    }
+
+    /// Same gate as the popup layer: the query is searchable and there
+    /// is something to show.
+    fn suggest_open(&self) -> bool {
+        let qnow = self.search_query.trim().to_string();
+        self.show_suggest
+            && qnow.len() >= 2
+            && (!self.suggest.is_empty() || !self.results.tracks.is_empty())
+    }
+
+    /// Arrow-key step over the open popup (wraps both ends). Dead
+    /// when the popup is closed, so arrows never hijack other views.
+    fn move_suggest(&mut self, down: bool) {
+        let n = self.suggest_count();
+        if n == 0 {
+            return;
+        }
+        self.suggest_idx = Some(match self.suggest_idx {
+            None => {
+                if down {
+                    0
+                } else {
+                    n - 1
+                }
+            }
+            Some(i) => {
+                if down {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                }
+            }
+        });
+    }
+
+    /// Enter with the popup open: text suggestions search, track rows
+    /// play instantly, and no highlight submits the raw query. Fired
+    /// from the input submit (single path, never doubled) when the
+    /// popup is open; a closed popup submits normally.
+    fn pick_suggest(&mut self) -> iced::Task<Message> {
+        if !self.suggest_open() {
+            self.suggest_idx = None;
+            return self.update(Message::SearchStay);
+        }
+        let n_text = self.suggest.len();
+        match self.suggest_idx {
+            Some(i) if i < n_text => {
+                let sug = self.suggest[i].clone();
+                self.apply_search_input(sug, false)
+            }
+            Some(i) => match self.results.tracks.get(i - n_text).map(|t| t.id.clone()) {
+                Some(id) => {
+                    self.suggest_idx = None;
+                    self.update(Message::PlayNow(id))
+                }
+                None => iced::Task::none(),
+            },
+            None => {
+                self.suggest_idx = None;
+                self.update(Message::SearchStay)
+            }
+        }
+    }
+
+    /// Clamp a stale highlight after fresh suggestions/results land.
+    fn clamp_suggest(&mut self) {
+        let n = self.suggest_count();
+        if self.suggest_idx.is_some_and(|i| i >= n) {
+            self.suggest_idx = None;
+        }
+    }
+
     /// Autoplay tail for [`Message::PlayNow`]: same-artist radio, seed first
     /// (the caller strips the seed and anything already queued).
     #[cfg(feature = "innertube")]
@@ -9614,7 +9752,7 @@ impl AppState {
     /// play; right-click opens the context menu. Fixed height plus a
     /// clipped text column so long names cut instead of painting over
     /// the play count.
-    fn suggest_track_row(&self, t: &Track) -> iced::Element<'_, Message> {
+    fn suggest_track_row(&self, t: &Track, selected: bool) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
@@ -9658,7 +9796,7 @@ impl AppState {
                 .padding(0)
                 .width(Fill),
             )
-            .style(row_bg(hovered))
+            .style(row_bg(hovered || selected))
             .width(Fill)
             .height(iced::Length::Fixed(SUGGEST_ROW_H))
             .clip(true)
@@ -11444,7 +11582,7 @@ impl AppState {
                     .style(search_inner_input)
                     .id("yutu-search")
                     .on_input(Message::HomeSearchChanged)
-                    .on_submit(Message::SearchStay)
+                    .on_submit(Message::SuggestPick)
                     .width(Fill)
                     .padding(10),
                 clear_btn,
@@ -12484,7 +12622,8 @@ impl AppState {
             let sug_rows: Vec<iced::Element<'_, Message>> = self
                 .suggest
                 .iter()
-                .map(|sug| {
+                .enumerate()
+                .map(|(i, sug)| {
                     button(
                         row![
                             icon("search", 13.0, MUTED),
@@ -12493,8 +12632,12 @@ impl AppState {
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .style(hover_row)
-                    .on_press(Message::HomeSearchChanged(sug.clone()))
+                    .style(if self.suggest_idx == Some(i) {
+                        selected_row
+                    } else {
+                        hover_row
+                    })
+                    .on_press(Message::PickSuggestion(sug.clone()))
                     .padding(5)
                     .width(Fill)
                     .into()
@@ -12505,7 +12648,10 @@ impl AppState {
                 .tracks
                 .iter()
                 .take(5)
-                .map(|t| self.suggest_track_row(t))
+                .enumerate()
+                .map(|(i, t)| {
+                    self.suggest_track_row(t, self.suggest_idx == Some(self.suggest.len() + i))
+                })
                 .collect();
             let progress: iced::Element<'_, Message> = if self.searching {
                 text("Searching…").size(11).color(SPOT_GREEN).into()
@@ -12611,6 +12757,7 @@ impl AppState {
                 iced::widget::Space::new().height(iced::Length::Fixed(SUGGEST_SCRIM_TOP)),
                 mouse_area(container(text("").size(1)).width(Fill).height(Fill))
                     .on_press(Message::CloseSuggest)
+                    .on_right_press(Message::CloseSuggest)
                     .on_enter(Message::ClearHovers)
                     .on_exit(Message::ClearHovers),
             ])
@@ -13564,7 +13711,7 @@ mod tests {
         let mut wide = mk_track("v9", &long, &long);
         wide.plays = Some("1B plays".into());
         let _ = s.view();
-        let _ = s.suggest_track_row(&wide);
+        let _ = s.suggest_track_row(&wide, false);
         let _ = s.track_row(&wide);
         let _ = s.queue_row(0);
         // Queue text boxes hold 2 title lines + 1 artist line always.
@@ -16382,6 +16529,64 @@ mod tests {
         let _ = s.update(Message::SearchStay);
         assert!(!s.show_suggest);
         assert_eq!(s.route, Route::Search);
+    }
+
+    #[test]
+    fn suggest_popup_pick_and_keyboard_flow() {
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("bon".into()));
+        let gen = s.suggest_gen;
+        let _ = s.update(Message::SuggestCompleted {
+            gen,
+            result: Ok(vec!["bonobo".into(), "bon iver".into()]),
+        });
+        // Popup track rows come from premature catalog hits.
+        assert!(s.suggest_open());
+        // Arrows walk text suggestions first, then track rows, wrapping.
+        let n = s.suggest_count();
+        assert!(n >= 2);
+        let _ = s.update(Message::SuggestMoveDown);
+        assert_eq!(s.suggest_idx, Some(0));
+        let _ = s.update(Message::SuggestMoveUp);
+        assert_eq!(s.suggest_idx, Some(n - 1));
+        let _ = s.update(Message::SuggestMoveDown);
+        assert_eq!(s.suggest_idx, Some(0));
+        // Highlighted rows render with no panic.
+        let _ = s.view();
+        // Enter on a text suggestion searches it and closes the popup.
+        let _ = s.update(Message::SuggestPick);
+        assert_eq!(s.search_query, "bonobo");
+        assert!(!s.show_suggest);
+        assert!(s.suggest_idx.is_none());
+        // Reopen on fixtures ("come" premature-matches catalog tracks),
+        // arrow to a track row, Enter plays it.
+        let _ = s.update(Message::HomeSearchChanged("come".into()));
+        let _ = s.update(Message::SuggestCompleted {
+            gen: s.suggest_gen,
+            result: Ok(vec!["come together".into()]),
+        });
+        assert!(s.suggest_open());
+        assert!(!s.results.tracks.is_empty());
+        let _ = s.update(Message::SuggestMoveUp);
+        let last = s.suggest_count() - 1;
+        assert_eq!(s.suggest_idx, Some(last));
+        assert!(last >= s.suggest.len());
+        let want = s.results.tracks[last - s.suggest.len()].id.clone();
+        let _ = s.update(Message::SuggestPick);
+        assert!(!s.show_suggest);
+        assert_eq!(
+            s.queue.current().map(|t| t.id.as_str()),
+            Some(want.as_str())
+        );
+        // Dead arrows with a closed popup, and scrim clears the rest.
+        let _ = s.update(Message::SuggestMoveDown);
+        assert!(s.suggest_idx.is_none());
+        let _ = s.update(Message::HomeSearchChanged("bon".into()));
+        let _ = s.update(Message::SuggestMoveDown);
+        assert!(s.suggest_idx.is_some());
+        let _ = s.update(Message::CloseSuggest);
+        assert!(!s.show_suggest);
+        assert!(s.suggest_idx.is_none());
     }
 
     #[cfg(feature = "innertube")]
