@@ -2,6 +2,8 @@
 
 ## 0.2.0 (unreleased)
 
+- Shuffle play fetches the shuffled head: the source list shuffles
+  before queueing (one fetch for the right track, no stale drop)
 - Playlist click-to-play from the clicked song: the song plus the rest
   of the playlist from that point replace the queue; playlist pages
   gain a Shuffle pill; bulk queue ops resolve in memory and persist

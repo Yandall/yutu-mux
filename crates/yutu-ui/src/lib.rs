@@ -3983,38 +3983,59 @@ impl AppState {
         }
     }
 
-    /// Shuffle-play order for a freshly built queue: snapshot the
-    /// incoming order (toggle-off restores it), then full Fisher-Yates
-    /// over `items[start..]` so the first track is random too. Always
-    /// reshuffles, even when shuffle mode was already on.
-    fn shuffle_fresh(&mut self, start: usize) {
-        let len = self.queue.len();
-        let start = start.min(len.saturating_sub(1));
-        self.pre_shuffle = Some(self.queue.items().iter().map(|t| t.id.clone()).collect());
-        if len > start + 1 {
-            let mut seed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos() as u64)
-                .unwrap_or(0x2545F491)
-                ^ 0x9E3779B97F4A7C15;
-            if seed == 0 {
-                seed = 0x2545F491;
-            }
-            let mut tail: Vec<usize> = (start..len).collect();
-            for i in (1..tail.len()).rev() {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                tail.swap(i, (seed as usize) % (i + 1));
-            }
-            let mut order: Vec<usize> = (0..start).collect();
-            order.extend(tail);
-            let _ = self.queue.reorder(&order);
+    /// Fisher-Yates permutation of 0..len (xorshift, nanos seed).
+    fn shuffled_order(len: usize) -> Vec<usize> {
+        let mut seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0x2545F491)
+            ^ 0x9E3779B97F4A7C15;
+        if seed == 0 {
+            seed = 0x2545F491;
         }
-        self.queue.jump_to(start);
-        // First-occurrence seating if duplicates exist (see restore).
-        self.pre_shuffle_cur = self.queue.current().map(|t| (t.id.clone(), 0));
-        self.queue.shuffle = true;
+        let mut order: Vec<usize> = (0..len).collect();
+        for i in (1..len).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            order.swap(i, (seed as usize) % (i + 1));
+        }
+        order
+    }
+
+    /// Fresh-context play with optional full shuffle: replaces the
+    /// queue, snapshots the incoming order for toggle-off, shuffles the
+    /// source list first (so the queued order - and its first fetch -
+    /// is already shuffled, random head included), then queues. Always
+    /// reshuffles, even when shuffle mode was already on.
+    fn play_fresh(
+        &mut self,
+        tracks: Vec<Track>,
+        label: &str,
+        shuffle: bool,
+    ) -> iced::Task<Message> {
+        self.queue.clear();
+        self.autoplay.clear();
+        self.autoplay_for = None;
+        self.drag = None;
+        let mut tracks = tracks;
+        if shuffle {
+            self.pre_shuffle = Some(tracks.iter().map(|t| t.id.clone()).collect());
+            let order = Self::shuffled_order(tracks.len());
+            let mut shuffled = Vec::with_capacity(tracks.len());
+            for i in order {
+                shuffled.push(tracks[i].clone());
+            }
+            tracks = shuffled;
+        }
+        let task = self.queue_many(tracks, label);
+        if shuffle {
+            // First-occurrence seating if duplicates exist (see restore).
+            self.pre_shuffle_cur = self.queue.current().map(|t| (t.id.clone(), 0));
+            self.queue.shuffle = true;
+        }
+        self.publish_mpris();
+        task
     }
 
     /// Restore the pre-shuffle order. Ids added while shuffled keep their
@@ -4582,19 +4603,9 @@ impl AppState {
             return iced::Task::none();
         }
         // Fresh context (like PlayNow): the old queue and tail go away,
-        // then the list plays from the top.
-        self.queue.clear();
-        self.autoplay.clear();
-        self.autoplay_for = None;
-        self.drag = None;
-        let task = self.queue_many(tracks, &label);
-        if shuffle {
-            // Fresh queue: fully shuffled with a random first track
-            // (shuffle_fresh always reshuffles, even when already on).
-            self.shuffle_fresh(0);
-        }
-        self.publish_mpris();
-        task
+        // then the list plays (shuffled first when asked, so the first
+        // fetch already targets the random head).
+        self.play_fresh(tracks, &label, shuffle)
     }
 
     /// Shuffle-play a known track list (search hero actions): same fresh
@@ -4604,14 +4615,7 @@ impl AppState {
             self.status = format!("{label}: nothing to play yet.");
             return iced::Task::none();
         }
-        self.queue.clear();
-        self.autoplay.clear();
-        self.autoplay_for = None;
-        self.drag = None;
-        let task = self.queue_many(tracks, label);
-        self.shuffle_fresh(0);
-        self.publish_mpris();
-        task
+        self.play_fresh(tracks, label, true)
     }
 
     fn play_index(&mut self, i: usize) -> iced::Task<Message> {
@@ -6556,16 +6560,7 @@ impl AppState {
                         self.status = format!("Playlist {label}: nothing playable.");
                         return iced::Task::none();
                     }
-                    self.queue.clear();
-                    self.autoplay.clear();
-                    self.autoplay_for = None;
-                    self.drag = None;
-                    let task = self.queue_many(tracks, &format!("Playlist {label}"));
-                    if shuffle {
-                        self.set_shuffle(true);
-                    }
-                    self.publish_mpris();
-                    return task;
+                    return self.play_fresh(tracks, &format!("Playlist {label}"), shuffle);
                 }
                 Err(e) => {
                     self.status = format!("Playlist {label} ({id}): {e}.");
@@ -13805,6 +13800,10 @@ mod tests {
         let _ = s.update(Message::PlayAllShuffled);
         assert!(s.queue.shuffle);
         assert_eq!(s.pre_shuffle, Some(ordered));
+        // The fetch targets the shuffled head, never the pre-shuffle
+        // first song (a stale fetch would drop and play nothing).
+        let head = s.queue.current().unwrap().id.clone();
+        assert_eq!(s.loading_track.as_deref(), Some(head.as_str()));
     }
 
     #[test]
