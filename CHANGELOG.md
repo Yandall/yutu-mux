@@ -3,8 +3,9 @@
 ## 0.2.0 (unreleased)
 
 - Quiet background sync: the top progress banner appears for library
-  imports only, while sync pulls surface through a loader glyph beside
-  the sidebar title (same slot reserved when idle, so nothing shifts)
+  imports only, while sync pulls surface through a spinning loader
+  beside the sidebar title (same slot reserved when idle, so nothing
+  shifts)
 - Lazy image component: every artwork site renders through one
   cache-first view (memory, then disk, then placeholder), and fetches
   follow the viewport (scroll math per list plus overscan, throttled

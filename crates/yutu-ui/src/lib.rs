@@ -1319,6 +1319,10 @@ const ART_PRUNE_MIN_SECS: u64 = 300;
 /// Divider pitch between uniform rows (1px hairline + 2px breathing
 /// room each side, never trailing): row height + 5.
 const DIVIDER_PX: f32 = 5.0;
+/// Sidebar sync spinner frames (verbatim loader glyph, one rotation
+/// step each): 60 steps at the ~60fps `Animate` tick is one turn/sec.
+#[cfg(feature = "innertube")]
+const SPINNER_STEPS: usize = 60;
 /// Shared lazy-art geometry: body padding, uniform row pitch (52px
 /// rows + 2px spacing), card grid pitch (200px cards + 10px wrap
 /// spacing). Declared once so slot math cannot drift per call site.
@@ -1669,6 +1673,11 @@ pub struct AppState {
     /// path that clears `import_active`.
     #[cfg(feature = "innertube")]
     sync_active: bool,
+    /// Spinner frame for the sidebar sync glyph: advanced one step per
+    /// `Animate` tick while syncing (the ticker runs then, see
+    /// [`Self::animating`]). Wraps around the precomputed frames.
+    #[cfg(feature = "innertube")]
+    sync_frame: u64,
     /// Expected import songs (base songs plus known playlist totals) and
     /// playlist songs already finished: banner bar math. Per-list live
     /// counts arrive via ticks; finished indices quarantine late ticks.
@@ -3724,6 +3733,8 @@ impl AppState {
             import_active: false,
             #[cfg(feature = "innertube")]
             sync_active: false,
+            #[cfg(feature = "innertube")]
+            sync_frame: 0,
             #[cfg(feature = "innertube")]
             import_expected: 0,
             #[cfg(feature = "innertube")]
@@ -5954,20 +5965,51 @@ impl AppState {
         self.import_active && self.sync_active
     }
 
-    /// Sidebar sync spinner: the Lucide loader glyph while a sync runs,
-    /// a same-width empty box otherwise (the pin button never hops when
-    /// a sync starts or stops). Static frame: iced svg has no rotation,
-    /// so this reads as a busy badge, not an animated spinner.
+    /// Sidebar sync spinner: the Lucide loader glyph rotating one step
+    /// per `Animate` tick while a sync runs, a same-width empty box
+    /// otherwise (the pin button never hops when a sync starts or
+    /// stops). Frames are the verbatim loader SVG with a rotation
+    /// transform applied at runtime (same precedent as the heart
+    /// fill-flip: no custom drawing, no new asset files).
     #[cfg(feature = "innertube")]
     fn sync_spinner(&self) -> iced::Element<'_, Message> {
+        use iced::widget::svg;
         if self.syncing() {
-            icon("loader", 14.0, SPOT_GREEN)
+            const LOADER: &str = include_str!("../assets/icons/loader-circle.svg");
+            // Parsed once: every tick shares the rotated handles.
+            static SPINNER_FRAMES: std::sync::LazyLock<Vec<svg::Handle>> =
+                std::sync::LazyLock::new(|| {
+                    (0..SPINNER_STEPS)
+                        .map(|i| {
+                            let angle = i * 360 / SPINNER_STEPS;
+                            let rotated = LOADER.replace(
+                                "<path",
+                                &format!("<path transform=\"rotate({angle} 12 12)\""),
+                            );
+                            svg::Handle::from_memory(rotated.into_bytes())
+                        })
+                        .collect()
+                });
+            let frame = (self.sync_frame % SPINNER_STEPS as u64) as usize;
+            svg(SPINNER_FRAMES[frame].clone())
+                .width(14.0)
+                .height(14.0)
+                .style(|_: &iced::Theme, _| svg::Style {
+                    color: Some(SPOT_GREEN),
+                })
+                .into()
         } else {
             iced::widget::Space::new()
                 .width(iced::Length::Fixed(14.0))
                 .height(iced::Length::Shrink)
                 .into()
         }
+    }
+
+    /// Offline builds never sync: no spinner, no layout shift.
+    #[cfg(not(feature = "innertube"))]
+    fn syncing(&self) -> bool {
+        false
     }
 
     /// Offline builds never sync: no spinner, no layout shift.
@@ -6153,12 +6195,14 @@ impl AppState {
     }
 
     /// True while any transition is still converging (drives the ticker).
+    /// Syncing counts: the sidebar spinner advances one frame per tick.
     fn animating(&self) -> bool {
         self.sidebar_w != self.sidebar_target()
             || self.right_w != self.right_target()
             || self.drawer_anim != if self.drawer_open { 1.0 } else { 0.0 }
             || self.drag_gap != self.drag_gap_target()
             || self.scroll_fading()
+            || self.syncing()
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -8179,6 +8223,12 @@ impl AppState {
                         {
                             *o = (*o - SCROLL_FADE_STEP).max(0.0);
                         }
+                    }
+                    // Sync spinner advances while a pull runs (the frame
+                    // drives the rotated glyph; nothing else moves).
+                    #[cfg(feature = "innertube")]
+                    if self.syncing() {
+                        self.sync_frame = self.sync_frame.wrapping_add(1);
                     }
                 }
             }
@@ -17712,6 +17762,11 @@ mod tests {
         assert!(s.syncing());
         assert!(s.import_banner_view().is_none());
         let _ = s.sync_spinner();
+        // The spinner turns while a sync runs: one frame per tick.
+        let f0 = s.sync_frame;
+        let _ = s.update(Message::Animate);
+        assert_eq!(s.sync_frame, f0 + 1);
+        let _ = s.sync_spinner();
         // Final arrival ends the sync (spinner drops, still no banner).
         let gen = s.import_gen;
         let _ = s.update(Message::PlaylistImported {
@@ -17731,6 +17786,10 @@ mod tests {
         assert!(!s.syncing());
         assert!(s.import_banner_view().is_none());
         let _ = s.sync_spinner();
+        // Idle ticks never advance the spinner.
+        let f1 = s.sync_frame;
+        let _ = s.update(Message::Animate);
+        assert_eq!(s.sync_frame, f1);
         // Error paths clear the pair too: a failed stage must never
         // wedge the UI into a silent stuck sync.
         s.import_active = true;
