@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Reliable advances: failed stream fetches retry twice, then skip to
+  the next song (or report honestly at the end of the queue); the next
+  song starts prefetching 2s before the current one ends
 - Lyrics follow: the Now Playing drawer auto-scrolls so the current
   verse stays centered; scrolling manually pauses it until you scroll
   back, seek, or change tracks

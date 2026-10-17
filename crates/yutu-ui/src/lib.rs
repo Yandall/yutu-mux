@@ -1381,6 +1381,17 @@ const ART_PRUNE_MIN_SECS: u64 = 300;
 /// pins disk (or memory) past a day. Absolute from fetch time: hits
 /// do not extend it (wall-clock mtimes are unreliable for atime).
 const ART_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+/// Resolve attempts per load before skipping ahead (initial load
+/// plus retries): transient yt-dlp/network flakes recover, dead
+/// tracks fail over fast instead of hanging the queue.
+const MAX_RESOLVE_ATTEMPTS: u8 = 3;
+/// A stream-URL resolve that outlives this never returns: the timeout
+/// error flows through the normal retry path instead of wedging the
+/// loader on a hung yt-dlp. Generous: healthy resolves take seconds.
+const RESOLVE_TIMEOUT_SECS: u64 = 15;
+/// Same backstop for full-download resolves (slow networks download
+/// for minutes legitimately, so this only catches true stalls).
+const RESOLVE_BYTES_TIMEOUT_SECS: u64 = 300;
 /// Divider pitch between uniform rows (1px hairline + 2px breathing
 /// room each side, never trailing): row height + 5.
 const DIVIDER_PX: f32 = 5.0;
@@ -1481,7 +1492,7 @@ impl AppState {
 const ANIM_TICK_MS: u64 = 16;
 const ANIM_MIN_MS: u64 = 20;
 const ANIM_MAX_MS: u64 = 400;
-const ANIM_DEFAULT_MS: u64 = 100;
+const ANIM_DEFAULT_MS: u64 = 130;
 /// Total travels used to derive per-tick steps for a target duration.
 const SIDEBAR_TRAVEL: f32 = 179.0;
 /// Right worst case (285 to 0 when the rail is empty) so every right
@@ -1744,6 +1755,9 @@ pub struct AppState {
     /// First Tick after launch runs the Home lazy batch (startup
     /// itself does zero network so the window appears instantly).
     lazy_init_done: bool,
+    /// Failed resolve attempts for the loading track: a few retries,
+    /// then skip forward (never silently stuck, never an error loop).
+    resolve_attempts: u8,
     /// Track id a prefetch was already attempted for (no Tick spam).
     prefetch_attempted: Option<String>,
     /// Google device-flow login in progress (cloned into poll tasks).
@@ -3883,6 +3897,7 @@ impl AppState {
             // itself does zero network so the window appears instantly).
             lazy_init_done: false,
             prefetch_attempted: None,
+            resolve_attempts: 0,
             #[cfg(feature = "innertube")]
             google_login: None,
             #[cfg(feature = "innertube")]
@@ -3941,6 +3956,17 @@ impl AppState {
             let (auto_sync, last_sync_unix) = load_sync_prefs(&state.library_path);
             state.auto_sync = auto_sync;
             state.last_sync_unix = last_sync_unix;
+        }
+        // Animation duration survives restarts (garbage falls back to
+        // the default; the slider clamps, so stored values are in range).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(ms) = store
+                .get_pref("anim_ms")
+                .unwrap_or(None)
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+            }
         }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
@@ -4438,6 +4464,7 @@ impl AppState {
             self.prefetched = None;
         }
         self.prefetch_attempted = None;
+        self.resolve_attempts = 0;
         self.loading_track = Some(t.id.clone());
         self.end_advanced = false;
         self.paused = false;
@@ -4456,9 +4483,11 @@ impl AppState {
         }
         // Lyrics + hero warming on every track start, whatever the route.
         follow_tasks.extend(self.track_start_tasks(&t));
-        // Prefetched URL: instant.
+        // Prefetched URL: instant, unless its expiry passed while we
+        // sat paused (a stale URL fails slow in mpv; re-resolve fast).
         if let Some((_, url)) = self.prefetched.take() {
-            if self.try_play_url(&url, &t) {
+            let fresh = url_expiry(&url).is_none_or(|exp| exp > now_unix() as u64 + 60);
+            if fresh && self.try_play_url(&url, &t) {
                 return iced::Task::batch(follow_tasks);
             }
         }
@@ -4483,7 +4512,52 @@ impl AppState {
         iced::Task::batch(follow_tasks)
     }
 
+    /// Resolve failure for the loading track: retry the same load up
+    /// to [`MAX_RESOLVE_ATTEMPTS`] (transient yt-dlp/network flakes),
+    /// then skip forward when a next song exists, else report honestly
+    /// and hold. Never silently stuck, never an error loop (landing
+    /// back on the same id, e.g. repeat loops, stops instead).
+    fn retry_or_skip_failed(&mut self, failed_id: String, err: String) -> iced::Task<Message> {
+        self.loading_track = None;
+        self.pending_resume = None;
+        self.resolve_attempts += 1;
+        if self.resolve_attempts < MAX_RESOLVE_ATTEMPTS {
+            self.loading_track = Some(failed_id.clone());
+            self.status = format!(
+                "Stream failed, retrying ({}/{MAX_RESOLVE_ATTEMPTS})…",
+                self.resolve_attempts
+            );
+            self.publish_mpris();
+            // Same backend choice as a fresh load (the queue never
+            // moved, so no other state resets).
+            return match &self.audio {
+                Some(a) if a.wants_stream() => Self::resolve_url_task(failed_id),
+                _ => Self::resolve_task(failed_id),
+            };
+        }
+        let title = self
+            .find_track(&failed_id)
+            .map(|t| t.title.clone())
+            .unwrap_or(failed_id.clone());
+        self.log_error(format!(
+            "Giving up on {failed_id} after {MAX_RESOLVE_ATTEMPTS} resolve attempts: {err}"
+        ));
+        if self.advance_queue() && !self.queue.current().is_some_and(|t| t.id == failed_id) {
+            self.status = format!("Skipped {title}: stream failed {MAX_RESOLVE_ATTEMPTS} times.");
+            self.publish_mpris();
+            return self.play_current_task();
+        }
+        // Same song (repeat loop) or end of line: stop loudly instead
+        // of cycling, and pin the end flag so Tick never retriggers.
+        self.end_advanced = true;
+        self.status = format!("Playback failed for {title}: {err} (end of queue).");
+        self.publish_mpris();
+        iced::Task::none()
+    }
+
     /// Best-effort instant play of a stream URL. True on success.
+    /// Failures stay quiet here (status only): the bytes fallback
+    /// usually recovers, and the give-up path logs if nothing does.
     fn try_play_url(&mut self, url: &str, t: &Track) -> bool {
         match &self.audio {
             Some(audio) => match audio.play_stream_url(url) {
@@ -4495,9 +4569,7 @@ impl AppState {
                 }
                 Err(e) => {
                     self.pending_resume = None;
-                    let msg = format!("Playback failed for {}: {e}", t.id);
-                    self.log_error(msg.clone());
-                    self.status = msg;
+                    self.status = format!("Playback failed for {}: {e}", t.id);
                     false
                 }
             },
@@ -4734,6 +4806,23 @@ impl AppState {
         }
     }
 
+    /// Next-song prefetch due check (pure for tests): the last 2s of
+    /// a known-length song with nothing loading and nothing warmed.
+    /// Fires once per track (see `prefetch_attempted`); failures stay
+    /// silent until the advance, which retries with its own budget.
+    fn prefetch_due(&self, position_secs: f64, duration_secs: f64) -> Option<String> {
+        if self.paused
+            || !duration_secs.is_finite()
+            || duration_secs <= 2.0
+            || self.prefetched.is_some()
+            || self.loading_track.is_some()
+            || position_secs < duration_secs - 2.0
+        {
+            return None;
+        }
+        self.peek_next_id()
+    }
+
     /// Id of the likely next track (repeat-all wraps), for prefetching.
     /// Repeat One needs none: the same song replays from the cache.
     fn peek_next_id(&self) -> Option<String> {
@@ -4801,6 +4890,8 @@ impl AppState {
                 if let Some(audio) = &self.audio {
                     audio.stop();
                 }
+                self.resolve_attempts = 0;
+                self.prefetch_attempted = None;
                 self.loading_track = Some(t.id.clone());
                 self.end_advanced = false;
                 self.paused = false;
@@ -8768,7 +8859,11 @@ impl AppState {
                 }
             }
             Message::AnimMsChanged(ms) => {
-                self.anim_ms = (ms as u64).clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+                let ms = (ms as u64).clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+                self.anim_ms = ms;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("anim_ms", &ms.to_string());
+                }
             }
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
@@ -9271,20 +9366,14 @@ impl AppState {
                     self.position_secs = self.audio_position();
                 }
                 let duration = self.audio_duration();
-                // Prefetch the next song while this one still plays (>75%).
-                // One attempt per track: failures stay silent until advance.
-                if !self.paused
-                    && duration > 30.0
-                    && self.prefetched.is_none()
-                    && self.loading_track.is_none()
-                    && self.position_secs > duration * 0.75
-                {
-                    if let Some(id) = self.peek_next_id() {
-                        if self.prefetch_attempted.as_deref() != Some(id.as_str()) {
-                            self.prefetch_attempted = Some(id.clone());
-                            self.publish_mpris();
-                            tasks.push(Self::prefetch_task(id));
-                        }
+                // Prefetch the next song 2s before the current one ends,
+                // so the advance lands on a warm URL. One attempt per
+                // track: failures stay silent until the advance, which
+                // retries with its own budget.
+                if let Some(id) = self.prefetch_due(self.position_secs, duration) {
+                    if self.prefetch_attempted.as_deref() != Some(id.as_str()) {
+                        self.prefetch_attempted = Some(id.clone());
+                        tasks.push(Self::prefetch_task(id));
                     }
                 }
                 // Auto-advance once per track end. The threshold sits 1s
@@ -9343,10 +9432,7 @@ impl AppState {
                 self.loading_track = None;
                 match result {
                     Err(e) => {
-                        self.pending_resume = None;
-                        let msg = format!("Playback failed for {track_id}: {e}");
-                        self.log_error(msg.clone());
-                        self.status = msg;
+                        return self.retry_or_skip_failed(track_id, e);
                     }
                     Ok(url) => {
                         if let Some(expires) = url_expiry(&url) {
@@ -9373,16 +9459,24 @@ impl AppState {
                 }
             }
             Message::StreamResolved { video_id, result } => {
-                self.loading_track = None;
+                // Stale errors (user moved on mid-fetch) must not retry
+                // or skip the new song: only the loader may report.
+                if result.is_err() && self.loading_track.as_deref() != Some(video_id.as_str()) {
+                    return iced::Task::none();
+                }
                 match result {
                     Err(e) => {
-                        self.pending_resume = None;
-                        let msg = format!("Playback failed for {video_id}: {e}");
-                        self.log_error(msg.clone());
-                        self.status = msg;
+                        return self.retry_or_skip_failed(video_id, e);
                     }
                     Ok(bytes) => {
-                        // Stale arrival (user moved on): drop, keep playing.
+                        // Stale arrival (user moved on): drop without
+                        // touching the new load's flag, or its resolve
+                        // would be orphaned and the song never starts.
+                        if self.loading_track.as_deref() != Some(video_id.as_str()) {
+                            return iced::Task::none();
+                        }
+                        self.loading_track = None;
+                        // Jumped away mid-fetch: drop, keep playing.
                         let current_id = self
                             .queue
                             .current()
@@ -9409,10 +9503,9 @@ impl AppState {
                                     self.consume_resume();
                                 }
                                 Err(e) => {
-                                    self.pending_resume = None;
-                                    let msg = format!("Playback failed for {video_id}: {e}");
-                                    self.log_error(msg.clone());
-                                    self.status = msg;
+                                    // Fresh bytes that will not play: treat
+                                    // like a failed fetch (retry, then skip).
+                                    return self.retry_or_skip_failed(video_id, e.to_string());
                                 }
                             },
                         }
@@ -9470,7 +9563,17 @@ impl AppState {
     fn resolve_task(video_id: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = resolve_and_fetch(&video_id).await;
+                let result = match tokio::time::timeout(
+                    std::time::Duration::from_secs(RESOLVE_BYTES_TIMEOUT_SECS),
+                    resolve_and_fetch(&video_id),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(format!(
+                        "download timed out after {RESOLVE_BYTES_TIMEOUT_SECS}s"
+                    )),
+                };
                 (video_id, result)
             },
             |(video_id, result)| Message::StreamResolved { video_id, result },
@@ -9507,11 +9610,22 @@ impl AppState {
 
     /// Resolve a track to a stream URL fast (yt-dlp only, no download).
     /// mpv plays the URL progressively; the rodio path uses `resolve_task`
-    /// (full bytes) instead.
+    /// (full bytes) instead. A hung yt-dlp cannot wedge the loader: the
+    /// timeout error flows through the normal retry path.
     fn resolve_url_task(track_id: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = resolve_stream_url(&track_id).await;
+                let result = match tokio::time::timeout(
+                    std::time::Duration::from_secs(RESOLVE_TIMEOUT_SECS),
+                    resolve_stream_url(&track_id),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(format!(
+                        "stream resolve timed out after {RESOLVE_TIMEOUT_SECS}s"
+                    )),
+                };
                 (track_id, result)
             },
             |(track_id, result)| Message::UrlResolved { track_id, result },
@@ -9537,10 +9651,22 @@ impl AppState {
     }
 
     /// Background prefetch of the next song's URL (never auto-plays).
+    /// Same timeout as resolves: a hung prefetch must neither wedge
+    /// the loader nor poison the slot (failures simply miss it).
     fn prefetch_task(track_id: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = resolve_stream_url(&track_id).await;
+                let result = match tokio::time::timeout(
+                    std::time::Duration::from_secs(RESOLVE_TIMEOUT_SECS),
+                    resolve_stream_url(&track_id),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(format!(
+                        "stream resolve timed out after {RESOLVE_TIMEOUT_SECS}s"
+                    )),
+                };
                 (track_id, result)
             },
             |(track_id, result)| Message::UrlPrefetched { track_id, result },
@@ -16491,20 +16617,22 @@ mod tests {
         assert_eq!(s.loading_track.as_deref(), Some("m1"));
         assert!(s.status.contains("Loading"));
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
-        // Stale arrival (user moved on): dropped silently.
+        // Stale arrival (user moved on): dropped silently, and the new
+        // load's flag survives so its own resolve still lands.
         let _ = s.update(Message::EnqueueTrack("m2".into()));
         let _ = s.update(Message::StreamResolved {
             video_id: "m1".into(),
             result: Ok(vec![1, 2, 3]),
         });
-        assert_eq!(s.loading_track, None);
+        assert_eq!(s.loading_track.as_deref(), Some("m2"));
         assert!(s.queue.current().map(|t| t.id.as_str()) == Some("m2"));
-        // Fetch failure for the current track reports honestly.
+        // Fetch failure for the current track retries the same load.
         let _ = s.update(Message::StreamResolved {
             video_id: "m2".into(),
             result: Err("403 Forbidden".into()),
         });
-        assert!(s.status.contains("m2") || s.status.contains("Playback failed"));
+        assert_eq!(s.loading_track.as_deref(), Some("m2"));
+        assert!(s.status.contains("retrying"));
     }
 
     #[test]
@@ -16512,11 +16640,23 @@ mod tests {
         let mut s = test_state();
         let _ = s.update(Message::EnqueueTrack("m1".into()));
         assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        // First failure retries the same load (never stuck on one flake).
         let _ = s.update(Message::StreamResolved {
             video_id: "m1".into(),
             result: Err("403 Forbidden".into()),
         });
-        assert!(s.status.contains("m1") && s.status.contains("403"));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        assert!(s.status.contains("retrying"));
+        // Budget exhausted on a single track: honest error, loader clear.
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Err("403 Forbidden".into()),
+        });
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Err("403 Forbidden".into()),
+        });
+        assert!(s.status.contains("end of queue"), "status: {}", s.status);
         assert_eq!(s.loading_track, None);
         // Empty bytes: whatever the backend does (play async / refuse /
         // no device), it must settle loading and report: never panic.
@@ -19367,6 +19507,18 @@ mod tests {
         assert_eq!(s.anim_ms, ANIM_MAX_MS);
         let _ = s.update(Message::AnimMsChanged(0.0));
         assert_eq!(s.anim_ms, ANIM_MIN_MS);
+        // The choice persists: a fresh state on the same library path
+        // reopens with it (garbage falls back to the default).
+        let _ = s.update(Message::AnimMsChanged(250.0));
+        assert_eq!(s.anim_ms, 250);
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.anim_ms, 250);
+        let Ok(store) = LibraryStore::open(&s.library_path) else {
+            panic!("test library must open");
+        };
+        let _ = store.set_pref("anim_ms", "junk");
+        let (fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(fallback.anim_ms, ANIM_DEFAULT_MS);
     }
 
     #[test]
@@ -19610,6 +19762,16 @@ mod tests {
         let mut s = test_state();
         assert!(s.error_log.is_empty());
         let _ = s.update(Message::EnqueueTrack("m1".into()));
+        // Retries stay quiet; only the give-up is logged.
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Err("403 Forbidden".into()),
+        });
+        assert!(s.error_log.is_empty());
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Err("403 Forbidden".into()),
+        });
         let _ = s.update(Message::StreamResolved {
             video_id: "m1".into(),
             result: Err("403 Forbidden".into()),
@@ -19708,6 +19870,119 @@ mod tests {
             s.prefetched,
             Some(("m2".into(), "https://example.invalid/m2".into()))
         );
+    }
+
+    #[test]
+    fn prefetch_due_fires_two_seconds_before_end() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        // Window opens exactly 2s before the end (inclusive).
+        assert_eq!(s.prefetch_due(198.0, 200.0).as_deref(), Some("m2"));
+        assert_eq!(s.prefetch_due(197.9, 200.0), None);
+        // Unknown/short durations never time an end.
+        assert_eq!(s.prefetch_due(0.0, 0.0), None);
+        assert_eq!(s.prefetch_due(0.0, 2.0), None);
+        // Busy states hold their fire.
+        s.paused = true;
+        assert_eq!(s.prefetch_due(199.0, 200.0), None);
+        s.paused = false;
+        s.prefetched = Some(("m2".into(), "https://example.invalid/x".into()));
+        assert_eq!(s.prefetch_due(199.0, 200.0), None);
+        s.prefetched = None;
+        s.loading_track = Some("m1".into());
+        assert_eq!(s.prefetch_due(199.0, 200.0), None);
+    }
+
+    /// Failed loads retry the same track, then skip forward.
+    /// Returns the task so tests prove a refetch actually fires.
+    fn failed_load(s: &mut AppState) -> iced::Task<Message> {
+        let id = s.loading_track.clone().expect("a load is in flight");
+        s.update(Message::UrlResolved {
+            track_id: id,
+            result: Err("boom".into()),
+        })
+    }
+
+    #[test]
+    fn failed_resolve_retries_then_skips() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.loading_track = Some("m1".into());
+        // Two failures retry the same load (never stuck, never moved).
+        let t = failed_load(&mut s);
+        assert!(t.units() > 0, "retry must refetch");
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        assert_eq!(s.resolve_attempts, 1);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        let t = failed_load(&mut s);
+        assert!(t.units() > 0, "retry must refetch");
+        assert_eq!(s.resolve_attempts, 2);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        // The third failure skips to the next song with a fresh budget.
+        let t = failed_load(&mut s);
+        assert!(t.units() > 0, "skip must start the next load");
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        assert_eq!(s.loading_track.as_deref(), Some("m2"));
+        assert_eq!(s.resolve_attempts, 0);
+        // The skip note is permanent in the error log (the loading
+        // status takes over the line immediately).
+        assert!(s.error_log.iter().any(|l| l.contains("Giving up on m1")));
+    }
+
+    #[test]
+    fn resolve_gives_up_at_end_of_queue() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.loading_track = Some("m1".into());
+        let _ = failed_load(&mut s);
+        let _ = failed_load(&mut s);
+        let t = failed_load(&mut s);
+        assert_eq!(t.units(), 0, "give-up issues no work");
+        // Nowhere to go: honest error, loader cleared, no retry loop.
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert!(s.loading_track.is_none());
+        assert!(s.status.contains("end of queue"));
+        // A fourth failure cannot arrive (nothing loading): silent.
+        let before = s.status.clone();
+        let _ = s.update(Message::UrlResolved {
+            track_id: "m1".into(),
+            result: Err("boom".into()),
+        });
+        assert_eq!(s.status, before);
+    }
+
+    #[test]
+    fn repeat_one_never_loops_on_failure() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.repeat = yutu_player::RepeatMode::One;
+        s.loading_track = Some("m1".into());
+        let _ = failed_load(&mut s);
+        let _ = failed_load(&mut s);
+        let _ = failed_load(&mut s);
+        // Repeat would replay the same dead track: stop instead.
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert!(s.loading_track.is_none());
+        assert!(s.status.contains("end of queue"));
+    }
+
+    #[test]
+    fn stale_stream_errors_are_ignored() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        // The user moved on mid-fetch: the old error must not retry
+        // or skip the new song.
+        s.loading_track = Some("m2".into());
+        let _ = s.update(Message::StreamResolved {
+            video_id: "m1".into(),
+            result: Err("boom".into()),
+        });
+        assert_eq!(s.resolve_attempts, 0);
+        assert_eq!(s.loading_track.as_deref(), Some("m2"));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
     }
 
     /// Live composition check: the UI's `live_search` over the real API.
