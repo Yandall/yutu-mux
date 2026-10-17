@@ -11428,7 +11428,12 @@ impl AppState {
                                 .results
                                 .albums
                                 .iter()
-                                .map(|a| self.album_card(a))
+                                .map(|a| {
+                                    let id = a.id.clone();
+                                    iced::widget::mouse_area(self.album_card(a))
+                                        .on_right_press(Message::OpenAlbumMenu(id))
+                                        .into()
+                                })
                                 .collect();
                             let list: iced::Element<'_, Message> = if cards.is_empty() {
                                 text(format!("No albums for “{query}”."))
@@ -11444,7 +11449,12 @@ impl AppState {
                                 .results
                                 .artists
                                 .iter()
-                                .map(|a| self.artist_card(a))
+                                .map(|a| {
+                                    let id = a.id.clone();
+                                    iced::widget::mouse_area(self.artist_card(a))
+                                        .on_right_press(Message::OpenArtistMenu(id))
+                                        .into()
+                                })
                                 .collect();
                             let list: iced::Element<'_, Message> = if cards.is_empty() {
                                 text(format!("No artists for “{query}”."))
@@ -14558,11 +14568,24 @@ mod tests {
         assert!(s.context_menu.is_none());
         assert_eq!(s.coll_menu, Some(CollectionMenu::Album("al1".into())));
         let _ = s.update(Message::CloseContext);
+        // Filter cards build and right-click through to the same menus.
+        s.route = Route::Search;
+        s.search_query = "system of a down".into();
+        s.search_filter = SearchFilter::Albums;
+        let _ = s.view();
+        let _ = s.update(Message::OpenAlbumMenu("al1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Album("al1".into())));
+        let _ = s.update(Message::CloseContext);
+        s.search_filter = SearchFilter::Artists;
+        let _ = s.view();
+        let _ = s.update(Message::OpenArtistMenu("ar1".into()));
+        assert_eq!(s.coll_menu, Some(CollectionMenu::Artist("ar1".into())));
+        let _ = s.update(Message::CloseContext);
         // Fresh results without the hit prune the open menu.
         let _ = s.update(Message::OpenArtistMenu("ar1".into()));
         s.results.artists.clear();
         let _ = s.update(Message::SearchCompleted {
-            query: String::new(),
+            query: "system of a down".into(),
             result: Ok(SearchResults {
                 tracks: vec![],
                 albums: vec![],
