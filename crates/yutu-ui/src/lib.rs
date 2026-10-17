@@ -1673,11 +1673,12 @@ pub struct AppState {
     /// path that clears `import_active`.
     #[cfg(feature = "innertube")]
     sync_active: bool,
-    /// Spinner frame for the sidebar sync glyph: advanced one step per
-    /// `Animate` tick while syncing (the ticker runs then, see
-    /// [`Self::animating`]). Wraps around the precomputed frames.
+    /// Spinner frame for loading states: advanced one step per
+    /// `Animate` tick while the pipeline runs (the ticker runs then,
+    /// see [`Self::animating`]). Wraps around the precomputed frames.
+    /// Shared by the sidebar sync glyph and busy buttons.
     #[cfg(feature = "innertube")]
-    sync_frame: u64,
+    spin_frame: u64,
     /// Expected import songs (base songs plus known playlist totals) and
     /// playlist songs already finished: banner bar math. Per-list live
     /// counts arrive via ticks; finished indices quarantine late ticks.
@@ -3734,7 +3735,7 @@ impl AppState {
             #[cfg(feature = "innertube")]
             sync_active: false,
             #[cfg(feature = "innertube")]
-            sync_frame: 0,
+            spin_frame: 0,
             #[cfg(feature = "innertube")]
             import_expected: 0,
             #[cfg(feature = "innertube")]
@@ -5776,17 +5777,10 @@ impl AppState {
             return column![
                 text("Signed in ✓").size(13).color(SPOT_GREEN),
                 row![
-                    button(
-                        text(if self.login_busy {
-                            "…"
-                        } else {
-                            "Import library"
-                        })
-                        .size(12)
-                    )
-                    .style(green_play)
-                    .on_press(Message::LibraryImport)
-                    .padding(7),
+                    button(self.busy_content("Import library", 12.0))
+                        .style(green_play)
+                        .on_press(Message::LibraryImport)
+                        .padding(7),
                     button(text("Sign out").size(12))
                         .style(hover_row)
                         .on_press(Message::GoogleLogout)
@@ -5805,17 +5799,10 @@ impl AppState {
                 text(login.verification_url.clone()).size(12),
                 text(format!("2. Enter the code: {}", login.user_code)).size(13),
                 row![
-                    button(
-                        text(if self.login_busy {
-                            "Checking…"
-                        } else {
-                            "I’ve approved: check"
-                        })
-                        .size(13)
-                    )
-                    .style(green_play)
-                    .on_press(Message::GoogleLoginPoll)
-                    .padding(8),
+                    button(self.busy_content("I’ve approved: check", 13.0))
+                        .style(green_play)
+                        .on_press(Message::GoogleLoginPoll)
+                        .padding(8),
                     button(text("Cancel").size(12))
                         .style(hover_row)
                         .on_press(Message::GoogleLogout)
@@ -5834,14 +5821,7 @@ impl AppState {
             text("Needs a free Google OAuth client: set YUTU_OAUTH_CLIENT_ID + YUTU_OAUTH_CLIENT_SECRET (same as youtui: register a desktop client).")
                 .size(11)
                 .color(MUTED),
-            button(
-                text(if self.login_busy {
-                    "Contacting Google…"
-                } else {
-                    "Sign in with Google"
-                })
-                .size(13)
-            )
+            button(self.busy_content("Sign in with Google", 13.0))
             .style(green_play)
             .on_press(Message::GoogleLoginStart)
             .padding(8),
@@ -5862,17 +5842,10 @@ impl AppState {
             return column![
                 text("Signed in with cookies").size(13).color(SPOT_GREEN),
                 row![
-                    button(
-                        text(if self.login_busy {
-                            "…"
-                        } else {
-                            "Import library"
-                        })
-                        .size(12)
-                    )
-                    .style(green_play)
-                    .on_press(Message::CookieSessionImport)
-                    .padding(7),
+                    button(self.busy_content("Import library", 12.0))
+                        .style(green_play)
+                        .on_press(Message::CookieSessionImport)
+                        .padding(7),
                     button(text("Sign out").size(12))
                         .style(hover_row)
                         .on_press(Message::CookieLogout)
@@ -5892,14 +5865,7 @@ impl AppState {
                 .on_input(Message::CookiePathChanged)
                 .width(Fill)
                 .padding(10),
-            button(
-                text(if self.login_busy {
-                    "…"
-                } else {
-                    "Import"
-                })
-                .size(12)
-            )
+            button(self.busy_content("Import", 12.0))
             .style(green_play)
             .on_press(Message::CookieImport)
             .padding(7),
@@ -5926,17 +5892,10 @@ impl AppState {
             .size(12)
             .color(MUTED),
             row![
-                button(
-                    text(if self.login_busy || self.import_active {
-                        "…"
-                    } else {
-                        "Sync now"
-                    })
-                    .size(12)
-                )
-                .style(green_play)
-                .on_press(Message::SyncNow)
-                .padding(7),
+                button(self.busy_content("Sync now", 12.0))
+                    .style(green_play)
+                    .on_press(Message::SyncNow)
+                    .padding(7),
                 checkbox(self.auto_sync)
                     .label("Auto-sync every 15 min")
                     .on_toggle(Message::AutoSyncToggled),
@@ -5965,39 +5924,45 @@ impl AppState {
         self.import_active && self.sync_active
     }
 
-    /// Sidebar sync spinner: the Lucide loader glyph rotating one step
-    /// per `Animate` tick while a sync runs, a same-width empty box
-    /// otherwise (the pin button never hops when a sync starts or
-    /// stops). Frames are the verbatim loader SVG with a rotation
-    /// transform applied at runtime (same precedent as the heart
-    /// fill-flip: no custom drawing, no new asset files).
+    /// One spinning-loader frame: the verbatim loader glyph rotated
+    /// `frame` steps (same precedent as the heart fill-flip: rotation
+    /// applied at runtime, no custom drawing, no new asset files).
+    /// Shared by the sidebar spinner and busy buttons.
+    #[cfg(feature = "innertube")]
+    fn spinner_frame(frame: u64, size: f32) -> iced::Element<'static, Message> {
+        use iced::widget::svg;
+        const LOADER: &str = include_str!("../assets/icons/loader-circle.svg");
+        // Parsed once: every tick shares the rotated handles.
+        static SPINNER_FRAMES: std::sync::LazyLock<Vec<svg::Handle>> =
+            std::sync::LazyLock::new(|| {
+                (0..SPINNER_STEPS)
+                    .map(|i| {
+                        let angle = i * 360 / SPINNER_STEPS;
+                        let rotated = LOADER.replace(
+                            "<path",
+                            &format!("<path transform=\"rotate({angle} 12 12)\""),
+                        );
+                        svg::Handle::from_memory(rotated.into_bytes())
+                    })
+                    .collect()
+            });
+        let frame = (frame % SPINNER_STEPS as u64) as usize;
+        svg(SPINNER_FRAMES[frame].clone())
+            .width(size)
+            .height(size)
+            .style(|_: &iced::Theme, _| svg::Style {
+                color: Some(SPOT_GREEN),
+            })
+            .into()
+    }
+
+    /// Sidebar sync spinner: the rotating loader while a sync runs,
+    /// a same-width empty box otherwise (the pin button never hops when
+    /// a sync starts or stops).
     #[cfg(feature = "innertube")]
     fn sync_spinner(&self) -> iced::Element<'_, Message> {
-        use iced::widget::svg;
         if self.syncing() {
-            const LOADER: &str = include_str!("../assets/icons/loader-circle.svg");
-            // Parsed once: every tick shares the rotated handles.
-            static SPINNER_FRAMES: std::sync::LazyLock<Vec<svg::Handle>> =
-                std::sync::LazyLock::new(|| {
-                    (0..SPINNER_STEPS)
-                        .map(|i| {
-                            let angle = i * 360 / SPINNER_STEPS;
-                            let rotated = LOADER.replace(
-                                "<path",
-                                &format!("<path transform=\"rotate({angle} 12 12)\""),
-                            );
-                            svg::Handle::from_memory(rotated.into_bytes())
-                        })
-                        .collect()
-                });
-            let frame = (self.sync_frame % SPINNER_STEPS as u64) as usize;
-            svg(SPINNER_FRAMES[frame].clone())
-                .width(14.0)
-                .height(14.0)
-                .style(|_: &iced::Theme, _| svg::Style {
-                    color: Some(SPOT_GREEN),
-                })
-                .into()
+            Self::spinner_frame(self.spin_frame, 14.0)
         } else {
             iced::widget::Space::new()
                 .width(iced::Length::Fixed(14.0))
@@ -6006,9 +5971,35 @@ impl AppState {
         }
     }
 
-    /// Offline builds never sync: no spinner, no layout shift.
+    /// Button content with a loading state: the label never changes,
+    /// a spinning loader sits beside it while the pipeline runs. Both
+    /// branches share the same row geometry (12px slot + 6px gap), so
+    /// buttons keep their exact width mid-flight.
+    #[cfg(feature = "innertube")]
+    fn busy_content<'b>(&self, label: &'b str, size: f32) -> iced::Element<'b, Message> {
+        use iced::widget::{row, text, Space};
+        use iced::Length::{Fixed, Shrink};
+        let slot: iced::Element<'b, Message> = if self.pipeline_busy() {
+            Self::spinner_frame(self.spin_frame, 12.0)
+        } else {
+            Space::new().width(Fixed(12.0)).height(Shrink).into()
+        };
+        row![slot, text(label).size(size)]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
+    }
+
+    /// True while any pipeline run is in flight (import or sync):
+    /// busy buttons spin and the `Animate` ticker runs for them.
+    #[cfg(feature = "innertube")]
+    fn pipeline_busy(&self) -> bool {
+        self.login_busy || self.import_active
+    }
+
+    /// Offline builds run no pipeline: never busy, no ticker for it.
     #[cfg(not(feature = "innertube"))]
-    fn syncing(&self) -> bool {
+    fn pipeline_busy(&self) -> bool {
         false
     }
 
@@ -6195,14 +6186,14 @@ impl AppState {
     }
 
     /// True while any transition is still converging (drives the ticker).
-    /// Syncing counts: the sidebar spinner advances one frame per tick.
+    /// A running pipeline counts: spinners advance one frame per tick.
     fn animating(&self) -> bool {
         self.sidebar_w != self.sidebar_target()
             || self.right_w != self.right_target()
             || self.drawer_anim != if self.drawer_open { 1.0 } else { 0.0 }
             || self.drag_gap != self.drag_gap_target()
             || self.scroll_fading()
-            || self.syncing()
+            || self.pipeline_busy()
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -8224,11 +8215,11 @@ impl AppState {
                             *o = (*o - SCROLL_FADE_STEP).max(0.0);
                         }
                     }
-                    // Sync spinner advances while a pull runs (the frame
-                    // drives the rotated glyph; nothing else moves).
+                    // Spinners advance while the pipeline runs (the frame
+                    // drives the rotated glyphs; nothing else moves).
                     #[cfg(feature = "innertube")]
-                    if self.syncing() {
-                        self.sync_frame = self.sync_frame.wrapping_add(1);
+                    if self.pipeline_busy() {
+                        self.spin_frame = self.spin_frame.wrapping_add(1);
                     }
                 }
             }
@@ -17763,9 +17754,9 @@ mod tests {
         assert!(s.import_banner_view().is_none());
         let _ = s.sync_spinner();
         // The spinner turns while a sync runs: one frame per tick.
-        let f0 = s.sync_frame;
+        let f0 = s.spin_frame;
         let _ = s.update(Message::Animate);
-        assert_eq!(s.sync_frame, f0 + 1);
+        assert_eq!(s.spin_frame, f0 + 1);
         let _ = s.sync_spinner();
         // Final arrival ends the sync (spinner drops, still no banner).
         let gen = s.import_gen;
@@ -17787,9 +17778,9 @@ mod tests {
         assert!(s.import_banner_view().is_none());
         let _ = s.sync_spinner();
         // Idle ticks never advance the spinner.
-        let f1 = s.sync_frame;
+        let f1 = s.spin_frame;
         let _ = s.update(Message::Animate);
-        assert_eq!(s.sync_frame, f1);
+        assert_eq!(s.spin_frame, f1);
         // Error paths clear the pair too: a failed stage must never
         // wedge the UI into a silent stuck sync.
         s.import_active = true;
@@ -17801,6 +17792,16 @@ mod tests {
         assert!(!s.import_active);
         assert!(!s.syncing());
         assert!(s.import_banner_view().is_none());
+        // Login-only busy (no import yet) still turns the button
+        // spinners: the ticker runs on any pipeline busy.
+        s.login_busy = true;
+        assert!(s.pipeline_busy());
+        let f2 = s.spin_frame;
+        let _ = s.update(Message::Animate);
+        assert_eq!(s.spin_frame, f2 + 1);
+        let _ = s.busy_content("Sync now", 12.0);
+        s.login_busy = false;
+        assert!(!s.pipeline_busy());
     }
 
     #[cfg(feature = "innertube")]

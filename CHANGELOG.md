@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Animated loading states: the sidebar sync loader spins (one frame per
+  tick), and busy buttons keep their label with the spinner beside it
+  instead of collapsing to dots (same width idle and busy)
 - Quiet background sync: the top progress banner appears for library
   imports only, while sync pulls surface through a spinning loader
   beside the sidebar title (same slot reserved when idle, so nothing
