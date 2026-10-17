@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Day-long image cache: covers older than 24 hours refetch on demand
+  instead of pinning disk forever (expired files survive reads and are
+  swept by the pruner, so offline viewing keeps its bytes)
 - Bolder buttons: labels render one weight up (Medium) and icons draw
   a slightly heavier stroke, everywhere a button is (pills, rows,
   menus, tabs, seeks); artwork and decorations are untouched
