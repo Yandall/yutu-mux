@@ -2,6 +2,12 @@
 
 ## 0.2.0 (unreleased)
 
+- Lazy image component: every artwork site renders through one
+  cache-first view (memory, then disk, then placeholder), and fetches
+  follow the viewport (scroll math per list plus overscan, throttled
+  sweeps, on-open warming for popup/drawer/flyout). The disk cache
+  holds every fetched cover (LRU-pruned to 150MB) instead of only
+  downloads, so scrolled rows stop sticking on placeholders
 - Search rows gain hover states and menus everywhere: the Songs filter
   matches the hover-reveal plus art play overlay, album/artist/playlist
   rows highlight on hover with a hover ellipsis and right-click menus

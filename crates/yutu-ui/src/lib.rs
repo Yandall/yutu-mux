@@ -797,8 +797,9 @@ pub enum Message {
     /// Drawer lyrics scroll offset (sticky header past 200px).
     DrawerScrolled(f32),
     /// A scrollable moved: lights its scrollbar fade, which the ticker
-    /// eases out after idle (the key matches a `scroll_hint` entry).
-    Scrolled(&'static str),
+    /// eases out after idle (the key matches a `scroll_hint` entry), and
+    /// carries the y offset so art fetches follow the viewport.
+    Scrolled(&'static str, f32),
     DragEnd,
     /// Right-panel row hover: highlight + drag-target tracking.
     PanelHover(usize),
@@ -1299,6 +1300,30 @@ const TRACK_ROW_H: f32 = 52.0;
 const SUGGEST_ROW_H: f32 = 44.0;
 const QUEUE_ROW_H: f32 = 58.0;
 const AUTO_ROW_H: f32 = 44.0;
+/// Lazy art sweep: viewport overscan each side (absorbs header-height
+/// estimates and fast scrolls), scroll buckets plus minimum gap (scroll
+/// storms collapse), fetch cap per sweep.
+const ART_OVERSCAN_PX: f32 = 480.0;
+const ART_BUCKET_PX: f32 = 120.0;
+const ART_SWEEP_MIN_MS: u128 = 250;
+const ART_SWEEP_CAP: usize = 48;
+/// In-flight fetch ceiling (sweeps pause past it; completions chain).
+const ART_INFLIGHT_CAP: usize = 48;
+/// In-memory handle cap (evicted entries re-resolve from disk, which
+/// the cache keeps, so dropping here never blanks rows).
+const ART_MEM_CAP: usize = 500;
+/// On-disk art cache cap (LRU by mtime, pruned at most every interval).
+const ART_CACHE_MAX_BYTES: u64 = 150 * 1024 * 1024;
+const ART_PRUNE_MIN_SECS: u64 = 300;
+/// Divider pitch between uniform rows (1px hairline + 2px breathing
+/// room each side, never trailing): row height + 5.
+const DIVIDER_PX: f32 = 5.0;
+/// Shared lazy-art geometry: body padding, uniform row pitch (52px
+/// rows + 2px spacing), card grid pitch (200px cards + 10px wrap
+/// spacing). Declared once so slot math cannot drift per call site.
+const BODY_PAD: f32 = 20.0;
+const ROW_PITCH: f32 = TRACK_ROW_H + 2.0;
+const GRID_PITCH: f32 = HOME_CARD_H + 10.0;
 /// Scrollbar fade: idle delay before the fade starts plus the per-tick
 /// step (~8 frames on the Animate tick, matching panel glides).
 const SCROLL_FADE_DELAY_MS: u64 = 700;
@@ -1535,6 +1560,15 @@ pub struct AppState {
     /// scroll motion lights the bar, the ticker fades it after idle.
     /// Never persisted; missing keys read as invisible.
     scroll_hint: HashMap<&'static str, (std::time::Instant, f32)>,
+    /// Scroll y offset per scrollable key: drives lazy art visibility
+    /// (the component fetches only what the viewport covers).
+    scroll_offsets: HashMap<&'static str, f32>,
+    /// Last fetched scroll bucket per key (scroll storms collapse).
+    art_buckets: HashMap<&'static str, i64>,
+    /// Last art sweep per key (minimum gap between sweeps, per list).
+    art_sweep_at: HashMap<&'static str, std::time::Instant>,
+    /// Last artwork dir prune (bounded on-disk cache).
+    art_pruned_at: Option<std::time::Instant>,
     /// Playlist filter text in the sidebar.
     sidebar_filter: String,
     /// Autoplay tail belongs to this seed (stale arrivals drop).
@@ -1875,6 +1909,12 @@ impl AppState {
             format!("{n} songs + {m} playlists for “{query}”.")
         };
         self.publish_mpris();
+        let mut tasks = tasks;
+        // Fresh data under a static viewport: sweep the stored window
+        // (forced: new urls must fetch without waiting for a scroll)
+        // plus the popup top tracks when open.
+        tasks.push(self.sweep_visible_art("body", true));
+        tasks.extend(self.popup_art_tasks());
         iced::Task::batch(tasks)
     }
 
@@ -2080,6 +2120,15 @@ impl AppState {
             .collect()
     }
 
+    /// Warm the popup's top tracks (always on screen when shown).
+    fn popup_art_tasks(&mut self) -> Vec<iced::Task<Message>> {
+        if !self.suggest_open() {
+            return Vec::new();
+        }
+        let tracks: Vec<Track> = self.results.tracks.iter().take(5).cloned().collect();
+        self.artwork_tasks(&tracks)
+    }
+
     /// Lazy batch for what is on screen right now: metadata probes for
     /// visible ids lacking a catalog row or art (deduped via `hydrating`,
     /// cooldown-skipped when a probe came back empty, capped small), plus
@@ -2112,9 +2161,17 @@ impl AppState {
         // Artwork: visible rows plus sidebar covers, disk-first. Both URL
         // keys are warmed (rows read the raw thumb, hero cards read the
         // 544px key): warming only one leaves the other placeholder.
+        // The right panel shows on every route, so its head warms too.
         let mut art_tracks = self.visible_tracks_for_art();
         art_tracks.extend(self.sidebar_cover_tracks());
+        art_tracks.extend(self.queue.items().iter().take(6).cloned());
+        art_tracks.extend(self.autoplay.iter().take(2).cloned());
         tasks.extend(self.artwork_tasks(&art_tracks));
+        // Viewport sweeps for the scrolled lists (forced: new content
+        // must fetch its window without waiting for a scroll event).
+        for key in ["body", "home", "queue"] {
+            tasks.push(self.sweep_visible_art(key, true));
+        }
         iced::Task::batch(tasks)
     }
 
@@ -3123,8 +3180,16 @@ pub fn lyrics_dir() -> String {
     format!("{}/lyrics", data_dir())
 }
 
-/// Disk dir for downloaded artwork (`{url-hash}.bin` per image URL).
+/// Disk dir for cached artwork (`{url-hash}.{ext}` per image URL).
+/// Tests redirect it via `YUTU_TEST_ART_DIR` (same env-at-test-time
+/// rule as the other `YUTU_TEST_*` vars) so completions never touch
+/// the real cache.
 pub fn artwork_dir() -> String {
+    if let Ok(dir) = std::env::var("YUTU_TEST_ART_DIR") {
+        if !dir.is_empty() {
+            return dir;
+        }
+    }
     format!("{}/artwork", data_dir())
 }
 
@@ -3250,13 +3315,64 @@ fn save_artwork(url: &str, bytes: &[u8]) {
     save_artwork_in(&artwork_dir(), url, bytes);
 }
 
+/// Prune an artwork dir to `max_bytes` (LRU by mtime, best-effort):
+/// the disk cache holds every fetched cover, so browsing history
+/// cannot grow it without bound.
+fn prune_artwork_dir_in(dir: &str, max_bytes: u64) {
+    let entries: Vec<(u64, u64, std::path::PathBuf)> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
+                if !meta.is_file() {
+                    return None;
+                }
+                let mtime = meta
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                Some((mtime, meta.len(), e.path()))
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    let total: u64 = entries.iter().map(|(_, len, _)| len).sum();
+    if total <= max_bytes {
+        return;
+    }
+    let mut entries = entries;
+    entries.sort_by_key(|(mtime, _, _)| *mtime);
+    let mut freed = 0u64;
+    let need = total - max_bytes;
+    for (_, len, path) in entries {
+        if freed >= need {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            freed += len;
+        }
+    }
+}
+
 /// [`save_artwork`] into an explicit dir (tests pass a temp dir).
+/// Sibling extensions for the same stem are removed first: a changed
+/// content type must not hide behind a stale file (lookup tries
+/// extensions in order and would keep serving the old one).
 fn save_artwork_in(dir: &str, url: &str, bytes: &[u8]) {
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
-    let path = format!("{}.{}", artwork_stem_in(dir, url), artwork_ext(bytes));
-    let _ = std::fs::write(path, bytes);
+    let stem = artwork_stem_in(dir, url);
+    let ext = artwork_ext(bytes);
+    for sibling in ARTWORK_EXTS {
+        if sibling != ext {
+            let _ = std::fs::remove_file(format!("{stem}.{sibling}"));
+        }
+    }
+    let _ = std::fs::remove_file(format!("{stem}.bin"));
+    let _ = std::fs::write(format!("{stem}.{ext}"), bytes);
 }
 
 /// Audio bytes previously downloaded for `track_id` inside `dir`.
@@ -3538,6 +3654,10 @@ impl AppState {
             anim_ms: ANIM_DEFAULT_MS,
             drawer_scroll: 0.0,
             scroll_hint: HashMap::new(),
+            scroll_offsets: HashMap::new(),
+            art_buckets: HashMap::new(),
+            art_sweep_at: HashMap::new(),
+            art_pruned_at: None,
             sidebar_filter: String::new(),
             autoplay_for: None,
             autoplay: Vec::new(),
@@ -3977,28 +4097,17 @@ impl AppState {
         };
     }
 
-    /// Best-effort delete of the whole offline bundle for `track_id`:
-    /// audio bytes plus the lyrics/art sidecars (missing files are fine:
-    /// the DB row is already gone). Art needs the track's URLs, so callers
-    /// pass the catalog row when they have it.
-    fn remove_download_bundle(track_id: &str, track: Option<&Track>) {
-        Self::remove_download_bundle_in(
-            &offline_cache_dir(),
-            &lyrics_dir(),
-            &artwork_dir(),
-            track_id,
-            track,
-        );
+    /// Best-effort delete of the offline bundle for `track_id`: audio
+    /// bytes plus the lyrics sidecar (missing files are fine: the DB
+    /// row is already gone). Art stays: the disk dir is a shared LRU
+    /// cache now (pruned by size), not a per-download bundle, so
+    /// deleting here would evict covers still referenced elsewhere.
+    fn remove_download_bundle(track_id: &str) {
+        Self::remove_download_bundle_in(&offline_cache_dir(), &lyrics_dir(), track_id);
     }
 
     /// [`remove_download_bundle`] against explicit dirs (tests pass temps).
-    fn remove_download_bundle_in(
-        cache_dir: &str,
-        lyrics_dir: &str,
-        art_dir: &str,
-        track_id: &str,
-        track: Option<&Track>,
-    ) {
+    fn remove_download_bundle_in(cache_dir: &str, lyrics_dir: &str, track_id: &str) {
         // Delete the audio file directly by path: the in-memory tracker
         // is always fresh here (restarts, background tasks), so a
         // tracker-based removal would no-op on its empty entry set.
@@ -4008,19 +4117,6 @@ impl AppState {
             let _ = std::fs::remove_file(path);
         }
         let _ = std::fs::remove_file(lyrics_file_in(lyrics_dir, track_id));
-        if let Some(t) = track {
-            let mut urls: Vec<String> = t.thumbnail_url.iter().cloned().collect();
-            urls.extend(
-                t.thumbnail_large_url
-                    .clone()
-                    .map(|u| yutu_core::hires_thumb_url(&u, 544)),
-            );
-            for url in urls {
-                if let Some(path) = artwork_path_in(art_dir, &url) {
-                    let _ = std::fs::remove_file(path);
-                }
-            }
-        }
     }
 
     fn persist_play(&self, id: &str) {
@@ -5078,6 +5174,21 @@ impl AppState {
         self.artwork_tasks_for_urls(&urls)
     }
 
+    /// Prune the on-disk art cache to the size cap (LRU by mtime),
+    /// at most every interval: keeps browsing history from growing
+    /// the cache without bound.
+    fn maybe_prune_artwork(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .art_pruned_at
+            .is_some_and(|at| now.duration_since(at).as_secs() < ART_PRUNE_MIN_SECS)
+        {
+            return;
+        }
+        self.art_pruned_at = Some(now);
+        prune_artwork_dir_in(&artwork_dir(), ART_CACHE_MAX_BYTES);
+    }
+
     /// Same fetch for any URL list (album covers, artist photos).
     /// Skips memory, in-flight, on-disk, and cooldown-failed URLs.
     fn artwork_tasks_for_urls(&mut self, urls: &[String]) -> Vec<iced::Task<Message>> {
@@ -5104,23 +5215,8 @@ impl AppState {
         tasks
     }
 
-    /// True when `url` is artwork for a downloaded track (raw thumb or
-    /// 544px hero key: the two keys the fetch tasks warm). Gates on-disk
-    /// art writes so the bundle holds only downloaded songs.
-    fn is_downloaded_art(&self, url: &str) -> bool {
-        self.downloaded_order.iter().any(|id| {
-            self.catalog.get(id).is_some_and(|t| {
-                t.thumbnail_url.as_deref() == Some(url)
-                    || t.thumbnail_large_url.as_deref() == Some(url)
-                    || t.thumbnail_large_url
-                        .as_deref()
-                        .is_some_and(|u| yutu_core::hires_thumb_url(u, 544) == url)
-            })
-        })
-    }
-
     /// Cover/photo art by URL at any size (albums, artists).
-    /// Memory first, then the on-disk download bundle (`Handle::from_path`
+    /// Memory first, then the on-disk art cache (`Handle::from_path`
     /// stays cached by iced, so repeated rows decode once).
     fn art_handle(&self, url: &str) -> Option<iced::widget::image::Handle> {
         if let Some(handle) = self.artwork.get(url) {
@@ -5129,12 +5225,16 @@ impl AppState {
         artwork_path_for(url).map(iced::widget::image::Handle::from_path)
     }
 
-    /// Cover/photo art by URL at any size (albums, artists).
-    fn art_thumb(&self, url: Option<&str>, size: f32) -> iced::Element<'_, Message> {
+    /// Lazy image component (the only image renderer: every art site
+    /// delegates here). Cache order is memory, then disk, then the
+    /// fixed placeholder box (identical dimensions either way, so rows
+    /// never jump when art lands). Fetching is visibility-driven and
+    /// never triggered here: scroll position decides what is on
+    /// screen (iced has no intersection observer), and sweeps fetch
+    /// exactly that window plus overscan.
+    fn lazy_image(&self, url: Option<&str>, size: f32) -> iced::Element<'_, Message> {
         use iced::widget::{container, image};
         match url.and_then(|u| self.art_handle(u)) {
-            // Same card box as the placeholder so loaded art never looks
-            // like a different component (or shifts the row).
             Some(handle) => container(image(handle.clone()).width(size).height(size))
                 .style(card_bg)
                 .padding(0)
@@ -5152,6 +5252,420 @@ impl AppState {
                 .align_y(iced::alignment::Vertical::Center)
                 .into(),
         }
+    }
+
+    /// Fetch art for what the viewport covers right now (plus
+    /// overscan), on one scrollable. Scroll storms collapse: same
+    /// bucket + minimum gap skips, and the fetch itself dedupes
+    /// memory/in-flight/disk/cooldown. Forced sweeps (new data, nav)
+    /// skip the gates but keep the fetch dedup.
+    fn sweep_visible_art(&mut self, key: &'static str, force: bool) -> iced::Task<Message> {
+        // Backpressure: completions chain the remainder, so a deep
+        // backlog pauses instead of piling concurrent fetches.
+        if self.artwork_loading.len() >= ART_INFLIGHT_CAP {
+            return iced::Task::none();
+        }
+        let y = self.scroll_offsets.get(key).copied().unwrap_or(0.0);
+        let bucket = (y / ART_BUCKET_PX) as i64;
+        let now = std::time::Instant::now();
+        if !force
+            && self.art_buckets.get(key) == Some(&bucket)
+            && self
+                .art_sweep_at
+                .get(key)
+                .is_some_and(|at| now.duration_since(*at).as_millis() < ART_SWEEP_MIN_MS)
+        {
+            return iced::Task::none();
+        }
+        self.art_buckets.insert(key, bucket);
+        self.art_sweep_at.insert(key, now);
+        let urls = self.visible_art_urls(key);
+        if urls.is_empty() {
+            return iced::Task::none();
+        }
+        iced::Task::batch(self.artwork_tasks_for_urls(&urls))
+    }
+
+    /// Viewport height estimate (window minus header, player and
+    /// padding). Overscan absorbs the slack, so this never needs to
+    /// be exact.
+    fn viewport_h(&self) -> f32 {
+        self.window
+            .map(|s| (s.height - 240.0).max(400.0))
+            .unwrap_or(600.0)
+    }
+
+    /// Card columns for wrapping grids at the current center width.
+    fn grid_cols(&self) -> usize {
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let avail = (ww - 16.0 - self.sidebar_w - 8.0 - self.right_w - 8.0 - 40.0).min(1110.0);
+        ((avail / (HOME_CARD_W + 10.0)) as usize).max(1)
+    }
+
+    /// Art URLs currently in the viewport window (plus overscan) for a
+    /// scrollable key, deduped in display order and capped.
+    fn visible_art_urls(&self, key: &str) -> Vec<String> {
+        let y = self.scroll_offsets.get(key).copied().unwrap_or(0.0);
+        let top = (y - ART_OVERSCAN_PX).max(0.0);
+        let bottom = y + self.viewport_h() + ART_OVERSCAN_PX;
+        let mut seen = std::collections::HashSet::new();
+        let mut urls = Vec::new();
+        for (url, yy) in self.art_slots(key) {
+            if urls.len() >= ART_SWEEP_CAP {
+                break;
+            }
+            if yy >= top && yy <= bottom && seen.insert(url.clone()) {
+                urls.push(url);
+            }
+        }
+        urls
+    }
+
+    /// Both art keys for one track (row reads the raw thumb, heroes
+    /// read the 544px key): slots warm both so neither flashes later.
+    fn track_art_keys(t: &Track) -> Vec<String> {
+        let mut urls = Vec::new();
+        if let Some(u) = t.thumbnail_url.clone() {
+            urls.push(u);
+        }
+        let hero = t
+            .thumbnail_large_url
+            .clone()
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
+            .or_else(|| {
+                t.thumbnail_url
+                    .clone()
+                    .map(|u| yutu_core::hires_thumb_url(&u, 544))
+            });
+        if let Some(h) = hero {
+            if !urls.contains(&h) {
+                urls.push(h);
+            }
+        }
+        urls
+    }
+
+    /// Home "Jump back in" picks (single source for the grid view and
+    /// the art visibility slots): recent history, else liked tracks.
+    fn home_pick_tracks(&self) -> Vec<Track> {
+        let mut seen = std::collections::HashSet::new();
+        let mut recent: Vec<Track> = Vec::new();
+        for id in self.history.iter().rev() {
+            if recent.len() >= 8 {
+                break;
+            }
+            if seen.insert(id.clone()) {
+                if let Some(t) = self.find_track(id) {
+                    recent.push(t);
+                }
+            }
+        }
+        // Liked tracks fill an empty history so the grid is alive
+        // (add order, deterministic even past 8).
+        if recent.is_empty() {
+            recent = self.favorite_tracks().into_iter().take(8).collect();
+        }
+        recent
+    }
+
+    /// Uniform rows of tracks as art slots (`pitch` includes spacing
+    /// and dividers): one entry per track per key.
+    fn track_row_slots(tracks: &[Track], y0: f32, pitch: f32) -> Vec<(String, f32)> {
+        let mut slots = Vec::new();
+        for (i, t) in tracks.iter().enumerate() {
+            let y = y0 + i as f32 * pitch;
+            for url in Self::track_art_keys(t) {
+                slots.push((url, y));
+            }
+        }
+        slots
+    }
+
+    /// Estimated text block height (line height ~1.35): mixed-page
+    /// header math only, overscan absorbs the slack.
+    fn text_h(size: f32) -> f32 {
+        size * 1.35
+    }
+
+    /// Art slots for a scrollable key: (url, y-top) in display order.
+    /// Uniform lists use exact pitches; mixed pages stack fixed header
+    /// estimates (all heroes/cards/rows are fixed-size) under the same
+    /// overscan, so estimate error only prefetches neighbors. Sources
+    /// mirror the view builders exactly (same vecs, same order).
+    fn art_slots(&self, key: &str) -> Vec<(String, f32)> {
+        match key {
+            "queue" => {
+                let mut slots =
+                    Self::track_row_slots(self.queue.items(), 0.0, QUEUE_ROW_H + DIVIDER_PX);
+                let n = self.queue.len();
+                let upcoming_h = if n > 0 {
+                    n as f32 * (QUEUE_ROW_H + DIVIDER_PX) - DIVIDER_PX
+                } else {
+                    0.0
+                };
+                let auto_y0 = upcoming_h + 2.0 + Self::text_h(13.0) + 2.0;
+                slots.extend(Self::track_row_slots(&self.autoplay, auto_y0, TRACK_ROW_H));
+                slots
+            }
+            "body" => self.body_art_slots(),
+            // Horizontal strip + flyout need no sweeps (warmed on open).
+            _ => Vec::new(),
+        }
+    }
+
+    /// Art slots for the center body scrollable, per route. Header
+    /// heights are fixed-size estimates (see constants above); rows
+    /// and grids are exact.
+    fn body_art_slots(&self) -> Vec<(String, f32)> {
+        const CHIPS_H: f32 = 34.0;
+        const HERO_H: f32 = 124.0;
+        const SECTION_H: f32 = 32.0;
+        const DIV_PITCH: f32 = TRACK_ROW_H + DIVIDER_PX;
+        match &self.route {
+            Route::Home => {
+                // Vertical page scrolls under the "body" key (the "home"
+                // key belongs to the horizontal strip, which needs no
+                // sweep: its cards warm on nav).
+                let mut y = BODY_PAD + Self::text_h(24.0) + 12.0;
+                let mut slots = Vec::new();
+                // Home hits (same top-6 source as the view).
+                if self.results.tracks.is_empty() {
+                    y += 24.0 + 12.0;
+                } else {
+                    y += Self::text_h(17.0) + 4.0;
+                    let hits: Vec<Track> = self.results.tracks.iter().take(6).cloned().collect();
+                    slots.extend(Self::track_row_slots(&hits, y, ROW_PITCH));
+                    y += (hits.len().min(6) as f32) * ROW_PITCH + 4.0 + 24.0 + 12.0;
+                }
+                // Picks grid (same order as the view).
+                y += Self::text_h(19.0) + 12.0;
+                let picks = self.home_pick_tracks();
+                let cols = self.grid_cols();
+                for (i, t) in picks.iter().enumerate() {
+                    let gy = y + (i / cols) as f32 * GRID_PITCH;
+                    for url in Self::track_art_keys(t) {
+                        slots.push((url, gy));
+                    }
+                }
+                slots
+            }
+            Route::Search => {
+                let mut slots = Vec::new();
+                match self.search_filter {
+                    SearchFilter::All => {
+                        // Hero art, then one entry per mixed row.
+                        if let Some(hero) = top_hero(&self.all_results) {
+                            let y = BODY_PAD + CHIPS_H + 10.0;
+                            match hero {
+                                SearchHit::Song(t) => {
+                                    for url in Self::track_art_keys(t) {
+                                        slots.push((url, y));
+                                    }
+                                }
+                                SearchHit::Album(a) => {
+                                    if let Some(url) = self.album_cover(a) {
+                                        slots.push((url, y));
+                                    }
+                                }
+                                SearchHit::Artist(a) => {
+                                    if let Some(url) = a
+                                        .thumbnail_url
+                                        .as_deref()
+                                        .map(|u| yutu_core::hires_thumb_url(u, 544))
+                                    {
+                                        slots.push((url, y));
+                                    }
+                                }
+                                SearchHit::Playlist(p) => {
+                                    if let Some(url) = p
+                                        .thumbnail_url
+                                        .as_deref()
+                                        .map(|u| yutu_core::hires_thumb_url(u, 544))
+                                    {
+                                        slots.push((url, y));
+                                    }
+                                }
+                            }
+                        }
+                        for (i, hit) in order_all_hits(&self.all_results).iter().enumerate() {
+                            let y =
+                                BODY_PAD + CHIPS_H + 10.0 + HERO_H + 10.0 + i as f32 * ROW_PITCH;
+                            match hit {
+                                SearchHit::Song(t) => {
+                                    for url in Self::track_art_keys(t) {
+                                        slots.push((url, y));
+                                    }
+                                }
+                                SearchHit::Album(a) => {
+                                    if let Some(url) = self.album_cover(a) {
+                                        slots.push((url, y));
+                                    }
+                                }
+                                SearchHit::Artist(a) => {
+                                    if let Some(url) = a
+                                        .thumbnail_url
+                                        .as_deref()
+                                        .map(|u| yutu_core::hires_thumb_url(u, 544))
+                                    {
+                                        slots.push((url, y));
+                                    }
+                                }
+                                SearchHit::Playlist(p) => {
+                                    if let Some(url) = p
+                                        .thumbnail_url
+                                        .as_deref()
+                                        .map(|u| yutu_core::hires_thumb_url(u, 544))
+                                    {
+                                        slots.push((url, y));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SearchFilter::Songs => slots.extend(Self::track_row_slots(
+                        &self.results.tracks,
+                        BODY_PAD + CHIPS_H + 10.0,
+                        ROW_PITCH,
+                    )),
+                    SearchFilter::Albums => {
+                        slots.extend(
+                            self.grid_art_slots(
+                                BODY_PAD + CHIPS_H + 10.0,
+                                self.results
+                                    .albums
+                                    .iter()
+                                    .filter_map(|a| self.album_cover(a))
+                                    .collect(),
+                            ),
+                        );
+                    }
+                    SearchFilter::Artists => {
+                        slots.extend(
+                            self.grid_art_slots(
+                                BODY_PAD + CHIPS_H + 10.0,
+                                self.results
+                                    .artists
+                                    .iter()
+                                    .filter_map(|a| {
+                                        a.thumbnail_url
+                                            .as_deref()
+                                            .map(|u| yutu_core::hires_thumb_url(u, 544))
+                                    })
+                                    .collect(),
+                            ),
+                        );
+                    }
+                    SearchFilter::Playlists => {
+                        // Playlist rows (same order as the view).
+                        for (i, p) in self.results.playlists.iter().enumerate() {
+                            let y = BODY_PAD + CHIPS_H + 10.0 + i as f32 * ROW_PITCH;
+                            if let Some(url) = p
+                                .thumbnail_url
+                                .as_deref()
+                                .map(|u| yutu_core::hires_thumb_url(u, 544))
+                            {
+                                slots.push((url, y));
+                            }
+                        }
+                    }
+                }
+                slots
+            }
+            Route::PlaylistDetail(id) => {
+                let y0 =
+                    BODY_PAD + Self::text_h(24.0) + 2.0 + Self::text_h(12.0) + 10.0 + 32.0 + 10.0;
+                match self.find_playlist(id) {
+                    None => Vec::new(),
+                    Some(p) => {
+                        let tracks: Vec<Track> = p
+                            .tracks
+                            .iter()
+                            .map(|t| self.find_track(&t.id).unwrap_or_else(|| t.clone()))
+                            .collect();
+                        Self::track_row_slots(&tracks, y0, ROW_PITCH)
+                    }
+                }
+            }
+            Route::Artist(id) => {
+                let name = self.resolve_artist_name(id);
+                let mut slots = Vec::new();
+                // Header photo (top of page).
+                if let Some(url) = self.artist_photo(&name) {
+                    slots.push((url, BODY_PAD));
+                }
+                let popular: Vec<Track> = self.artist_tracks(&name).into_iter().take(10).collect();
+                let pop_y0 = BODY_PAD + 160.0 + 12.0 + SECTION_H;
+                slots.extend(Self::track_row_slots(&popular, pop_y0, ROW_PITCH));
+                let grid_y0 = pop_y0 + popular.len() as f32 * ROW_PITCH + 12.0 + SECTION_H;
+                slots.extend(
+                    self.grid_art_slots(
+                        grid_y0,
+                        self.artist_albums(&name)
+                            .into_iter()
+                            .take(5)
+                            .filter_map(|a| self.album_cover(&a))
+                            .collect(),
+                    ),
+                );
+                slots
+            }
+            Route::Album(id) => {
+                let rows = self.album_tracks(id);
+                Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)
+            }
+            Route::Library => {
+                let mut y = BODY_PAD + Self::text_h(22.0) + 10.0 + Self::text_h(19.0) + 6.0;
+                let liked = self.favorite_tracks();
+                if self.liked.len() > liked.len() {
+                    y += Self::text_h(12.0);
+                }
+                Self::track_row_slots(&liked, y, ROW_PITCH)
+            }
+            Route::Queue => {
+                let y0 = BODY_PAD + 30.0 + 10.0 + 45.0 + 10.0 + Self::text_h(13.0) + 10.0;
+                Self::track_row_slots(self.queue.items(), y0, DIV_PITCH)
+            }
+            Route::Discovery => {
+                let weekly = self.weekly_mix_tracks();
+                let forgotten = self.forgotten_tracks();
+                let mut slots = Self::track_row_slots(
+                    &weekly,
+                    BODY_PAD + Self::text_h(22.0) + 10.0 + 32.0 + 10.0,
+                    ROW_PITCH,
+                );
+                let fy0 = BODY_PAD
+                    + Self::text_h(22.0)
+                    + 10.0
+                    + 32.0
+                    + 10.0
+                    + weekly.len() as f32 * ROW_PITCH
+                    + 10.0
+                    + 32.0
+                    + 10.0;
+                slots.extend(Self::track_row_slots(&forgotten, fy0, ROW_PITCH));
+                slots
+            }
+            Route::Radio(_) => Self::track_row_slots(
+                &self.radio_tracks,
+                BODY_PAD + Self::text_h(24.0) + 10.0 + Self::text_h(12.0) + 10.0 + 32.0 + 10.0,
+                ROW_PITCH,
+            ),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Card-grid art slots: row-major at the wrapped column count.
+    fn grid_art_slots(&self, y0: f32, urls: Vec<String>) -> Vec<(String, f32)> {
+        let cols = self.grid_cols();
+        urls.into_iter()
+            .enumerate()
+            .map(|(i, url)| (url, y0 + (i / cols) as f32 * GRID_PITCH))
+            .collect()
+    }
+
+    /// Cover/photo art by URL at any size (albums, artists).
+    fn art_thumb(&self, url: Option<&str>, size: f32) -> iced::Element<'_, Message> {
+        self.lazy_image(url, size)
     }
 
     /// 40px artwork for rows/panel, music-note placeholder until loaded.
@@ -5732,36 +6246,15 @@ impl AppState {
     /// row's own art, else a fixed music placeholder (same box either
     /// way, rows never shift).
     fn playlist_cover(&self, pl: &Playlist, size: f32) -> iced::Element<'_, Message> {
-        use iced::widget::container;
         if let Some(t) = pl.tracks.first().and_then(|t| self.find_track(&t.id)) {
             return self.thumb_sized(&t, size);
         }
-        if let Some(url) = pl
+        let url = pl
             .tracks
             .first()
             .and_then(|t| t.thumbnail_url.clone())
-            .map(|u| Self::cover_url_for(&u, size))
-        {
-            if let Some(handle) = self.art_handle(&url) {
-                use iced::widget::image;
-                return container(image(handle.clone()).width(size).height(size))
-                    .style(card_bg)
-                    .padding(0)
-                    .width(iced::Length::Fixed(size))
-                    .height(iced::Length::Fixed(size))
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .into();
-            }
-        }
-        container(icon("music", size * 0.4, MUTED))
-            .style(card_bg)
-            .padding(0)
-            .width(iced::Length::Fixed(size))
-            .height(iced::Length::Fixed(size))
-            .align_x(iced::alignment::Horizontal::Center)
-            .align_y(iced::alignment::Vertical::Center)
-            .into()
+            .map(|u| Self::cover_url_for(&u, size));
+        self.lazy_image(url.as_deref(), size)
     }
 
     /// Display size at/above which track art uses the 544px hero key
@@ -5785,54 +6278,17 @@ impl AppState {
     /// Hero art element for focal headers (context menu, playlist menu,
     /// search hero): always the 544px key.
     fn thumb_hero(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
-        use iced::widget::{container, image};
         let url = self.hero_art_for(track);
-        match url.as_deref().and_then(|u| self.art_handle(u)) {
-            Some(handle) => container(image(handle.clone()).width(size).height(size))
-                .style(card_bg)
-                .padding(0)
-                .width(iced::Length::Fixed(size))
-                .height(iced::Length::Fixed(size))
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center)
-                .into(),
-            None => container(icon("music", size * 0.4, MUTED))
-                .style(card_bg)
-                .padding(0)
-                .width(iced::Length::Fixed(size))
-                .height(iced::Length::Fixed(size))
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center)
-                .into(),
-        }
+        self.lazy_image(url.as_deref(), size)
     }
 
     /// Artwork at any square size (home cards use 52, rows use 40).
     fn thumb_sized(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
-        use iced::widget::{container, image};
         // Catalog wins on art: queued/stored rows may predate the fetch.
         // At/above HIRES_MIN_PX the hero key is used (same key the
         // fetch warms), below it the raw small URL.
         let url = self.art_url_for(track, size);
-        match url.as_deref().and_then(|u| self.art_handle(u)) {
-            // Same card box as the placeholder (see art_thumb).
-            Some(handle) => container(image(handle.clone()).width(size).height(size))
-                .style(card_bg)
-                .padding(0)
-                .width(iced::Length::Fixed(size))
-                .height(iced::Length::Fixed(size))
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center)
-                .into(),
-            None => container(icon("music", size * 0.4, MUTED))
-                .style(card_bg)
-                .padding(0)
-                .width(iced::Length::Fixed(size))
-                .height(iced::Length::Fixed(size))
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center)
-                .into(),
-        }
+        self.lazy_image(url.as_deref(), size)
     }
 
     /// Record a playback/fetch failure for the Settings error log (capped)
@@ -6503,6 +6959,9 @@ impl AppState {
                     }
                 }
                 self.clamp_suggest();
+                let tasks = self.popup_art_tasks();
+                self.publish_mpris();
+                return iced::Task::batch(tasks);
             }
             Message::SearchDebounced { gen, query } => {
                 // Stale keystroke (user kept typing): drop silently.
@@ -6853,11 +7312,13 @@ impl AppState {
                 }
                 if let Ok(bytes) = result {
                     if bytes.len() > 512 {
-                        // Like lyrics: on-disk art exists only for
-                        // downloaded tracks, so rows render from disk when
-                        // the in-memory handle is gone.
-                        if self.is_downloaded_art(&url) {
-                            save_artwork(&url, &bytes);
+                        // The disk cache holds every fetched cover (LRU
+                        // pruned, capped), so rows render from disk when
+                        // the in-memory handle is gone, online or off.
+                        self.maybe_prune_artwork();
+                        save_artwork(&url, &bytes);
+                        if self.artwork.len() >= ART_MEM_CAP {
+                            self.artwork.clear();
                         }
                         self.artwork
                             .insert(url, iced::widget::image::Handle::from_bytes(bytes));
@@ -6907,6 +7368,7 @@ impl AppState {
                     self.go(Route::Radio(seed.clone()));
                     let mut tasks = self.artwork_tasks(&tracks);
                     tasks.push(self.queue_many(tracks, &format!("Radio (seed {seed})")));
+                    tasks.push(self.sweep_visible_art("body", true));
                     if n == 0 {
                         self.status = format!("Radio (seed {seed}): nothing found.");
                     }
@@ -7148,10 +7610,9 @@ impl AppState {
                 // Virtual Downloaded maps to deleting the offline bundle.
                 if playlist_id == Self::DOWNLOADED_ID {
                     if self.downloaded.contains(&track_id) {
-                        let track = self.find_track(&track_id);
                         self.unmark_downloaded_id(&track_id);
                         self.persist_downloaded(&track_id, false);
-                        Self::remove_download_bundle(&track_id, track.as_ref());
+                        Self::remove_download_bundle(&track_id);
                         self.status = format!("Removed {track_id} from Downloaded.");
                     } else {
                         self.status = format!("{track_id} is not in Downloaded.");
@@ -7691,8 +8152,10 @@ impl AppState {
                 self.drawer_scroll = y.max(0.0);
                 self.lit_scroll("drawer");
             }
-            Message::Scrolled(key) => {
+            Message::Scrolled(key, y) => {
                 self.lit_scroll(key);
+                self.scroll_offsets.insert(key, y.max(0.0));
+                return self.sweep_visible_art(key, false);
             }
             Message::OpenContext(id) => {
                 self.show_suggest = false;
@@ -7708,6 +8171,12 @@ impl AppState {
                     self.submenu_playlists_for = None;
                 } else {
                     self.submenu_playlists_for = Some(id);
+                    // Flyout covers are always on screen when open.
+                    let covers = self.sidebar_cover_tracks();
+                    let tasks = self.artwork_tasks(&covers);
+                    if !tasks.is_empty() {
+                        return iced::Task::batch(tasks);
+                    }
                 }
             }
             Message::OpenPlaylistMenu(id) => {
@@ -10849,7 +11318,7 @@ impl AppState {
                 )
                 .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
                 .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
-                .on_scroll(|_| Message::Scrolled("queue"))
+                .on_scroll(|v| Message::Scrolled("queue", v.absolute_offset().y))
                 .height(Fill),
             ]
             .spacing(4)
@@ -11640,24 +12109,7 @@ impl AppState {
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
             Route::Home => {
-                let mut seen = std::collections::HashSet::new();
-                let mut recent: Vec<Track> = Vec::new();
-                for id in self.history.iter().rev() {
-                    if recent.len() >= 8 {
-                        break;
-                    }
-                    if seen.insert(id.clone()) {
-                        if let Some(t) = self.find_track(id) {
-                            recent.push(t);
-                        }
-                    }
-                }
-                // Liked tracks fill an empty history so the grid is alive
-                // (add order, deterministic even past 8).
-                if recent.is_empty() {
-                    recent = self.favorite_tracks().into_iter().take(8).collect();
-                }
-                let picks: Vec<Track> = recent;
+                let picks: Vec<Track> = self.home_pick_tracks();
                 let grid: iced::Element<'_, Message> = if picks.is_empty() {
                     column![
                         text("Your recent plays will appear here.").color(MUTED),
@@ -11712,7 +12164,7 @@ impl AppState {
                     scrollable(row(cards).spacing(10))
                         .direction(scrollable::Direction::Horizontal(slim_bar()))
                         .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("home")))
-                        .on_scroll(|_| Message::Scrolled("home"))
+                        .on_scroll(|v| Message::Scrolled("home", v.absolute_offset().y))
                         .width(Fill)
                         .height(iced::Length::Fixed(HOME_CARD_H + HOME_STRIP_GAP))
                         .into()
@@ -12606,14 +13058,14 @@ impl AppState {
             )
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("body")))
-            .on_scroll(|_| Message::Scrolled("body"))
+            .on_scroll(|v| Message::Scrolled("body", v.absolute_offset().y))
             .height(Fill)
             .into()
         } else {
             scrollable(container(body).padding(20).width(Fill))
                 .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
                 .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("body")))
-                .on_scroll(|_| Message::Scrolled("body"))
+                .on_scroll(|v| Message::Scrolled("body", v.absolute_offset().y))
                 .height(Fill)
                 .into()
         };
@@ -13148,7 +13600,7 @@ impl AppState {
                             .style(move |t, s| {
                                 slim_scroll_alpha(t, s, self.scroll_opacity("flyout"))
                             })
-                            .on_scroll(|_| Message::Scrolled("flyout"))
+                            .on_scroll(|v| Message::Scrolled("flyout", v.absolute_offset().y))
                             .height(iced::Length::Fixed(fly_h))
                             .width(Fill),
                     )
@@ -14016,7 +14468,7 @@ mod tests {
         assert!(!s.animating());
         // Scroll motion lights the bar at full strength (no tick needed
         // while fresh: it sits at 1).
-        let _ = s.update(Message::Scrolled("queue"));
+        let _ = s.update(Message::Scrolled("queue", 0.0));
         assert_eq!(s.scroll_opacity("queue"), 1.0);
         assert!(!s.scroll_fading());
         // Other lists stay invisible.
@@ -14735,16 +15187,6 @@ mod tests {
         let cache_dir = format!("{base}/audio");
         let lyrics_dir = format!("{base}/lyrics");
         let art_dir = format!("{base}/art");
-        let track = Track {
-            id: "m1".into(),
-            title: "Come Together".into(),
-            artist: "The Beatles".into(),
-            album: None,
-            duration_secs: 200,
-            thumbnail_url: Some("https://example.invalid/s".into()),
-            thumbnail_large_url: Some("https://example.invalid/l".into()),
-            plays: None,
-        };
         // Fake a complete bundle on disk.
         let mut cache = yutu_player::OfflineCache::new(10 * 1024 * 1024);
         cache.set_dir(cache_dir.clone());
@@ -14761,14 +15203,15 @@ mod tests {
         save_artwork_in(&art_dir, "https://example.invalid/s", &[0xFF, 0xD8, 0xFF]);
         assert!(offline_bytes_in(&cache_dir, "m1").is_some());
         assert!(artwork_path_in(&art_dir, "https://example.invalid/s").is_some());
-        // Removal drops audio + lyrics + art, and is idempotent.
-        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, &art_dir, "m1", Some(&track));
+        // Removal drops audio + lyrics but keeps cached art, and is
+        // idempotent.
+        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, "m1");
         assert!(offline_bytes_in(&cache_dir, "m1").is_none());
         assert!(!std::path::Path::new(&lyrics_file_in(&lyrics_dir, "m1")).exists());
-        assert!(artwork_path_in(&art_dir, "https://example.invalid/s").is_none());
-        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, &art_dir, "m1", Some(&track));
-        // Unknown tracks still clear audio + lyrics (art needs URLs).
-        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, &art_dir, "ghost", None);
+        assert!(artwork_path_in(&art_dir, "https://example.invalid/s").is_some());
+        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, "m1");
+        // Unknown tracks still clear audio + lyrics.
+        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, "ghost");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -15931,6 +16374,7 @@ mod tests {
     fn artwork_ready_chains_the_capped_remainder() {
         // Batch cap (12 tasks for ~6 two-key tracks) leaves remainder;
         // each arrival re-scans visible so the rest still loads.
+        redirect_art_cache();
         let mut s = test_state();
         for i in 0..8 {
             let id = format!("chain-{i}");
@@ -15963,6 +16407,271 @@ mod tests {
         assert!(
             !s.artwork_loading.is_empty(),
             "chained scan picks up the capped remainder"
+        );
+    }
+
+    /// Process-unique art cache dir shared by all art tests (same
+    /// value in every test, so parallel `set_var` races are benign;
+    /// urls stay unique per test so files never collide; nanos-unique
+    /// so stale files from past runs cannot linger).
+    fn redirect_art_cache() -> String {
+        static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let dir = DIR
+            .get_or_init(|| {
+                let ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                std::env::temp_dir()
+                    .join(format!("yutu-test-art-{}-{ns}", std::process::id()))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .clone();
+        std::env::set_var("YUTU_TEST_ART_DIR", &dir);
+        dir
+    }
+
+    /// Track with both art keys (rows read the raw thumb, heroes the
+    /// 544px key, like real search hits).
+    fn art_track(id: &str) -> Track {
+        Track {
+            id: id.into(),
+            title: id.into(),
+            artist: "A".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: Some(format!("https://example.invalid/{id}.jpg=w60-h60-l90-rj")),
+            thumbnail_large_url: None,
+            plays: None,
+        }
+    }
+
+    #[test]
+    fn scroll_sweep_fetches_only_the_viewport() {
+        redirect_art_cache();
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        s.search_query = "ab".into();
+        s.route = Route::Search;
+        s.search_filter = SearchFilter::Songs;
+        s.results.tracks = (0..30).map(|i| art_track(&format!("sw{i}"))).collect();
+        // Top of list: head urls fetch, tail does not.
+        let _ = s.update(Message::Scrolled("body", 0.0));
+        assert!(s.artwork_loading.iter().any(|u| u.contains("sw0.jpg")));
+        assert!(!s.artwork_loading.iter().any(|u| u.contains("sw29.jpg")));
+        let first = s.artwork_loading.len();
+        assert!(first > 0);
+        // Same bucket immediately: storm collapses, nothing new.
+        let _ = s.update(Message::Scrolled("body", 10.0));
+        assert_eq!(s.artwork_loading.len(), first);
+        // Deep scroll: a new bucket fetches the window head (cap 12).
+        let _ = s.update(Message::Scrolled("body", 1200.0));
+        assert!(s.artwork_loading.iter().any(|u| u.contains("sw13.jpg")));
+        assert!(!s.artwork_loading.iter().any(|u| u.contains("sw29.jpg")));
+        // Completing the head lets the next sweep progress the tail.
+        for url in s.artwork_loading.clone() {
+            let _ = s.update(Message::ArtworkReady {
+                url,
+                result: Ok(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x00, 0x10]),
+            });
+        }
+        let _ = s.update(Message::Scrolled("body", 1320.0));
+        assert!(s.artwork_loading.iter().any(|u| u.contains("sw24.jpg")));
+        assert_eq!(
+            s.scroll_offsets.get("body").copied().unwrap_or(-1.0),
+            1320.0
+        );
+    }
+
+    #[test]
+    fn search_row_slots_follow_pitch() {
+        redirect_art_cache();
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        s.route = Route::Search;
+        s.search_filter = SearchFilter::Songs;
+        s.results.tracks = vec![art_track("a"), art_track("b"), art_track("c")];
+        let slots = s.art_slots("body");
+        // Chips + spacing head, then exact 54px pitch per row.
+        let ya: Vec<f32> = slots
+            .iter()
+            .filter(|(u, _)| u.contains("/a.jpg"))
+            .map(|(_, y)| *y)
+            .collect();
+        let yb: Vec<f32> = slots
+            .iter()
+            .filter(|(u, _)| u.contains("/b.jpg"))
+            .map(|(_, y)| *y)
+            .collect();
+        assert_eq!(ya.len(), 2);
+        assert!((ya[0] - 64.0).abs() < 0.01);
+        assert!((yb[0] - ya[0] - 54.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn queue_slots_use_divider_pitch() {
+        redirect_art_cache();
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        for id in ["q0", "q1", "q2"] {
+            s.queue.push(art_track(id));
+        }
+        let slots = s.art_slots("queue");
+        let y0: Vec<f32> = slots
+            .iter()
+            .filter(|(u, _)| u.contains("q0.jpg"))
+            .map(|(_, y)| *y)
+            .collect();
+        let y1: Vec<f32> = slots
+            .iter()
+            .filter(|(u, _)| u.contains("q1.jpg"))
+            .map(|(_, y)| *y)
+            .collect();
+        assert_eq!(y0, vec![0.0, 0.0]);
+        // 58px rows + 5px hairlines between (never leading).
+        assert_eq!(y1.len(), 2);
+        assert!(y1.iter().all(|y| (y - 63.0).abs() < 0.01));
+    }
+
+    #[test]
+    fn grid_cols_follow_center_width() {
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        // (1280 - 16 - 235 - 8 - 285 - 8 - 40) capped at 1110, / 166.
+        assert_eq!(s.grid_cols(), 4);
+    }
+
+    #[test]
+    fn lazy_image_never_fetches_from_view() {
+        redirect_art_cache();
+        let s = test_state();
+        // Placeholder builds with no cache touch and no fetch state.
+        let _ = s.lazy_image(None, 40.0);
+        assert!(s.artwork.is_empty());
+        assert!(s.artwork_loading.is_empty());
+        // Cached handle renders from memory (still no fetch).
+        let mut s = s;
+        s.artwork.insert(
+            "https://example.invalid/cached.jpg".into(),
+            iced::widget::image::Handle::from_bytes(vec![0u8; 600]),
+        );
+        let _ = s.lazy_image(Some("https://example.invalid/cached.jpg"), 40.0);
+        assert!(s.artwork_loading.is_empty());
+    }
+
+    #[test]
+    fn artwork_ready_saves_every_cover_to_disk() {
+        let dir = redirect_art_cache();
+        let mut s = test_state();
+        let url = "https://example.invalid/saveall.jpg".to_string();
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x00, 0x10];
+        jpeg.resize(1024, 0);
+        let _ = s.update(Message::ArtworkReady {
+            url: url.clone(),
+            result: Ok(jpeg),
+        });
+        assert!(s.artwork.contains_key(&url));
+        assert!(
+            artwork_path_in(&dir, &url).is_some(),
+            "fetched covers persist even when not downloaded"
+        );
+    }
+
+    #[test]
+    fn prune_artwork_dir_evicts_oldest_first() {
+        let base = std::env::temp_dir().join(format!(
+            "yutu-test-prune-{}-{}",
+            std::process::id(),
+            TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let dir = base.to_string_lossy().into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.bin", "b.bin", "c.bin"] {
+            std::fs::write(base.join(name), vec![0u8; 8]).unwrap();
+        }
+        // 24 bytes live, cap 10: two files must go, one survives.
+        prune_artwork_dir_in(&dir, 10);
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(left.len(), 1);
+        let total: u64 = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        assert!(total <= 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_artwork_replaces_sibling_extensions() {
+        let base = std::env::temp_dir().join(format!(
+            "yutu-test-ext-{}-{}",
+            std::process::id(),
+            TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let dir = base.to_string_lossy().into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        let url = "https://example.invalid/changing";
+        save_artwork_in(&dir, url, &[0xFF, 0xD8, 0xFF, 0xE0]);
+        assert!(artwork_path_in(&dir, url).is_some());
+        // Same stem, new content type: the stale jpg must not shadow it.
+        save_artwork_in(&dir, url, &[0x89, b'P', b'N', b'G', 0x0D, 0x0A]);
+        let path = artwork_path_in(&dir, url).expect("png wins");
+        assert!(path.ends_with(".png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn home_slots_live_under_body_not_the_strip() {
+        redirect_art_cache();
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        s.route = Route::Home;
+        // The horizontal strip key sweeps nothing (warmed on nav).
+        assert!(s.art_slots("home").is_empty());
+        // The vertical page slots live under the body key.
+        s.catalog.insert("home-1".into(), art_track("home-1"));
+        s.history.push("home-1".into());
+        assert!(!s.art_slots("body").is_empty());
+    }
+
+    #[test]
+    fn sweep_backpressures_past_the_inflight_cap() {
+        redirect_art_cache();
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        s.route = Route::Search;
+        s.search_filter = SearchFilter::Songs;
+        s.results.tracks = (0..30).map(|i| art_track(&format!("bp{i}"))).collect();
+        for i in 0..60 {
+            s.artwork_loading
+                .insert(format!("https://example.invalid/x{i}"));
+        }
+        // Forced or not, a deep backlog pauses instead of piling on.
+        let _ = s.update(Message::Scrolled("body", 0.0));
+        assert!(!s.artwork_loading.iter().any(|u| u.contains("bp0")));
+    }
+
+    #[test]
+    fn popup_warms_top_tracks_on_suggest() {
+        redirect_art_cache();
+        let mut s = test_state();
+        // Catalog art the premature popup rows can actually warm.
+        s.catalog.insert("come-1".into(), art_track("come-1"));
+        let _ = s.update(Message::HomeSearchChanged("come".into()));
+        assert!(s.show_suggest);
+        let _ = s.update(Message::SuggestCompleted {
+            gen: s.suggest_gen,
+            result: Ok(vec!["come together".into()]),
+        });
+        assert!(s.show_suggest);
+        // Premature catalog tracks back the popup rows: their art warms.
+        assert!(
+            !s.artwork_loading.is_empty(),
+            "open popup must warm its visible rows"
         );
     }
 
