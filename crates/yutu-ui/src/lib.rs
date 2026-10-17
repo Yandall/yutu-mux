@@ -5971,25 +5971,25 @@ impl AppState {
         }
     }
 
-    /// Button content with a loading state: the label never changes,
-    /// a spinning loader sits beside it while the pipeline runs. Both
-    /// branches share the same row geometry (12px slot + 6px gap), so
-    /// buttons keep their exact width mid-flight.
+    /// Button content with a loading state: the plain label when idle
+    /// (nothing reserved, so the text centers exactly), the label plus
+    /// a spinner on its right while the pipeline runs.
     #[cfg(feature = "innertube")]
     fn busy_content<'b>(&self, label: &'b str, size: f32) -> iced::Element<'b, Message> {
-        use iced::widget::{row, text, Space};
-        use iced::Length::{Fixed, Shrink};
-        let slot: iced::Element<'b, Message> = if self.pipeline_busy() {
+        use iced::widget::{row, text};
+        if self.pipeline_busy() {
             // White like the label: these buttons sit on red
             // (`green_play`), where the accent glyph would vanish.
-            Self::spinner_frame(self.spin_frame, 12.0, iced::Color::WHITE)
-        } else {
-            Space::new().width(Fixed(12.0)).height(Shrink).into()
-        };
-        row![slot, text(label).size(size)]
+            row![
+                text(label).size(size),
+                Self::spinner_frame(self.spin_frame, 12.0, iced::Color::WHITE),
+            ]
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center)
             .into()
+        } else {
+            text(label).size(size).into()
+        }
     }
 
     /// True while any pipeline run is in flight (import or sync):
