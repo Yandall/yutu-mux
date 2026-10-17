@@ -9239,10 +9239,16 @@ impl AppState {
                 let q2 = trimmed.clone();
                 self.searching = true;
                 self.publish_mpris();
-                return iced::Task::batch([
+                let mut tasks = vec![
                     Self::search_debounce_task(gen, trimmed),
                     Self::suggest_debounce_task(sgen, q2),
-                ]);
+                ];
+                if !popup_open {
+                    // Picks replace the whole query: park the cursor at
+                    // the end (it keeps its old position otherwise).
+                    tasks.push(Self::search_cursor_end());
+                }
+                return iced::Task::batch(tasks);
             }
         } else {
             // Single character: no stale results, no network yet.
@@ -9251,7 +9257,16 @@ impl AppState {
             self.suggest.clear();
             self.searching = false;
         }
+        if !popup_open && self.search_query.trim().len() >= 2 {
+            return Self::search_cursor_end();
+        }
         iced::Task::none()
+    }
+
+    /// Park the search input cursor at the end (picks replace the
+    /// whole query; without this the cursor keeps its old position).
+    fn search_cursor_end() -> iced::Task<Message> {
+        iced::widget::operation::move_cursor_to_end("yutu-search")
     }
 
     /// Rows behind the open suggest popup: text suggestions first,
