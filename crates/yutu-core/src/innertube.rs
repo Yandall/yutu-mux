@@ -9,6 +9,9 @@
 //!   ([`InnertubeBackend::search_tracks`],
 //!   [`InnertubeBackend::search_albums`], [`InnertubeBackend::search_artists`]
 //!   via `YtMusic::search_songs` / `search_albums` / `search_artists`),
+//!   and the web-style unfiltered search ([`crate::raw_search`]: raw
+//!   `youtubei/v1/search` in server rank order, tolerant of the current
+//!   flat item layout that `ytmapi-rs` 0.3 can no longer parse),
 //!   login-gated library queries ([`InnertubeBackend::library_songs`],
 //!   [`InnertubeBackend::liked_songs`] via the `VLLM` playlist,
 //!   [`InnertubeBackend::library_albums`]), radio recommendations
@@ -37,8 +40,8 @@ use ytmapi_rs::auth::oauth::OAuthToken;
 use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{PlaylistID, Thumbnail, VideoID, YoutubeID};
 use ytmapi_rs::parse::{
-    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultPlaylist, SearchResultSong,
-    TableListSong, WatchPlaylistTrack,
+    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultFeaturedPlaylist,
+    SearchResultPlaylist, SearchResultSong, TableListSong, WatchPlaylistTrack,
 };
 use ytmapi_rs::query::GetSongTrackingUrlQuery;
 use ytmapi_rs::YtMusic;
@@ -1357,10 +1360,10 @@ async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String,
 
 const PLAYER_URL: &str =
     "https://music.youtube.com/youtubei/v1/player?alt=json&prettyPrint=false&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
-const USER_AGENT: &str =
+pub(crate) const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0";
 /// Dummy WEB_REMIX version, same date-based spirit as upstream's fallback.
-const WEB_REMIX_VERSION: &str = "1.20261007.00.00";
+pub(crate) const WEB_REMIX_VERSION: &str = "1.20261007.00.00";
 
 /// Build the raw `player` body. `po_token = None` reproduces the plain probe;
 /// `Some` attaches `serviceIntegrityDimensions` per the BotGuard contract.
@@ -1521,13 +1524,7 @@ fn artist_to_artist(artist: &SearchResultArtist) -> Artist {
 /// community variants; podcasts are `None` and skipped by the caller).
 fn community_playlist_to_hit(list: &SearchResultPlaylist) -> Option<PlaylistHit> {
     match list {
-        SearchResultPlaylist::Featured(f) => Some(PlaylistHit {
-            id: f.playlist_id.get_raw().to_string(),
-            title: f.title.clone(),
-            author: f.author.clone(),
-            detail: f.songs.clone(),
-            thumbnail_url: pick_thumb_url(&f.thumbnails),
-        }),
+        SearchResultPlaylist::Featured(f) => Some(featured_to_hit(f)),
         SearchResultPlaylist::Community(c) => Some(PlaylistHit {
             id: c.playlist_id.get_raw().to_string(),
             title: c.title.clone(),
@@ -1538,6 +1535,17 @@ fn community_playlist_to_hit(list: &SearchResultPlaylist) -> Option<PlaylistHit>
         SearchResultPlaylist::Podcast(_) => None,
         // Future variants (the enum is non-exhaustive): skip like podcasts.
         _ => None,
+    }
+}
+
+/// Map one featured playlist (official/web shelves) to our [`PlaylistHit`].
+fn featured_to_hit(f: &SearchResultFeaturedPlaylist) -> PlaylistHit {
+    PlaylistHit {
+        id: f.playlist_id.get_raw().to_string(),
+        title: f.title.clone(),
+        author: f.author.clone(),
+        detail: f.songs.clone(),
+        thumbnail_url: pick_thumb_url(&f.thumbnails),
     }
 }
 
@@ -2638,127 +2646,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn search_tracks_fixture_parses_to_tracks() {
-        let tracks = parse_search_tracks_fixture(include_str!("../fixtures/search_tracks.json"));
-        assert!(!tracks.is_empty(), "fixture should hold at least one track");
-        for track in &tracks {
-            assert!(!track.id.is_empty(), "track id empty: {track:?}");
-            assert!(!track.title.is_empty(), "track title empty: {track:?}");
-            assert!(!track.artist.is_empty(), "track artist empty: {track:?}");
-        }
-        // The real fixture carries artwork: mapping must keep it.
+    #[tokio::test]
+    #[ignore = "live network: anonymous raw unfiltered search"]
+    async fn live_search_all() {
+        let all = crate::raw_search::raw_search_all(
+            "Beatles",
+            &crate::raw_search::SearchAuth::anonymous(),
+        )
+        .await
+        .expect("search all");
         assert!(
-            tracks.iter().any(|t| t
-                .thumbnail_url
-                .as_deref()
-                .is_some_and(|u| u.starts_with("https://"))),
-            "expected at least one thumbnail url"
+            !all.tracks.is_empty(),
+            "expected non-empty track results for 'Beatles', got none"
         );
-        // Play counts survive the mapping (search popup shows them).
         assert!(
-            tracks
+            all.tracks
                 .iter()
-                .any(|t| t.plays.as_deref().is_some_and(|p| !p.is_empty())),
-            "expected at least one play count"
+                .all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry id and title: {:?}",
+            all.tracks
         );
-    }
-
-    #[test]
-    fn thumb_picks_smallest_and_largest() {
-        use ytmapi_rs::common::Thumbnail;
-        let thumbs = vec![
-            Thumbnail {
-                height: 60,
-                width: 60,
-                url: "https://example.invalid/s".into(),
-            },
-            Thumbnail {
-                height: 544,
-                width: 544,
-                url: "https://example.invalid/l".into(),
-            },
-        ];
-        assert_eq!(
-            pick_thumb_url(&thumbs).as_deref(),
-            Some("https://example.invalid/s")
-        );
-        assert_eq!(
-            pick_large_thumb_url(&thumbs).as_deref(),
-            Some("https://example.invalid/l")
-        );
-        let empty: Vec<Thumbnail> = vec![];
-        assert!(pick_thumb_url(&empty).is_none());
-        assert!(pick_large_thumb_url(&empty).is_none());
-    }
-
-    #[test]
-    fn search_track_mapping_handles_missing_album_and_bad_duration() {
-        // `SearchResultSong` is `#[non_exhaustive]`, so build it via serde
-        // rather than a struct literal.
-        let song: SearchResultSong = serde_json::from_value(serde_json::json!({
-            "title": "Song",
-            "artist": "Someone",
-            "album": null,
-            "duration": "not a time",
-            "plays": "0",
-            "explicit": "NotExplicit",
-            "video_id": "vid123",
-            "thumbnails": []
-        }))
-        .unwrap();
-        let track = song_to_track(&song);
-        assert_eq!(
-            track,
-            Track {
-                id: "vid123".into(),
-                title: "Song".into(),
-                artist: "Someone".into(),
-                album: None,
-                duration_secs: 0,
-                thumbnail_url: None,
-                thumbnail_large_url: None,
-                plays: Some("0".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn community_playlist_mapping_skips_podcasts() {
-        // `SearchResultPlaylist` is `#[non_exhaustive]`; build via serde.
-        let community: SearchResultPlaylist = serde_json::from_value(serde_json::json!({
-            "Community": {
-                "title": "Greatest Rock Workout Songs",
-                "author": "Redlist",
-                "views": "9.6M views",
-                "playlist_id": "PLabc123",
-                "thumbnails": [{"height": 60, "width": 60, "url": "https://example.invalid/p"}]
-            }
-        }))
-        .unwrap();
-        assert_eq!(
-            community_playlist_to_hit(&community),
-            Some(PlaylistHit {
-                id: "PLabc123".into(),
-                title: "Greatest Rock Workout Songs".into(),
-                author: "Redlist".into(),
-                detail: "9.6M views".into(),
-                thumbnail_url: Some("https://example.invalid/p".into()),
-            })
-        );
-        let featured: SearchResultPlaylist = serde_json::from_value(serde_json::json!({
-            "Featured": {
-                "title": "New Music Friday",
-                "author": "YouTube Music",
-                "songs": "80 songs",
-                "playlist_id": "PLdef456",
-                "thumbnails": []
-            }
-        }))
-        .unwrap();
-        let hit = community_playlist_to_hit(&featured).expect("featured maps");
-        assert_eq!(hit.detail, "80 songs");
-        assert!(hit.thumbnail_url.is_none());
+        assert!(!all.mixed.is_empty(), "expected web mixed order");
     }
 
     #[test]

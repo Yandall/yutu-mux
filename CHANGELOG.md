@@ -6,6 +6,11 @@
   matches the hover-reveal plus art play overlay, album/artist/playlist
   rows highlight on hover with a hover ellipsis and right-click menus
   (Open, Shuffle play, Start mix, Go to artist, Play)
+- Search uses YouTube's server relevance order: one raw unfiltered
+  search renders the web mixed order with the official top hit first
+  (no more client text re-sort burying it), signed-in sessions get
+  personalized ranking like the web client, and failed categories fall
+  back instead of vanishing
 - Silent test suite: the 440Hz rodio test tone is gone, control and
   clock tests emit no audio
 - Playlist menu Shuffle play uses the fixed fresh-play path (same as

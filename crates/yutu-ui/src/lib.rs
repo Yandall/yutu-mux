@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
-    LyricsResult, Playlist, PlaylistHit, QueueSnapshot, SearchResults, Track,
+    LyricsResult, Playlist, PlaylistHit, QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -711,7 +711,7 @@ pub enum Message {
     PlayForgotten,
     SearchCompleted {
         query: String,
-        result: Result<SearchResults, String>,
+        result: Result<Box<SearchBundle>, String>,
     },
     RadioReady {
         seed: String,
@@ -1397,10 +1397,24 @@ fn fmt_time(secs: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
+/// Duration text for search rows: raw All results carry no durations,
+/// so a zero one renders blank, never "0:00".
+fn duration_text(secs: u32) -> iced::Element<'static, Message> {
+    use iced::widget::text;
+    if secs > 0 {
+        text(fmt_time(secs as f64)).size(12).color(MUTED).into()
+    } else {
+        text("").size(12).into()
+    }
+}
+
 pub struct AppState {
     pub route: Route,
     pub search_query: String,
     pub results: SearchResults,
+    /// Server-ordered All response for the current query (keystroke
+    /// narrowed like `results`; the All tab renders it as-is).
+    pub all_results: SearchAll,
     pub queue: Queue,
     pub liked: HashSet<String>,
     /// Liked ids in add order (membership stays in `liked`).
@@ -1636,9 +1650,11 @@ pub struct AppState {
     catalog: HashMap<String, Track>,
     /// Last complete real search (local filtering base for `SearchChanged`).
     search_base: SearchResults,
+    /// Last complete unfiltered search (same narrowing base for All).
+    search_all_base: SearchAll,
     /// Query cache: normalized query to (arrival time, results). Repeat
     /// searches (backspace/retype, Enter-after-popup) skip the network.
-    search_cache: HashMap<String, (std::time::Instant, SearchResults)>,
+    search_cache: HashMap<String, (std::time::Instant, SearchBundle)>,
     /// A real search is in flight (loading indicator).
     searching: bool,
     /// Keystroke generation: each input bumps it; only the latest
@@ -1725,17 +1741,17 @@ impl AppState {
     }
 
     /// Cached results for a normalized query (miss on absent or stale).
-    fn search_cache_get(&self, query: &str) -> Option<SearchResults> {
-        let (at, results) = self.search_cache.get(&search_cache_key(query))?;
+    fn search_cache_get(&self, query: &str) -> Option<SearchBundle> {
+        let (at, bundle) = self.search_cache.get(&search_cache_key(query))?;
         if at.elapsed().as_secs() > SEARCH_CACHE_TTL_SECS {
             return None;
         }
-        Some(results.clone())
+        Some(bundle.clone())
     }
 
     /// Store results under the normalized query (evict the oldest when
     /// full, never the whole cache).
-    fn search_cache_put(&mut self, query: &str, results: SearchResults) {
+    fn search_cache_put(&mut self, query: &str, bundle: SearchBundle) {
         if self.search_cache.len() >= SEARCH_CACHE_CAP {
             if let Some(oldest) = self
                 .search_cache
@@ -1746,10 +1762,8 @@ impl AppState {
                 self.search_cache.remove(&oldest);
             }
         }
-        self.search_cache.insert(
-            search_cache_key(query),
-            (std::time::Instant::now(), results),
-        );
+        self.search_cache
+            .insert(search_cache_key(query), (std::time::Instant::now(), bundle));
     }
 
     /// Cache-first search: paint cached results with no network task,
@@ -1761,22 +1775,58 @@ impl AppState {
     }
 
     /// Register tracks and queue artwork (no painting). Shared by live
-    /// completions (fresh or stale) and cache hits.
-    fn stage_search(&mut self, search: SearchResults) -> (SearchResults, Vec<iced::Task<Message>>) {
-        let tracks = self.register_tracks(search.tracks);
-        let search = SearchResults { tracks, ..search };
-        let art_urls: Vec<String> = search
+    /// completions (fresh or stale) and cache hits. Both halves register:
+    /// track menus resolve through the catalog off either list. Raw goes
+    /// first so filtered durations win (flat items carry none).
+    fn stage_search(&mut self, bundle: SearchBundle) -> (SearchBundle, Vec<iced::Task<Message>>) {
+        let all_tracks = self.register_tracks(bundle.all.tracks);
+        let filtered_tracks = self.register_tracks(bundle.filtered.tracks);
+        let bundle = SearchBundle {
+            all: SearchAll {
+                tracks: all_tracks,
+                ..bundle.all
+            },
+            filtered: SearchResults {
+                tracks: filtered_tracks,
+                ..bundle.filtered
+            },
+        };
+        let art_urls: Vec<String> = bundle
+            .filtered
             .albums
             .iter()
             .filter_map(|a| a.thumbnail_url.clone())
             .chain(
-                search
+                bundle
+                    .filtered
                     .artists
                     .iter()
                     .filter_map(|a| a.thumbnail_url.clone()),
             )
             .chain(
-                search
+                bundle
+                    .filtered
+                    .playlists
+                    .iter()
+                    .filter_map(|p| p.thumbnail_url.clone()),
+            )
+            .chain(
+                bundle
+                    .all
+                    .albums
+                    .iter()
+                    .filter_map(|a| a.thumbnail_url.clone()),
+            )
+            .chain(
+                bundle
+                    .all
+                    .artists
+                    .iter()
+                    .filter_map(|a| a.thumbnail_url.clone()),
+            )
+            .chain(
+                bundle
+                    .all
                     .playlists
                     .iter()
                     .filter_map(|p| p.thumbnail_url.clone()),
@@ -1785,21 +1835,27 @@ impl AppState {
             // art_thumb is an exact-key lookup, so warm what is shown.
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
             .collect();
-        let mut tasks = self.artwork_tasks(&search.tracks);
+        let mut tasks = self.artwork_tasks(&bundle.filtered.tracks);
+        tasks.extend(self.artwork_tasks(&bundle.all.tracks));
         tasks.extend(self.artwork_tasks_for_urls(&art_urls));
-        (search, tasks)
+        (bundle, tasks)
     }
 
     /// Paint results into results/base/status/artwork (shared by live
     /// completions and cache hits). Returns the artwork batch.
-    fn apply_search_hit(&mut self, query: &str, search: SearchResults) -> iced::Task<Message> {
-        let n = search.tracks.len();
-        let m = search.playlists.len();
-        let (search, tasks) = self.stage_search(search);
-        self.search_base = search.clone();
-        self.results = filter_results(&search, &self.search_query);
-        if self.results.tracks.is_empty() && !search.tracks.is_empty() {
-            self.results = search;
+    fn apply_search_hit(&mut self, query: &str, bundle: SearchBundle) -> iced::Task<Message> {
+        let n = bundle.filtered.tracks.len();
+        let m = bundle.filtered.playlists.len();
+        let (bundle, tasks) = self.stage_search(bundle);
+        self.search_base = bundle.filtered.clone();
+        self.search_all_base = bundle.all.clone();
+        self.results = filter_results(&bundle.filtered, &self.search_query);
+        if self.results.tracks.is_empty() && !bundle.filtered.tracks.is_empty() {
+            self.results = bundle.filtered.clone();
+        }
+        self.all_results = filter_all(&bundle.all, &self.search_query);
+        if self.all_results.tracks.is_empty() && !bundle.all.tracks.is_empty() {
+            self.all_results = bundle.all;
         }
         self.prune_coll_menu();
         self.status = if m == 0 {
@@ -2530,101 +2586,157 @@ enum SearchHit<'a> {
     Playlist(&'a PlaylistHit),
 }
 
-/// Whole-word hit inside an already lowercased field.
-fn contains_word(field: &str, q: &str) -> bool {
-    field.split(|c: char| !c.is_alphanumeric()).any(|w| w == q)
+/// One search round trip: the server-ordered All response plus the
+/// filtered per-type depth behind the Songs/Albums/Artists/Playlists
+/// tabs. The cache stores the bundle; keystroke narrowing filters both
+/// halves (order-preserving, so server rank survives typing). Boxed at
+/// the `SearchCompleted` edge: nine vecs would bloat the `Message` enum.
+#[derive(Debug, Clone, Default)]
+pub struct SearchBundle {
+    pub all: SearchAll,
+    pub filtered: SearchResults,
 }
 
-/// Text-match tier of one field for the query (lower is better):
-/// exact, prefix, whole word, substring, no match.
-fn field_tier(field: &str, q: &str) -> u8 {
-    let f = field.to_lowercase();
-    if f == q {
-        0
-    } else if f.starts_with(q) {
-        1
-    } else if contains_word(&f, q) {
-        2
-    } else if f.contains(q) {
-        3
-    } else {
-        4
-    }
+/// True when the unfiltered response holds nothing renderable.
+fn all_empty(all: &SearchAll) -> bool {
+    all.tracks.is_empty()
+        && all.artists.is_empty()
+        && all.albums.is_empty()
+        && all.playlists.is_empty()
 }
 
-/// Relevance tier of one hit for the query (lower is better). Titles
-/// outrank artists: an exact title beats an exact artist, and any text
-/// match beats backend-only leftovers with no text match at all.
-fn hit_tier(q: &str, hit: &SearchHit) -> u8 {
-    let artist_tier = |artist: &str| field_tier(artist, q) + 4;
-    match hit {
-        SearchHit::Song(t) => {
-            let title = field_tier(&t.title, q);
-            if title < 4 {
-                title
-            } else {
-                artist_tier(&t.artist)
-            }
-        }
-        SearchHit::Album(a) => {
-            let title = field_tier(&a.title, q);
-            if title < 4 {
-                title
-            } else {
-                artist_tier(&a.artist)
-            }
-        }
-        SearchHit::Artist(a) => {
-            let name = field_tier(&a.name, q);
-            if name < 4 {
-                name
-            } else {
-                8
-            }
-        }
-        SearchHit::Playlist(p) => {
-            let title = field_tier(&p.title, q);
-            if title < 4 {
-                title
-            } else {
-                artist_tier(&p.author)
-            }
-        }
-    }
+/// Lowercase with edge punctuation trimmed, so "Chop Suey!" matches
+/// a "Chop Suey" top hit when resolving the hero play target.
+fn norm_title(s: &str) -> String {
+    s.to_lowercase()
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_string()
 }
 
-/// Relevance order for the unified search list, mixing songs, albums,
-/// artists and playlists by text match against the query: exact title,
-/// prefix, whole word, substring, then artist/author matches in the same
-/// ladder, then backend-only leftovers. Ties keep backend order
-/// (per-type index, then songs before albums before artists before
-/// playlists), capped so the page stays fast. The head is the
-/// top-result hero.
-fn rank_search_hits<'a>(query: &str, results: &'a SearchResults) -> Vec<SearchHit<'a>> {
-    let q = query.to_lowercase();
-    let mut scored: Vec<(u8, usize, u8, SearchHit)> = Vec::new();
-    for (i, t) in results.tracks.iter().enumerate() {
-        let hit = SearchHit::Song(t);
-        scored.push((hit_tier(&q, &hit), i, 0, hit));
+/// Hero for the unified search list: the server's top hit resolved by
+/// id into the shelves (the card tap target is directly actionable),
+/// falling back to a title match and then the first row. The shelves
+/// below supply the play button.
+fn top_hero<'a>(all: &'a SearchAll) -> Option<SearchHit<'a>> {
+    let by_id = all.top.as_ref().and_then(|top| match top.kind {
+        TopKind::Song | TopKind::Video => all
+            .tracks
+            .iter()
+            .find(|t| t.id == top.id)
+            .map(SearchHit::Song),
+        TopKind::Artist => all
+            .artists
+            .iter()
+            .find(|a| a.id == top.id)
+            .map(SearchHit::Artist),
+        TopKind::Album => all
+            .albums
+            .iter()
+            .find(|a| a.id == top.id)
+            .map(SearchHit::Album),
+        TopKind::Playlist => all
+            .playlists
+            .iter()
+            .find(|p| p.id == top.id)
+            .map(SearchHit::Playlist),
+        TopKind::Other => None,
+    });
+    if by_id.is_some() {
+        return by_id;
     }
-    for (i, a) in results.albums.iter().enumerate() {
-        let hit = SearchHit::Album(a);
-        scored.push((hit_tier(&q, &hit), i, 1, hit));
+    let matched = all.top.as_ref().and_then(|top| {
+        let title = norm_title(&top.title);
+        let artist = norm_title(&top.artist);
+        match top.kind {
+            TopKind::Song | TopKind::Video => all
+                .tracks
+                .iter()
+                .find(|t| {
+                    norm_title(&t.title) == title
+                        && (artist.is_empty() || norm_title(&t.artist) == artist)
+                })
+                .map(SearchHit::Song),
+            TopKind::Artist => all
+                .artists
+                .iter()
+                .find(|a| norm_title(&a.name) == title || norm_title(&a.name) == artist)
+                .map(SearchHit::Artist),
+            TopKind::Album => all
+                .albums
+                .iter()
+                .find(|a| norm_title(&a.title) == title)
+                .map(SearchHit::Album),
+            TopKind::Playlist => all
+                .playlists
+                .iter()
+                .find(|p| norm_title(&p.title) == title)
+                .map(SearchHit::Playlist),
+            TopKind::Other => None,
+        }
+    });
+    matched.or_else(|| {
+        all.tracks
+            .first()
+            .map(SearchHit::Song)
+            .or_else(|| all.artists.first().map(SearchHit::Artist))
+            .or_else(|| all.albums.first().map(SearchHit::Album))
+            .or_else(|| all.playlists.first().map(SearchHit::Playlist))
+    })
+}
+
+/// Row order for the unified search list: the exact web mixed order
+/// (`mixed` refs into the typed vecs), hero excluded and capped for
+/// page speed. Narrowed-away refs are skipped. No client re-sort, so
+/// official hits stay where the server put them.
+fn order_all_hits<'a>(all: &'a SearchAll) -> Vec<SearchHit<'a>> {
+    let hero_id: Option<&str> = match top_hero(all) {
+        Some(SearchHit::Song(t)) => Some(t.id.as_str()),
+        Some(SearchHit::Album(a)) => Some(a.id.as_str()),
+        Some(SearchHit::Artist(a)) => Some(a.id.as_str()),
+        Some(SearchHit::Playlist(p)) => Some(p.id.as_str()),
+        None => None,
+    };
+    let mut rows: Vec<SearchHit<'a>> = Vec::new();
+    for m in &all.mixed {
+        let hit = match m.kind {
+            0 => all
+                .tracks
+                .iter()
+                .find(|t| t.id == m.id)
+                .map(SearchHit::Song),
+            1 => all
+                .artists
+                .iter()
+                .find(|a| a.id == m.id)
+                .map(SearchHit::Artist),
+            2 => all
+                .albums
+                .iter()
+                .find(|a| a.id == m.id)
+                .map(SearchHit::Album),
+            3 => all
+                .playlists
+                .iter()
+                .find(|p| p.id == m.id)
+                .map(SearchHit::Playlist),
+            _ => None,
+        };
+        if let Some(hit) = hit {
+            let id = match hit {
+                SearchHit::Song(t) => t.id.as_str(),
+                SearchHit::Album(a) => a.id.as_str(),
+                SearchHit::Artist(a) => a.id.as_str(),
+                SearchHit::Playlist(p) => p.id.as_str(),
+            };
+            if hero_id != Some(id) {
+                rows.push(hit);
+            }
+        }
+        if rows.len() >= MIXED_SEARCH_CAP {
+            break;
+        }
     }
-    for (i, a) in results.artists.iter().enumerate() {
-        let hit = SearchHit::Artist(a);
-        scored.push((hit_tier(&q, &hit), i, 2, hit));
-    }
-    for (i, p) in results.playlists.iter().enumerate() {
-        let hit = SearchHit::Playlist(p);
-        scored.push((hit_tier(&q, &hit), i, 3, hit));
-    }
-    scored.sort_by_key(|a| (a.0, a.1, a.2));
-    scored
-        .into_iter()
-        .map(|(_, _, _, hit)| hit)
-        .take(MIXED_SEARCH_CAP)
-        .collect()
+    rows
 }
 
 /// True when every result list is empty (drives the search page
@@ -2634,6 +2746,47 @@ fn results_empty(results: &SearchResults) -> bool {
         && results.albums.is_empty()
         && results.artists.is_empty()
         && results.playlists.is_empty()
+}
+
+/// Order-preserving substring narrow of an unfiltered response (the
+/// keystroke path for the All tab): same predicates as
+/// `filter_results`, server order untouched. The top hit survives only
+/// while it still matches the narrower query.
+fn filter_all(base: &SearchAll, query: &str) -> SearchAll {
+    let q = query.to_lowercase();
+    if q.trim().is_empty() {
+        return SearchAll::default();
+    }
+    SearchAll {
+        top: base.top.clone().filter(|t| {
+            t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q)
+        }),
+        mixed: base.mixed.clone(),
+        tracks: base
+            .tracks
+            .iter()
+            .filter(|t| t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+        artists: base
+            .artists
+            .iter()
+            .filter(|a| a.name.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+        albums: base
+            .albums
+            .iter()
+            .filter(|a| a.title.to_lowercase().contains(&q) || a.artist.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+        playlists: base
+            .playlists
+            .iter()
+            .filter(|p| p.title.to_lowercase().contains(&q) || p.author.to_lowercase().contains(&q))
+            .cloned()
+            .collect(),
+    }
 }
 
 /// Case-insensitive substring filter over a full search result set.
@@ -2687,26 +2840,109 @@ async fn resolve_stream_url(video_id: &str) -> Result<String, String> {
     yutu_core::resolve_audio_url(&bin, video_id).map_err(|e| e.to_string())
 }
 
-/// Real search over the live Innertube API: tracks, albums, artists and
-/// community playlists. Each category fails open (empty vec) so one bad
-/// query cannot sink the others; only a failed *connection* or a total
-/// failure errors.
+/// Real search over the live Innertube API: the web-style unfiltered
+/// search (server relevance order for the All tab, one round trip)
+/// plus the four filtered searches (depth for the filter tabs, with
+/// the raw shelves as fallback when a filtered query fails to parse).
+/// Only a total failure errors. Uses the signed-in session when one
+/// exists (the server then ranks like the logged-in web client, from
+/// the account's own activity), else anonymous.
 #[cfg(feature = "innertube")]
-async fn live_search(query: &str) -> Result<SearchResults, String> {
-    use yutu_core::InnertubeBackend;
-    let backend = InnertubeBackend::connect_anonymous().await?;
-    let tracks = backend.search_tracks(query).await;
-    let albums = backend.search_albums(query).await;
-    let artists = backend.search_artists(query).await;
-    let playlists = backend.search_community_playlists(query).await;
-    match (tracks, albums, artists, playlists) {
-        (Err(e), Err(_), Err(_), Err(_)) => Err(e),
-        (tracks, albums, artists, playlists) => Ok(SearchResults {
-            tracks: tracks.unwrap_or_default(),
-            albums: albums.unwrap_or_default(),
-            artists: artists.unwrap_or_default(),
-            playlists: playlists.unwrap_or_default(),
-        }),
+async fn live_search(query: &str) -> Result<Box<SearchBundle>, String> {
+    use yutu_core::{raw_search_all, InnertubeBackend};
+    let auth = AppState::session_search_auth();
+    let backend = match AppState::session_backend().await {
+        Ok(b) => b,
+        Err(_) => InnertubeBackend::connect_anonymous().await?,
+    };
+    let (all, tracks, albums, artists, playlists) = tokio::join!(
+        raw_search_all(query, &auth),
+        backend.search_tracks(query),
+        backend.search_albums(query),
+        backend.search_artists(query),
+        backend.search_community_playlists(query),
+    );
+    if let (Err(e), Err(_), Err(_), Err(_), Err(_)) = (&all, &tracks, &albums, &artists, &playlists)
+    {
+        return Err(e.clone());
+    }
+    let all = all.unwrap_or_default();
+    let filtered = SearchResults {
+        tracks: tracks.unwrap_or_default(),
+        albums: albums.unwrap_or_default(),
+        artists: artists.unwrap_or_default(),
+        playlists: playlists.unwrap_or_default(),
+    };
+    // Either half backs the other: a failed raw response still leaves
+    // server-ordered filtered shelves for All, and failed filtered
+    // queries fall back to the raw shelves for the tabs.
+    let all = if all_empty(&all) {
+        all_from_filtered(&filtered)
+    } else {
+        all
+    };
+    let filtered = SearchResults {
+        tracks: if filtered.tracks.is_empty() {
+            all.tracks.clone()
+        } else {
+            filtered.tracks
+        },
+        albums: if filtered.albums.is_empty() {
+            all.albums.clone()
+        } else {
+            filtered.albums
+        },
+        artists: if filtered.artists.is_empty() {
+            all.artists.clone()
+        } else {
+            filtered.artists
+        },
+        playlists: if filtered.playlists.is_empty() {
+            all.playlists.clone()
+        } else {
+            filtered.playlists
+        },
+    };
+    Ok(Box::new(SearchBundle { all, filtered }))
+}
+
+/// All response derived from filtered shelves (raw failure fallback):
+/// per-type server order concatenated, no top hit.
+#[cfg(feature = "innertube")]
+fn all_from_filtered(filtered: &SearchResults) -> SearchAll {
+    use yutu_core::MixedRef;
+    let mut mixed = Vec::new();
+    for t in &filtered.tracks {
+        mixed.push(MixedRef {
+            kind: 0,
+            id: t.id.clone(),
+        });
+    }
+    for a in &filtered.artists {
+        mixed.push(MixedRef {
+            kind: 1,
+            id: a.id.clone(),
+        });
+    }
+    for a in &filtered.albums {
+        mixed.push(MixedRef {
+            kind: 2,
+            id: a.id.clone(),
+        });
+    }
+    for p in &filtered.playlists {
+        mixed.push(MixedRef {
+            kind: 3,
+            id: p.id.clone(),
+        });
+    }
+    SearchAll {
+        top: None,
+        tracks: filtered.tracks.clone(),
+        artists: filtered.artists.clone(),
+        albums: filtered.albums.clone(),
+        playlists: filtered.playlists.clone(),
+        mixed,
     }
 }
 
@@ -3234,6 +3470,7 @@ impl AppState {
             route: Route::Home,
             search_query: String::new(),
             results: SearchResults::default(),
+            all_results: SearchAll::default(),
             queue: Queue::default(),
             liked,
             liked_order,
@@ -3365,6 +3602,7 @@ impl AppState {
             library_path,
             catalog: HashMap::new(),
             search_base: SearchResults::default(),
+            search_all_base: SearchAll::default(),
             search_cache: HashMap::new(),
             searching: false,
             search_gen: 0,
@@ -4548,7 +4786,7 @@ impl AppState {
                     text(format!("{n}")).size(13).color(MUTED).width(28),
                     self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    duration_text(t.duration_secs),
                     heart,
                     more,
                 ]
@@ -6217,17 +6455,32 @@ impl AppState {
                 self.suggest_gen = self.suggest_gen.wrapping_add(1);
                 if trimmed.is_empty() {
                     self.results = SearchResults::default();
+                    self.all_results = SearchAll::default();
                     self.suggest.clear();
                     self.show_suggest = false;
                     self.searching = false;
                 } else if trimmed.len() >= 2 {
                     self.show_suggest = true;
                     // Premature results: known tracks paint instantly.
+                    let premature = self.catalog_hits(&trimmed);
                     self.results = SearchResults {
-                        tracks: self.catalog_hits(&trimmed),
+                        tracks: premature.clone(),
                         albums: Vec::new(),
                         artists: Vec::new(),
                         playlists: Vec::new(),
+                    };
+                    // Premature All mirrors the tracks with matching refs
+                    // (hero + rows, same as a real response).
+                    self.all_results = SearchAll {
+                        tracks: premature.clone(),
+                        mixed: premature
+                            .iter()
+                            .map(|t| yutu_core::MixedRef {
+                                kind: 0,
+                                id: t.id.clone(),
+                            })
+                            .collect(),
+                        ..SearchAll::default()
                     };
                     #[cfg(feature = "innertube")]
                     {
@@ -6244,6 +6497,7 @@ impl AppState {
                 } else {
                     // Single character: no stale results, no network yet.
                     self.results = SearchResults::default();
+                    self.all_results = SearchAll::default();
                     self.suggest.clear();
                     self.searching = false;
                 }
@@ -6326,6 +6580,7 @@ impl AppState {
             Message::SearchChanged(q) => {
                 self.search_query = q.clone();
                 self.results = filter_results(&self.search_base, &q);
+                self.all_results = filter_all(&self.search_all_base, &q);
             }
             Message::Search => {
                 let q = self.search_query.trim().to_string();
@@ -6357,14 +6612,14 @@ impl AppState {
                 self.searching = false;
                 match result {
                     Ok(search) => {
-                        self.search_cache_put(&query, search.clone());
+                        self.search_cache_put(&query, (*search).clone());
                         // Out-of-order arrival (user typed on): keep the
                         // tracks in the catalog, but never overwrite the
                         // newer query's results.
                         if query.trim() == self.search_query.trim() {
-                            return self.apply_search_hit(&query, search);
+                            return self.apply_search_hit(&query, *search);
                         }
-                        let (_, tasks) = self.stage_search(search);
+                        let (_, tasks) = self.stage_search(*search);
                         self.publish_mpris();
                         return iced::Task::batch(tasks);
                     }
@@ -8559,6 +8814,32 @@ impl AppState {
         Err("sign in first (cookies or Google)".into())
     }
 
+    /// Auth headers for raw search, mirroring [`Self::session_backend`]
+    /// precedence (OAuth file, else cookie file, else anonymous). The
+    /// server personalizes ranking for signed-in sessions, like the
+    /// logged-in web client.
+    #[cfg(feature = "innertube")]
+    fn session_search_auth() -> yutu_core::SearchAuth {
+        use yutu_core::SearchAuth;
+        if std::path::Path::new(&oauth_path()).exists() {
+            if let Ok(persist) =
+                yutu_core::OAuthPersist::load_from_file(std::path::Path::new(&oauth_path()))
+            {
+                if let Some(auth) = SearchAuth::from_oauth(&persist) {
+                    return auth;
+                }
+            }
+        }
+        if cookie_session_exists() {
+            if let Ok(auth) =
+                yutu_core::CookieAuth::from_file(std::path::Path::new(&cookie_session_path()))
+            {
+                return SearchAuth::from_cookie(&auth);
+            }
+        }
+        SearchAuth::anonymous()
+    }
+
     /// True when a like/playlist write can attempt a server sync.
     #[cfg(feature = "innertube")]
     fn has_session() -> bool {
@@ -9677,8 +9958,9 @@ impl AppState {
     /// type-led subtitle, and actions (like, more) that only appear on
     /// hover. Hidden actions keep same-size spacers so rows never jump.
     /// The liked heart stays visible: it is state, not just an action.
+    /// Raw All results carry no durations, so a zero one renders blank.
     fn search_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
-        use iced::widget::{container, mouse_area, row, text};
+        use iced::widget::{container, mouse_area, row};
         use iced::Fill;
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
@@ -9693,7 +9975,7 @@ impl AppState {
                         14,
                         iced::Color::WHITE
                     ),
-                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    duration_text(t.duration_secs),
                     heart,
                     more,
                 ]
@@ -11378,9 +11660,12 @@ impl AppState {
                 // (search input) and scroll wrapper always render.
                 let content: iced::Element<'_, Message> = if query.len() < 2 {
                     iced::widget::Space::new().width(Fill).height(Fill).into()
-                } else if self.searching && results_empty(&self.results) {
+                } else if self.searching
+                    && results_empty(&self.results)
+                    && all_empty(&self.all_results)
+                {
                     Self::search_loading()
-                } else if results_empty(&self.results) {
+                } else if results_empty(&self.results) && all_empty(&self.all_results) {
                     let header = text(format!("Results for “{query}”")).size(22);
                     column![
                         header,
@@ -11393,18 +11678,19 @@ impl AppState {
                     let chips = self.search_filter_chips();
                     match self.search_filter {
                         SearchFilter::All => {
-                            // Unified mixed list: top hit in the hero card,
-                            // the rest as type-labelled rows.
-                            let hits = rank_search_hits(&query, &self.results);
-                            let hero: iced::Element<'_, Message> = match hits.first() {
+                            // Server relevance order straight from the
+                            // unfiltered response: top hit in the hero
+                            // card, shelves as type-labelled rows.
+                            let hero_hit = top_hero(&self.all_results);
+                            let hero: iced::Element<'_, Message> = match &hero_hit {
                                 Some(h) => self.search_hero(h),
                                 None => text("").size(1).into(),
                             };
-                            let rows: Vec<iced::Element<'_, Message>> = hits
-                                .iter()
-                                .skip(1)
-                                .map(|h| self.search_hit_row(h))
-                                .collect();
+                            let rows: Vec<iced::Element<'_, Message>> =
+                                order_all_hits(&self.all_results)
+                                    .into_iter()
+                                    .map(|h| self.search_hit_row(&h))
+                                    .collect();
                             column![header, chips, hero, column(rows).spacing(2),]
                                 .spacing(10)
                                 .into()
@@ -13150,6 +13436,15 @@ mod tests {
         }
     }
 
+    /// Search payload with an empty All half (filter-tab tests only
+    /// need the filtered depth, not server order).
+    fn bundle_of(filtered: SearchResults) -> SearchBundle {
+        SearchBundle {
+            all: SearchAll::default(),
+            filtered,
+        }
+    }
+
     fn test_state() -> AppState {
         let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!("yutu-test-{}-{}.db", std::process::id(), n));
@@ -13213,7 +13508,7 @@ mod tests {
         // A completed real search lands in results + catalog.
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![
                     mk_track("v1", "Yesterday", "The Beatles"),
                     mk_track("v2", "Yellow Submarine", "The Beatles"),
@@ -13221,7 +13516,7 @@ mod tests {
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         assert_eq!(s.results.tracks.len(), 2);
         assert!(s.find_track("v1").is_some());
@@ -13256,12 +13551,12 @@ mod tests {
         hit.plays = Some("213M plays".into());
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![hit],
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         // Counts survive staging into results + catalog (popup reads them).
         assert_eq!(s.results.tracks[0].plays.as_deref(), Some("213M plays"));
@@ -13291,111 +13586,264 @@ mod tests {
     }
 
     #[test]
-    fn ranked_search_orders_by_text_match() {
-        use yutu_core::{Album, Artist};
-        let results = SearchResults {
+    fn server_search_keeps_mixed_order() {
+        use yutu_core::{Album, Artist, MixedRef, SearchAll};
+        // The web row order survives verbatim: no client re-sort, even
+        // when a playlist title exactly matches and a cover sorts
+        // textually first.
+        let mixed = |kind: u8, id: &str| MixedRef {
+            kind,
+            id: id.into(),
+        };
+        let all = SearchAll {
+            top: None,
             tracks: vec![
                 mk_track("v1", "Bohemian Rhapsody", "Queen"),
                 mk_track("v2", "Queens", "Ruby Darkrose"),
-                mk_track("v3", "Run", "Queen"),
             ],
+            artists: vec![Artist {
+                id: "r1".into(),
+                name: "Queen".into(),
+                thumbnail_url: None,
+            }],
             albums: vec![Album {
                 id: "a1".into(),
-                title: "Deep Cuts (Vol. 3 / 1984-1995)".into(),
+                title: "Bohemian Rhapsody".into(),
                 artist: "Queen".into(),
                 year: Some(2011),
                 thumbnail_url: None,
             }],
-            artists: vec![
-                Artist {
-                    id: "r1".into(),
-                    name: "Queen".into(),
-                    thumbnail_url: None,
-                },
-                Artist {
-                    id: "r2".into(),
-                    name: "Josiah Queen".into(),
-                    thumbnail_url: None,
-                },
-            ],
             playlists: vec![PlaylistHit {
                 id: "PL1".into(),
-                title: "Queen: Greatest Hits".into(),
+                title: "Bohemian Rhapsody".into(),
                 author: "Fan Club".into(),
                 detail: "50 songs".into(),
                 thumbnail_url: None,
             }],
+            mixed: vec![
+                mixed(0, "v1"),
+                mixed(1, "r1"),
+                mixed(0, "v2"),
+                mixed(2, "a1"),
+                mixed(3, "PL1"),
+            ],
         };
-        let hits = rank_search_hits("queen", &results);
-        // Exact name first, then title prefix (playlist head beats deeper
-        // song), then whole word, then artist matches in backend order.
-        assert_eq!(hits.len(), 7);
-        assert!(matches!(hits[0], SearchHit::Artist(a) if a.id == "r1"));
-        assert!(matches!(hits[1], SearchHit::Playlist(p) if p.id == "PL1"));
-        assert!(matches!(hits[2], SearchHit::Song(t) if t.id == "v2"));
-        assert!(matches!(hits[3], SearchHit::Artist(a) if a.id == "r2"));
-        assert!(matches!(hits[4], SearchHit::Song(t) if t.id == "v1"));
-        assert!(matches!(hits[5], SearchHit::Album(a) if a.id == "a1"));
-        assert!(matches!(hits[6], SearchHit::Song(t) if t.id == "v3"));
+        // No top hit: hero falls back to the first track, rows skip it.
+        let rows = order_all_hits(&all);
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(rows[0], SearchHit::Artist(a) if a.id == "r1"));
+        assert!(matches!(rows[1], SearchHit::Song(t) if t.id == "v2"));
+        assert!(matches!(rows[2], SearchHit::Album(a) if a.id == "a1"));
+        assert!(matches!(rows[3], SearchHit::Playlist(p) if p.id == "PL1"));
     }
 
     #[test]
-    fn ranked_search_head_is_top_result() {
-        use yutu_core::{Album, Artist};
-        // Exact title match headlines when present.
-        let with_songs = SearchResults {
-            tracks: vec![mk_track("v1", "Run", "A")],
-            albums: vec![Album {
-                id: "a1".into(),
-                title: "Running".into(),
-                artist: "C".into(),
-                year: None,
+    fn server_search_top_hit_resolves_to_hero() {
+        use yutu_core::{Artist, MixedRef, SearchAll, TopHit, TopKind};
+        let mixed = |kind: u8, id: &str| MixedRef {
+            kind,
+            id: id.into(),
+        };
+        let all = SearchAll {
+            top: Some(TopHit {
+                kind: TopKind::Video,
+                id: "official".into(),
+                title: "Chop Suey!".into(),
+                artist: "System Of A Down".into(),
                 thumbnail_url: None,
-            }],
-            artists: vec![],
-            playlists: vec![],
-        };
-        let hits = rank_search_hits("run", &with_songs);
-        assert!(matches!(hits[0], SearchHit::Song(_)));
-        // No title match anywhere: the prefix album headlines.
-        let no_songs = SearchResults {
-            tracks: vec![],
-            ..with_songs.clone()
-        };
-        let hits = rank_search_hits("run", &no_songs);
-        assert!(matches!(hits[0], SearchHit::Album(_)));
-        // Artists only: the prefix artist headlines.
-        let artists_only = SearchResults {
-            tracks: vec![],
-            albums: vec![],
+            }),
+            tracks: vec![
+                mk_track("cover", "Chop Suey", "Mister Chicken"),
+                mk_track("official", "Chop Suey!", "System Of A Down"),
+            ],
             artists: vec![Artist {
                 id: "r1".into(),
-                name: "Runner".into(),
+                name: "System Of A Down".into(),
                 thumbnail_url: None,
             }],
+            albums: vec![],
             playlists: vec![],
+            mixed: vec![mixed(0, "cover"), mixed(1, "r1"), mixed(0, "official")],
         };
-        let hits = rank_search_hits("run", &artists_only);
-        assert!(matches!(hits[0], SearchHit::Artist(_)));
-        // Empty results rank to nothing (loading/empty states own that).
-        assert!(rank_search_hits("run", &SearchResults::default()).is_empty());
-        assert!(results_empty(&SearchResults::default()));
-        assert!(!results_empty(&with_songs));
+        // Id resolution beats text order: the cover lists first but the
+        // official video heroes.
+        let hero = top_hero(&all).expect("hero resolves");
+        assert!(matches!(hero, SearchHit::Song(t) if t.id == "official"));
+        let rows = order_all_hits(&all);
+        assert!(rows
+            .iter()
+            .any(|h| matches!(h, SearchHit::Song(t) if t.id == "cover")));
+        assert!(!rows
+            .iter()
+            .any(|h| matches!(h, SearchHit::Song(t) if t.id == "official")));
+        // Stale card id falls back to title match, then first row.
+        let stale = SearchAll {
+            top: Some(TopHit {
+                kind: TopKind::Song,
+                id: "gone".into(),
+                title: "Chop Suey".into(),
+                artist: "Mister Chicken".into(),
+                thumbnail_url: None,
+            }),
+            ..all.clone()
+        };
+        assert!(matches!(top_hero(&stale), Some(SearchHit::Song(t)) if t.id == "cover"));
+        let unknown = SearchAll {
+            top: Some(TopHit {
+                kind: TopKind::Song,
+                id: "gone".into(),
+                title: "Unknown".into(),
+                artist: "Nobody".into(),
+                thumbnail_url: None,
+            }),
+            ..all.clone()
+        };
+        assert!(matches!(top_hero(&unknown), Some(SearchHit::Song(t)) if t.id == "cover"));
+        // Empty response has no hero and no rows.
+        let empty = SearchAll::default();
+        assert!(top_hero(&empty).is_none());
+        assert!(order_all_hits(&empty).is_empty());
+        assert!(all_empty(&empty));
+        assert!(!all_empty(&all));
     }
 
     #[test]
-    fn ranked_search_caps_total() {
+    fn server_search_caps_total_and_narrows() {
+        use yutu_core::{MixedRef, SearchAll};
         let tracks: Vec<Track> = (0..40)
             .map(|i| mk_track(&format!("v{i}"), "Run", "A"))
             .collect();
-        let results = SearchResults {
+        let mixed: Vec<MixedRef> = tracks
+            .iter()
+            .map(|t| MixedRef {
+                kind: 0,
+                id: t.id.clone(),
+            })
+            .collect();
+        let all = SearchAll {
             tracks,
+            mixed,
+            ..SearchAll::default()
+        };
+        let rows = order_all_hits(&all);
+        assert_eq!(rows.len(), MIXED_SEARCH_CAP);
+        // Keystroke narrowing drops dangling refs at render.
+        let base = SearchAll {
+            tracks: vec![
+                mk_track("v1", "Yesterday", "The Beatles"),
+                mk_track("v2", "Yellow Submarine", "The Beatles"),
+            ],
+            mixed: vec![
+                MixedRef {
+                    kind: 0,
+                    id: "v1".into(),
+                },
+                MixedRef {
+                    kind: 0,
+                    id: "v2".into(),
+                },
+            ],
+            ..SearchAll::default()
+        };
+        let narrowed = filter_all(&base, "yesterday");
+        assert_eq!(narrowed.tracks.len(), 1);
+        // The survivor heroes, so rows are empty but rendering is not.
+        assert!(matches!(top_hero(&narrowed), Some(SearchHit::Song(t)) if t.id == "v1"));
+        assert!(order_all_hits(&narrowed).is_empty());
+        assert!(filter_all(&base, "xyz").tracks.is_empty());
+        assert!(order_all_hits(&filter_all(&base, "xyz")).is_empty());
+        assert!(filter_all(&base, "").tracks.is_empty());
+    }
+
+    #[test]
+    fn search_bundle_paints_both_halves() {
+        use yutu_core::SearchAll;
+        let mut s = test_state();
+        let _ = s.update(Message::HomeSearchChanged("beatles".into()));
+        let all = SearchAll {
+            tracks: vec![mk_track("v9", "Hey Jude", "The Beatles")],
+            ..SearchAll::default()
+        };
+        let _ = s.update(Message::SearchCompleted {
+            query: "beatles".into(),
+            result: Ok(Box::new(SearchBundle {
+                all,
+                filtered: SearchResults {
+                    tracks: vec![mk_track("v1", "Yesterday", "The Beatles")],
+                    albums: vec![],
+                    artists: vec![],
+                    playlists: vec![],
+                },
+            })),
+        });
+        // Tabs read the filtered half, All reads the server half.
+        assert_eq!(s.results.tracks.len(), 1);
+        assert_eq!(s.all_results.tracks.len(), 1);
+        assert_eq!(s.all_results.tracks[0].id, "v9");
+        // Both halves register, so track menus resolve off either list.
+        assert!(s.find_track("v9").is_some());
+        // Keystrokes narrow both halves with no network.
+        let _ = s.update(Message::SearchChanged("yesterday".into()));
+        assert_eq!(s.results.tracks.len(), 1);
+        assert!(s.all_results.tracks.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "innertube")]
+    fn all_from_filtered_keeps_server_order() {
+        let filtered = SearchResults {
+            tracks: vec![mk_track("v1", "Song", "A")],
             albums: vec![],
             artists: vec![],
-            playlists: vec![],
+            playlists: vec![PlaylistHit {
+                id: "PL1".into(),
+                title: "Mix".into(),
+                author: "Fan".into(),
+                detail: "5 songs".into(),
+                thumbnail_url: None,
+            }],
         };
-        let hits = rank_search_hits("run", &results);
-        assert_eq!(hits.len(), MIXED_SEARCH_CAP);
+        let all = all_from_filtered(&filtered);
+        assert!(all.top.is_none());
+        assert_eq!(
+            all.mixed
+                .iter()
+                .map(|m| (m.kind, m.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "v1"), (3, "PL1")]
+        );
+        // Hero falls back to the first row, rows exclude it, no dups.
+        let hero = top_hero(&all).expect("fallback hero");
+        assert!(matches!(hero, SearchHit::Song(t) if t.id == "v1"));
+        let rows = order_all_hits(&all);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0], SearchHit::Playlist(_)));
+    }
+
+    #[test]
+    fn empty_top_id_never_dupes_the_hero() {
+        use yutu_core::{MixedRef, SearchAll, TopHit, TopKind};
+        // Card without a tap target: title match still heroes right.
+        let all = SearchAll {
+            top: Some(TopHit {
+                kind: TopKind::Song,
+                id: String::new(),
+                title: "Hey Jude".into(),
+                artist: "The Beatles".into(),
+                thumbnail_url: None,
+            }),
+            tracks: vec![mk_track("v9", "Hey Jude", "The Beatles")],
+            artists: vec![],
+            albums: vec![],
+            playlists: vec![],
+            mixed: vec![MixedRef {
+                kind: 0,
+                id: "v9".into(),
+            }],
+        };
+        let hero = top_hero(&all).expect("title-match hero");
+        assert!(matches!(hero, SearchHit::Song(t) if t.id == "v9"));
+        assert!(order_all_hits(&all).is_empty());
     }
 
     #[test]
@@ -14241,7 +14689,7 @@ mod tests {
         let _ = s.update(Message::HomeSearchChanged("beatles".into()));
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![
                     mk_track("v1", "Yesterday", "The Beatles"),
                     mk_track("v2", "Hey Jude", "The Beatles"),
@@ -14249,7 +14697,7 @@ mod tests {
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         assert!(!s.queue.shuffle);
         let _ = s.update(Message::PlayAllShuffled);
@@ -14577,12 +15025,12 @@ mod tests {
         s.results.artists.clear();
         let _ = s.update(Message::SearchCompleted {
             query: "system of a down".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![],
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         assert!(s.coll_menu.is_none());
     }
@@ -14655,7 +15103,7 @@ mod tests {
         let _ = s.update(Message::HomeSearchChanged("beatles".into()));
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![
                     mk_track("v1", "Yesterday", "The Beatles"),
                     mk_track("v2", "Hey Jude", "The Beatles"),
@@ -14663,7 +15111,7 @@ mod tests {
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         let _ = s.update(Message::PlayAll);
         assert_eq!(s.queue.len(), 2);
@@ -15551,12 +15999,12 @@ mod tests {
         // Completion never kicks the user to another page.
         let _ = s.update(Message::SearchCompleted {
             query: "beatles".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![mk_track("v1", "Yesterday", "The Beatles")],
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         assert_eq!(s.route, Route::Home);
         assert_eq!(s.results.tracks.len(), 1);
@@ -15576,24 +16024,24 @@ mod tests {
         // Out-of-order payload registers tracks but keeps newer results.
         let _ = s.update(Message::SearchCompleted {
             query: "bon".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![mk_track("old", "Old Song", "Someone")],
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         assert!(s.find_track("old").is_some());
         assert!(s.results.tracks.is_empty());
         // Current payload lands normally.
         let _ = s.update(Message::SearchCompleted {
             query: "bonobo".into(),
-            result: Ok(SearchResults {
+            result: Ok(Box::new(bundle_of(SearchResults {
                 tracks: vec![mk_track("new", "Rosewood", "Bonobo")],
                 albums: vec![],
                 artists: vec![],
                 playlists: vec![],
-            }),
+            }))),
         });
         assert_eq!(s.results.tracks.len(), 1);
         assert_eq!(s.results.tracks[0].id, "new");
@@ -17158,14 +17606,14 @@ mod tests {
         assert!(s.search_cache_get("beatles").is_none());
         s.search_cache_put(
             "  Beatles ",
-            SearchResults {
+            bundle_of(SearchResults {
                 tracks: vec![mk_track("v1", "Hey Jude", "The Beatles")],
                 ..Default::default()
-            },
+            }),
         );
         let hit = s.search_cache_get("beatles").expect("normalized hit");
-        assert_eq!(hit.tracks.len(), 1);
-        assert_eq!(hit.tracks[0].id, "v1");
+        assert_eq!(hit.filtered.tracks.len(), 1);
+        assert_eq!(hit.filtered.tracks[0].id, "v1");
         // TTL expiry reads as a miss.
         if let Some((at, _)) = s.search_cache.get_mut("beatles") {
             *at = std::time::Instant::now() - std::time::Duration::from_secs(3600);
@@ -17487,9 +17935,10 @@ mod tests {
     #[ignore = "live network: UI search composition over core Innertube queries"]
     async fn live_ui_search_returns_tracks() {
         let r = super::live_search("Beatles").await.expect("live UI search");
-        assert!(!r.tracks.is_empty(), "expected real tracks for Beatles");
+        assert!(!r.all.tracks.is_empty(), "expected real tracks for Beatles");
         assert!(
-            r.tracks
+            r.all
+                .tracks
                 .iter()
                 .all(|t| !t.id.is_empty() && !t.title.is_empty()),
             "tracks must carry playable ids + titles"
