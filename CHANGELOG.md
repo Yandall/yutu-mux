@@ -3,9 +3,10 @@
 ## 0.2.0 (unreleased)
 
 - Audible, customizable EQ: bands are now 1-octave-wide (the old 1 Hz
-  width moved broadband level by 0.0 dB), with 10 per-band sliders in
-  Settings; presets are predefined curves for those sliders and edits
-  relabel to Custom (or back to a matching preset)
+  width moved broadband level by 0.0 dB), with a hardware-style
+  graphic-EQ panel in Settings (vertical drag sliders, smooth curve,
+  bypass toggle, arrow-key nudges); presets are predefined curves for
+  those sliders and edits relabel to Custom (or back to a match)
 - Cookies-only sign-in: the Google sign-in section is gone and the
   signed-in cookie row no longer carries Import library (Sync now is
   the one refresh); saved OAuth sessions keep syncing untouched

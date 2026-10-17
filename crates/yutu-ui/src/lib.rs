@@ -1,5 +1,7 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
+mod eq_graph;
+
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
@@ -7,9 +9,7 @@ use yutu_core::{
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
-use yutu_player::{
-    EqPreset, Queue, RodioBackend, BAND_COUNT, EQ_FREQUENCIES, MAX_GAIN_DB, MIN_GAIN_DB,
-};
+use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
 // ---------------------------------------------------------------------------
 // YouTube-red theme (dark, red accent). Keeps every view on one visual
@@ -45,6 +45,18 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(CARD_BG)),
         border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
+/// Graphic-EQ panel: deep navy card (hardware-EQ look), softer than the
+/// near-black app surface so the blue bars + curve stand out.
+fn eq_panel(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(
+            0x1A, 0x1F, 0x2E,
+        ))),
+        border: iced::Border::default().rounded(14),
         ..Default::default()
     }
 }
@@ -377,24 +389,6 @@ fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widg
             border_width: 0.0,
             border_color: iced::Color::TRANSPARENT,
         },
-    }
-}
-
-/// EQ band frequency label: "31 Hz" below 1 kHz, "1 kHz" and up.
-fn eq_freq_label(freq_hz: f32) -> String {
-    if freq_hz >= 1000.0 {
-        format!("{} kHz", freq_hz / 1000.0)
-    } else {
-        format!("{freq_hz} Hz")
-    }
-}
-
-/// EQ band gain label: bare "0 dB" at unity, signed one-decimal else.
-fn eq_gain_label(gain_db: f32) -> String {
-    if gain_db == 0.0 {
-        "0 dB".to_string()
-    } else {
-        format!("{gain_db:+.1} dB")
     }
 }
 
@@ -781,6 +775,7 @@ pub enum Message {
     DeletePlaylist(String),
     SelectEqPreset(String),
     SetEqBand(usize, f32),
+    EqToggled(bool),
     ScrobbleToggled(bool),
     ScrobbleUserChanged(String),
     ScrobbleLbTokenChanged(String),
@@ -1612,6 +1607,9 @@ pub struct AppState {
     /// `eq_dirty` defers the trailing edge to the Tick flush.
     pub eq_cooldown_until: Option<std::time::Instant>,
     pub eq_dirty: bool,
+    /// EQ bypass toggle (in-memory only; never persisted). Off applies a
+    /// flat chain but keeps `eq_gains` + labels, so the curve survives.
+    pub eq_enabled: bool,
     /// Scrobble toggle (in-memory only; submission needs credentials below).
     pub scrobble_enabled: bool,
     /// Scrobble username (in-memory only; never persisted).
@@ -3853,6 +3851,7 @@ impl AppState {
             eq_gains: [0.0; BAND_COUNT],
             eq_cooldown_until: None,
             eq_dirty: false,
+            eq_enabled: true,
             scrobble_enabled: false,
             scrobble_user: String::new(),
             scrobble_lb_token: String::new(),
@@ -6907,9 +6906,14 @@ impl AppState {
                     self.eq_preset = p.name.clone();
                     self.eq_gains = p.bands;
                     // Discrete click: applies at once, superseding any
-                    // pending drag flush.
+                    // pending drag flush (unless bypassed: the curve is
+                    // kept, nothing pushes).
                     self.eq_dirty = false;
-                    self.apply_eq_curve();
+                    if self.eq_enabled {
+                        self.apply_eq_curve();
+                    } else {
+                        self.status = format!("EQ: {} (kept; toggle EQ on to hear it)", p.name);
+                    }
                 }
                 Err(e) => {
                     self.status = format!("EQ preset invalid: {e}.");
@@ -6933,9 +6937,13 @@ impl AppState {
         let Some(slot) = self.eq_gains.get_mut(index) else {
             return;
         };
-        *slot = gain.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+        *slot = ((gain * 2.0).round() / 2.0).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
         self.eq_preset =
             EqPreset::builtin_name_for(&self.eq_gains).unwrap_or_else(|| "Custom".to_string());
+        if !self.eq_enabled {
+            self.status = format!("EQ: {} (kept; toggle EQ on to hear it)", self.eq_preset);
+            return;
+        }
         let now = std::time::Instant::now();
         if self.eq_cooldown_until.is_none_or(|until| now >= until) {
             self.eq_cooldown_until = Some(now + std::time::Duration::from_millis(600));
@@ -6965,6 +6973,34 @@ impl AppState {
                 }
                 Err(e) => {
                     self.status = format!("EQ: {name} (saved; {e})");
+                }
+            },
+        }
+    }
+
+    /// Bypass toggle: off pushes a flat chain (the stored curve + labels
+    /// survive untouched), on re-pushes the stored curve. Either push
+    /// arms the drag cooldown (back-to-back `af` rebuilds stutter).
+    fn toggle_eq(&mut self, on: bool) {
+        self.eq_enabled = on;
+        self.eq_dirty = false;
+        self.eq_cooldown_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(600));
+        if on {
+            self.apply_eq_curve();
+            return;
+        }
+        let flat = EqPreset::flat();
+        match &self.audio {
+            None => {
+                self.status = "EQ off (no audio device)".into();
+            }
+            Some(audio) => match audio.apply_eq(&flat) {
+                Ok(()) => {
+                    self.status = format!("EQ off (bypassed on {})", audio.backend_name());
+                }
+                Err(e) => {
+                    self.status = format!("EQ off (saved; {e})");
                 }
             },
         }
@@ -8103,6 +8139,7 @@ impl AppState {
             }
             Message::SelectEqPreset(name) => self.select_eq_preset(&name),
             Message::SetEqBand(index, gain) => self.set_eq_band(index, gain),
+            Message::EqToggled(on) => self.toggle_eq(on),
             Message::ScrobbleToggled(on) => {
                 self.scrobble_enabled = on;
                 self.status = if on {
@@ -9372,7 +9409,12 @@ impl AppState {
                 self.maybe_persist_queue(now);
                 // EQ trailing edge: slider nudges deferred by the drag
                 // throttle land here (at most one extra `af` push).
-                if self.eq_dirty && self.eq_cooldown_until.is_none_or(|until| now >= until) {
+                // Bypassed EQ never pushes (the curve waits for the
+                // toggle).
+                if self.eq_enabled
+                    && self.eq_dirty
+                    && self.eq_cooldown_until.is_none_or(|until| now >= until)
+                {
                     self.eq_dirty = false;
                     self.eq_cooldown_until = Some(now + std::time::Duration::from_millis(600));
                     self.apply_eq_curve();
@@ -12811,7 +12853,7 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{
             button, checkbox, column, container, mouse_area, row, scrollable, slider, text,
-            text_input,
+            text_input, toggler,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -13401,7 +13443,13 @@ impl AppState {
                     .into_iter()
                     .map(|p| p.name)
                     .collect();
-                let current_eq = self.eq_preset.clone();
+                let current_eq = if self.eq_enabled {
+                    self.eq_preset.clone()
+                } else {
+                    // Bypassed: the chain is flat, whatever the kept
+                    // curve (same honesty as the rodio note).
+                    format!("Off ({})", self.eq_preset)
+                };
                 let eq_buttons: Vec<iced::Element<'_, Message>> = eq_names
                     .into_iter()
                     .map(|n| {
@@ -13417,32 +13465,24 @@ impl AppState {
                             .into()
                     })
                     .collect();
-                // One row per band: fixed labels keep the sliders aligned,
-                // presets above are just predefined curves for these gains.
-                let eq_bands: Vec<iced::Element<'_, Message>> = EQ_FREQUENCIES
-                    .iter()
-                    .zip(self.eq_gains.iter())
-                    .enumerate()
-                    .map(|(i, (freq, gain))| {
+                // Graphic EQ panel (dark hardware look): bypass toggle
+                // in the header, canvas sliders + curve below. Presets
+                // above are predefined curves for the same gains.
+                let eq_panel: iced::Element<'_, Message> = container(
+                    column![
                         row![
-                            text(eq_freq_label(*freq))
-                                .size(12)
-                                .width(iced::Length::Fixed(52.0)),
-                            slider(MIN_GAIN_DB..=MAX_GAIN_DB, *gain, move |g| {
-                                Message::SetEqBand(i, g)
-                            })
-                            .step(0.5_f32)
-                            .style(themed_slider)
-                            .width(Fill),
-                            text(eq_gain_label(*gain))
-                                .size(12)
-                                .width(iced::Length::Fixed(68.0)),
+                            text("Graphic EQ").size(15).width(Fill),
+                            toggler(self.eq_enabled).on_toggle(Message::EqToggled),
                         ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .into()
-                    })
-                    .collect();
+                        .align_y(iced::alignment::Vertical::Center),
+                        eq_graph::eq_graph(self.eq_gains),
+                    ]
+                    .spacing(8),
+                )
+                .style(eq_panel)
+                .padding(12)
+                .width(Fill)
+                .into();
                 column![
                     text("Settings").size(22),
                     text("Playback").size(17),
@@ -13468,7 +13508,7 @@ impl AppState {
                     text(format!("EQ: {current_eq} · {}", self.eq_note()))
                         .size(12)
                         .color(MUTED),
-                    column(eq_bands).spacing(2),
+                    eq_panel,
                     text("Animations").size(17),
                     checkbox(self.animations_enabled)
                         .label("Enable animations (off = panels snap instantly)")
@@ -16647,13 +16687,38 @@ mod tests {
     }
 
     #[test]
-    fn eq_labels() {
-        assert_eq!(eq_freq_label(31.0), "31 Hz");
-        assert_eq!(eq_freq_label(1000.0), "1 kHz");
-        assert_eq!(eq_freq_label(16000.0), "16 kHz");
-        assert_eq!(eq_gain_label(0.0), "0 dB");
-        assert_eq!(eq_gain_label(6.0), "+6.0 dB");
-        assert_eq!(eq_gain_label(-2.5), "-2.5 dB");
+    fn eq_bypass_keeps_curve() {
+        let mut s = test_state();
+        // Off: preset picks are kept, nothing pushes.
+        let _ = s.update(Message::EqToggled(false));
+        assert!(!s.eq_enabled);
+        assert!(s.status.contains("EQ off"));
+        let _ = s.update(Message::SelectEqPreset("Rock".into()));
+        assert_eq!(s.eq_preset, "Rock");
+        assert_eq!(s.eq_gains, EqPreset::rock().bands);
+        assert!(s.status.contains("kept"));
+        // Slider edits while off keep gains + label, set no flush.
+        let _ = s.update(Message::SetEqBand(0, 6.0));
+        assert_eq!(s.eq_gains[0], 6.0);
+        assert!(!s.eq_dirty);
+        // Back on: the stored curve pushes.
+        let _ = s.update(Message::EqToggled(true));
+        assert!(s.eq_enabled);
+        assert!(s.status.contains("EQ: Custom"));
+    }
+
+    #[test]
+    fn settings_view_builds_with_graph_eq() {
+        // Widget-tree smoke: Settings (preset buttons, bypass toggle,
+        // canvas graph) constructs without panicking.
+        let mut s = test_state();
+        s.route = Route::Settings;
+        let _ = s.view();
+        // Bypassed, custom, and preset states all build.
+        let _ = s.update(Message::EqToggled(false));
+        let _ = s.view();
+        let _ = s.update(Message::SetEqBand(4, 3.5));
+        let _ = s.view();
     }
 
     #[test]

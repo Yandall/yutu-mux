@@ -196,5 +196,6 @@ Done: user can plausibly replace Spotify for daily listening.
 57. Round 46: song-version preference (search drops video rows duplicating a song row with duration guard, server order kept, top hit untouched; libraries/playlists/radio out of scope; adversarial review highs fixed)
 58. Round 47: cookies-only auth UI (Google sign-in section removed, Import library deleted from the signed-in cookie row leaving Sync now as the one refresh; OAuth backend kept for legacy sessions)
 59. Round 48: audible + custom EQ (1-octave bands fix the 1 Hz-width inaudibility, 10 per-band sliders with Custom/builtin relabel, 600 ms drag throttle with Tick trailing flush; adversarial review meds fixed)
+60. Round 49: graphic-EQ panel (canvas widget: vertical drag sliders, smooth curve + wash, dB/freq labels, bypass toggle, arrow-key nudges, narrow-window scaling; adversarial review meds fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
