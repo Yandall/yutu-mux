@@ -1384,6 +1384,32 @@ const ART_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Divider pitch between uniform rows (1px hairline + 2px breathing
 /// room each side, never trailing): row height + 5.
 const DIVIDER_PX: f32 = 5.0;
+/// Drawer lyrics follow geometry (estimates: verses wrap, so exact
+/// per-row heights are unknowable; every constant mirrors its view
+/// builder, and error only shifts the center, never loses the verse).
+/// Hero block above the lyrics: 300 art + 24/15/12 titles at default
+/// line height + like row + spacings.
+/// Scrollable id for the drawer lyrics pane (follow snap target).
+const LYRICS_SCROLL_ID: &str = "drawer-lyrics";
+/// Estimated hero block height (see sum above).
+const LYRIC_HERO_H: f32 = 428.0;
+/// Hero-to-lyrics column spacing.
+const LYRIC_LIST_GAP: f32 = 16.0;
+/// Spacing between lyric rows (and around stanza gaps).
+const LYRIC_ROW_SPACING: f32 = 6.0;
+/// Stanza separator height (plus the row spacing around it).
+const LYRIC_GAP_H: f32 = 10.0;
+/// Lyric button vertical padding (4 top + 4 bottom).
+const LYRIC_BTN_PAD: f32 = 8.0;
+/// Horizontal chrome beside lyric text (25px rail/icon + 8px button
+/// padding; both row arms sum the same, so one constant serves).
+const LYRIC_ROW_CHROME: f32 = 33.0;
+/// Window chrome above the drawer viewport (header + player).
+const LYRIC_VIEWPORT_PAD: f32 = 260.0;
+/// Manual scroll disengages follow past this distance from our snap;
+/// proximity re-engages within this distance of the live target.
+const LYRIC_TAKEOVER_PX: f32 = 40.0;
+const LYRIC_RESUME_PX: f32 = 120.0;
 /// Sidebar sync spinner frames (verbatim loader glyph, one rotation
 /// step each): 60 steps at the ~60fps `Animate` tick is one turn/sec.
 #[cfg(feature = "innertube")]
@@ -1561,6 +1587,16 @@ pub struct AppState {
     /// Lyrics by track id (LRCLIB, no login) + in-flight fetch.
     lyrics_cache: HashMap<String, LyricsResult>,
     lyrics_loading: Option<String>,
+    /// Lyrics follow: auto-scroll the drawer so the current verse stays
+    /// centered. Manual scrolling disengages (proximity, seek, or track
+    /// change re-engages); never persisted.
+    lyrics_follow: bool,
+    /// Last followed (track id, verse index): detects track/verse
+    /// changes so snaps fire once per change, never per tick.
+    lyrics_follow_at: Option<(String, usize)>,
+    /// Last issued follow target (drawer y): tells manual scrolls apart
+    /// from our own snaps (snaps land exactly, so they never trip it).
+    lyrics_target: f32,
     /// Browser-style back/forward stacks (Route history, capped).
     nav_back: Vec<Route>,
     nav_forward: Vec<Route>,
@@ -3769,6 +3805,9 @@ impl AppState {
             prefetched: None,
             lyrics_cache: HashMap::new(),
             lyrics_loading: None,
+            lyrics_follow: true,
+            lyrics_follow_at: None,
+            lyrics_target: 0.0,
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             right_tab: RightTab::Queue,
@@ -6584,6 +6623,9 @@ impl AppState {
     /// anti-flicker hold on success, logged honest error otherwise.
     fn seek_to_secs(&mut self, pos: f64) {
         let pos = pos.max(0.0);
+        // Any seek re-engages lyrics follow (slider, verse tap,
+        // widget, media keys): the snap lands on the new verse.
+        self.lyrics_follow = true;
         match &self.audio {
             None => {
                 self.status = "No audio device.".into();
@@ -8405,6 +8447,10 @@ impl AppState {
                 self.drawer_open = !self.drawer_open;
                 if self.drawer_open {
                     self.drawer_scroll = 0.0;
+                    // Fresh follow run: the next tick centers the verse
+                    // as the drawer glides open.
+                    self.lyrics_follow = true;
+                    self.lyrics_follow_at = None;
                 }
                 // Warm the hi-res hero and the lyrics on open: the drawer
                 // is the lyrics home, but no fetch trigger fires for it.
@@ -8420,6 +8466,14 @@ impl AppState {
             Message::DrawerScrolled(y) => {
                 self.drawer_scroll = y.max(0.0);
                 self.lit_scroll("drawer");
+                // Follow takeover: a real scroll away from our last snap
+                // disengages (snaps land exactly, so they never trip it;
+                // end-of-song clamping may, which is harmless).
+                if self.lyrics_follow
+                    && (self.drawer_scroll - self.lyrics_target).abs() > LYRIC_TAKEOVER_PX
+                {
+                    self.lyrics_follow = false;
+                }
             }
             Message::Scrolled(key, y) => {
                 self.lit_scroll(key);
@@ -8567,6 +8621,11 @@ impl AppState {
             }
             Message::WindowResized(sz) => {
                 self.window = Some(sz);
+                // Geometry changed: re-snap the followed verse once
+                // (unless the user took over scrolling).
+                if self.drawer_open && self.lyrics_follow {
+                    self.lyrics_follow_at = None;
+                }
                 return iced::Task::none();
             }
             Message::CloseContext => {
@@ -9214,6 +9273,8 @@ impl AppState {
                 {
                     self.ease_import_shown();
                 }
+                // Drawer lyrics follow: centers the verse on change.
+                tasks.push(self.lyric_follow_task());
                 // Scheduled sync: web changes arrive on their own while
                 // signed in (plus Sync now in Settings). Idle only: never
                 // while a pull is already in flight.
@@ -9233,6 +9294,11 @@ impl AppState {
             }
             Message::SeekToMs(ms) => {
                 self.seek_to_secs(ms as f64 / 1000.0);
+                // Force the snap even inside the live verse (equality
+                // would otherwise suppress it while off-verse).
+                self.lyrics_follow_at = None;
+                self.publish_mpris();
+                return self.lyric_follow_task();
             }
             Message::UrlResolved { track_id, result } => {
                 // Only the in-flight track may report; anything else is stale.
@@ -12044,8 +12110,138 @@ impl AppState {
         .into()
     }
 
+    /// Highlighted verse index into the VISIBLE (non-empty) synced
+    /// lines for `id`, or None without synced lyrics / before the
+    /// first timestamp. Same filter + `line_at` call as
+    /// [`lyrics_content`]: the follow geometry must agree with the
+    /// highlight, so both read through here.
+    fn lyric_cursor_at(&self, id: &str) -> Option<usize> {
+        let cached = self.lyrics_cache.get(id)?;
+        // Instrumentals render a static label (no verses to follow),
+        // even when stray synced lines exist.
+        if cached.synced.is_empty() || cached.instrumental {
+            return None;
+        }
+        // +1ms truncation guard, mirroring the view.
+        let pos_ms = (self.position_secs * 1000.0 + 1.0) as u64;
+        let visible: Vec<yutu_core::LyricLine> = cached
+            .synced
+            .iter()
+            .filter(|l| !l.text.trim().is_empty())
+            .cloned()
+            .collect();
+        yutu_core::line_at(&visible, pos_ms)
+    }
+
+    /// Estimated height of one lyric row: wrapped visual lines at the
+    /// lyrics column width times the sized line height, plus button
+    /// padding. Wrapping is approximate (average advance), so callers
+    /// treat the result as a centering hint, never truth.
+    fn lyric_row_h(text_len: usize, current: bool, col_w: f32) -> f32 {
+        let (size, lh) = if current { (19.0, 1.4) } else { (15.0, 1.5) };
+        let avail = (col_w - LYRIC_ROW_CHROME).max(120.0);
+        let per_line = (avail / (size * 0.47)).max(8.0) as usize;
+        let lines = text_len.max(1).div_ceil(per_line);
+        lines as f32 * size * lh + LYRIC_BTN_PAD
+    }
+
+    /// Absolute drawer-scroll y that centers verse `at` (index into
+    /// the visible lines): hero estimate, exact pitch walk over the
+    /// cached rows (stanza gaps included, current row at its larger
+    /// size), viewport centering, floored at zero. Takes the cursor
+    /// instead of recomputing it (one clone per tick, not two).
+    fn lyric_follow_y(&self, id: &str, at: usize) -> Option<f32> {
+        let cached = self.lyrics_cache.get(id)?;
+        if cached.synced.is_empty() || cached.instrumental {
+            return None;
+        }
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+        // Same width formula as the drawer lyrics column.
+        let col_w = (ww - self.sidebar_w - self.right_w - 96.0).clamp(280.0, 560.0);
+        // Window minus header/player chrome (approximate: only shifts
+        // the center, never loses the verse).
+        let viewport = (wh - LYRIC_VIEWPORT_PAD).max(320.0);
+        let mut y = LYRIC_HERO_H + LYRIC_LIST_GAP;
+        let mut vi = 0usize;
+        let mut target = None;
+        for l in &cached.synced {
+            if l.text.trim().is_empty() {
+                y += LYRIC_GAP_H + LYRIC_ROW_SPACING;
+                continue;
+            }
+            let current = vi == at;
+            let h = Self::lyric_row_h(l.text.chars().count(), current, col_w);
+            if current {
+                target = Some(y + h / 2.0 - viewport / 2.0);
+            }
+            y += h + LYRIC_ROW_SPACING;
+            vi += 1;
+        }
+        target.map(|t| t.max(0.0))
+    }
+
+    /// Lyrics follow step (drawer only): on verse or track change with
+    /// follow engaged, snap the lyrics scrollable so the verse
+    /// centers. Snaps fire once per change, never per tick. Manual
+    /// scrolls disengage (proximity re-engages); closed drawer and
+    /// unsynced lyrics are always a no-op.
+    fn lyric_follow_task(&mut self) -> iced::Task<Message> {
+        let Some(t) = self.queue.current() else {
+            return iced::Task::none();
+        };
+        if !self.drawer_open {
+            return iced::Task::none();
+        }
+        let id = t.id.clone();
+        let Some(at) = self.lyric_cursor_at(&id) else {
+            return iced::Task::none();
+        };
+        let changed_track = self
+            .lyrics_follow_at
+            .as_ref()
+            .is_none_or(|(fid, _)| fid != &id);
+        if changed_track {
+            self.lyrics_follow = true;
+        }
+        if !self.lyrics_follow {
+            // Proximity resume: the user scrolled back near the verse,
+            // so follow picks up silently (already centered: no snap).
+            if let Some(y) = self.lyric_follow_y(&id, at) {
+                if (self.drawer_scroll - y).abs() <= LYRIC_RESUME_PX {
+                    self.lyrics_follow = true;
+                }
+            }
+            self.lyrics_follow_at = Some((id, at));
+            return iced::Task::none();
+        }
+        if !changed_track && self.lyrics_follow_at == Some((id.clone(), at)) {
+            return iced::Task::none();
+        }
+        self.lyrics_follow_at = Some((id.clone(), at));
+        match self.lyric_follow_y(&id, at) {
+            Some(y) => {
+                self.lyrics_target = y;
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::scrollable::scroll_to::<Message>(
+                        iced::widget::Id::new(LYRICS_SCROLL_ID),
+                        iced::advanced::widget::operation::scrollable::AbsoluteOffset {
+                            x: None,
+                            y: Some(y),
+                        },
+                    ),
+                )
+            }
+            None => iced::Task::none(),
+        }
+    }
+
     /// Shared synced-lyrics body (lyrics page + Now Playing drawer):
     /// loading / instrumental / empty / plain states included.
+    ///
+    /// Drawer follow geometry (see [`lyric_follow_y`]) mirrors the row
+    /// construction below exactly (gaps, pitches, current-row size):
+    /// keep the two in sync when this layout changes.
     fn lyrics_content(&self, id: &str) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, row, text};
         match self.lyrics_cache.get(id) {
@@ -12053,20 +12249,9 @@ impl AppState {
                 text("[Instrumental]").size(14).color(MUTED).into()
             }
             Some(cached) if !cached.synced.is_empty() => {
-                // +1ms truncation guard: click times and clock values pass
-                // through floats, and a hair below the boundary would
-                // highlight the previous verse.
-                let pos_ms = (self.position_secs * 1000.0 + 1.0) as u64;
-                // Empty-text stanza markers never win the highlight and
-                // are not clickable: filter them, render gaps instead.
-                let visible: Vec<&yutu_core::LyricLine> = cached
-                    .synced
-                    .iter()
-                    .filter(|l| !l.text.trim().is_empty())
-                    .collect();
-                let owned: Vec<yutu_core::LyricLine> =
-                    visible.iter().map(|l| (*l).clone()).collect();
-                let at = yutu_core::line_at(&owned, pos_ms);
+                // Highlight reads through the shared cursor so the
+                // follow geometry can never disagree with it.
+                let at = self.lyric_cursor_at(id);
                 let mut rows: Vec<iced::Element<'_, Message>> = Vec::new();
                 let mut vi = 0usize;
                 for l in &cached.synced {
@@ -12233,6 +12418,7 @@ impl AppState {
             .height(Fill)
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
+            .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
             .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y)),
         ]
         .spacing(8)
@@ -16986,6 +17172,126 @@ mod tests {
         let path = artwork_path_in(&dir, url).expect("png wins");
         assert!(path.ends_with(".png"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Synced fixture: two verses, a stanza gap, then a third verse.
+    /// `position_secs` picks the highlight; geometry is hand-checked
+    /// below (window 1280x800, default sidebars).
+    fn synced_state(pos_secs: f64) -> AppState {
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        s.queue.push(mk_track("m1", "T", "A"));
+        s.lyrics_cache.insert(
+            "m1".into(),
+            yutu_core::LyricsResult {
+                plain: String::new(),
+                synced: vec![
+                    yutu_core::LyricLine {
+                        start_ms: 0,
+                        text: "aaa".into(),
+                    },
+                    yutu_core::LyricLine {
+                        start_ms: 5000,
+                        text: String::new(),
+                    },
+                    yutu_core::LyricLine {
+                        start_ms: 5000,
+                        text: "bbb".into(),
+                    },
+                    yutu_core::LyricLine {
+                        start_ms: 10000,
+                        text: "ccc".into(),
+                    },
+                ],
+                instrumental: false,
+            },
+        );
+        s.drawer_open = true;
+        s.position_secs = pos_secs;
+        s
+    }
+
+    #[test]
+    fn lyric_follow_centers_each_verse() {
+        // col 560, viewport 540: plain rows 30.5, current 34.6, gap 16.
+        let s = synced_state(1.0);
+        assert_eq!(s.lyric_cursor_at("m1"), Some(0));
+        // Verse 0 top 444, center 444 + 17.3 - 270.
+        let y0 = s.lyric_follow_y("m1", 0).expect("verse 0 targets");
+        assert!((y0 - 191.3).abs() < 1.0, "got {y0}");
+        // Verse 1 sits past a stanza gap: top 496.5, taller current row.
+        let s = synced_state(6.0);
+        assert_eq!(s.lyric_cursor_at("m1"), Some(1));
+        let y1 = s.lyric_follow_y("m1", 1).expect("verse 1 targets");
+        assert!((y1 - 243.8).abs() < 1.0, "got {y1}");
+        assert!(y1 > y0);
+        // Verse 2 advances again.
+        let s = synced_state(11.0);
+        let y2 = s.lyric_follow_y("m1", 2).expect("verse 2 targets");
+        assert!((y2 - 280.3).abs() < 1.0, "got {y2}");
+        assert!(y2 > y1);
+        // No highlight (position before the first timestamp): no target.
+        let mut s = synced_state(0.0);
+        s.lyrics_cache
+            .get_mut("m1")
+            .unwrap()
+            .synced
+            .iter_mut()
+            .for_each(|l| l.start_ms += 5000);
+        assert_eq!(s.lyric_cursor_at("m1"), None);
+        // The task path returns before geometry on no highlight, and
+        // unknown ids have no rows to center.
+        assert!(s.lyric_follow_y("ghost", 0).is_none());
+        // Instrumentals never follow, even with stray synced lines.
+        let mut s = synced_state(6.0);
+        s.lyrics_cache.get_mut("m1").unwrap().instrumental = true;
+        assert_eq!(s.lyric_cursor_at("m1"), None);
+        assert!(s.lyric_follow_y("m1", 1).is_none());
+    }
+
+    #[test]
+    fn lyric_follow_snaps_takeover_and_resumes() {
+        let mut s = synced_state(1.0);
+        // Opening the drawer arms a fresh follow run.
+        s.drawer_open = false;
+        let _ = s.update(Message::ToggleDrawer);
+        assert!(s.drawer_open);
+        assert!(s.lyrics_follow);
+        assert!(s.lyrics_follow_at.is_none());
+        // First verse snaps once (task content is runtime-only: the
+        // recorded target is the assertion).
+        let _ = s.lyric_follow_task();
+        assert_eq!(s.lyrics_follow_at, Some(("m1".into(), 0)));
+        let y0 = s.lyrics_target;
+        assert!(y0 > 0.0);
+        // Our own snap arrival never disengages.
+        let _ = s.update(Message::DrawerScrolled(y0));
+        assert!(s.lyrics_follow);
+        // Same verse next tick: no re-snap, target holds.
+        let _ = s.lyric_follow_task();
+        assert!((s.lyrics_target - y0).abs() < 0.01);
+        // Verse change snaps forward.
+        s.position_secs = 11.0;
+        let _ = s.lyric_follow_task();
+        assert_eq!(s.lyrics_follow_at, Some(("m1".into(), 2)));
+        assert!(s.lyrics_target > y0);
+        // A real scroll away disengages...
+        let _ = s.update(Message::DrawerScrolled(900.0));
+        assert!(!s.lyrics_follow);
+        // ...and scrolling back near the verse resumes silently.
+        let back = s.lyrics_target - 50.0;
+        let _ = s.update(Message::DrawerScrolled(back));
+        let _ = s.lyric_follow_task();
+        assert!(s.lyrics_follow);
+        // Closed drawer and plain lyrics are always a no-op.
+        s.drawer_open = false;
+        s.lyrics_follow_at = None;
+        let _ = s.lyric_follow_task();
+        assert!(s.lyrics_follow_at.is_none());
+        s.drawer_open = true;
+        s.lyrics_cache.get_mut("m1").unwrap().synced.clear();
+        let _ = s.lyric_follow_task();
+        assert!(s.lyrics_follow_at.is_none());
     }
 
     #[test]

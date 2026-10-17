@@ -190,5 +190,6 @@ Done: user can plausibly replace Spotify for daily listening.
 51. Round 40: animated loading states (sidebar spinner rotates one frame per Animate tick via runtime-transformed loader frames; busy buttons keep their label with the spinner beside it and identical idle geometry, replacing the dots; adversarial review lows fixed)
 52. Round 41: bolder buttons (Medium labels via btn_text plus 2.5-stroke icons via btn_icon across all 138 button spans, including track rows, like states, and lyrics seeks; verbatim assets untouched; adversarial review meds fixed)
 53. Round 42: day-long image cache (24h absolute TTL on memory and disk tiers; expired covers miss and refetch, sweeps delete; reads never destroy offline files; single-stat lookups; adversarial review highs fixed)
+54. Round 43: lyrics follow (drawer auto-scroll centers the current verse via estimated geometry + scroll_to snap; manual scroll disengages with proximity/seek/track-change resume; adversarial review meds fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
