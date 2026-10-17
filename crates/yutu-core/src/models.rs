@@ -145,6 +145,57 @@ pub struct PlaylistHit {
     pub thumbnail_url: Option<String>,
 }
 
+/// Server-ranked top result kind (the web's "Top result" hero).
+/// Station/podcast kinds are not playable here and collapse to Other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TopKind {
+    Song,
+    Video,
+    Artist,
+    Album,
+    Playlist,
+    Other,
+}
+
+/// The unfiltered search's top result: display metadata plus the
+/// playable/browse id from the card tap target (the card itself is
+/// directly actionable, unlike ytmapi's id-less top result).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopHit {
+    pub kind: TopKind,
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub thumbnail_url: Option<String>,
+}
+
+/// Position of one row in the web mixed order: kind + id into the
+/// typed vecs below. Ids survive keystroke narrowing; dangling refs
+/// (narrowed away) are skipped when rendering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MixedRef {
+    /// 0 = track (song or video), 1 = artist, 2 = album, 3 = playlist.
+    pub kind: u8,
+    pub id: String,
+}
+
+/// One unfiltered (web-style "All") search response: every shelf in
+/// server relevance order plus the top hit. Songs and videos share
+/// `tracks` (each shelf server-ordered); featured playlists lead
+/// community ones; `mixed` is the exact web row order. The All tab
+/// renders this order as-is: no client re-sort, so official hits stay
+/// on top. Flat items carry no durations (the API omits them), so
+/// rows hide zero durations.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchAll {
+    pub top: Option<TopHit>,
+    pub tracks: Vec<Track>,
+    pub artists: Vec<Artist>,
+    pub albums: Vec<Album>,
+    pub playlists: Vec<PlaylistHit>,
+    pub mixed: Vec<MixedRef>,
+}
+
 /// Persisted playback session: the queue as track ids in order, the
 /// current index, the position in seconds, shuffle/repeat/volume.
 /// Tracks resolve back through the track cache on launch; unknown ids
