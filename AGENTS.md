@@ -174,6 +174,9 @@ cargo test -p yutu-ui --no-default-features
   (`feat/<name>`, `fix/<name>`), pushed for review as a PR; merge to
   `main` only once the feature is complete (3-config clippy + fmt +
   workspace tests green, adversarial review med+ findings fixed).
+  NEVER merge a PR (via gh or otherwise) unless the user explicitly
+  asked for that merge: the user tests every feature on their machine
+  before it lands on `main`. Opening the PR is fine; merging is not.
   When working on a feature/fix, create a new branch and open a PR
   using the gh CLI (e.g. `gh pr create --base main --head <branch>
   --title ... --body ...`).
