@@ -2,6 +2,8 @@
 
 ## 0.2.0 (unreleased)
 
+- Mute button beside every volume slider: silences output without
+  touching the level (unmuting restores it exactly), survives restarts
 - Reliable advances: failed stream fetches retry twice, then skip to
   the next song (or report honestly at the end of the queue); the next
   song starts prefetching 2s before the current one ends
