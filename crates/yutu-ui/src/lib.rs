@@ -12927,11 +12927,6 @@ impl AppState {
                             .find(|a| a.id == id)
                             .map(|a| a.artist.clone())
                             .unwrap_or_default();
-                        items.push(menu_item(
-                            "disc",
-                            "Open".to_string(),
-                            Message::OpenAlbum(id.clone()),
-                        ));
                         let tracks = self.album_tracks(&id);
                         if let Some(seed) = tracks.first().map(|t| t.id.clone()) {
                             items.push(menu_item(
@@ -12961,11 +12956,6 @@ impl AppState {
                             .find(|a| a.id == id)
                             .map(|a| a.name.clone())
                             .unwrap_or_default();
-                        items.push(menu_item(
-                            "folder",
-                            "Open".to_string(),
-                            Message::OpenArtist(id),
-                        ));
                         let tracks = self.artist_tracks(&name);
                         if let Some(seed) = tracks.first().map(|t| t.id.clone()) {
                             items.push(menu_item(
