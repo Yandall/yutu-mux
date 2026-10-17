@@ -3,7 +3,6 @@
 //! `Cursor` (`decode_bytes`); Innertube resolution + PO tokens live in
 //! `yutu_core::{InnertubeBackend, fetch_po_token}`.
 
-use rodio::source::{SineWave, Source};
 use rodio::Decoder;
 use std::io::Cursor;
 use std::sync::Mutex;
@@ -114,15 +113,6 @@ impl RodioBackend {
             player,
             clock: Mutex::new(ClockState::default()),
         })
-    }
-
-    /// 440Hz test tone, 0.5s. Proves the whole output chain without network.
-    pub fn play_test_tone(&self) {
-        let source = SineWave::new(440.0)
-            .take_duration(Duration::from_secs_f32(0.5))
-            .amplify(0.2);
-        self.player.append(source);
-        lock_clock(&self.clock).restart();
     }
 
     /// Decode in-memory audio (WAV/MP3/Opus/AAC via symphonia) and play it.
@@ -285,9 +275,12 @@ pub fn decode_bytes(bytes: Vec<u8>) -> Result<Decoder<Cursor<Vec<u8>>>, PlayerEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rodio::source::Source;
 
+    /// Control ops never append a source, so this test is silent: no
+    /// test tone, no audio out of the speakers during `cargo test`.
     #[test]
-    fn rodio_test_tone_plays_or_skips_headless() {
+    fn rodio_controls_do_not_error_and_play_nothing() {
         let backend = match RodioBackend::try_new() {
             Ok(b) => b,
             Err(e) => {
@@ -295,7 +288,6 @@ mod tests {
                 return;
             }
         };
-        backend.play_test_tone();
         backend.set_volume(0.5);
         backend.pause();
         backend.resume();
@@ -363,48 +355,41 @@ mod tests {
         assert_eq!(backend.position_secs(), 0.0);
     }
 
+    /// Clock behavior without touching hardware: `ClockState` is pure
+    /// wall-clock logic, so this test needs no device and emits no audio.
     #[test]
     fn clock_advances_freezes_resumes_and_stops() {
-        let backend = match RodioBackend::try_new() {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("SKIP: no audio device in CI/headless: {e}");
-                return;
-            }
-        };
-        assert_eq!(backend.position_secs(), 0.0);
-        if let Err(e) = backend.play_bytes(wav_bytes()) {
-            eprintln!("SKIP: play_bytes failed headless: {e}");
-            return;
-        }
+        let mut clock = ClockState::default();
+        assert_eq!(clock.position_secs(), 0.0);
+        clock.restart();
         // Monotonic non-decreasing across two reads.
-        let first = backend.position_secs();
+        let first = clock.position_secs();
         assert!(first >= 0.0);
         std::thread::sleep(Duration::from_millis(30));
-        let second = backend.position_secs();
+        let second = clock.position_secs();
         assert!(
             second >= first,
             "position should be monotonic: {first} -> {second}"
         );
 
         // Pause freezes: two reads must be exactly equal (no running part).
-        backend.pause();
-        let frozen_a = backend.position_secs();
-        let frozen_b = backend.position_secs();
+        clock.freeze();
+        let frozen_a = clock.position_secs();
+        let frozen_b = clock.position_secs();
         assert_eq!(frozen_a, frozen_b);
 
         // Resume advances again.
-        backend.resume();
+        clock.resume();
         std::thread::sleep(Duration::from_millis(30));
-        let advanced = backend.position_secs();
+        let advanced = clock.position_secs();
         assert!(
             advanced >= frozen_b,
             "position should advance after resume: {frozen_b} -> {advanced}"
         );
 
         // Stop resets to zero.
-        backend.stop();
-        assert_eq!(backend.position_secs(), 0.0);
+        clock.reset();
+        assert_eq!(clock.position_secs(), 0.0);
     }
 
     #[test]
