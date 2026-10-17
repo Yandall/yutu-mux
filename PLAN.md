@@ -194,5 +194,6 @@ Done: user can plausibly replace Spotify for daily listening.
 55. Round 44: advance retry (3 resolve attempts then skip-or-hold, stale arrivals never orphan a load, 2s prefetch window, 15s/300s resolve timeouts; adversarial review highs fixed)
 56. Round 45: mute button (level-preserving toggle beside every volume slider, slider/MPRIS drags unmute, effective volume to MPRIS, flag persisted in the session; adversarial review meds fixed)
 57. Round 46: song-version preference (search drops video rows duplicating a song row with duration guard, server order kept, top hit untouched; libraries/playlists/radio out of scope; adversarial review highs fixed)
+58. Round 47: cookies-only auth UI (Google sign-in section removed, Import library deleted from the signed-in cookie row leaving Sync now as the one refresh; OAuth backend kept for legacy sessions)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

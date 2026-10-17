@@ -48,10 +48,11 @@
   former soft `#E62117`; pure-red family allowed from Round 11),
   hover `#FF3366`. Dark Spotify-style surfaces,
   rounded inputs/surfaces. Glyphs on red are always white for contrast.
-- Auth paths: Google OAuth **device flow requires a user-registered
-  client** (unavoidable: ytmapi-rs embeds none); cookie-file import is
-  the no-client login path. Never paste cookie contents; secrets only via
-  env vars at test time.
+- Auth: cookies-only UI (the Google sign-in section was removed; the
+  OAuth device-flow backend stays for legacy saved sessions only).
+  Cookie-file import is the login path. Never paste cookie contents;
+  secrets only via env vars at test time. Signed-in cookie rows carry
+  no import button: Sync now (Sync section) is the one refresh.
 
 ## 3. Behavioral contracts (regressions live here)
 
