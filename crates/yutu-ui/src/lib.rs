@@ -1387,8 +1387,6 @@ const DRAWER_TOP_RESERVE: f32 = 46.0;
 const CENTER_MAX_W: f32 = 1150.0;
 /// Window width past which the center body centers with margins.
 const CENTER_MARGIN_BREAK: f32 = 1600.0;
-/// Top strip the search-popup scrim leaves clickable (header + input).
-const SUGGEST_SCRIM_TOP: f32 = 110.0;
 
 /// Ease `current` toward `target` by `step` (frame tick for drawer and
 /// sidebar transitions). Snaps when closer than one step.
@@ -11513,6 +11511,28 @@ impl AppState {
         8.0 + self.sidebar_w + 8.0 + Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0
     }
 
+    /// Pill geometry shared by the header pill, the suggest popup and
+    /// the scrim hole (same left + width everywhere, so popup edges
+    /// match the input exactly and only the input stays clickable).
+    fn search_pill_geom(&self) -> (f32, f32) {
+        let search_w = self.search_width();
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
+        let gaps = if self.right_target() != 0.0 {
+            16.0
+        } else {
+            8.0
+        };
+        let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
+        let w = if center_avail < search_w {
+            center_avail.max(140.0)
+        } else {
+            search_w
+        };
+        let left = self.search_pill_left().clamp(0.0, ww.max(0.0));
+        (left, w.min(ww).max(0.0))
+    }
+
     /// Global header (nav + search + settings), shared by the center and
     /// the drawer-open state so the search bar never vanishes.
     fn header_view(&self) -> iced::Element<'_, Message> {
@@ -11558,23 +11578,10 @@ impl AppState {
         } else {
             text("").size(1).into()
         };
-        let search_w = self.search_width();
-        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-        let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
-        // Main row gaps: sidebar|center plus center|right when visible.
-        // Plus the header inner spacing (4 gaps of 4 in fixed layout).
-        let gaps = if self.right_target() != 0.0 {
-            16.0
-        } else {
-            8.0
-        };
-        let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
-        let pill_w = if center_avail < search_w {
-            iced::Length::Fill
-        } else {
-            iced::Length::Fixed(search_w)
-        };
-        let fixed_pill = center_avail >= search_w;
+        // Pill width comes from the shared geometry (same number the
+        // popup and scrim use, so edges always match).
+        let (_, pill_w) = self.search_pill_geom();
+        let pill_w = iced::Length::Fixed(pill_w);
         let pill: iced::Element<'_, Message> = container(
             row![
                 icon("search", 14.0, MUTED),
@@ -11604,13 +11611,11 @@ impl AppState {
             .on_press(Message::Navigate(Route::Settings))
             .padding(6)
             .into();
-        // Fixed pill: Fill space docks the gear to the header right edge.
-        // Fill pill: it already stretches, no space needed.
+        // Fixed pill always (shared geometry with the popup): Fill
+        // space docks the gear to the header right edge.
         let mut h = iced::widget::Row::with_children(vec![back_btn, fwd_btn, pill]);
-        if fixed_pill {
-            let spacer: iced::Element<'_, Message> = iced::widget::Space::new().width(Fill).into();
-            h = h.push(spacer);
-        }
+        let spacer: iced::Element<'_, Message> = iced::widget::Space::new().width(Fill).into();
+        h = h.push(spacer);
         h = h.push(gear);
         h.spacing(4)
             .align_y(iced::alignment::Vertical::Center)
@@ -12729,43 +12734,40 @@ impl AppState {
         .into();
         let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
         // Search popup above everything in the center (including the
-        // drawer), below the context menu. The scrim leaves a top strip
-        // hole so the search input stays clickable; anything else
-        // outside dismisses like a context menu.
+        // drawer), below the context menu. The scrim wraps a hole the
+        // exact size of the input pill (shared geometry, so only the
+        // input stays clickable); anything else outside dismisses like
+        // a context menu.
         if let Some(popup) = self.suggest_popup() {
-            let search_w = self.search_width();
-            let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-            // Same shrink contract as the header pill so narrow windows
-            // never get a popup wider than the pill.
-            let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
-            let gaps = if self.right_target() != 0.0 {
-                16.0
-            } else {
-                8.0
-            };
-            let center_avail =
-                ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
-            let pill_actual = if center_avail < search_w {
-                center_avail.max(140.0)
-            } else {
-                search_w
-            };
-            // Aligned to the real pill edges, tracking sidebar width.
-            let pop_w = pill_actual.min(ww).max(0.0);
-            let pop_left = self.search_pill_left().clamp(0.0, (ww - pop_w).max(0.0));
-            let suggest_scrim: iced::Element<'_, Message> = container(column![
-                iced::widget::Space::new().height(iced::Length::Fixed(SUGGEST_SCRIM_TOP)),
-                mouse_area(container(text("").size(1)).width(Fill).height(Fill))
+            // Shared pill edges: popup width always matches the input.
+            let (pop_left, pop_w) = self.search_pill_geom();
+            // Header band height: the pill sits inside it, the popup
+            // starts right below it.
+            const HOLE_H: f32 = 66.0;
+            let dismiss = |w: iced::Length, h: iced::Length| {
+                mouse_area(iced::widget::Space::new().width(w).height(h))
                     .on_press(Message::CloseSuggest)
                     .on_right_press(Message::CloseSuggest)
                     .on_enter(Message::ClearHovers)
-                    .on_exit(Message::ClearHovers),
+                    .on_exit(Message::ClearHovers)
+            };
+            let suggest_scrim: iced::Element<'_, Message> = container(column![
+                row![
+                    dismiss(iced::Length::Fixed(pop_left), iced::Length::Fixed(HOLE_H)),
+                    // Pill hole: passive space, clicks reach the input.
+                    iced::widget::Space::new()
+                        .width(iced::Length::Fixed(pop_w))
+                        .height(iced::Length::Fixed(HOLE_H)),
+                    dismiss(iced::Length::Fill, iced::Length::Fixed(HOLE_H)),
+                ]
+                .height(iced::Length::Fixed(HOLE_H)),
+                dismiss(iced::Length::Fill, iced::Length::Fill),
             ])
             .width(Fill)
             .height(Fill)
             .into();
             let suggest_placed: iced::Element<'_, Message> = container(column![
-                iced::widget::Space::new().height(iced::Length::Fixed(66.0)),
+                iced::widget::Space::new().height(iced::Length::Fixed(HOLE_H)),
                 row![
                     iced::widget::Space::new().width(iced::Length::Fixed(pop_left)),
                     container(popup).width(iced::Length::Fixed(pop_w)),
