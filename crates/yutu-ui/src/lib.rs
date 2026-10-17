@@ -5927,9 +5927,11 @@ impl AppState {
     /// One spinning-loader frame: the verbatim loader glyph rotated
     /// `frame` steps (same precedent as the heart fill-flip: rotation
     /// applied at runtime, no custom drawing, no new asset files).
-    /// Shared by the sidebar spinner and busy buttons.
+    /// Shared by the sidebar spinner and busy buttons. The tint is the
+    /// caller's text color: glyphs must contrast their background
+    /// (white on red buttons, red on dark surfaces).
     #[cfg(feature = "innertube")]
-    fn spinner_frame(frame: u64, size: f32) -> iced::Element<'static, Message> {
+    fn spinner_frame(frame: u64, size: f32, color: iced::Color) -> iced::Element<'static, Message> {
         use iced::widget::svg;
         const LOADER: &str = include_str!("../assets/icons/loader-circle.svg");
         // Parsed once: every tick shares the rotated handles.
@@ -5950,9 +5952,7 @@ impl AppState {
         svg(SPINNER_FRAMES[frame].clone())
             .width(size)
             .height(size)
-            .style(|_: &iced::Theme, _| svg::Style {
-                color: Some(SPOT_GREEN),
-            })
+            .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
             .into()
     }
 
@@ -5962,7 +5962,7 @@ impl AppState {
     #[cfg(feature = "innertube")]
     fn sync_spinner(&self) -> iced::Element<'_, Message> {
         if self.syncing() {
-            Self::spinner_frame(self.spin_frame, 14.0)
+            Self::spinner_frame(self.spin_frame, 14.0, SPOT_GREEN)
         } else {
             iced::widget::Space::new()
                 .width(iced::Length::Fixed(14.0))
@@ -5980,7 +5980,9 @@ impl AppState {
         use iced::widget::{row, text, Space};
         use iced::Length::{Fixed, Shrink};
         let slot: iced::Element<'b, Message> = if self.pipeline_busy() {
-            Self::spinner_frame(self.spin_frame, 12.0)
+            // White like the label: these buttons sit on red
+            // (`green_play`), where the accent glyph would vanish.
+            Self::spinner_frame(self.spin_frame, 12.0, iced::Color::WHITE)
         } else {
             Space::new().width(Fixed(12.0)).height(Shrink).into()
         };
