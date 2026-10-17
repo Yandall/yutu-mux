@@ -7220,8 +7220,15 @@ impl AppState {
                 let incoming: std::collections::HashSet<&str> =
                     p.tracks.iter().map(|t| t.id.as_str()).collect();
                 self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
-                for t in &p.tracks {
-                    let rt = self.resolve_for_play(t);
+                // Resolve in memory first, persist once: per-track SQLite
+                // traffic freezes the GUI on long playlists.
+                let resolved: Vec<Track> = p
+                    .tracks
+                    .iter()
+                    .map(|t| self.resolve_for_play_mem(t))
+                    .collect();
+                self.cache_tracks(&resolved);
+                for rt in resolved {
                     self.queue.push(rt);
                 }
                 self.status = format!("Playlist {title}: queued {n} track(s).");
@@ -7244,15 +7251,11 @@ impl AppState {
                     self.status = format!("Playlist {}: nothing to queue.", p.title);
                     return iced::Task::none();
                 }
-                self.queue.clear();
-                self.autoplay.clear();
-                self.autoplay_for = None;
-                self.cancel_drag();
                 let title = p.title.clone();
-                let task = self.queue_many(p.tracks.clone(), &format!("Playlist {title}"));
-                self.set_shuffle(true);
-                self.publish_mpris();
-                return task;
+                // Same path as the page Shuffle pill: fully shuffled with
+                // a random head, always reshuffled.
+                self.cancel_drag();
+                return self.play_fresh(p.tracks.clone(), &format!("Playlist {title}"), true);
             }
             Message::CursorMoved(p) => {
                 self.cursor = Some(p);
@@ -11617,7 +11620,7 @@ impl AppState {
                             .color(MUTED),
                             row![
                                 Self::play_pill("PLAY".into(), Message::PlayAll),
-                                Self::play_pill("SHUFFLE".into(), Message::PlayAllShuffled),
+                                Self::shuffle_pill("SHUFFLE".into(), Message::PlayAllShuffled),
                                 radio_btn,
                             ]
                             .spacing(8)
@@ -11697,7 +11700,7 @@ impl AppState {
                             text(meta).size(12).color(MUTED),
                             row![
                                 Self::play_pill("PLAY".into(), Message::PlayAll),
-                                Self::play_pill("SHUFFLE".into(), Message::PlayAllShuffled),
+                                Self::shuffle_pill("SHUFFLE".into(), Message::PlayAllShuffled),
                             ]
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center),
@@ -11740,7 +11743,16 @@ impl AppState {
                             .style(green_play)
                             .on_press(Message::PlayAll)
                             .padding(8),
-                            Self::play_pill("SHUFFLE".into(), Message::PlayAllShuffled),
+                            button(
+                                row![
+                                    icon("shuffle", 13.0, iced::Color::WHITE),
+                                    text("Shuffle").size(13)
+                                ]
+                                .spacing(6)
+                            )
+                            .style(green_play)
+                            .on_press(Message::PlayAllShuffled)
+                            .padding(8),
                             button(icon("ellipsis", 15.0, MUTED))
                                 .style(hover_row)
                                 .on_press(Message::OpenPlaylistMenu(p.id.clone()))
@@ -16178,10 +16190,24 @@ mod tests {
                 plays: None,
             });
         }
-        let _ = s.update(Message::ShufflePlaylist(pid));
+        let _ = s.update(Message::ShufflePlaylist(pid.clone()));
         assert_eq!(s.queue.len(), 4);
         assert!(s.queue.shuffle);
         assert_eq!(s.queue.position(), Some(0));
+        // Same path as the page pill: the fetch targets the shuffled
+        // head and the snapshot is the playlist order.
+        let head = s.queue.current().unwrap().id.clone();
+        assert_eq!(s.loading_track.as_deref(), Some(head.as_str()));
+        let ordered: Vec<String> = ["m1", "m2", "m3", "m4"]
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(s.pre_shuffle, Some(ordered.clone()));
+        // Shuffle-play while already on reshuffles (no early-return).
+        let _ = s.update(Message::ShufflePlaylist(pid));
+        assert!(s.queue.shuffle);
+        assert_eq!(s.queue.len(), 4);
+        assert_eq!(s.pre_shuffle, Some(ordered));
     }
 
     #[test]

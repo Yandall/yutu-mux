@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Playlist menu Shuffle play uses the fixed fresh-play path (same as
+  the page pill); playlist Shuffle button matches the Play all size
+  with the shuffle icon, and artist/album Shuffle pills use it too
 - Shuffle play fetches the shuffled head: the source list shuffles
   before queueing (one fetch for the right track, no stale drop)
 - Playlist click-to-play from the clicked song: the song plus the rest
