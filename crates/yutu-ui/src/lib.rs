@@ -11662,15 +11662,10 @@ impl AppState {
                 {
                     Self::search_loading()
                 } else if results_empty(&self.results) && all_empty(&self.all_results) {
-                    let header = text(format!("Results for “{query}”")).size(22);
-                    column![
-                        header,
-                        text("No results found: try another spelling.").color(MUTED),
-                    ]
-                    .spacing(10)
-                    .into()
+                    column![text("No results found: try another spelling.").color(MUTED),]
+                        .spacing(10)
+                        .into()
                 } else {
-                    let header = text(format!("Results for “{query}”")).size(22);
                     let chips = self.search_filter_chips();
                     match self.search_filter {
                         SearchFilter::All => {
@@ -11687,7 +11682,7 @@ impl AppState {
                                     .into_iter()
                                     .map(|h| self.search_hit_row(&h))
                                     .collect();
-                            column![header, chips, hero, column(rows).spacing(2),]
+                            column![chips, hero, column(rows).spacing(2),]
                                 .spacing(10)
                                 .into()
                         }
@@ -11704,7 +11699,7 @@ impl AppState {
                             } else {
                                 column(songs).spacing(2).into()
                             };
-                            column![header, chips, list,].spacing(10).into()
+                            column![chips, list,].spacing(10).into()
                         }
                         SearchFilter::Albums => {
                             let cards: Vec<iced::Element<'_, Message>> = self
@@ -11725,7 +11720,7 @@ impl AppState {
                             } else {
                                 Self::card_strip(cards)
                             };
-                            column![header, chips, list,].spacing(10).into()
+                            column![chips, list,].spacing(10).into()
                         }
                         SearchFilter::Artists => {
                             let cards: Vec<iced::Element<'_, Message>> = self
@@ -11746,7 +11741,7 @@ impl AppState {
                             } else {
                                 Self::card_strip(cards)
                             };
-                            column![header, chips, list,].spacing(10).into()
+                            column![chips, list,].spacing(10).into()
                         }
                         SearchFilter::Playlists => {
                             let rows: Vec<iced::Element<'_, Message>> = self
@@ -11762,7 +11757,7 @@ impl AppState {
                             } else {
                                 column(rows).spacing(2).into()
                             };
-                            column![header, chips, list,].spacing(10).into()
+                            column![chips, list,].spacing(10).into()
                         }
                     }
                 };
