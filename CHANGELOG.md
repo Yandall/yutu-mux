@@ -2,6 +2,16 @@
 
 ## 0.2.0 (unreleased)
 
+- Bolder buttons: labels render one weight up (Medium) and icons draw
+  a slightly heavier stroke, everywhere a button is (pills, rows,
+  menus, tabs, seeks); artwork and decorations are untouched
+- Animated loading states: the sidebar sync loader spins (one frame per
+  tick), and busy buttons keep their label with the spinner beside it
+  instead of collapsing to dots (same width idle and busy)
+- Quiet background sync: the top progress banner appears for library
+  imports only, while sync pulls surface through a spinning loader
+  beside the sidebar title (same slot reserved when idle, so nothing
+  shifts)
 - Lazy image component: every artwork site renders through one
   cache-first view (memory, then disk, then placeholder), and fetches
   follow the viewport (scroll math per list plus overscan, throttled
