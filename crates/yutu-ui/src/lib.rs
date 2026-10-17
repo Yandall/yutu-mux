@@ -2841,37 +2841,33 @@ async fn resolve_stream_url(video_id: &str) -> Result<String, String> {
 }
 
 /// Real search over the live Innertube API: the web-style unfiltered
-/// search (server relevance order for the All tab, one round trip)
-/// plus the four filtered searches (depth for the filter tabs, with
-/// the raw shelves as fallback when a filtered query fails to parse).
-/// Only a total failure errors. Uses the signed-in session when one
-/// exists (the server then ranks like the logged-in web client, from
-/// the account's own activity), else anonymous.
+/// search (server relevance order for the All tab) plus one raw
+/// filtered search per type (depth for the filter tabs, same `params`
+/// the web client sends). Five round trips, each failing open; only a
+/// total failure errors. Uses the signed-in session when one exists
+/// (the server then ranks like the logged-in web client, from the
+/// account's own activity), else anonymous.
 #[cfg(feature = "innertube")]
 async fn live_search(query: &str) -> Result<Box<SearchBundle>, String> {
-    use yutu_core::{raw_search_all, InnertubeBackend};
+    use yutu_core::{raw_search_all, raw_search_filtered, SearchFilterKind};
     let auth = AppState::session_search_auth();
-    let backend = match AppState::session_backend().await {
-        Ok(b) => b,
-        Err(_) => InnertubeBackend::connect_anonymous().await?,
-    };
-    let (all, tracks, albums, artists, playlists) = tokio::join!(
+    let (all, songs, albums, artists, playlists) = tokio::join!(
         raw_search_all(query, &auth),
-        backend.search_tracks(query),
-        backend.search_albums(query),
-        backend.search_artists(query),
-        backend.search_community_playlists(query),
+        raw_search_filtered(query, &auth, SearchFilterKind::Songs),
+        raw_search_filtered(query, &auth, SearchFilterKind::Albums),
+        raw_search_filtered(query, &auth, SearchFilterKind::Artists),
+        raw_search_filtered(query, &auth, SearchFilterKind::Playlists),
     );
-    if let (Err(e), Err(_), Err(_), Err(_), Err(_)) = (&all, &tracks, &albums, &artists, &playlists)
+    if let (Err(e), Err(_), Err(_), Err(_), Err(_)) = (&all, &songs, &albums, &artists, &playlists)
     {
         return Err(e.clone());
     }
     let all = all.unwrap_or_default();
     let filtered = SearchResults {
-        tracks: tracks.unwrap_or_default(),
-        albums: albums.unwrap_or_default(),
-        artists: artists.unwrap_or_default(),
-        playlists: playlists.unwrap_or_default(),
+        tracks: songs.map(|s| s.tracks).unwrap_or_default(),
+        albums: albums.map(|s| s.albums).unwrap_or_default(),
+        artists: artists.map(|s| s.artists).unwrap_or_default(),
+        playlists: playlists.map(|s| s.playlists).unwrap_or_default(),
     };
     // Either half backs the other: a failed raw response still leaves
     // server-ordered filtered shelves for All, and failed filtered

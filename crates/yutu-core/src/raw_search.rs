@@ -12,7 +12,7 @@
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 
-use crate::innertube::{USER_AGENT, WEB_REMIX_VERSION};
+use crate::innertube::{parse_duration_secs, USER_AGENT, WEB_REMIX_VERSION};
 use crate::models::{Album, Artist, MixedRef, PlaylistHit, SearchAll, TopHit, TopKind, Track};
 
 const SEARCH_URL: &str =
@@ -97,15 +97,42 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// One unfiltered search round trip + tolerant parse. Stale auth
-/// (401/403) retries once anonymously instead of failing the page;
-/// any other failure passes through (no blind double traffic).
-pub async fn raw_search_all(query: &str, auth: &SearchAuth) -> Result<SearchAll, String> {
-    match post_search(query, auth).await {
+/// Per-type filter for raw search (the filter-tab requests): same
+/// `params` the web client sends for each tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchFilterKind {
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
+impl SearchFilterKind {
+    /// Filter `params` (mirrors the `ytmapi-rs` filtered queries, same
+    /// `ExactMatch` spelling the app has always used).
+    fn params(self) -> &'static str {
+        match self {
+            SearchFilterKind::Songs => "EgWKAQIIAWoMEA4QChADEAQQCRAF",
+            SearchFilterKind::Albums => "EgWKAQIYAWoMEA4QChADEAQQCRAF",
+            SearchFilterKind::Artists => "EgWKAQIgAWoMEA4QChADEAQQCRAF",
+            SearchFilterKind::Playlists => "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU%3D",
+        }
+    }
+}
+
+/// One filtered search round trip + the same tolerant parse (filtered
+/// responses use the old shelf layout, handled by the same path).
+/// Same 401/403 anonymous retry as [`raw_search_all`].
+pub async fn raw_search_filtered(
+    query: &str,
+    auth: &SearchAuth,
+    kind: SearchFilterKind,
+) -> Result<SearchAll, String> {
+    match post_search(query, auth, Some(kind.params())).await {
         Ok(text) => parse_search_all(&text),
         Err(SearchFail::Auth) if auth.authed() => {
-            eprintln!("[yutu-search] authed search rejected: retrying anonymous");
-            let text = post_search(query, &SearchAuth::anonymous())
+            eprintln!("[yutu-search] authed filtered search rejected: retrying anonymous");
+            let text = post_search(query, &SearchAuth::anonymous(), Some(kind.params()))
                 .await
                 .map_err(|e| e.message())?;
             parse_search_all(&text)
@@ -130,8 +157,29 @@ impl SearchFail {
     }
 }
 
-async fn post_search(query: &str, auth: &SearchAuth) -> Result<String, SearchFail> {
-    let body = serde_json::json!({
+/// One unfiltered search round trip + tolerant parse. Stale auth
+/// (401/403) retries once anonymously instead of failing the page;
+/// any other failure passes through (no blind double traffic).
+pub async fn raw_search_all(query: &str, auth: &SearchAuth) -> Result<SearchAll, String> {
+    match post_search(query, auth, None).await {
+        Ok(text) => parse_search_all(&text),
+        Err(SearchFail::Auth) if auth.authed() => {
+            eprintln!("[yutu-search] authed search rejected: retrying anonymous");
+            let text = post_search(query, &SearchAuth::anonymous(), None)
+                .await
+                .map_err(|e| e.message())?;
+            parse_search_all(&text)
+        }
+        Err(e) => Err(e.message()),
+    }
+}
+
+async fn post_search(
+    query: &str,
+    auth: &SearchAuth,
+    params: Option<&str>,
+) -> Result<String, SearchFail> {
+    let mut body = serde_json::json!({
         "context": {
             "client": {
                 "clientName": "WEB_REMIX",
@@ -141,6 +189,9 @@ async fn post_search(query: &str, auth: &SearchAuth) -> Result<String, SearchFai
         },
         "query": query,
     });
+    if let Some(params) = params {
+        body["params"] = serde_json::Value::String(params.to_string());
+    }
     let mut request = reqwest::Client::new()
         .post(SEARCH_URL)
         .header("User-Agent", USER_AGENT)
@@ -306,7 +357,14 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
         return;
     }
     let segs = segments(&flex_runs(item, 1));
-    let token = segs.first().cloned().unwrap_or_default();
+    // Type-led segments start past the token; bare shelf segments
+    // (filtered shelves omit it) start at the artist/author.
+    let first = segs.first().cloned().unwrap_or_default();
+    let b: &[String] = if token_kind(&first).is_some() {
+        &segs[1..]
+    } else {
+        &segs[..]
+    };
     let art = thumbs(item);
     if let Some(browse) = browse_id(item) {
         if browse.starts_with("UC") {
@@ -321,8 +379,8 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
             out.albums.push(Album {
                 id: browse,
                 title: title.clone(),
-                artist: segs.get(1).cloned().unwrap_or_default(),
-                year: segs.get(2).and_then(|y| y.trim().parse().ok()),
+                artist: b.first().cloned().unwrap_or_default(),
+                year: b.last().and_then(|y| y.trim().parse().ok()),
                 thumbnail_url: art.0,
             });
             let id = out.albums.last().map(|a| a.id.clone()).unwrap_or_default();
@@ -331,8 +389,8 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
             out.playlists.push(PlaylistHit {
                 id: browse,
                 title: title.clone(),
-                author: segs.get(1).cloned().unwrap_or_default(),
-                detail: segs.get(2).cloned().unwrap_or_default(),
+                author: b.first().cloned().unwrap_or_default(),
+                detail: b.get(1).cloned().unwrap_or_default(),
                 thumbnail_url: art.0,
             });
             let id = out
@@ -353,20 +411,35 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
         .or_else(|| play_video_id(item))
         .map(str::to_string);
     let Some(video_id) = video_id else { return };
-    let song = match (force.or_else(|| token_kind(&token)), music_video_type(item)) {
+    // Song middle segments are album-or-nothing: `[artist, album,
+    // duration]`, or a bare `[artist, duration]` with no album.
+    // Filtered shelves carry durations; flat items do not.
+    let (album, duration) = match (b.get(1), b.get(2)) {
+        (Some(a), Some(d)) => (
+            Some(a.clone()).filter(|s| !s.is_empty()),
+            parse_duration_secs(d),
+        ),
+        (Some(x), None) if x.contains(':') => (None, parse_duration_secs(x)),
+        (Some(a), None) => (Some(a.clone()).filter(|s| !s.is_empty()), 0),
+        _ => (None, 0),
+    };
+    let song = match (force.or_else(|| token_kind(&first)), music_video_type(item)) {
         (Some(1), _) => false,
         (Some(0), _) => true,
         (None, Some(t)) => t == "MUSIC_VIDEO_TYPE_ATV",
         // No signal at all: skip, never misfile.
         _ => return,
     };
-    if song {
+    // An explicit video player type wins over a forced song shelf:
+    // views must never land in the album slot.
+    let video_row = music_video_type(item).is_some_and(|t| t != "MUSIC_VIDEO_TYPE_ATV");
+    if song && !video_row {
         out.tracks.push(Track {
             id: video_id.clone(),
             title: title.clone(),
-            artist: segs.get(1).cloned().unwrap_or_default(),
-            album: segs.get(2).cloned().filter(|a| !a.is_empty()),
-            duration_secs: 0,
+            artist: b.first().cloned().unwrap_or_default(),
+            album,
+            duration_secs: duration,
             thumbnail_url: art.0,
             thumbnail_large_url: art.1,
             plays: third_col_plays(item),
@@ -375,12 +448,12 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
         out.tracks.push(Track {
             id: video_id.clone(),
             title: title.clone(),
-            artist: segs.get(1).cloned().unwrap_or_default(),
+            artist: b.first().cloned().unwrap_or_default(),
             album: None,
-            duration_secs: 0,
+            duration_secs: b.get(2).map(|d| parse_duration_secs(d)).unwrap_or(0),
             thumbnail_url: art.0,
             thumbnail_large_url: art.1,
-            plays: segs.get(2).cloned().filter(|v| !v.is_empty()),
+            plays: b.get(1).cloned().filter(|v| !v.is_empty()),
         });
     }
     out.mixed.push(MixedRef {
@@ -790,6 +863,55 @@ mod tests {
     }
 
     #[test]
+    fn bare_shelf_songs_parse_artist_album_duration() {
+        // Filtered songs omit the type token: artist, album, duration.
+        // (The overlay player type is the classification signal.)
+        let atv = |id: &str| {
+            serde_json::json!({"overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer": {
+                "playNavigationEndpoint": {"watchEndpoint": {
+                    "videoId": id,
+                    "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig": {"musicVideoType": "MUSIC_VIDEO_TYPE_ATV"}},
+                }},
+            }}}}})
+        };
+        let with_overlay = |id: &str| {
+            let mut extra = serde_json::json!({"playlistItemData": {"videoId": id}});
+            extra["overlay"] = atv(id)["overlay"].clone();
+            extra
+        };
+        let out = parse_search_all(&wrap(vec![item(
+            "Chop Suey!",
+            vec!["System Of A Down", " • ", "Toxicity", " • ", "3:31"],
+            with_overlay("v1"),
+        )]))
+        .expect("parse");
+        assert_eq!(out.tracks.len(), 1);
+        assert_eq!(out.tracks[0].artist, "System Of A Down");
+        assert_eq!(out.tracks[0].album.as_deref(), Some("Toxicity"));
+        assert_eq!(out.tracks[0].duration_secs, 211);
+        // No-album shape keeps the duration out of the album slot.
+        let out = parse_search_all(&wrap(vec![item(
+            "Intro",
+            vec!["Band", " • ", "0:42"],
+            with_overlay("v2"),
+        )]))
+        .expect("parse");
+        assert_eq!(out.tracks[0].artist, "Band");
+        assert!(out.tracks[0].album.is_none());
+        assert_eq!(out.tracks[0].duration_secs, 42);
+        // Bare shelf playlists map author + detail without a token.
+        let out = parse_search_all(&wrap(vec![item(
+            "Mix",
+            vec!["Fan", " • ", "56 views"],
+            serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "VL1"}}}),
+        )]))
+        .expect("parse");
+        assert_eq!(out.playlists.len(), 1);
+        assert_eq!(out.playlists[0].author, "Fan");
+        assert_eq!(out.playlists[0].detail, "56 views");
+    }
+
+    #[test]
     fn missing_section_list_errors_but_bad_items_do_not() {
         assert!(parse_search_all("{}").is_err());
         assert!(parse_search_all("not json").is_err());
@@ -802,6 +924,28 @@ mod tests {
         let out = parse_search_all(&broken.to_string()).expect("parse");
         assert!(out.tracks.is_empty() && out.mixed.is_empty());
         assert!(out.top.is_some());
+    }
+
+    #[test]
+    fn filter_params_match_web_tabs() {
+        // Same `params` the web client sends per tab (mirrors the
+        // ytmapi-rs filtered queries with ExactMatch spelling).
+        assert_eq!(
+            SearchFilterKind::Songs.params(),
+            "EgWKAQIIAWoMEA4QChADEAQQCRAF"
+        );
+        assert_eq!(
+            SearchFilterKind::Albums.params(),
+            "EgWKAQIYAWoMEA4QChADEAQQCRAF"
+        );
+        assert_eq!(
+            SearchFilterKind::Artists.params(),
+            "EgWKAQIgAWoMEA4QChADEAQQCRAF"
+        );
+        assert_eq!(
+            SearchFilterKind::Playlists.params(),
+            "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU%3D"
+        );
     }
 
     #[test]

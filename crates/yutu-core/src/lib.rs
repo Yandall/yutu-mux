@@ -39,7 +39,9 @@ pub use models::{
 };
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 #[cfg(feature = "innertube")]
-pub use raw_search::{parse_search_all, raw_search_all, SearchAuth};
+pub use raw_search::{
+    parse_search_all, raw_search_all, raw_search_filtered, SearchAuth, SearchFilterKind,
+};
 pub use scrobble::{
     api_sig, build_listen_payload, build_scrobble_params, should_scrobble, Scrobble,
 };

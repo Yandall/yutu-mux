@@ -1774,7 +1774,7 @@ fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
 
 /// Parse `"m:ss"` / `"h:mm:ss"` (also bare seconds) to seconds.
 /// Empty or malformed input → `0` (never fails: it feeds `duration_secs`).
-fn parse_duration_secs(raw: &str) -> u32 {
+pub(crate) fn parse_duration_secs(raw: &str) -> u32 {
     let raw = raw.trim();
     if raw.is_empty() {
         return 0;
