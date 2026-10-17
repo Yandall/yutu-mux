@@ -1,13 +1,13 @@
 //! Graphic-EQ canvas widget: ten vertical drag sliders under one smooth
-//! curve, dB values on top, frequencies below (dark panel, blue bars +
-//! curve, like a hardware graphic EQ).
+//! curve, dB values on top, frequencies below. Theme-colored (red accent
+//! on dark cards, like every other control).
 //!
 //! Layout and curve math are pure and unit-tested here; the [`Program`]
 //! only wires pointer events to `Message::SetEqBand` (press jumps,
 //! drag slides, release drops). Slider rows elsewhere are gone: presets
 //! are predefined curves for these same gains.
 
-use crate::Message;
+use crate::{Message, MUTED, SPOT_GREEN};
 use iced::advanced::text::Alignment;
 use iced::widget::canvas::{
     self, Action, Event, Frame, Geometry, LineCap, Path, Program, Stroke, Text,
@@ -25,22 +25,8 @@ const HANDLE_R: f32 = 8.0;
 const BAR_W: f32 = 5.0;
 const TRACK_W: f32 = 3.0;
 
-const EQ_BLUE: Color = Color::from_rgb(
-    0x6E as f32 / 255.0,
-    0xA8 as f32 / 255.0,
-    0xFE as f32 / 255.0,
-);
-const TRACK_GRAY: Color = Color::from_rgb(
-    0x3A as f32 / 255.0,
-    0x3F as f32 / 255.0,
-    0x4D as f32 / 255.0,
-);
-const LABEL_WHITE: Color = Color::WHITE;
-const LABEL_DIM: Color = Color::from_rgb(
-    0x9A as f32 / 255.0,
-    0xA0 as f32 / 255.0,
-    0xAE as f32 / 255.0,
-);
+/// Track gray matches the themed horizontal sliders (same rail color).
+const TRACK_GRAY: Color = Color::from_rgb8(0x3A, 0x3A, 0x3A);
 
 /// Plot geometry for one canvas size: plot rect + band column centers.
 pub struct GraphLayout {
@@ -313,14 +299,14 @@ impl Program<Message> for EqGraph {
                 Stroke::default()
                     .with_color(Color {
                         a: 0.10,
-                        ..LABEL_WHITE
+                        ..Color::WHITE
                     })
                     .with_width(1.0),
             );
             frame.fill_text(Text {
                 content: gain_label(gain),
                 position: Point::new(layout.left - 5.0, y),
-                color: LABEL_DIM,
+                color: MUTED,
                 size: axis_size.into(),
                 align_x: Alignment::Right,
                 align_y: iced::alignment::Vertical::Center,
@@ -342,14 +328,20 @@ impl Program<Message> for EqGraph {
                 Stroke::default()
                     .with_color(Color {
                         a: 0.08,
-                        ..LABEL_WHITE
+                        ..Color::WHITE
                     })
                     .with_width(1.0),
             );
         }
 
         // Wash under the curve.
-        frame.fill(&area_path(&handles, bottom), Color { a: 0.15, ..EQ_BLUE });
+        frame.fill(
+            &area_path(&handles, bottom),
+            Color {
+                a: 0.15,
+                ..SPOT_GREEN
+            },
+        );
 
         // Track (full) + fill (handle to bottom) per column.
         for handle in &handles {
@@ -366,7 +358,7 @@ impl Program<Message> for EqGraph {
             frame.stroke(
                 &Path::line(*handle, Point::new(handle.x, bottom)),
                 Stroke::default()
-                    .with_color(EQ_BLUE)
+                    .with_color(SPOT_GREEN)
                     .with_width(bar_w)
                     .with_line_cap(LineCap::Round),
             );
@@ -376,17 +368,17 @@ impl Program<Message> for EqGraph {
         frame.stroke(
             &curve_path(&handles),
             Stroke::default()
-                .with_color(EQ_BLUE)
+                .with_color(SPOT_GREEN)
                 .with_width(2.0)
                 .with_line_cap(LineCap::Round),
         );
 
         // Handles on top of the curve.
         for handle in &handles {
-            frame.fill(&Path::circle(*handle, handle_r), EQ_BLUE);
+            frame.fill(&Path::circle(*handle, handle_r), SPOT_GREEN);
             frame.stroke(
                 &Path::circle(*handle, handle_r),
-                Stroke::default().with_color(LABEL_WHITE).with_width(1.5),
+                Stroke::default().with_color(Color::WHITE).with_width(1.5),
             );
         }
 
@@ -395,7 +387,7 @@ impl Program<Message> for EqGraph {
             frame.fill_text(Text {
                 content: gain_label(self.gains[i]),
                 position: Point::new(handle.x, 8.0),
-                color: LABEL_WHITE,
+                color: Color::WHITE,
                 size: label_size.into(),
                 align_x: Alignment::Center,
                 align_y: iced::alignment::Vertical::Top,
@@ -404,7 +396,7 @@ impl Program<Message> for EqGraph {
             frame.fill_text(Text {
                 content: freq_label(EQ_FREQUENCIES[i]),
                 position: Point::new(handle.x, bottom + 5.0),
-                color: LABEL_DIM,
+                color: MUTED,
                 size: label_size.into(),
                 align_x: Alignment::Center,
                 align_y: iced::alignment::Vertical::Top,

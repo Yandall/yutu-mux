@@ -17,9 +17,9 @@ use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GA
 // primary action, muted secondary text, text-buttons for row actions.
 // ---------------------------------------------------------------------------
 
-const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
+pub(crate) const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
 const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x33, 0x66);
-const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
+pub(crate) const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
 const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
 const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
 const SIDEBAR_BG: iced::Color = iced::Color::from_rgb8(0x12, 0x12, 0x12);
@@ -45,18 +45,6 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(CARD_BG)),
         border: iced::Border::default().rounded(8),
-        ..Default::default()
-    }
-}
-
-/// Graphic-EQ panel: deep navy card (hardware-EQ look), softer than the
-/// near-black app surface so the blue bars + curve stand out.
-fn eq_panel(_: &iced::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(
-            0x1A, 0x1F, 0x2E,
-        ))),
-        border: iced::Border::default().rounded(14),
         ..Default::default()
     }
 }
@@ -389,6 +377,35 @@ fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widg
             border_width: 0.0,
             border_color: iced::Color::TRANSPARENT,
         },
+    }
+}
+
+/// EQ bypass toggle in theme red: red track when on, dark track when
+/// off, white knob either way (glyphs on red are always white).
+fn red_toggle(
+    _: &iced::Theme,
+    status: iced::widget::toggler::Status,
+) -> iced::widget::toggler::Style {
+    use iced::widget::toggler::Status;
+    let on = match status {
+        Status::Active { is_toggled }
+        | Status::Hovered { is_toggled }
+        | Status::Disabled { is_toggled } => is_toggled,
+    };
+    iced::widget::toggler::Style {
+        background: iced::Background::Color(if on {
+            SPOT_GREEN
+        } else {
+            iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+        }),
+        background_border_width: 0.0,
+        background_border_color: iced::Color::TRANSPARENT,
+        foreground: iced::Background::Color(iced::Color::WHITE),
+        foreground_border_width: 0.0,
+        foreground_border_color: iced::Color::TRANSPARENT,
+        text_color: None,
+        border_radius: None,
+        padding_ratio: 0.1,
     }
 }
 
@@ -13465,21 +13482,23 @@ impl AppState {
                             .into()
                     })
                     .collect();
-                // Graphic EQ panel (dark hardware look): bypass toggle
-                // in the header, canvas sliders + curve below. Presets
-                // above are predefined curves for the same gains.
+                // Graphic EQ panel: bypass toggle top-right, canvas
+                // sliders + curve below. Presets above are predefined
+                // curves for the same gains.
                 let eq_panel: iced::Element<'_, Message> = container(
                     column![
                         row![
-                            text("Graphic EQ").size(15).width(Fill),
-                            toggler(self.eq_enabled).on_toggle(Message::EqToggled),
+                            iced::widget::Space::new().width(Fill),
+                            toggler(self.eq_enabled)
+                                .on_toggle(Message::EqToggled)
+                                .style(red_toggle),
                         ]
                         .align_y(iced::alignment::Vertical::Center),
                         eq_graph::eq_graph(self.eq_gains),
                     ]
                     .spacing(8),
                 )
-                .style(eq_panel)
+                .style(card_bg)
                 .padding(12)
                 .width(Fill)
                 .into();
