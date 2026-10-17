@@ -227,11 +227,14 @@ async fn post_search(
 }
 
 /// Parse a raw unfiltered response into server order. Unknown sections
-/// and items are skipped; only a missing section list errors.
+/// and items are skipped; only a missing section list errors. Video
+/// rows duplicating a song row are dropped last (song versions win
+/// for streams and art); survivors keep exact server order.
 pub fn parse_search_all(text: &str) -> Result<SearchAll, String> {
     let root: Value = serde_json::from_str(text).map_err(|e| format!("search parse: {e}"))?;
     let sections = section_contents(&root).ok_or("search parse: no section list")?;
     let mut out = SearchAll::default();
+    let mut rows: Vec<TrackRow> = Vec::new();
     for section in sections {
         if let Some(card) = section.get("musicCardShelfRenderer") {
             if let Some(top) = parse_top_card(card) {
@@ -244,13 +247,14 @@ pub fn parse_search_all(text: &str) -> Result<SearchAll, String> {
                 .into_iter()
                 .flatten()
             {
-                push_content(&mut out, content);
+                push_content(&mut out, &mut rows, content);
             }
         } else if let Some(shelf) = section.get("musicShelfRenderer") {
-            push_shelf(&mut out, shelf);
+            push_shelf(&mut out, &mut rows, shelf);
         }
         // Carousels, podcasts, episodes, profiles: skipped by design.
     }
+    prefer_song_versions(&mut out, &rows);
     Ok(out)
 }
 
@@ -268,17 +272,17 @@ fn section_contents(root: &Value) -> Option<&Vec<Value>> {
 
 /// One content entry: flat item or old-style shelf (both tolerated so
 /// layout flip-flops never blank the page).
-fn push_content(out: &mut SearchAll, content: &Value) {
+fn push_content(out: &mut SearchAll, rows: &mut Vec<TrackRow>, content: &Value) {
     if let Some(item) = content.get("musicResponsiveListItemRenderer") {
-        push_item(out, item, None);
+        push_item(out, rows, item, None);
     } else if let Some(shelf) = content.get("musicShelfRenderer") {
-        push_shelf(out, shelf);
+        push_shelf(out, rows, shelf);
     }
 }
 
 /// Old-style shelf fallback: items take the shelf's kind (the shelf
 /// title names it in the response locale).
-fn push_shelf(out: &mut SearchAll, shelf: &Value) {
+fn push_shelf(out: &mut SearchAll, rows: &mut Vec<TrackRow>, shelf: &Value) {
     let title: String = shelf
         .get("title")
         .map(|t| run_texts(t).concat())
@@ -309,7 +313,7 @@ fn push_shelf(out: &mut SearchAll, shelf: &Value) {
         .flatten()
     {
         if let Some(renderer) = item.get("musicResponsiveListItemRenderer") {
-            push_item(out, renderer, Some(force));
+            push_item(out, rows, renderer, Some(force));
         }
     }
 }
@@ -347,11 +351,128 @@ fn segments(runs: &[String]) -> Vec<String> {
     segs.into_iter().map(|s| s.join(" ")).collect()
 }
 
+/// One parsed song/video row plus its position in `mixed` (the song
+/// preference needs both to drop dup videos cleanly).
+struct TrackRow {
+    song: bool,
+    track: Track,
+    mixed_pos: usize,
+}
+
+/// Video-ness markers stripped from titles when matching songs to
+/// videos ("Song (Official Video)" is the same track as "Song";
+/// anything else in parens, like remasters, never merges). Lyric
+/// videos and visualizers reuse the studio recording, so they merge;
+/// live videos are different performances and must NOT (durations
+/// guard them when known, so they stay out of this list).
+const VIDEO_MARKERS: [&str; 13] = [
+    "official music video",
+    "official lyric video",
+    "official video",
+    "official visualizer",
+    "music video",
+    "lyrics video",
+    "lyric video",
+    "official audio",
+    "visualizer",
+    "video",
+    "audio",
+    "lyrics",
+    "lyric",
+];
+
+/// Collapse ASCII whitespace runs to single spaces.
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Title key for song/video matching: lowercase, video markers
+/// stripped (trailing ` - X`, ` (X)`, `[X]`, or bare ` X`), spaces
+/// collapsed. Conservative: unknown parentheticals stay.
+fn norm_title(title: &str) -> String {
+    let mut s = title.to_lowercase();
+    loop {
+        let before = s.len();
+        s = s.trim_end().to_string();
+        for m in VIDEO_MARKERS {
+            for pat in [
+                format!(" - {m}"),
+                format!(" ({m})"),
+                format!(" [{m}]"),
+                format!(" {m}"),
+            ] {
+                if s.len() > pat.len() {
+                    if let Some(stripped) = s.strip_suffix(&pat) {
+                        s = stripped.to_string();
+                    }
+                }
+            }
+        }
+        if s.len() == before {
+            break;
+        }
+    }
+    collapse_ws(&s)
+}
+
+/// Artist key: lowercase, spaceless (topic/VEVO channels drop their
+/// suffixes and spacing: "X - Topic" is "X").
+fn norm_artist(artist: &str) -> String {
+    let s = artist.to_lowercase();
+    let s = s
+        .strip_suffix(" - topic")
+        .or_else(|| s.strip_suffix(" - vevo"))
+        .or_else(|| s.strip_suffix("vevo"))
+        .unwrap_or(&s);
+    s.split_whitespace().collect::<Vec<_>>().join("")
+}
+
+/// True when `video` is the video version of `song`: same normalized
+/// title + artist, durations within 3s when both are known (flat All
+/// items carry none, so title + artist decide there).
+fn same_track(song: &Track, video: &Track) -> bool {
+    norm_title(&song.title) == norm_title(&video.title)
+        && norm_artist(&song.artist) == norm_artist(&video.artist)
+        && (song.duration_secs == 0
+            || video.duration_secs == 0
+            || song.duration_secs.abs_diff(video.duration_secs) <= 3)
+}
+
+/// Song-version preference over a parsed response: video rows
+/// duplicating a song row are dropped (streams + art resolve to the
+/// song instead); survivors keep exact server order (nothing is
+/// re-sorted, only hidden twins). Videos without a song twin,
+/// libraries, playlists, and radio are untouched. The top hit is
+/// deliberately NOT retargeted: it carries no duration, so a long
+/// video could bind to a short song (wrong stream); the server's
+/// top pick plays as ranked.
+fn prefer_song_versions(out: &mut SearchAll, rows: &[TrackRow]) {
+    let songs: Vec<&Track> = rows.iter().filter(|r| r.song).map(|r| &r.track).collect();
+    let dead: std::collections::HashSet<usize> = rows
+        .iter()
+        .filter(|r| !r.song && songs.iter().any(|s| same_track(s, &r.track)))
+        .map(|r| r.mixed_pos)
+        .collect();
+    out.tracks = rows
+        .iter()
+        .filter(|r| r.song || !dead.contains(&r.mixed_pos))
+        .map(|r| r.track.clone())
+        .collect();
+    let mut mixed = std::mem::take(&mut out.mixed);
+    mixed = mixed
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !dead.contains(i))
+        .map(|(_, m)| m)
+        .collect();
+    out.mixed = mixed;
+}
+
 /// One flat item into the typed vecs + mixed order. Endpoint shape
 /// decides artists/albums/playlists (browse id prefix); songs and
 /// videos share the watch path and split on the player type, with the
 /// kind token as backup. Anything unrecognized is skipped.
-fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
+fn push_item(out: &mut SearchAll, rows: &mut Vec<TrackRow>, item: &Value, force: Option<u8>) {
     let title: String = flex_runs(item, 0).concat();
     if title.is_empty() {
         return;
@@ -433,8 +554,9 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
     // An explicit video player type wins over a forced song shelf:
     // views must never land in the album slot.
     let video_row = music_video_type(item).is_some_and(|t| t != "MUSIC_VIDEO_TYPE_ATV");
-    if song && !video_row {
-        out.tracks.push(Track {
+    let is_song = song && !video_row;
+    let track = if is_song {
+        Track {
             id: video_id.clone(),
             title: title.clone(),
             artist: b.first().cloned().unwrap_or_default(),
@@ -443,9 +565,9 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
             thumbnail_url: art.0,
             thumbnail_large_url: art.1,
             plays: third_col_plays(item),
-        });
+        }
     } else {
-        out.tracks.push(Track {
+        Track {
             id: video_id.clone(),
             title: title.clone(),
             artist: b.first().cloned().unwrap_or_default(),
@@ -454,8 +576,13 @@ fn push_item(out: &mut SearchAll, item: &Value, force: Option<u8>) {
             thumbnail_url: art.0,
             thumbnail_large_url: art.1,
             plays: b.get(1).cloned().filter(|v| !v.is_empty()),
-        });
-    }
+        }
+    };
+    rows.push(TrackRow {
+        song: is_song,
+        mixed_pos: out.mixed.len(),
+        track,
+    });
     out.mixed.push(MixedRef {
         kind: 0,
         id: video_id,
@@ -693,6 +820,9 @@ mod tests {
     fn flat_response_parses_in_server_order() {
         let out = parse_search_all(&fixture().to_string()).expect("parse");
         let top = out.top.expect("top card");
+        // The top card is the server's pick verbatim (song preference
+        // applies to rows, never to the ranked top hit: it carries no
+        // duration to disambiguate long videos from songs).
         assert_eq!(top.kind, TopKind::Video);
         assert_eq!(top.id, "CSvFpBOe8eY");
         assert_eq!(top.artist, "System Of A Down");
@@ -954,6 +1084,131 @@ mod tests {
         assert!(hash.starts_with("1234567890_"));
         assert_eq!(hash.len(), 11 + 40);
         assert!(hash[11..].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Extra payload for video rows: playlist id plus the OMV player
+    /// type (the mirror of the ATV helper elsewhere).
+    fn with_video(id: &str) -> Value {
+        serde_json::json!({
+            "playlistItemData": {"videoId": id},
+            "overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer": {
+                "playNavigationEndpoint": {"watchEndpoint": {
+                    "videoId": id,
+                    "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig": {"musicVideoType": "MUSIC_VIDEO_TYPE_OMV"}},
+                }},
+            }}}},
+        })
+    }
+
+    #[test]
+    fn song_preference_drops_duplicate_videos() {
+        let out = parse_search_all(&wrap(vec![
+            item(
+                "Chop Suey!",
+                vec!["Song", " • ", "System Of A Down"],
+                serde_json::json!({"playlistItemData": {"videoId": "song1"}}),
+            ),
+            item(
+                "Chop Suey! (Official Video)",
+                vec!["Video", " • ", "System Of A Down"],
+                with_video("vid1"),
+            ),
+            // Interleaved kinds hold their mixed positions around drops.
+            item(
+                "System of A Down",
+                vec!["Artist", " • ", "29.3M monthly audience"],
+                serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "UC123"}}}),
+            ),
+            item(
+                "Lonely Day",
+                vec!["Video", " • ", "System Of A Down"],
+                with_video("vid2"),
+            ),
+            item(
+                "Toxicity",
+                vec!["Song", " • ", "System Of A Down"],
+                serde_json::json!({"playlistItemData": {"videoId": "song2"}}),
+            ),
+        ]))
+        .expect("parse");
+        // Dup video gone, everything else in walk order (mixed too).
+        let ids: Vec<&str> = out.tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["song1", "vid2", "song2"]);
+        let mixed: Vec<(u8, &str)> = out.mixed.iter().map(|m| (m.kind, m.id.as_str())).collect();
+        assert_eq!(
+            mixed,
+            vec![(0, "song1"), (1, "UC123"), (0, "vid2"), (0, "song2")]
+        );
+    }
+
+    #[test]
+    fn song_preference_keeps_videos_without_a_song_twin() {
+        // Different durations: different recordings, both stay.
+        let out = parse_search_all(&wrap(vec![
+            item(
+                "Chop Suey!",
+                vec!["Song", " • ", "Band", " • ", "Album", " • ", "3:31"],
+                serde_json::json!({"playlistItemData": {"videoId": "song1"}}),
+            ),
+            item(
+                "Chop Suey!",
+                vec!["Video", " • ", "Band", " • ", "1M views", " • ", "9:99"],
+                with_video("vid1"),
+            ),
+            // Same duration: the video is the same track, dropped.
+            item(
+                "Intro",
+                vec!["Song", " • ", "Band", " • ", "0:42"],
+                serde_json::json!({"playlistItemData": {"videoId": "song2"}}),
+            ),
+            item(
+                "Intro",
+                vec!["Video", " • ", "Band", " • ", "9 views", " • ", "0:42"],
+                with_video("vid2"),
+            ),
+            // Remaster markers are not video markers: both stay.
+            item(
+                "Song",
+                vec!["Song", " • ", "Band"],
+                serde_json::json!({"playlistItemData": {"videoId": "song3"}}),
+            ),
+            item(
+                "Song (Remastered)",
+                vec!["Video", " • ", "Band"],
+                with_video("vid3"),
+            ),
+            // Topic channels match the plain artist name.
+            item(
+                "Anthem",
+                vec!["Song", " • ", "Band"],
+                serde_json::json!({"playlistItemData": {"videoId": "song4"}}),
+            ),
+            item(
+                "Anthem [Video]",
+                vec!["Video", " • ", "Band - Topic"],
+                with_video("vid4"),
+            ),
+        ]))
+        .expect("parse");
+        let ids: Vec<&str> = out.tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["song1", "vid1", "song2", "song3", "vid3", "song4"]
+        );
+    }
+
+    #[test]
+    fn norm_title_strips_video_markers_only() {
+        assert_eq!(norm_title("Chop Suey! (Official Video)"), "chop suey!");
+        assert_eq!(norm_title("Anthem [Official Music Video]"), "anthem");
+        assert_eq!(norm_title("Song - Music Video"), "song");
+        assert_eq!(norm_title("Anthem [Official Lyric Video]"), "anthem");
+        assert_eq!(norm_title("Clip (Visualizer)"), "clip");
+        // Non-video parentheticals survive (never merge remasters).
+        assert_eq!(norm_title("Song (Remastered)"), "song (remastered)");
+        assert_eq!(norm_title("Song (Live)"), "song (live)");
+        assert_eq!(norm_artist("Band - Topic"), "band");
+        assert_eq!(norm_artist("BandVEVO"), "band");
     }
 
     #[test]
