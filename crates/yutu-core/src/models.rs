@@ -197,7 +197,7 @@ pub struct SearchAll {
 }
 
 /// Persisted playback session: the queue as track ids in order, the
-/// current index, the position in seconds, shuffle/repeat/volume.
+/// current index, the position in seconds, shuffle/repeat/volume/mute.
 /// Tracks resolve back through the track cache on launch; unknown ids
 /// are dropped.
 #[derive(Debug, Clone, PartialEq)]
@@ -208,6 +208,7 @@ pub struct QueueSnapshot {
     pub shuffle: bool,
     pub repeat: String,
     pub volume: f32,
+    pub muted: bool,
 }
 
 impl Default for QueueSnapshot {
@@ -219,6 +220,7 @@ impl Default for QueueSnapshot {
             shuffle: false,
             repeat: "off".into(),
             volume: 0.8,
+            muted: false,
         }
     }
 }
