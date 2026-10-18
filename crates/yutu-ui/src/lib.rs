@@ -1,5 +1,7 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
+mod eq_graph;
+
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
@@ -7,7 +9,7 @@ use yutu_core::{
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
-use yutu_player::{EqPreset, Queue, RodioBackend};
+use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
 // ---------------------------------------------------------------------------
 // YouTube-red theme (dark, red accent). Keeps every view on one visual
@@ -15,9 +17,9 @@ use yutu_player::{EqPreset, Queue, RodioBackend};
 // primary action, muted secondary text, text-buttons for row actions.
 // ---------------------------------------------------------------------------
 
-const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
+pub(crate) const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
 const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x33, 0x66);
-const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
+pub(crate) const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
 const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
 const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
 const SIDEBAR_BG: iced::Color = iced::Color::from_rgb8(0x12, 0x12, 0x12);
@@ -375,6 +377,35 @@ fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widg
             border_width: 0.0,
             border_color: iced::Color::TRANSPARENT,
         },
+    }
+}
+
+/// EQ bypass toggle in theme red: red track when on, dark track when
+/// off, white knob either way (glyphs on red are always white).
+fn red_toggle(
+    _: &iced::Theme,
+    status: iced::widget::toggler::Status,
+) -> iced::widget::toggler::Style {
+    use iced::widget::toggler::Status;
+    let on = match status {
+        Status::Active { is_toggled }
+        | Status::Hovered { is_toggled }
+        | Status::Disabled { is_toggled } => is_toggled,
+    };
+    iced::widget::toggler::Style {
+        background: iced::Background::Color(if on {
+            SPOT_GREEN
+        } else {
+            iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+        }),
+        background_border_width: 0.0,
+        background_border_color: iced::Color::TRANSPARENT,
+        foreground: iced::Background::Color(iced::Color::WHITE),
+        foreground_border_width: 0.0,
+        foreground_border_color: iced::Color::TRANSPARENT,
+        text_color: None,
+        border_radius: None,
+        padding_ratio: 0.1,
     }
 }
 
@@ -760,6 +791,8 @@ pub enum Message {
     },
     DeletePlaylist(String),
     SelectEqPreset(String),
+    SetEqBand(usize, f32),
+    EqToggled(bool),
     ScrobbleToggled(bool),
     ScrobbleUserChanged(String),
     ScrobbleLbTokenChanged(String),
@@ -1578,7 +1611,22 @@ pub struct AppState {
     pub new_playlist_name: String,
     pub playlist_seq: u64,
     /// Selected EQ preset name (in-memory only; never persisted).
+    /// "Custom" when the band gains match no built-in curve.
     pub eq_preset: String,
+    /// Live EQ band gains in dB, band order matches `EQ_FREQUENCIES`
+    /// (in-memory only; never persisted). Preset buttons overwrite all
+    /// ten; band sliders edit one and relabel to the matching preset
+    /// (or "Custom").
+    pub eq_gains: [f32; BAND_COUNT],
+    /// EQ apply throttle: slider drags push at most one `af` re-init per
+    /// 600 ms (each push rebuilds mpv's filter graph: a per-tick storm
+    /// would stutter). `eq_cooldown_until` gates immediate pushes;
+    /// `eq_dirty` defers the trailing edge to the Tick flush.
+    pub eq_cooldown_until: Option<std::time::Instant>,
+    pub eq_dirty: bool,
+    /// EQ bypass toggle (in-memory only; never persisted). Off applies a
+    /// flat chain but keeps `eq_gains` + labels, so the curve survives.
+    pub eq_enabled: bool,
     /// Scrobble toggle (in-memory only; submission needs credentials below).
     pub scrobble_enabled: bool,
     /// Scrobble username (in-memory only; never persisted).
@@ -3817,6 +3865,10 @@ impl AppState {
             new_playlist_name: String::new(),
             playlist_seq,
             eq_preset: "Flat".into(),
+            eq_gains: [0.0; BAND_COUNT],
+            eq_cooldown_until: None,
+            eq_dirty: false,
+            eq_enabled: true,
             scrobble_enabled: false,
             scrobble_user: String::new(),
             scrobble_lb_token: String::new(),
@@ -6863,24 +6915,21 @@ impl AppState {
     /// Validate + select an EQ preset (in-memory only; never persisted).
     /// Honest about backends: rodio has no filter stage, so selecting a
     /// preset there records the choice and says so (it takes effect on mpv).
+    /// Band sliders stay in sync: presets overwrite all ten gains.
     fn select_eq_preset(&mut self, name: &str) {
         match EqPreset::preset_by_name(name) {
             Some(p) => match p.validate() {
                 Ok(()) => {
                     self.eq_preset = p.name.clone();
-                    match &self.audio {
-                        None => {
-                            self.status = format!("EQ: {} (no audio device)", p.name);
-                        }
-                        Some(audio) => match audio.apply_eq(&p) {
-                            Ok(()) => {
-                                self.status =
-                                    format!("EQ: {} (live on {})", p.name, audio.backend_name());
-                            }
-                            Err(e) => {
-                                self.status = format!("EQ: {} (saved; {e})", p.name);
-                            }
-                        },
+                    self.eq_gains = p.bands;
+                    // Discrete click: applies at once, superseding any
+                    // pending drag flush (unless bypassed: the curve is
+                    // kept, nothing pushes).
+                    self.eq_dirty = false;
+                    if self.eq_enabled {
+                        self.apply_eq_curve();
+                    } else {
+                        self.status = format!("EQ: {} (kept; toggle EQ on to hear it)", p.name);
                     }
                 }
                 Err(e) => {
@@ -6890,6 +6939,87 @@ impl AppState {
             None => {
                 self.status = format!("Unknown EQ preset: {name}.");
             }
+        }
+    }
+
+    /// Nudge one EQ band from its slider: clamp, relabel (the matching
+    /// built-in curve, or "Custom"), and push the curve live. Drags are
+    /// throttled: the first nudge pushes at once, later ones inside the
+    /// 600 ms cooldown set `eq_dirty` for the Tick flush (an `af` push
+    /// rebuilds mpv's whole filter graph, so per-tick pushes stutter).
+    fn set_eq_band(&mut self, index: usize, gain: f32) {
+        if !gain.is_finite() {
+            return;
+        }
+        let Some(slot) = self.eq_gains.get_mut(index) else {
+            return;
+        };
+        *slot = ((gain * 2.0).round() / 2.0).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+        self.eq_preset =
+            EqPreset::builtin_name_for(&self.eq_gains).unwrap_or_else(|| "Custom".to_string());
+        if !self.eq_enabled {
+            self.status = format!("EQ: {} (kept; toggle EQ on to hear it)", self.eq_preset);
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.eq_cooldown_until.is_none_or(|until| now >= until) {
+            self.eq_cooldown_until = Some(now + std::time::Duration::from_millis(600));
+            self.apply_eq_curve();
+        } else {
+            self.eq_dirty = true;
+            self.status = format!("EQ: {} (tuning…)", self.eq_preset);
+        }
+    }
+
+    /// Push the current `eq_gains` to the backend under the current
+    /// `eq_preset` name, with the same honest reporting as preset
+    /// selection (rodio records the curve and says so).
+    fn apply_eq_curve(&mut self) {
+        let name = self.eq_preset.clone();
+        let preset = EqPreset {
+            name: name.clone(),
+            bands: self.eq_gains,
+        };
+        match &self.audio {
+            None => {
+                self.status = format!("EQ: {name} (no audio device)");
+            }
+            Some(audio) => match audio.apply_eq(&preset) {
+                Ok(()) => {
+                    self.status = format!("EQ: {name} (live on {})", audio.backend_name());
+                }
+                Err(e) => {
+                    self.status = format!("EQ: {name} (saved; {e})");
+                }
+            },
+        }
+    }
+
+    /// Bypass toggle: off pushes a flat chain (the stored curve + labels
+    /// survive untouched), on re-pushes the stored curve. Either push
+    /// arms the drag cooldown (back-to-back `af` rebuilds stutter).
+    fn toggle_eq(&mut self, on: bool) {
+        self.eq_enabled = on;
+        self.eq_dirty = false;
+        self.eq_cooldown_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(600));
+        if on {
+            self.apply_eq_curve();
+            return;
+        }
+        let flat = EqPreset::flat();
+        match &self.audio {
+            None => {
+                self.status = "EQ off (no audio device)".into();
+            }
+            Some(audio) => match audio.apply_eq(&flat) {
+                Ok(()) => {
+                    self.status = format!("EQ off (bypassed on {})", audio.backend_name());
+                }
+                Err(e) => {
+                    self.status = format!("EQ off (saved; {e})");
+                }
+            },
         }
     }
 
@@ -8025,6 +8155,8 @@ impl AppState {
                 }
             }
             Message::SelectEqPreset(name) => self.select_eq_preset(&name),
+            Message::SetEqBand(index, gain) => self.set_eq_band(index, gain),
+            Message::EqToggled(on) => self.toggle_eq(on),
             Message::ScrobbleToggled(on) => {
                 self.scrobble_enabled = on;
                 self.status = if on {
@@ -9292,6 +9424,18 @@ impl AppState {
                 // Session saver: queue changes land within a tick, the
                 // playing position refreshes every 30s.
                 self.maybe_persist_queue(now);
+                // EQ trailing edge: slider nudges deferred by the drag
+                // throttle land here (at most one extra `af` push).
+                // Bypassed EQ never pushes (the curve waits for the
+                // toggle).
+                if self.eq_enabled
+                    && self.eq_dirty
+                    && self.eq_cooldown_until.is_none_or(|until| now >= until)
+                {
+                    self.eq_dirty = false;
+                    self.eq_cooldown_until = Some(now + std::time::Duration::from_millis(600));
+                    self.apply_eq_curve();
+                }
                 if self.seek_hold_until.is_some_and(|until| now < until) {
                     if !self.paused {
                         self.position_secs = (self.position_secs + dt).max(0.0);
@@ -12726,7 +12870,7 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{
             button, checkbox, column, container, mouse_area, row, scrollable, slider, text,
-            text_input,
+            text_input, toggler,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -13316,7 +13460,13 @@ impl AppState {
                     .into_iter()
                     .map(|p| p.name)
                     .collect();
-                let current_eq = self.eq_preset.clone();
+                let current_eq = if self.eq_enabled {
+                    self.eq_preset.clone()
+                } else {
+                    // Bypassed: the chain is flat, whatever the kept
+                    // curve (same honesty as the rodio note).
+                    format!("Off ({})", self.eq_preset)
+                };
                 let eq_buttons: Vec<iced::Element<'_, Message>> = eq_names
                     .into_iter()
                     .map(|n| {
@@ -13332,6 +13482,28 @@ impl AppState {
                             .into()
                     })
                     .collect();
+                // Graphic EQ panel: bypass toggle top-right, canvas
+                // sliders + curve below. Presets above are predefined
+                // curves for the same gains.
+                let eq_panel: iced::Element<'_, Message> = container(
+                    column![
+                        row![
+                            iced::widget::Space::new().width(Fill),
+                            text("Enable custom EQ").size(12).color(MUTED),
+                            toggler(self.eq_enabled)
+                                .on_toggle(Message::EqToggled)
+                                .style(red_toggle),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                        eq_graph::eq_graph(self.eq_gains),
+                    ]
+                    .spacing(8),
+                )
+                .style(card_bg)
+                .padding(12)
+                .width(Fill)
+                .into();
                 column![
                     text("Settings").size(22),
                     text("Playback").size(17),
@@ -13357,6 +13529,7 @@ impl AppState {
                     text(format!("EQ: {current_eq} · {}", self.eq_note()))
                         .size(12)
                         .color(MUTED),
+                    eq_panel,
                     text("Animations").size(17),
                     checkbox(self.animations_enabled)
                         .label("Enable animations (off = panels snap instantly)")
@@ -16478,7 +16651,8 @@ mod tests {
         assert_eq!(s.eq_preset, "Flat");
         let _ = s.update(Message::SelectEqPreset("Rock".into()));
         assert_eq!(s.eq_preset, "Rock");
-        assert!(s.status.contains("EQ: Rock"));
+        // Presets overwrite all ten slider gains.
+        assert_eq!(s.eq_gains, EqPreset::rock().bands);
         assert!(s.status.contains("EQ: Rock"));
         // Case-insensitive lookup keeps the canonical name.
         let _ = s.update(Message::SelectEqPreset("pop".into()));
@@ -16487,6 +16661,85 @@ mod tests {
         let _ = s.update(Message::SelectEqPreset("Nope".into()));
         assert_eq!(s.eq_preset, "Pop");
         assert!(s.status.contains("Unknown EQ preset"));
+    }
+
+    #[test]
+    fn eq_band_sliders_go_custom_and_snap_back() {
+        let mut s = test_state();
+        // One nudge off Flat relabels to Custom and records the gain.
+        let _ = s.update(Message::SetEqBand(0, 6.0));
+        assert_eq!(s.eq_preset, "Custom");
+        assert_eq!(s.eq_gains[0], 6.0);
+        assert!(s.eq_gains[1..].iter().all(|g| *g == 0.0));
+        assert!(s.status.contains("EQ: Custom"));
+        // Out-of-range band indices are ignored, NaN gains too.
+        let _ = s.update(Message::SetEqBand(99, 6.0));
+        assert_eq!(s.eq_preset, "Custom");
+        let _ = s.update(Message::SetEqBand(1, f32::NAN));
+        assert_eq!(s.eq_gains[1], 0.0);
+        // Clamping keeps sliders inside +/-12 dB.
+        let _ = s.update(Message::SetEqBand(1, 99.0));
+        assert_eq!(s.eq_gains[1], 12.0);
+        // Landing back on a builtin curve restores its name.
+        let _ = s.update(Message::SetEqBand(0, 0.0));
+        let _ = s.update(Message::SetEqBand(1, 0.0));
+        assert_eq!(s.eq_preset, "Flat");
+    }
+
+    #[test]
+    fn eq_drag_throttle_defers_to_tick() {
+        use std::time::{Duration, Instant};
+        let mut s = test_state();
+        // First nudge pushes at once.
+        let _ = s.update(Message::SetEqBand(0, 6.0));
+        assert_eq!(s.eq_preset, "Custom");
+        assert!(!s.eq_dirty);
+        // Second nudge inside the cooldown defers to the Tick flush
+        // (gains + label still update instantly for the sliders).
+        let _ = s.update(Message::SetEqBand(1, 6.0));
+        assert!(s.eq_dirty);
+        assert!(s.status.contains("tuning"));
+        assert_eq!(s.eq_gains[1], 6.0);
+        // A tick past the cooldown lands the trailing edge.
+        let _ = s.update(Message::Tick(Instant::now() + Duration::from_secs(1)));
+        assert!(!s.eq_dirty);
+        assert!(s.status.contains("EQ: Custom"));
+        assert!(!s.status.contains("tuning"));
+    }
+
+    #[test]
+    fn eq_bypass_keeps_curve() {
+        let mut s = test_state();
+        // Off: preset picks are kept, nothing pushes.
+        let _ = s.update(Message::EqToggled(false));
+        assert!(!s.eq_enabled);
+        assert!(s.status.contains("EQ off"));
+        let _ = s.update(Message::SelectEqPreset("Rock".into()));
+        assert_eq!(s.eq_preset, "Rock");
+        assert_eq!(s.eq_gains, EqPreset::rock().bands);
+        assert!(s.status.contains("kept"));
+        // Slider edits while off keep gains + label, set no flush.
+        let _ = s.update(Message::SetEqBand(0, 6.0));
+        assert_eq!(s.eq_gains[0], 6.0);
+        assert!(!s.eq_dirty);
+        // Back on: the stored curve pushes.
+        let _ = s.update(Message::EqToggled(true));
+        assert!(s.eq_enabled);
+        assert!(s.status.contains("EQ: Custom"));
+    }
+
+    #[test]
+    fn settings_view_builds_with_graph_eq() {
+        // Widget-tree smoke: Settings (preset buttons, bypass toggle,
+        // canvas graph) constructs without panicking.
+        let mut s = test_state();
+        s.route = Route::Settings;
+        let _ = s.view();
+        // Bypassed, custom, and preset states all build.
+        let _ = s.update(Message::EqToggled(false));
+        let _ = s.view();
+        let _ = s.update(Message::SetEqBand(4, 3.5));
+        let _ = s.view();
     }
 
     #[test]
