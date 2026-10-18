@@ -201,5 +201,6 @@ Done: user can plausibly replace Spotify for daily listening.
 62. Round 51: seek-drag bar (Pointer canvas, preview-while-held with pause, commit on release, advance gates, orphan watchdog) + shuffle starts off at launch; adversarial review highs/meds fixed
 63. Round 52: EQ curve persists (gains JSON + bypass prefs, tick saver, silent restore with mpv-only fallback; adversarial review highs fixed)
 64. Round 53: macOS packaging script (release build + .app bundle, launcher PATH fix, opt-in self-contained libmpv/yt-dlp, ad-hoc sign, ditto zip)
+65. Round 54: macOS Now Playing + media keys (souvlaki driver over shared state, zero UI changes, mac CI job; adversarial review high fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
