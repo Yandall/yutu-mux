@@ -1,0 +1,117 @@
+#!/bin/bash
+# Build the release binary and wrap it as a macOS YutuMux.app bundle.
+#
+#   packaging/macos/build-app.sh [--self-contained] [--zip] [--output DIR]
+#
+# --self-contained bundles libmpv (+ its ffmpeg libs) via dylibbundler and
+# fetches the standalone yt-dlp macOS binary, so the app runs with nothing
+# installed. Without it the bundle links Homebrew's libmpv and finds
+# yt-dlp on PATH (both must exist on the machine).
+# --zip additionally produces a ditto zipped bundle for distribution
+# (plain zip breaks codesigning metadata).
+#
+# Requirements: Xcode CLT, Rust, and for the default feature set
+# `brew install mpv` (libmpv) plus pkg-config. The repo's
+# .cargo/config.toml already points the linker at Homebrew's lib dir.
+# Extra cargo flags pass through via CARGO_FLAGS (e.g. rodio-only:
+# `--no-default-features --features submit,innertube,lyrics`).
+#
+# One architecture per run (native): repeat per arch and lipo the two
+# binaries together for a universal bundle.
+set -eu
+
+SELF_CONTAINED=0
+ZIP=0
+OUT="dist"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --self-contained) SELF_CONTAINED=1 ;;
+        --zip) ZIP=1 ;;
+        --output) OUT="$2"; shift ;;
+        -h|--help)
+            sed -n '2,20p' "$0"
+            exit 0
+            ;;
+        *) echo "unknown flag: $1 (see --help)" >&2; exit 1 ;;
+    esac
+    shift
+done
+
+if [ "$(uname)" != "Darwin" ]; then
+    echo "error: this script wraps a macOS .app bundle; run it on a Mac" >&2
+    exit 1
+fi
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+APP_NAME="YutuMux"
+IDENTIFIER="org.yutu_mux.YutuMux"
+VERSION="$(grep -m1 '^version *= *"' "$ROOT/Cargo.toml" | cut -d'"' -f2)"
+ARCH="$(uname -m)"
+# shellcheck disable=SC2086
+[ -n "${CARGO_FLAGS:-}" ] && echo "cargo flags: $CARGO_FLAGS"
+
+echo "==> building release ($VERSION, $ARCH)"
+(cd "$ROOT" && cargo build --release --locked ${CARGO_FLAGS:-})
+BIN="$ROOT/target/release/yutu-mux"
+[ -x "$BIN" ] || { echo "error: release binary missing at $BIN" >&2; exit 1; }
+
+STAGE="$OUT/stage"
+APP="$STAGE/$APP_NAME.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/"{MacOS,Resources}
+
+echo "==> staging bundle"
+cp "$BIN" "$APP/Contents/MacOS/yutu-mux-bin"
+cat > "$APP/Contents/MacOS/$APP_NAME" <<'EOF'
+#!/bin/sh
+# Finder launches get a skeletal PATH: Homebrew, the bundled yt-dlp
+# sidecar, and this directory are added back before starting the app.
+HERE="$(dirname "$0")"
+export PATH="$HERE:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+exec "$HERE/yutu-mux-bin" "$@"
+EOF
+chmod +x "$APP/Contents/MacOS/$APP_NAME"
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>$APP_NAME</string>
+  <key>CFBundleIdentifier</key><string>$IDENTIFIER</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleExecutable</key><string>$APP_NAME</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+EOF
+
+if [ "$SELF_CONTAINED" -eq 1 ]; then
+    command -v dylibbundler >/dev/null 2>&1 \
+        || { echo "error: need dylibbundler (brew install dylibbundler)" >&2; exit 1; }
+    echo "==> bundling libmpv (+ ffmpeg libs)"
+    dylibbundler -b \
+        -x "$APP/Contents/MacOS/yutu-mux-bin" \
+        -d "$APP/Contents/libs" \
+        -p @executable_path/../libs \
+        -of
+    echo "==> fetching standalone yt-dlp"
+    curl -fsSL -o "$APP/Contents/MacOS/yt-dlp" \
+        https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+    chmod +x "$APP/Contents/MacOS/yt-dlp"
+fi
+
+echo "==> ad-hoc signing (personal use; distribution needs a Developer ID)"
+codesign -s - --deep --force "$APP" >/dev/null
+
+if [ "$ZIP" -eq 1 ]; then
+    ZIPFILE="$OUT/YutuMux-macos-$ARCH.zip"
+    ditto -c -k --sequesterRsrc "$APP" "$ZIPFILE"
+    echo "==> zipped: $ZIPFILE"
+fi
+
+echo "done: $APP"
+echo "first launch: right-click -> Open (unsigned bundle), then sign in via cookies.txt in Settings"
