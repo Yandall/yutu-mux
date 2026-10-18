@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Memory diet: lists warm one art raster per track (not two),
+  in-memory art capped at 128 handles with oldest-half eviction,
+  disk-file handles instead of byte copies, shared HTTP clients
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

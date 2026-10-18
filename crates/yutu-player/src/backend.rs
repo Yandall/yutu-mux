@@ -18,6 +18,20 @@ pub enum PlayerError {
     NotImplemented,
 }
 
+/// Shared HTTP client for stream/audio fetches: one connection pool
+/// and TLS session cache per process instead of one per fetch (a fresh
+/// `Client::new()` per 60px thumb burned handshakes plus pool memory
+/// on every scroll sweep).
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
 /// Stability anchor for audio backends (stub → rodio → mpv).
 pub trait AudioBackend {
     fn is_ok(&self) -> bool;
@@ -202,8 +216,7 @@ impl AudioBackend for RodioBackend {
 pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
     const CHUNK: u64 = 1024 * 1024;
     const MAX_BYTES: u64 = 100 * 1024 * 1024;
-    const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut start: u64 = 0;
     let mut out = Vec::new();
     loop {
@@ -211,7 +224,6 @@ pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
         let response = client
             .get(url)
             .header("Range", format!("bytes={start}-{end}"))
-            .header("User-Agent", USER_AGENT)
             .header("Accept", "*/*")
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("Origin", "https://www.youtube.com")
