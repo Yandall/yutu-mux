@@ -2,6 +2,8 @@
 
 ## 0.2.0 (unreleased)
 
+- EQ curve persists: preset, gains, and bypass survive restarts and
+  push silently to mpv on launch (garbage falls back to Flat)
 - Seek-bar drags preview while held (pointer cursor, audio pauses) and
   commit on release; advances never fire mid-drag, shuffle starts off
 - Gapless-feeling track ends: a backend gone silent after audible

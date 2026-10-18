@@ -239,6 +239,31 @@ impl EqPreset {
             .find(|p| p.bands == *gains)
             .map(|p| p.name)
     }
+
+    /// Render gains as JSON for the prefs store (session persistence).
+    /// Non-finite bands (direct struct literals bypass validation;
+    /// JSON has no NaN) sanitize to 0.0 rather than `null`.
+    #[must_use]
+    pub fn gains_to_json(gains: &[f32; BAND_COUNT]) -> String {
+        let clean: Vec<f32> = gains
+            .iter()
+            .map(|g| if g.is_finite() { *g } else { 0.0 })
+            .collect();
+        serde_json::to_string(&clean).unwrap_or_else(|_| "[0,0,0,0,0,0,0,0,0,0]".into())
+    }
+
+    /// Parse stored gains back: exactly 10 finite in-range bands, else
+    /// `None` (garbage falls back to Flat at load).
+    #[must_use]
+    pub fn gains_from_json(raw: &str) -> Option<[f32; BAND_COUNT]> {
+        let parsed: Vec<f32> = serde_json::from_str(raw).ok()?;
+        if validate_gains(&parsed).is_err() {
+            return None;
+        }
+        let mut gains = [0.0f32; BAND_COUNT];
+        gains.copy_from_slice(&parsed);
+        Some(gains)
+    }
 }
 
 #[cfg(test)]
@@ -366,6 +391,25 @@ mod tests {
         let mut custom = [0.0f32; BAND_COUNT];
         custom[0] = 0.5;
         assert_eq!(EqPreset::builtin_name_for(&custom), None);
+    }
+
+    #[test]
+    fn gains_json_round_trips_and_rejects_garbage() {
+        let gains = EqPreset::rock().bands;
+        let raw = EqPreset::gains_to_json(&gains);
+        assert_eq!(EqPreset::gains_from_json(&raw), Some(gains));
+        assert_eq!(EqPreset::gains_from_json("[0,0,0]"), None);
+        assert_eq!(EqPreset::gains_from_json("not json"), None);
+        assert_eq!(EqPreset::gains_from_json("[0,0,0,0,0,0,0,0,0,99]"), None);
+        assert_eq!(EqPreset::gains_from_json("[0,0,0,0,0,0,0,0,0,NaN]"), None);
+        // Non-finite gains (direct struct literals bypass validation)
+        // render as the flat fallback, which parses back to zeros.
+        let nan = EqPreset {
+            name: "Smuggled".to_string(),
+            bands: [f32::NAN; BAND_COUNT],
+        };
+        let flat = EqPreset::gains_from_json(&EqPreset::gains_to_json(&nan.bands));
+        assert_eq!(flat, Some([0.0; BAND_COUNT]));
     }
 
     #[test]

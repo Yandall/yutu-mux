@@ -1613,13 +1613,13 @@ pub struct AppState {
     pub user_playlists: Vec<Playlist>,
     pub new_playlist_name: String,
     pub playlist_seq: u64,
-    /// Selected EQ preset name (in-memory only; never persisted).
+    /// Selected EQ preset name (persisted pref; restored at startup).
     /// "Custom" when the band gains match no built-in curve.
     pub eq_preset: String,
     /// Live EQ band gains in dB, band order matches `EQ_FREQUENCIES`
-    /// (in-memory only; never persisted). Preset buttons overwrite all
-    /// ten; band sliders edit one and relabel to the matching preset
-    /// (or "Custom").
+    /// (persisted pref as JSON; restored at startup). Preset buttons
+    /// overwrite all ten; band sliders edit one and relabel to the
+    /// matching preset (or "Custom").
     pub eq_gains: [f32; BAND_COUNT],
     /// EQ apply throttle: slider drags push at most one `af` re-init per
     /// 600 ms (each push rebuilds mpv's filter graph: a per-tick storm
@@ -1627,9 +1627,12 @@ pub struct AppState {
     /// `eq_dirty` defers the trailing edge to the Tick flush.
     pub eq_cooldown_until: Option<std::time::Instant>,
     pub eq_dirty: bool,
-    /// EQ bypass toggle (in-memory only; never persisted). Off applies a
+    /// EQ bypass toggle (persisted pref, default on). Off applies a
     /// flat chain but keeps `eq_gains` + labels, so the curve survives.
     pub eq_enabled: bool,
+    /// Last persisted EQ curve (preset name, gains, bypass): the Tick
+    /// saver writes prefs on change, so drags settle without storms.
+    pub eq_saved: Option<(String, [f32; BAND_COUNT], bool)>,
     /// Seek-bar drag preview in seconds (Some while held): display only
     /// (time label, lyrics, MPRIS follow it). The backend seek and the
     /// auto-advance wait for release; in-memory only, never persisted.
@@ -3886,6 +3889,7 @@ impl AppState {
             eq_cooldown_until: None,
             eq_dirty: false,
             eq_enabled: true,
+            eq_saved: None,
             seek_drag: None,
             seek_drag_at: None,
             seek_paused: false,
@@ -4046,6 +4050,42 @@ impl AppState {
             {
                 state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
             }
+        }
+        // EQ curve survives restarts (garbage falls back to Flat): the
+        // name re-derives from the gains, so nothing stored can lie;
+        // the backend push stays silent (startup status belongs to
+        // Ready/restore). A fresh backend defaults flat, so Flat pushes
+        // nothing (there is no reused handle to carry stale EQ).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            state.eq_enabled = store.get_pref("eq_enabled").unwrap_or(None).as_deref() != Some("0");
+            if let Some(gains) = store
+                .get_pref("eq_gains")
+                .unwrap_or(None)
+                .and_then(|v| EqPreset::gains_from_json(&v))
+            {
+                state.eq_preset =
+                    EqPreset::builtin_name_for(&gains).unwrap_or_else(|| "Custom".to_string());
+                state.eq_gains = gains;
+                if state.eq_preset != "Flat" && state.eq_enabled {
+                    if let Some(audio) = &state.audio {
+                        let preset = EqPreset {
+                            name: state.eq_preset.clone(),
+                            bands: gains,
+                        };
+                        // A rejected chain falls back to Flat rather
+                        // than reopening mislabeled (rodio keeps the
+                        // stored choice: it applies on mpv, as always).
+                        if audio.supports_eq() && audio.apply_eq(&preset).is_err() {
+                            state.eq_preset = "Flat".to_string();
+                            state.eq_gains = [0.0; BAND_COUNT];
+                        }
+                    }
+                }
+            } else {
+                state.eq_gains = [0.0; BAND_COUNT];
+                state.eq_preset = "Flat".to_string();
+            }
+            state.eq_saved = Some((state.eq_preset.clone(), state.eq_gains, state.eq_enabled));
         }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
@@ -7040,7 +7080,7 @@ impl AppState {
         player.set_position(self.position_secs);
     }
 
-    /// Validate + select an EQ preset (in-memory only; never persisted).
+    /// Validate + select an EQ preset (persisted via the Tick saver).
     /// Honest about backends: rodio has no filter stage, so selecting a
     /// preset there records the choice and says so (it takes effect on mpv).
     /// Band sliders stay in sync: presets overwrite all ten gains.
@@ -7133,22 +7173,36 @@ impl AppState {
             Some(std::time::Instant::now() + std::time::Duration::from_millis(600));
         if on {
             self.apply_eq_curve();
-            return;
-        }
-        let flat = EqPreset::flat();
-        match &self.audio {
-            None => {
-                self.status = "EQ off (no audio device)".into();
+        } else {
+            let flat = EqPreset::flat();
+            match &self.audio {
+                None => {
+                    self.status = "EQ off (no audio device)".into();
+                }
+                Some(audio) => match audio.apply_eq(&flat) {
+                    Ok(()) => {
+                        self.status = format!("EQ off (bypassed on {})", audio.backend_name());
+                    }
+                    Err(e) => {
+                        self.status = format!("EQ off (saved; {e})");
+                    }
+                },
             }
-            Some(audio) => match audio.apply_eq(&flat) {
-                Ok(()) => {
-                    self.status = format!("EQ off (bypassed on {})", audio.backend_name());
-                }
-                Err(e) => {
-                    self.status = format!("EQ off (saved; {e})");
-                }
-            },
         }
+        self.persist_eq();
+    }
+
+    /// Persist the EQ curve + bypass (gains JSON, enabled flag; the
+    /// name re-derives at load, so it is never stored). The Tick saver
+    /// calls this on change, so drags settle without write storms;
+    /// toggles land at once. Saved-state updates even when the store
+    /// fails (a dead store retries nothing every tick).
+    fn persist_eq(&mut self) {
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref("eq_gains", &EqPreset::gains_to_json(&self.eq_gains));
+            let _ = store.set_pref("eq_enabled", if self.eq_enabled { "1" } else { "0" });
+        }
+        self.eq_saved = Some((self.eq_preset.clone(), self.eq_gains, self.eq_enabled));
     }
 
     /// One-line EQ backend note for Settings (honest on rodio builds).
@@ -9570,6 +9624,13 @@ impl AppState {
                     self.eq_dirty = false;
                     self.eq_cooldown_until = Some(now + std::time::Duration::from_millis(600));
                     self.apply_eq_curve();
+                }
+                // EQ curve saver: gains/bypass persist on change (drags
+                // settle within a tick, no write storm).
+                if self.eq_saved.as_ref().is_none_or(|(n, g, e)| {
+                    *n != self.eq_preset || *g != self.eq_gains || *e != self.eq_enabled
+                }) {
+                    self.persist_eq();
                 }
                 if self.seek_drag.is_some() {
                     // Drag preview holds the display: no backend reads
@@ -16883,6 +16944,41 @@ mod tests {
         let _ = s.update(Message::SetEqBand(0, 0.0));
         let _ = s.update(Message::SetEqBand(1, 0.0));
         assert_eq!(s.eq_preset, "Flat");
+    }
+
+    #[test]
+    fn eq_curve_survives_restarts() {
+        use std::time::Instant;
+        let mut s = test_state();
+        // Preset pick persists through the tick saver + reopens intact.
+        let _ = s.update(Message::SelectEqPreset("Rock".into()));
+        let _ = s.update(Message::Tick(Instant::now()));
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.eq_preset, "Rock");
+        assert_eq!(reopened.eq_gains, EqPreset::rock().bands);
+        assert!(reopened.eq_enabled);
+        // A band nudge persists as Custom with the exact gains.
+        let _ = s.update(Message::SetEqBand(0, 6.5));
+        let _ = s.update(Message::Tick(Instant::now()));
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.eq_preset, "Custom");
+        assert_eq!(reopened.eq_gains[0], 6.5);
+        // Bypass persists too (curve kept, toggle off)...
+        let _ = s.update(Message::EqToggled(false));
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(!reopened.eq_enabled);
+        assert_eq!(reopened.eq_gains[0], 6.5);
+        // ...and re-enabling persists as well (no stuck bypass).
+        let _ = s.update(Message::EqToggled(true));
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(reopened.eq_enabled);
+        assert_eq!(reopened.eq_preset, "Custom");
+        // Garbage gains fall back to Flat.
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        let _ = store.set_pref("eq_gains", "junk");
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.eq_preset, "Flat");
+        assert_eq!(reopened.eq_gains, [0.0; BAND_COUNT]);
     }
 
     #[test]
