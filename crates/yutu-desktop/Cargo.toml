@@ -9,3 +9,8 @@ license = "MIT"
 yutu-core = { path = "../yutu-core" }
 zbus = "5"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
+
+# macOS media keys + Now Playing via souvlaki (MPNowPlayingInfoCenter /
+# MPRemoteCommandCenter). Target-gated: other platforms never compile it.
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = "0.8"
