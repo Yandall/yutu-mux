@@ -1811,6 +1811,10 @@ pub struct AppState {
     /// Failed resolve attempts for the loading track: a few retries,
     /// then skip forward (never silently stuck, never an error loop).
     resolve_attempts: u8,
+    /// Backend audio actually heard for the current load (nonzero raw
+    /// position): distinguishes a finished track from a load that never
+    /// started, so the EOF-idle net never fires on gaps or failures.
+    heard_audio: bool,
     /// Track id a prefetch was already attempted for (no Tick spam).
     prefetch_attempted: Option<String>,
     /// Google device-flow login in progress (cloned into poll tasks).
@@ -3956,6 +3960,7 @@ impl AppState {
             lazy_init_done: false,
             prefetch_attempted: None,
             resolve_attempts: 0,
+            heard_audio: false,
             #[cfg(feature = "innertube")]
             google_login: None,
             #[cfg(feature = "innertube")]
@@ -4526,6 +4531,7 @@ impl AppState {
         }
         self.prefetch_attempted = None;
         self.resolve_attempts = 0;
+        self.heard_audio = false;
         self.loading_track = Some(t.id.clone());
         self.end_advanced = false;
         self.paused = false;
@@ -4884,6 +4890,20 @@ impl AppState {
         self.peek_next_id()
     }
 
+    /// EOF safety net predicate (pure, Tick-tested): true when the raw
+    /// backend clock reads idle (0/0) after audible playback of a live
+    /// load. Paused, already-advanced, loading, never-heard, and empty
+    /// states never qualify, so gaps, failures, and Stop stay put.
+    fn eof_idle(&self, raw_pos: f64, raw_dur: f64) -> bool {
+        !self.paused
+            && !self.end_advanced
+            && self.loading_track.is_none()
+            && self.heard_audio
+            && self.queue.current().is_some()
+            && raw_pos <= 0.0
+            && raw_dur <= 1.0
+    }
+
     /// Id of the likely next track (repeat-all wraps), for prefetching.
     /// Repeat One needs none: the same song replays from the cache.
     fn peek_next_id(&self) -> Option<String> {
@@ -4952,6 +4972,7 @@ impl AppState {
                     audio.stop();
                 }
                 self.resolve_attempts = 0;
+                self.heard_audio = false;
                 self.prefetch_attempted = None;
                 self.loading_track = Some(t.id.clone());
                 self.end_advanced = false;
@@ -6787,6 +6808,9 @@ impl AppState {
                 if let Some(a) = &self.audio {
                     a.stop();
                 }
+                // Stopped is not finished (same disarm as the UI Stop:
+                // a later resume on the empty backend must not skip).
+                self.heard_audio = false;
                 self.paused = true;
                 self.status = "Stopped (desktop).".into();
             }
@@ -7569,6 +7593,10 @@ impl AppState {
                 }
             }
             Message::Stop => {
+                // Stopped is not finished: disarm the EOF-idle net (the
+                // backend is silent with no next song coming), device or
+                // no device.
+                self.heard_audio = false;
                 if let Some(a) = &self.audio {
                     a.stop();
                     self.paused = false;
@@ -9450,6 +9478,28 @@ impl AppState {
                     self.position_secs = self.audio_position();
                 }
                 let duration = self.audio_duration();
+                // Raw backend clock (no metadata fallback): mpv reports
+                // 0/0 when idle, which is exactly the EOF signature.
+                let raw_pos = self
+                    .audio
+                    .as_ref()
+                    .map(|a| a.position_secs())
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let raw_dur = self
+                    .audio
+                    .as_ref()
+                    .map(|a| a.duration_secs(0.0))
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                // Audible playback seen for this load: any nonzero raw
+                // position means the demuxer produced timestamps (past
+                // the silent load gap), so the net below cannot mistake
+                // a slow start (or an instant failure, which never
+                // leaves 0.0) for a finished song.
+                if raw_pos > 0.0 {
+                    self.heard_audio = true;
+                }
                 // Prefetch the next song 2s before the current one ends,
                 // so the advance lands on a warm URL. One attempt per
                 // track: failures stay silent until the advance, which
@@ -9470,6 +9520,20 @@ impl AppState {
                     && self.position_secs >= duration - 1.0
                     && self.advance_queue()
                 {
+                    self.end_advanced = true;
+                    self.publish_mpris();
+                    tasks.push(self.play_current_task());
+                }
+                // EOF safety net: at end-of-file the backend goes idle
+                // (mpv time-pos errors to 0.0) while the metadata
+                // duration survives, so the threshold above can never
+                // fire when the last live read sat below it (frozen
+                // tail, short reads). A backend gone silent after
+                // audible playback is a finished track: advance the
+                // same way (a mid-play stream death skips rather than
+                // wedging the queue; the give-up path still logs).
+                if self.eof_idle(raw_pos, raw_dur) && self.advance_queue() {
+                    eprintln!("[yutu-play] backend went idle after audible playback: advancing");
                     self.end_advanced = true;
                     self.publish_mpris();
                     tasks.push(self.play_current_task());
@@ -20230,6 +20294,100 @@ mod tests {
             result: Err("boom".into()),
         });
         assert_eq!(s.status, before);
+    }
+
+    #[test]
+    fn eof_idle_advances_a_silenced_track() {
+        use std::time::Instant;
+        // Predicate shape: silent backend + heard playback qualifies;
+        // every other state stays put.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        assert!(!s.eof_idle(0.0, 0.0), "load gap never qualifies");
+        s.heard_audio = true;
+        assert!(s.eof_idle(0.0, 0.0));
+        s.paused = true;
+        assert!(!s.eof_idle(0.0, 0.0), "paused holds");
+        s.paused = false;
+        s.loading_track = Some("m1".into());
+        assert!(!s.eof_idle(0.0, 0.0), "loading holds");
+        s.loading_track = None;
+        s.end_advanced = true;
+        assert!(!s.eof_idle(0.0, 0.0), "already advanced holds");
+        s.end_advanced = false;
+        assert!(!s.eof_idle(3.0, 200.0), "live clock holds");
+        assert!(!s.eof_idle(0.0, 200.0), "known duration holds");
+        // Full tick: no audio device reads 0/0 (the EOF-idle shape),
+        // so a heard track advances exactly once.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.heard_audio = true;
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        // The next load is in flight (its flag pins the net until audio).
+        assert_eq!(s.loading_track.as_deref(), Some("m2"));
+        // Unheard (a load that never started) never advances.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        // Stop disarms even with nothing heard since.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.heard_audio = true;
+        let _ = s.update(Message::Stop);
+        assert!(!s.heard_audio);
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    }
+
+    #[test]
+    fn mpris_stop_then_play_does_not_skip() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Instant;
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.heard_audio = true;
+        let handle: yutu_desktop::SharedPlayer =
+            Arc::new(Mutex::new(yutu_desktop::MprisPlayer::default()));
+        s.mpris = Some(handle.clone());
+        // Widget stop disarms the net...
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::Stop);
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert!(!s.heard_audio);
+        // ...so a later resume on the silent backend holds instead of
+        // skipping to the next track.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::Play);
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    }
+
+    #[test]
+    fn eof_idle_holds_at_end_of_queue() {
+        use std::time::Instant;
+        // Nowhere to go: the net fires the predicate but the queue
+        // holds silently (no advance loop, no tick spam).
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.heard_audio = true;
+        assert!(s.eof_idle(0.0, 0.0));
+        let before = s.status.clone();
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert!(s.loading_track.is_none());
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert_eq!(s.status, before, "holding must not spam status");
     }
 
     #[test]

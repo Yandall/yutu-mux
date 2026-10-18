@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Gapless-feeling track ends: a backend gone silent after audible
+  playback advances like the threshold path (frozen tails and short
+  reads no longer wedge the queue on silence)
 - Audible, customizable EQ: bands are now 1-octave-wide (the old 1 Hz
   width moved broadband level by 0.0 dB), with a hardware-style
   graphic-EQ panel in Settings (vertical drag sliders, smooth curve,
