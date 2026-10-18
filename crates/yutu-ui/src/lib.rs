@@ -13489,10 +13489,12 @@ impl AppState {
                     column![
                         row![
                             iced::widget::Space::new().width(Fill),
+                            text("Enable custom EQ").size(12).color(MUTED),
                             toggler(self.eq_enabled)
                                 .on_toggle(Message::EqToggled)
                                 .style(red_toggle),
                         ]
+                        .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
                         eq_graph::eq_graph(self.eq_gains),
                     ]
