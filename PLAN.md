@@ -199,5 +199,6 @@ Done: user can plausibly replace Spotify for daily listening.
 60. Round 49: graphic-EQ panel (canvas widget: vertical drag sliders, smooth curve + wash, dB/freq labels, bypass toggle, arrow-key nudges, narrow-window scaling; adversarial review meds fixed)
 61. Round 50: EOF-idle advance net (silent backend after heard playback advances like the threshold path; Stop/MPRIS-Stop disarm; adversarial review high fixed)
 62. Round 51: seek-drag bar (Pointer canvas, preview-while-held with pause, commit on release, advance gates, orphan watchdog) + shuffle starts off at launch; adversarial review highs/meds fixed
+63. Round 52: EQ curve persists (gains JSON + bypass prefs, tick saver, silent restore with mpv-only fallback; adversarial review highs fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
