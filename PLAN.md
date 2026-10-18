@@ -203,5 +203,6 @@ Done: user can plausibly replace Spotify for daily listening.
 64. Round 53: macOS packaging script (release build + .app bundle, launcher PATH fix, opt-in self-contained libmpv/yt-dlp, ad-hoc sign, ditto zip)
 65. Round 54: macOS Now Playing + media keys (souvlaki driver over shared state, zero UI changes, mac CI job; adversarial review high fixed)
 66. Round 55: memory diet (single-raster art warming, 128-handle LRU, path handles, shared HTTP clients; review-fixed menu/album hero warming + hero cooldown)
+67. Round 56: diet follow-up (w120 row rasters everywhere, row/card key split, history/lyrics/URL caps, debug cache census; 3 review rounds, all HIGH fixed)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
