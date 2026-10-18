@@ -1,10 +1,8 @@
 //! macOS Now Playing and media-key integration notes.
 //!
-//! There is no implementation here yet: macOS has no MPRIS/D-Bus equivalent,
-//! and `yutu-desktop` intentionally takes no dependency on macOS system
-//! frameworks (no `objc2`, no `*-sys` crates). This module records the
-//! integration plan so a later change can implement it without rediscovering
-//! the constraints.
+//! Implemented in [`crate::macos`] (souvlaki driver over the shared
+//! player state). This module keeps the raw design constraints so a
+//! future native-`objc2` rewrite does not rediscover them.
 //!
 //! # Now Playing (Control Center / lock screen)
 //!
@@ -35,13 +33,10 @@
 //!
 //! # Suggested build plan
 //!
-//! 1. Add an `mpris.rs`-style `macos.rs` module gated on
-//!    `#[cfg(target_os = "macos")]` so Linux/Windows builds stay
-//!    dependency-free.
-//! 2. Depend on `objc2` (+ `objc2-foundation`, plus generated MediaPlayer
-//!    bindings) only under that `cfg`.
-//! 3. Expose the same shape as the Linux side: `update_track`, `set_status`:
-//!    so the Iced layer calls one cross-platform facade.
+//! Shipped as [`crate::macos`]: one souvlaki driver over the shared
+//! player state (no UI changes, target-gated dependency). The native
+//! `objc2` + generated MediaPlayer bindings sketch stays the fallback
+//! if souvlaki ever goes unmaintained.
 
 #[cfg(test)]
 mod tests {
