@@ -186,9 +186,9 @@ impl Player {
         self.queue.current()
     }
 
-    /// Set volume, clamped to `0.0..=1.0`.
+    /// Set volume, clamped to `0.0..=2.0` (200% with the boost toggle).
     pub fn set_volume(&mut self, volume: f32) {
-        self.volume = volume.clamp(0.0, 1.0);
+        self.volume = volume.clamp(0.0, 2.0);
     }
 
     /// UI-facing playback position in seconds (>= 0.0): accumulated wall
@@ -336,7 +336,9 @@ mod tests {
         p.set_volume(0.5);
         assert_eq!(p.volume(), 0.5);
         p.set_volume(2.0);
-        assert_eq!(p.volume(), 1.0);
+        assert_eq!(p.volume(), 2.0);
+        p.set_volume(3.0);
+        assert_eq!(p.volume(), 2.0);
         p.set_volume(-1.0);
         assert_eq!(p.volume(), 0.0);
     }

@@ -1038,6 +1038,7 @@ pub enum Message {
     /// Scheduled-sync master toggle (Settings).
     #[cfg(feature = "innertube")]
     AutoSyncToggled(bool),
+    VolumeBoostToggled(bool),
     /// Best-effort server like/unlike result (local state is already
     /// applied: only failures report, so the row never lies).
     #[cfg(feature = "innertube")]
@@ -1606,6 +1607,9 @@ pub struct AppState {
     pub downloaded_order: Vec<String>,
     pub history: Vec<String>,
     pub volume: f32,
+    /// Boost range unlock (volume sliders run 0-200% instead of 0-100%).
+    /// Persisted pref (default off); the level itself rides the session.
+    pub volume_boost: bool,
     /// Muted: the backend plays silence while `volume` (slider, session)
     /// stays untouched, so unmuting restores the exact level.
     pub muted: bool,
@@ -3876,6 +3880,7 @@ impl AppState {
             downloaded_order,
             history,
             volume: 0.8,
+            volume_boost: false,
             muted: false,
             status: "Ready: search for music.".into(),
             user_playlists,
@@ -4046,6 +4051,9 @@ impl AppState {
             {
                 state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
             }
+            // Boost toggle survives restarts (default off).
+            state.volume_boost =
+                store.get_pref("volume_boost").unwrap_or(None).as_deref() == Some("1");
         }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
@@ -4308,7 +4316,8 @@ impl AppState {
         self.queue.restore(items, snap.index);
         self.queue.shuffle = false;
         self.queue.repeat = Self::repeat_parse(&snap.repeat);
-        self.volume = snap.volume;
+        // A boosted level without the toggle caps back to the ceiling.
+        self.volume = snap.volume.clamp(0.0, self.volume_max());
         self.muted = snap.muted;
         self.apply_volume();
         self.position_secs = snap.position_secs;
@@ -4319,6 +4328,7 @@ impl AppState {
         // a phantom identity change (one redundant rewrite per launch).
         if let Some(saved) = self.queue_saved.as_mut() {
             saved.shuffle = false;
+            saved.volume = self.volume;
         }
         self.queue_saved_at = Some(std::time::Instant::now());
         // The next play loads the saved track (never resumes an empty
@@ -5092,6 +5102,17 @@ impl AppState {
             // Muted plays silence; the slider level is untouched so
             // unmuting restores it exactly.
             a.set_volume(if self.muted { 0.0 } else { self.volume });
+        }
+    }
+
+    /// Slider ceiling: 1.0 normally, 2.0 with the boost toggle (200%).
+    /// Slider and desktop-command write paths clamp through here (the
+    /// backends clamp defensively on their own).
+    fn volume_max(&self) -> f32 {
+        if self.volume_boost {
+            2.0
+        } else {
+            1.0
         }
     }
 
@@ -6937,9 +6958,13 @@ impl AppState {
                 self.seek_or_preview(pos);
             }
             C::SetVolume(v) => {
-                self.volume = (v as f32).clamp(0.0, 1.0);
-                self.muted = false;
-                self.apply_volume();
+                // Non-finite widget values are ignored outright (never
+                // stored, never unmuting).
+                if v.is_finite() {
+                    self.volume = (v as f32).clamp(0.0, self.volume_max());
+                    self.muted = false;
+                    self.apply_volume();
+                }
             }
             C::SetShuffle(shuffle) => {
                 if self.queue.shuffle != shuffle {
@@ -7036,7 +7061,9 @@ impl AppState {
         } else {
             yutu_desktop::PlaybackStatus::Playing
         });
-        player.set_volume(f64::from(if self.muted { 0.0 } else { self.volume }));
+        // MPRIS Volume is 0.0..=1.0 by spec: boosted levels clamp here
+        // (the app slider keeps the real value).
+        player.set_volume(f64::from(if self.muted { 0.0 } else { self.volume }).min(1.0));
         player.set_position(self.position_secs);
     }
 
@@ -7797,11 +7824,15 @@ impl AppState {
                 return Self::dislike_sync_task(id, disliked);
             }
             Message::SetVolume(v) => {
-                self.volume = v.clamp(0.0, 1.0);
-                // Dragging the slider always unmutes (standard mixer
-                // behavior); the mute button owns the muted flag.
-                self.muted = false;
-                self.apply_volume();
+                // Sliders only emit finite values; guard anyway so a bad
+                // value can never corrupt the persisted level or unmute.
+                if v.is_finite() {
+                    self.volume = v.clamp(0.0, self.volume_max());
+                    // Dragging the slider always unmutes (standard mixer
+                    // behavior); the mute button owns the muted flag.
+                    self.muted = false;
+                    self.apply_volume();
+                }
             }
             Message::ToggleMute => {
                 self.muted = !self.muted;
@@ -9535,6 +9566,23 @@ impl AppState {
                     "Auto-sync on (every 15 min while signed in).".into()
                 } else {
                     "Auto-sync off.".into()
+                };
+            }
+            Message::VolumeBoostToggled(on) => {
+                self.volume_boost = on;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("volume_boost", if on { "1" } else { "0" });
+                }
+                // Disabling caps a boosted level back to 100% at once.
+                if !on && self.volume > 1.0 {
+                    self.volume = 1.0;
+                    self.apply_volume();
+                }
+                self.publish_mpris();
+                self.status = if on {
+                    "Volume boost on (sliders run to 200%; rodio may distort).".into()
+                } else {
+                    "Volume boost off (sliders run to 100%).".into()
                 };
             }
             Message::Tick(now) => {
@@ -12438,7 +12486,7 @@ impl AppState {
                     .align_y(iced::alignment::Vertical::Center),
                     row![
                         self.mute_button(),
-                        slider(0.0..=1.0, self.volume, Message::SetVolume)
+                        slider(0.0..=self.volume_max(), self.volume, Message::SetVolume)
                             .step(0.01_f32)
                             .style(themed_slider)
                             .width(Fill),
@@ -12534,7 +12582,7 @@ impl AppState {
                         iced::widget::Space::new().width(Fill),
                         self.mute_button(),
                         tooltip(
-                            slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            slider(0.0..=self.volume_max(), self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(volume_w),
@@ -13713,7 +13761,7 @@ impl AppState {
                         })
                         .size(13),
                         row![
-                            slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            slider(0.0..=self.volume_max(), self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(Fill),
@@ -13721,6 +13769,9 @@ impl AppState {
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
+                        checkbox(self.volume_boost)
+                            .label("Allow volume above 100% (up to 200%)")
+                            .on_toggle(Message::VolumeBoostToggled),
                     ]
                     .spacing(4),
                     row(eq_buttons).spacing(4),
@@ -19901,6 +19952,60 @@ mod tests {
         let _ = s.update(Message::WindowResized(iced::Size::new(400.0, 800.0)));
         let _ = s.view();
         let _ = s.mute_button();
+    }
+
+    #[test]
+    fn volume_boost_unlocks_two_hundred_percent() {
+        let mut s = test_state();
+        assert!(!s.volume_boost);
+        assert_eq!(s.volume_max(), 1.0);
+        // Locked: over-100% clamps.
+        let _ = s.update(Message::SetVolume(1.5));
+        assert_eq!(s.volume, 1.0);
+        // Unlocked: sticks to 200%, persists as a pref.
+        let _ = s.update(Message::VolumeBoostToggled(true));
+        assert!(s.volume_boost);
+        assert_eq!(s.volume_max(), 2.0);
+        let _ = s.update(Message::SetVolume(1.5));
+        assert_eq!(s.volume, 1.5);
+        let _ = s.update(Message::SetVolume(2.5));
+        assert_eq!(s.volume, 2.0);
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        assert_eq!(
+            store.get_pref("volume_boost").unwrap().as_deref(),
+            Some("1")
+        );
+        // Relocking caps a boosted level back to 100% at once.
+        let _ = s.update(Message::VolumeBoostToggled(false));
+        assert_eq!(s.volume, 1.0);
+        // The toggle survives restarts (garbage stays off).
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(!reopened.volume_boost);
+        let _ = s.update(Message::VolumeBoostToggled(true));
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(reopened.volume_boost);
+    }
+
+    #[test]
+    fn boosted_level_caps_without_the_toggle() {
+        let mut s = test_state();
+        let tracks = yutu_core::MockBackend::fixture_tracks();
+        s.register_tracks(tracks.clone());
+        s.queue.push(tracks[0].clone());
+        let _ = s.update(Message::VolumeBoostToggled(true));
+        let _ = s.update(Message::SetVolume(1.5));
+        s.persist_queue();
+        // Boosted session reopens boosted.
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(reopened.volume_boost);
+        assert_eq!(reopened.volume, 1.5);
+        // Garbage pref stays off...
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        let _ = store.set_pref("volume_boost", "junk");
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(!reopened.volume_boost);
+        // ...and a boosted level without the toggle caps to 100%.
+        assert_eq!(reopened.volume, 1.0);
     }
 
     #[test]

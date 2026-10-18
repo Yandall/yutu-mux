@@ -18,8 +18,9 @@
 //!   true queued-gapless playback is future work.
 //! - Headless: video output is disabled (`vo=null`, `audio-display=no`); mpv
 //!   is used as an audio engine only.
-//! - Volume mapping: caller range `0.0..=1.0` is clamped and scaled to mpv's
-//!   `volume` property range `0..=100` (see [`volume_to_mpv`]).
+//! - Volume mapping: caller range `0.0..=2.0` is clamped and scaled to mpv's
+//!   `volume` property range `0..=200` (see [`volume_to_mpv`]); the handle
+//!   raises `volume-max` to 200 so the boost range applies real gain.
 //! - EQ mapping: the 10 bands of [`crate::eq::EqPreset`] map to one mpv `af`
 //!   filter chain of 10 FFmpeg `equalizer` biquad sections, one per band:
 //!   `equalizer=f={FREQ}:t=o:w=1:g={GAIN}` joined with commas and applied via
@@ -40,12 +41,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-/// Clamp a caller volume (`0.0..=1.0`) and scale it to mpv's `volume`
-/// property range (`0..=100`). Non-finite input maps to silence (0.0).
+/// Clamp a caller volume (`0.0..=2.0`, 200% with the boost toggle) and
+/// scale it to mpv's `volume` property range (`0..=200`; the handle is
+/// created with `volume-max=200`). Non-finite input maps to silence.
 #[must_use]
 pub fn volume_to_mpv(volume: f32) -> f64 {
     let clamped = if volume.is_finite() {
-        volume.clamp(0.0, 1.0)
+        volume.clamp(0.0, 2.0)
     } else {
         0.0
     };
@@ -101,13 +103,15 @@ pub struct MpvBackend {
 
 impl MpvBackend {
     /// Create and initialize a headless mpv instance (`vo=null`,
-    /// `gapless-audio=yes`). Returns `Err` (never panics) when mpv cannot be
+    /// `gapless-audio=yes`, `volume-max=200` for the boost range).
+    /// Returns `Err` (never panics) when mpv cannot be
     /// created/initialized: e.g. headless environments or a broken install.
     pub fn new() -> Result<Self, PlayerError> {
         let mpv = libmpv2::Mpv::with_initializer(|init| {
             init.set_option("vo", "null")?;
             init.set_option("audio-display", "no")?;
             init.set_option("gapless-audio", "yes")?;
+            init.set_option("volume-max", "200")?;
             Ok(())
         })
         .map_err(|e| PlayerError::NoDevice(format!("mpv init failed: {e}")))?;
@@ -188,7 +192,7 @@ impl MpvBackend {
             .map_err(|e| mpv_op_err("seek", e))
     }
 
-    /// Set volume (`0.0..=1.0`, clamped) mapped to mpv's `0..=100` range.
+    /// Set volume (`0.0..=2.0`, clamped) mapped to mpv's `0..=200` range.
     pub fn set_volume(&self, volume: f32) -> Result<(), PlayerError> {
         self.mpv
             .set_property("volume", volume_to_mpv(volume))
@@ -283,8 +287,10 @@ mod tests {
         assert_eq!(volume_to_mpv(0.0), 0.0);
         assert_eq!(volume_to_mpv(1.0), 100.0);
         assert_eq!(volume_to_mpv(0.5), 50.0);
+        assert_eq!(volume_to_mpv(1.5), 150.0);
+        assert_eq!(volume_to_mpv(2.0), 200.0);
         assert_eq!(volume_to_mpv(-0.25), 0.0);
-        assert_eq!(volume_to_mpv(2.0), 100.0);
+        assert_eq!(volume_to_mpv(2.5), 200.0);
         assert_eq!(volume_to_mpv(f32::NAN), 0.0);
         assert_eq!(volume_to_mpv(f32::INFINITY), 0.0);
         // Spot-check linearity.

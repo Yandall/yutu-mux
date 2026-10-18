@@ -176,7 +176,9 @@ impl RodioBackend {
     }
 
     pub fn set_volume(&self, volume: f32) {
-        self.player.set_volume(volume.clamp(0.0, 1.0));
+        // Rodio gain is a linear amplitude factor: above 1.0 amplifies
+        // (clipping at the device), which is exactly the boost range.
+        self.player.set_volume(volume.clamp(0.0, 2.0));
     }
 }
 

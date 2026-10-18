@@ -907,7 +907,7 @@ impl LibraryStore {
                     "off".into()
                 }
             },
-            volume: meta("volume").parse::<f32>().unwrap_or(0.8).clamp(0.0, 1.0),
+            volume: meta("volume").parse::<f32>().unwrap_or(0.8).clamp(0.0, 2.0),
             // Missing on pre-mute snapshots: restarts unmuted.
             muted: meta("muted") == "1",
         }))
@@ -1484,11 +1484,12 @@ mod tests {
             muted: false,
         })
         .unwrap();
-        // NaN parses to 0, unknown repeat falls back to off, volume clamps.
+        // NaN parses to 0, unknown repeat falls back to off, volume
+        // clamps to the boost ceiling (the toggle decides at restore).
         let snap = s.load_queue().unwrap().expect("saved");
         assert_eq!(snap.position_secs, 0.0);
         assert_eq!(snap.repeat, "off");
-        assert!((snap.volume - 1.0).abs() < 1e-6);
+        assert!((snap.volume - 2.0).abs() < 1e-6);
         // Index clamping is the caller's job (kept verbatim here).
         assert_eq!(snap.index, Some(99));
     }

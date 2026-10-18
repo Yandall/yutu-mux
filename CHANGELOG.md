@@ -2,6 +2,9 @@
 
 ## 0.2.0 (unreleased)
 
+- Volume boost toggle in Settings: sliders run to 200% (mpv cap
+  raised, rodio amplifies natively); the toggle persists, MPRIS stays
+  in its 0-100% spec range
 - Seek-bar drags preview while held (pointer cursor, audio pauses) and
   commit on release; advances never fire mid-drag, shuffle starts off
 - Gapless-feeling track ends: a backend gone silent after audible
