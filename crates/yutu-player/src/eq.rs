@@ -13,7 +13,10 @@ pub const MIN_GAIN_DB: f32 = -12.0;
 /// Maximum gain per band in dB.
 pub const MAX_GAIN_DB: f32 = 12.0;
 
-/// Center frequencies for the 10 bands (Hz).
+/// Center frequencies for the 10 bands (Hz), classic octave spacing.
+/// The 16 kHz top band reaches past the 22.05 kHz Nyquist of 44.1 kHz
+/// material (its skirt still bites): standard graphic-EQ layout, and
+/// YTM Opus streams are typically 48 kHz anyway.
 pub const EQ_FREQUENCIES: [f32; BAND_COUNT] = [
     31.0, 62.0, 125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0,
 ];
@@ -54,6 +57,16 @@ fn validate_gain(gain: f32, index: usize) -> Result<(), EqError> {
         return Err(EqError::GainOutOfRange { gain, index });
     }
     Ok(())
+}
+
+/// Clamp one gain for filter-string rendering (mirrors the mpv
+/// backend's clamp): `EqPreset` fields are public, so direct struct
+/// literals can smuggle NaN/out-of-range gains past validation.
+fn clamp_gain(gain_db: f32) -> f32 {
+    if !gain_db.is_finite() {
+        return 0.0;
+    }
+    gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB)
 }
 
 /// Validate a gain slice: must be exactly 10 bands, each within +/-12dB.
@@ -99,25 +112,30 @@ impl EqPreset {
 
     /// One `--af=equalizer=...` flag per band for the future mpv backend.
     ///
-    /// Each entry uses the lavfi `equalizer` syntax:
-    /// `--af=equalizer=f={freq}:t=h:w=1:g={gain}`.
+    /// Each entry uses the lavfi `equalizer` syntax with a 1-octave-wide
+    /// band (`t=o:w=1`): the centers are octave-spaced, so each bump
+    /// covers its own octave and is audible on music. A Hertz width
+    /// (`t=h:w=1`, the old shape) is a 1 Hz sliver and provably moves
+    /// broadband level by 0.0 dB: never use it. Gains render clamped
+    /// (same rule as the live backend path).
     #[must_use]
     pub fn to_mpv_args(&self) -> Vec<String> {
         EQ_FREQUENCIES
             .iter()
             .zip(self.bands.iter())
-            .map(|(freq, gain)| format!("--af=equalizer=f={freq}:t=h:w=1:g={gain}"))
+            .map(|(freq, gain)| format!("--af=equalizer=f={freq}:t=o:w=1:g={}", clamp_gain(*gain)))
             .collect()
     }
 
     /// Single comma-joined filter chain for one `--af` flag, e.g.
-    /// `equalizer=f=31:... ,equalizer=f=62:...`.
+    /// `equalizer=f=31:... ,equalizer=f=62:...` (1-octave bands, gains
+    /// clamped, see [`Self::to_mpv_args`]).
     #[must_use]
     pub fn to_mpv_af_chain(&self) -> String {
         EQ_FREQUENCIES
             .iter()
             .zip(self.bands.iter())
-            .map(|(freq, gain)| format!("equalizer=f={freq}:t=h:w=1:g={gain}"))
+            .map(|(freq, gain)| format!("equalizer=f={freq}:t=o:w=1:g={}", clamp_gain(*gain)))
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -208,6 +226,19 @@ impl EqPreset {
             .into_iter()
             .find(|p| p.name.eq_ignore_ascii_case(name))
     }
+
+    /// Name of the built-in preset exactly matching `gains`, if any.
+    /// Powers the Custom label: slider edits that land back on a
+    /// builtin curve show that preset's name instead of "Custom".
+    /// Exact float compare is sound here: gains only ever come from
+    /// builtin copies or fixed-step sliders, never from DSP math.
+    #[must_use]
+    pub fn builtin_name_for(gains: &[f32; BAND_COUNT]) -> Option<String> {
+        Self::builtin_presets()
+            .into_iter()
+            .find(|p| p.bands == *gains)
+            .map(|p| p.name)
+    }
 }
 
 #[cfg(test)]
@@ -285,13 +316,56 @@ mod tests {
             let freq = EQ_FREQUENCIES[i];
             assert!(arg.starts_with("--af=equalizer=f="), "bad prefix: {arg}");
             assert!(arg.contains(&format!("f={freq}:")), "bad freq: {arg}");
-            assert!(arg.contains(":t=h:w=1:g="), "bad filter shape: {arg}");
+            assert!(arg.contains(":t=o:w=1:g="), "bad filter shape: {arg}");
         }
-        assert_eq!(args[0], "--af=equalizer=f=31:t=h:w=1:g=0");
+        assert_eq!(args[0], "--af=equalizer=f=31:t=o:w=1:g=0");
         // Chain form joins the same filters with commas.
         let chain = p.to_mpv_af_chain();
         assert_eq!(chain.split(',').count(), BAND_COUNT);
         assert!(chain.starts_with("equalizer=f=31:"));
+    }
+
+    #[test]
+    fn bands_are_octave_wide_not_hertz_slivers() {
+        // Regression: `t=h:w=1` is a 1 Hz-wide band (inaudible on
+        // music); every section must be 1-octave-wide (`t=o:w=1`).
+        for arg in EqPreset::rock().to_mpv_args() {
+            assert!(arg.contains(":t=o:w=1:g="), "narrow band: {arg}");
+        }
+        for section in EqPreset::flat().to_mpv_af_chain().split(',') {
+            assert!(section.contains(":t=o:w=1:g="), "narrow band: {section}");
+        }
+    }
+
+    #[test]
+    fn mpv_strings_clamp_like_the_live_path() {
+        let mut bands = [0.0f32; BAND_COUNT];
+        bands[0] = 99.0;
+        bands[1] = f32::NAN;
+        let p = EqPreset {
+            name: "Smuggled".to_string(),
+            bands,
+        };
+        let chain = p.to_mpv_af_chain();
+        let segs: Vec<&str> = chain.split(',').collect();
+        assert!(segs[0].ends_with("g=12"), "got {}", segs[0]);
+        assert!(segs[1].ends_with("g=0"), "got {}", segs[1]);
+        assert!(p.to_mpv_args()[0].ends_with("g=12"));
+    }
+
+    #[test]
+    fn builtin_name_for_detects_curves() {
+        assert_eq!(
+            EqPreset::builtin_name_for(&[0.0; BAND_COUNT]).as_deref(),
+            Some("Flat")
+        );
+        assert_eq!(
+            EqPreset::builtin_name_for(&EqPreset::rock().bands).as_deref(),
+            Some("Rock")
+        );
+        let mut custom = [0.0f32; BAND_COUNT];
+        custom[0] = 0.5;
+        assert_eq!(EqPreset::builtin_name_for(&custom), None);
     }
 
     #[test]

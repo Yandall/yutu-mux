@@ -22,13 +22,13 @@
 //!   `volume` property range `0..=100` (see [`volume_to_mpv`]).
 //! - EQ mapping: the 10 bands of [`crate::eq::EqPreset`] map to one mpv `af`
 //!   filter chain of 10 FFmpeg `equalizer` biquad sections, one per band:
-//!   `equalizer=f={FREQ}:t=h:w=1:g={GAIN}` joined with commas and applied via
+//!   `equalizer=f={FREQ}:t=o:w=1:g={GAIN}` joined with commas and applied via
 //!   the `af` property (see [`af_chain_for_gains`]). This reuses the exact
-//!   format of [`crate::eq::EqPreset::to_mpv_af_chain`]. Approximation note:
-//!   each section is a narrow peaking filter at the band center frequency, so
-//!   the chain approximates an octave-wide graphic EQ without exactly
-//!   reproducing it; gains are defensively clamped to +/-12 dB because `EqPreset`
-//!   fields are public and may bypass validation. Applying a preset replaces
+//!   format of [`crate::eq::EqPreset::to_mpv_af_chain`]. Each section is a
+//!   1-octave-wide peaking filter at its band center (the centers are
+//!   octave-spaced, so the chain is a true octave graphic EQ); gains are
+//!   defensively clamped to +/-12 dB because `EqPreset` fields are public
+//!   and may bypass validation. Applying a preset replaces
 //!   the whole `af` chain and may cause a brief audible re-init glitch.
 //! - `load_bytes` spills audio to a temp file (`std::env::temp_dir`) because
 //!   libmpv loads from paths/URLs, not memory; spilled files are removed
@@ -63,15 +63,16 @@ pub fn clamp_eq_gain(gain_db: f32) -> f32 {
 }
 
 /// Build the mpv `af` filter chain for 10 band gains (order matches
-/// [`crate::eq::EQ_FREQUENCIES`]). Output equals
-/// [`crate::eq::EqPreset::to_mpv_af_chain`] for validated presets; out-of-range
-/// gains are clamped via [`clamp_eq_gain`].
+/// [`crate::eq::EQ_FREQUENCIES`]). Output always equals
+/// [`crate::eq::EqPreset::to_mpv_af_chain`] (both sides clamp);
+/// out-of-range gains are clamped via [`clamp_eq_gain`]. Bands are 1-octave-wide
+/// (`t=o:w=1`): Hertz widths are inaudible slivers on music.
 #[must_use]
 pub fn af_chain_for_gains(gains: &[f32; BAND_COUNT]) -> String {
     EQ_FREQUENCIES
         .iter()
         .zip(gains.iter())
-        .map(|(freq, gain)| format!("equalizer=f={freq}:t=h:w=1:g={}", clamp_eq_gain(*gain)))
+        .map(|(freq, gain)| format!("equalizer=f={freq}:t=o:w=1:g={}", clamp_eq_gain(*gain)))
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -197,7 +198,14 @@ impl MpvBackend {
     /// Apply a 10-band EQ preset as the mpv `af` equalizer chain (replaces any
     /// existing audio filters). See the module docs for the mapping.
     pub fn apply_eq_preset(&self, preset: &EqPreset) -> Result<(), PlayerError> {
-        let chain = af_chain_for_gains(&preset.bands);
+        self.apply_eq_gains(&preset.bands)
+    }
+
+    /// Apply raw 10-band gains as the mpv `af` equalizer chain (custom
+    /// curves go through here; presets delegate). Gains are clamped,
+    /// never rejected.
+    pub fn apply_eq_gains(&self, gains: &[f32; BAND_COUNT]) -> Result<(), PlayerError> {
+        let chain = af_chain_for_gains(gains);
         self.mpv
             .set_property("af", chain.as_str())
             .map_err(|e| mpv_op_err("apply EQ", e))
@@ -304,7 +312,7 @@ mod tests {
             assert_eq!(chain.split(',').count(), BAND_COUNT);
         }
         let flat = af_chain_for_gains(&EqPreset::flat().bands);
-        assert!(flat.starts_with("equalizer=f=31:t=h:w=1:g=0"));
+        assert!(flat.starts_with("equalizer=f=31:t=o:w=1:g=0"));
         for freq in EQ_FREQUENCIES {
             assert!(flat.contains(&format!("f={freq}:")), "missing band {freq}");
         }

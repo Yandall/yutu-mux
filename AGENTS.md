@@ -30,7 +30,8 @@
 - Playback: **mpv default** (progressive URL streaming, real seek/position,
   EQ via `af` chain), **rodio fallback** (full download path).
   `AudioOut` shields the UI from backend choice. EQ is honestly mpv-only;
-  rodio must say so in the UI, never fake it.
+  rodio must say so in the UI, never fake it. EQ bands are 1-octave-wide
+  (`t=o:w=1`): Hertz widths are inaudible 1 Hz slivers on music.
 - Resolver: **yt-dlp sidecar primary** (`--get-url --quiet --no-warnings`,
   AAC preferred). Raw rustypipe path removed.
 - Lyrics: **LRCLIB** (free, no credentials). No Genius/Musixmatch for MVP.
