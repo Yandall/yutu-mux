@@ -1,0 +1,10 @@
+# macOS Homebrew library search paths (libmpv2-sys links `-lmpv` with no
+# search path of its own, and the Apple linker does not look in Homebrew
+# prefixes by default, so `cargo build` fails with `library not found
+# for -lmpv` without these). Harmless elsewhere: sections are
+# target-specific, and a missing dir is just a skipped search path.
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/lib"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-L", "/usr/local/lib"]
