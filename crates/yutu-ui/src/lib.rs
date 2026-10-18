@@ -1,6 +1,7 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
 mod eq_graph;
+mod seek_bar;
 
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
@@ -793,6 +794,8 @@ pub enum Message {
     SelectEqPreset(String),
     SetEqBand(usize, f32),
     EqToggled(bool),
+    SeekPreview(f32),
+    SeekRelease,
     ScrobbleToggled(bool),
     ScrobbleUserChanged(String),
     ScrobbleLbTokenChanged(String),
@@ -1627,6 +1630,16 @@ pub struct AppState {
     /// EQ bypass toggle (in-memory only; never persisted). Off applies a
     /// flat chain but keeps `eq_gains` + labels, so the curve survives.
     pub eq_enabled: bool,
+    /// Seek-bar drag preview in seconds (Some while held): display only
+    /// (time label, lyrics, MPRIS follow it). The backend seek and the
+    /// auto-advance wait for release; in-memory only, never persisted.
+    pub seek_drag: Option<f32>,
+    /// Last preview motion (orphaned drags, e.g. a layout switch that
+    /// dropped the canvas flag, expire from Tick instead of gating the
+    /// advance forever).
+    pub seek_drag_at: Option<std::time::Instant>,
+    /// The drag paused playback (resume on release only in this case).
+    pub seek_paused: bool,
     /// Scrobble toggle (in-memory only; submission needs credentials below).
     pub scrobble_enabled: bool,
     /// Scrobble username (in-memory only; never persisted).
@@ -3873,6 +3886,9 @@ impl AppState {
             eq_cooldown_until: None,
             eq_dirty: false,
             eq_enabled: true,
+            seek_drag: None,
+            seek_drag_at: None,
+            seek_paused: false,
             scrobble_enabled: false,
             scrobble_user: String::new(),
             scrobble_lb_token: String::new(),
@@ -4270,7 +4286,8 @@ impl AppState {
 
     /// Rebuild the queue from the persisted snapshot (unknown ids drop:
     /// the track was never cached). Starts paused at the saved position
-    /// with shuffle/repeat/volume/mute restored.
+    /// with repeat/volume/mute restored. Shuffle always starts off (the
+    /// saved order is kept as-is): a fresh launch never opens shuffled.
     fn restore_queue(&mut self) {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
             return;
@@ -4289,7 +4306,7 @@ impl AppState {
         }
         let dropped = snap.ids.len() - items.len();
         self.queue.restore(items, snap.index);
-        self.queue.shuffle = snap.shuffle;
+        self.queue.shuffle = false;
         self.queue.repeat = Self::repeat_parse(&snap.repeat);
         self.volume = snap.volume;
         self.muted = snap.muted;
@@ -4298,6 +4315,11 @@ impl AppState {
         self.paused = true;
         self.playing_from = "Saved queue".into();
         self.queue_saved = Some(snap);
+        // Mirror the forced shuffle-off so the first Tick does not see
+        // a phantom identity change (one redundant rewrite per launch).
+        if let Some(saved) = self.queue_saved.as_mut() {
+            saved.shuffle = false;
+        }
         self.queue_saved_at = Some(std::time::Instant::now());
         // The next play loads the saved track (never resumes an empty
         // backend); any other load clears the flag instead.
@@ -4542,6 +4564,11 @@ impl AppState {
         // previous track); the resume flow re-arms it afterwards.
         self.pending_resume = None;
         self.restored_pending = false;
+        // A new load also cancels any held seek drag (the preview
+        // belongs to the old track); release afterwards is a no-op.
+        self.seek_drag = None;
+        self.seek_drag_at = None;
+        self.seek_paused = false;
         // Lyrics page follows playback: swap the id in place (no back-stack
         // spam) and fetch the new song's lyrics unless cached.
         let mut follow_tasks: Vec<iced::Task<Message>> = Vec::new();
@@ -4631,7 +4658,15 @@ impl AppState {
                 Ok(()) => {
                     self.loading_track = None;
                     self.status = format!("Playing: {} · {}.", t.title, t.artist);
+                    let held = self.seek_drag.is_some();
                     self.consume_resume();
+                    // A resolve landing mid-drag stays silent until
+                    // release (the bar is held, not the backend).
+                    if held {
+                        if let Some(audio) = &self.audio {
+                            audio.pause();
+                        }
+                    }
                     true
                 }
                 Err(e) => {
@@ -4654,12 +4689,22 @@ impl AppState {
         match &self.audio {
             Some(audio) => match audio.play_track_bytes(bytes) {
                 Ok(()) => {
+                    let held = self.seek_drag.is_some();
                     self.loading_track = None;
-                    self.paused = false;
                     self.end_advanced = false;
                     self.position_secs = 0.0;
                     self.status = format!("Playing (offline): {} · {}.", t.title, t.artist);
                     self.consume_resume();
+                    // Landed mid-drag: hold silent until release (a
+                    // pre-paused load stays paused either way).
+                    if held {
+                        if let Some(audio) = &self.audio {
+                            audio.pause();
+                        }
+                        self.paused = true;
+                    } else {
+                        self.paused = false;
+                    }
                     true
                 }
                 Err(e) => {
@@ -4983,6 +5028,11 @@ impl AppState {
                 // New load cancels any pending resume seek (see above).
                 self.pending_resume = None;
                 self.restored_pending = false;
+                // ...and any held seek drag (preview belongs to the old
+                // track); release afterwards is a no-op.
+                self.seek_drag = None;
+                self.seek_drag_at = None;
+                self.seek_paused = false;
                 let mut tasks = self.track_start_tasks(&t);
                 // Downloaded bytes play with no network (bulk queue paths
                 // like playlist Play-all funnel here, not through
@@ -6759,6 +6809,55 @@ impl AppState {
         }
     }
 
+    /// Seek-bar drag preview: display only (no backend seek, so the
+    /// advance cannot fire mid-drag). The first preview pauses live
+    /// playback; release resumes it only in that case.
+    fn preview_seek(&mut self, pos: f32) {
+        let pos = pos.max(0.0);
+        if self.seek_drag.is_none() && !self.paused {
+            // Device-gated: with no audio backend there is nothing to
+            // pause, so no resume debt either (display previews anyway).
+            if let Some(audio) = &self.audio {
+                audio.pause();
+                self.paused = true;
+                self.seek_paused = true;
+            }
+        }
+        self.seek_drag = Some(pos);
+        self.seek_drag_at = Some(std::time::Instant::now());
+        self.position_secs = f64::from(pos);
+    }
+
+    /// Seek-bar release: commit the preview to the backend, then resume
+    /// when the drag itself paused playback (a pre-paused song stays
+    /// paused, mirroring `TogglePause`).
+    fn release_seek(&mut self) {
+        let Some(preview) = self.seek_drag.take() else {
+            return;
+        };
+        self.seek_drag_at = None;
+        self.seek_to_secs(f64::from(preview));
+        if self.seek_paused {
+            self.seek_paused = false;
+            if let Some(audio) = &self.audio {
+                audio.resume();
+            }
+            self.paused = false;
+            self.paused_seek = false;
+        }
+    }
+
+    /// Position intent (keys, taps, desktop): a held drag turns it into
+    /// preview so backend and display never diverge; otherwise it
+    /// commits at once like before.
+    fn seek_or_preview(&mut self, pos: f64) {
+        if self.seek_drag.is_some() {
+            self.preview_seek(pos as f32);
+        } else {
+            self.seek_to_secs(pos);
+        }
+    }
+
     /// Apply one desktop transport command (MPRIS widget / media keys).
     /// Next/Previous return their real play tasks (dropping them would
     /// move the pointer without ever fetching audio).
@@ -6783,6 +6882,11 @@ impl AppState {
                     a.pause();
                 }
                 self.paused = true;
+                // Explicit headset pause wins over the drag: release
+                // must not resume behind the user's back.
+                if self.seek_drag.is_some() {
+                    self.seek_paused = false;
+                }
                 self.status = "Paused (desktop).".into();
             }
             C::PlayPause => {
@@ -6827,10 +6931,10 @@ impl AppState {
                 }
             }
             C::Seek(offset) => {
-                self.seek_to_secs(self.position_secs + offset);
+                self.seek_or_preview(self.position_secs + offset);
             }
             C::SetPosition(pos) => {
-                self.seek_to_secs(pos);
+                self.seek_or_preview(pos);
             }
             C::SetVolume(v) => {
                 self.volume = (v as f32).clamp(0.0, 1.0);
@@ -7595,8 +7699,11 @@ impl AppState {
             Message::Stop => {
                 // Stopped is not finished: disarm the EOF-idle net (the
                 // backend is silent with no next song coming), device or
-                // no device.
+                // no device. A held seek drag dies with the load too.
                 self.heard_audio = false;
+                self.seek_drag = None;
+                self.seek_drag_at = None;
+                self.seek_paused = false;
                 if let Some(a) = &self.audio {
                     a.stop();
                     self.paused = false;
@@ -9464,7 +9571,28 @@ impl AppState {
                     self.eq_cooldown_until = Some(now + std::time::Duration::from_millis(600));
                     self.apply_eq_curve();
                 }
-                if self.seek_hold_until.is_some_and(|until| now < until) {
+                if self.seek_drag.is_some() {
+                    // Drag preview holds the display: no backend reads
+                    // (paused) and no clock math until release commits.
+                    // Orphaned drags (canvas flag lost, e.g. a layout
+                    // switch mid-gesture) expire after 10s motionless:
+                    // cancel, resuming a drag-pause, instead of gating
+                    // the advance forever.
+                    if let Some(at) = self.seek_drag_at {
+                        if now.duration_since(at).as_secs() >= 10 {
+                            self.seek_drag = None;
+                            self.seek_drag_at = None;
+                            if self.seek_paused {
+                                self.seek_paused = false;
+                                if let Some(audio) = &self.audio {
+                                    audio.resume();
+                                }
+                                self.paused = false;
+                                self.paused_seek = false;
+                            }
+                        }
+                    }
+                } else if self.seek_hold_until.is_some_and(|until| now < until) {
                     if !self.paused {
                         self.position_secs = (self.position_secs + dt).max(0.0);
                     }
@@ -9513,9 +9641,11 @@ impl AppState {
                 // Auto-advance once per track end. The threshold sits 1s
                 // before the reported duration: mpv's time-pos can hold just
                 // short of it, and the rodio wall-clock can overshoot, so
-                // both cross (duration - 1) exactly once per song.
+                // both cross (duration - 1) exactly once per song. Held
+                // drags never advance (the preview is not a position).
                 if !self.paused
                     && !self.end_advanced
+                    && self.seek_drag.is_none()
                     && duration > 2.0
                     && self.position_secs >= duration - 1.0
                     && self.advance_queue()
@@ -9531,8 +9661,12 @@ impl AppState {
                 // tail, short reads). A backend gone silent after
                 // audible playback is a finished track: advance the
                 // same way (a mid-play stream death skips rather than
-                // wedging the queue; the give-up path still logs).
-                if self.eof_idle(raw_pos, raw_dur) && self.advance_queue() {
+                // wedging the queue; the give-up path still logs). Held
+                // drags pin it too (release re-arms from the new spot).
+                if self.seek_drag.is_none()
+                    && self.eof_idle(raw_pos, raw_dur)
+                    && self.advance_queue()
+                {
                     eprintln!("[yutu-play] backend went idle after audible playback: advancing");
                     self.end_advanced = true;
                     self.publish_mpris();
@@ -9560,12 +9694,14 @@ impl AppState {
                 return iced::Task::batch(tasks);
             }
             Message::SeekTo(pos) => {
-                self.seek_to_secs(pos as f64);
+                self.seek_or_preview(pos as f64);
                 // Retarget like a verse tap (the ticker glides there).
                 self.lyrics_follow_at = None;
             }
+            Message::SeekPreview(pos) => self.preview_seek(pos),
+            Message::SeekRelease => self.release_seek(),
             Message::SeekToMs(ms) => {
-                self.seek_to_secs(ms as f64 / 1000.0);
+                self.seek_or_preview(ms as f64 / 1000.0);
                 // Force the snap even inside the live verse (equality
                 // would otherwise suppress it while off-verse).
                 self.lyrics_follow_at = None;
@@ -12141,7 +12277,11 @@ impl AppState {
         let play_icon = if self.paused { "play" } else { "pause" };
         let duration = self.audio_duration();
         let slider_max = duration.max(1.0);
-        let shown_pos = self.position_secs.clamp(0.0, slider_max);
+        let shown_pos = self
+            .seek_drag
+            .map(f64::from)
+            .unwrap_or(self.position_secs)
+            .clamp(0.0, slider_max);
         // Compact mode tightens everything but keeps every control.
         let tight = mode == PlayerLayout::Compact;
         let art_size = if tight { 32.0 } else { 40.0 };
@@ -12291,10 +12431,7 @@ impl AppState {
                     transport_centered,
                     row![
                         text(fmt_time(shown_pos)).size(11).color(MUTED),
-                        slider(0.0..=slider_max as f32, shown_pos as f32, Message::SeekTo)
-                            .step(1.0_f32)
-                            .style(themed_slider)
-                            .width(Fill),
+                        seek_bar::seek_bar(shown_pos as f32, slider_max as f32),
                         text(fmt_time(duration)).size(11).color(MUTED),
                     ]
                     .spacing(6)
@@ -12384,10 +12521,7 @@ impl AppState {
                         .align_y(iced::alignment::Vertical::Center),
                         row![
                             text(fmt_time(shown_pos)).size(11).color(MUTED),
-                            slider(0.0..=slider_max as f32, shown_pos as f32, Message::SeekTo)
-                                .step(1.0_f32)
-                                .style(themed_slider)
-                                .width(Fill),
+                            seek_bar::seek_bar(shown_pos as f32, slider_max as f32),
                             text(fmt_time(duration)).size(11).color(MUTED),
                         ]
                         .spacing(6)
@@ -16614,13 +16748,14 @@ mod tests {
         s.volume = 0.5;
         s.persist_queue();
         drop(s);
-        // Reopen: queue, index, position and modes come back paused.
+        // Reopen: queue, index, position and modes come back paused,
+        // but shuffle always starts off (order kept as saved).
         let (s2, _) = AppState::with_library_path(path);
         assert_eq!(s2.queue.len(), 5);
         assert_eq!(s2.queue.position(), Some(2));
         assert_eq!(s2.queue.current().map(|t| t.id.as_str()), Some("m3"));
         assert!((s2.position_secs - 42.0).abs() < 1e-6);
-        assert!(s2.queue.shuffle);
+        assert!(!s2.queue.shuffle);
         assert_eq!(s2.queue.repeat, yutu_player::RepeatMode::All);
         assert!((s2.volume - 0.5).abs() < f32::EPSILON);
         assert!(s2.paused);
@@ -20345,6 +20480,29 @@ mod tests {
     }
 
     #[test]
+    fn mpris_pause_during_drag_cancels_resume() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Instant;
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.paused = false;
+        let _ = s.update(Message::SeekPreview(50.0));
+        assert!(s.seek_paused);
+        let handle: yutu_desktop::SharedPlayer =
+            Arc::new(Mutex::new(yutu_desktop::MprisPlayer::default()));
+        s.mpris = Some(handle.clone());
+        // Explicit headset pause wins: release must not resume.
+        handle
+            .lock()
+            .unwrap()
+            .push_command(yutu_desktop::PlayerCommand::Pause);
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert!(!s.seek_paused);
+        let _ = s.update(Message::SeekRelease);
+        assert!(s.paused);
+    }
+
+    #[test]
     fn mpris_stop_then_play_does_not_skip() {
         use std::sync::{Arc, Mutex};
         use std::time::Instant;
@@ -20370,6 +20528,99 @@ mod tests {
             .push_command(yutu_desktop::PlayerCommand::Play);
         let _ = s.update(Message::Tick(Instant::now()));
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    }
+
+    #[test]
+    fn seek_drag_pauses_and_commits_on_release() {
+        use std::time::Instant;
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.paused = false;
+        // Preview: display follows, live playback pauses exactly once.
+        let _ = s.update(Message::SeekPreview(50.0));
+        assert_eq!(s.seek_drag, Some(50.0));
+        assert_eq!(s.position_secs, 50.0);
+        assert!(s.paused);
+        assert!(s.seek_paused);
+        let _ = s.update(Message::SeekPreview(60.0));
+        assert!(s.seek_paused, "second preview keeps the pause source");
+        // Tick holds the preview (no backend reads, no advance).
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.position_secs, 50.0 + 10.0);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        // Release commits + resumes (idle backend reports the seek
+        // honestly; the state transitions are what matter here).
+        let _ = s.update(Message::SeekRelease);
+        assert_eq!(s.seek_drag, None);
+        assert!(!s.seek_paused);
+        assert!(!s.paused);
+        // A pre-paused song stays paused through the whole gesture.
+        s.paused = true;
+        let _ = s.update(Message::SeekPreview(30.0));
+        assert!(!s.seek_paused);
+        let _ = s.update(Message::SeekRelease);
+        assert!(s.paused);
+    }
+
+    #[test]
+    fn seek_intents_preview_while_held() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.paused = false;
+        let _ = s.update(Message::SeekPreview(50.0));
+        // Keyboard/lyrics/MPRIS seeks become preview, never commits.
+        let _ = s.update(Message::SeekTo(60.0));
+        assert_eq!(s.seek_drag, Some(60.0));
+        assert_eq!(s.position_secs, 60.0);
+        let _ = s.update(Message::SeekToMs(70_000));
+        assert_eq!(s.seek_drag, Some(70.0));
+    }
+
+    #[test]
+    fn orphaned_drags_expire_from_tick() {
+        use std::time::{Duration, Instant};
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.paused = false;
+        let _ = s.update(Message::SeekPreview(50.0));
+        assert!(s.seek_paused);
+        // Motionless for 10s (canvas flag lost): cancel + resume.
+        s.seek_drag_at = Some(Instant::now() - Duration::from_secs(11));
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.seek_drag, None);
+        assert!(!s.seek_paused);
+        assert!(!s.paused);
+    }
+
+    #[test]
+    fn stop_clears_a_held_drag() {
+        use std::time::Instant;
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.paused = false;
+        let _ = s.update(Message::SeekPreview(50.0));
+        let _ = s.update(Message::Stop);
+        assert_eq!(s.seek_drag, None);
+        assert!(!s.seek_paused);
+        // Nothing held: the tick cannot advance or resume anything.
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    }
+
+    #[test]
+    fn seek_drag_to_the_end_never_advances_mid_drag() {
+        use std::time::Instant;
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.heard_audio = true;
+        // Preview parked at the end: both advance paths hold fire.
+        let _ = s.update(Message::SeekPreview(199.0));
+        assert_eq!(s.position_secs, 199.0);
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert!(s.loading_track.is_none());
     }
 
     #[test]

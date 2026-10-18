@@ -64,7 +64,8 @@
   append-only** and never hijacks playback; **new loads cut the old song
   instantly** (`audio.stop()` before resolving, for feedback).
 - **Shuffle = physical reorder**: snapshot original order on enable,
-  Fisher-Yates shuffle, restore snapshot on disable. Advance walks with no
+  Fisher-Yates shuffle, restore snapshot on disable. Shuffle always
+  starts off at launch (saved order kept as-is). Advance walks with no
   repeats to a real end, then autoplay. Repeat All/One loops the manual
   queue and starves autoplay by design.
 - **Queue vs Autoplay split**: manual queue and radio/autoplay tail are
@@ -73,6 +74,11 @@
 - **Seek anti-flicker**: 1.2s manual position clock after a seek
   (`seek_hold_until`); a seek that lands **while paused** freezes the
   manual clock until resume (`paused_seek` flag). New loads clear both.
+- **Seek drag**: the bar previews while held (display only, Pointer
+  cursor); backend seek + both advance paths wait for release. First
+  preview pauses, release resumes only then. New loads, Stop, and a
+  10s-motionless watchdog clear the drag; all position intents become
+  preview while held.
 - **EOF-idle advance**: at end-of-file the backend goes idle (raw 0/0)
   while metadata duration survives, so the threshold path can miss;
   a silent backend after heard playback (`heard_audio`, any nonzero

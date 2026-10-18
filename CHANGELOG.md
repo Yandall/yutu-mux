@@ -2,6 +2,8 @@
 
 ## 0.2.0 (unreleased)
 
+- Seek-bar drags preview while held (pointer cursor, audio pauses) and
+  commit on release; advances never fire mid-drag, shuffle starts off
 - Gapless-feeling track ends: a backend gone silent after audible
   playback advances like the threshold path (frozen tails and short
   reads no longer wedge the queue on silence)
