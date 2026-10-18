@@ -6,7 +6,8 @@
   rows fetch a small 120px raster (not full-size thumbs),
   in-memory art capped at 128 handles with oldest-half eviction,
   disk-file handles instead of byte copies, shared HTTP clients,
-  history/lyrics/URL maps capped, debug cache census in Settings
+  history/lyrics/URL maps capped, debug cache census in Settings,
+  mimalloc global allocator (prompt page return, lower footprint)
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and
