@@ -440,19 +440,27 @@ fn effective_font() -> FontFamily {
     *EFFECTIVE_FONT.get_or_init(|| FontFamily::Inter)
 }
 
+/// True when the pick differs from the startup-effective family
+/// (the renderer font is fixed at launch, so only a relaunch can
+/// apply it). Single rule behind both the status note and the
+/// relaunch button below.
+fn font_pending(picked: FontFamily, effective: FontFamily) -> bool {
+    picked != effective
+}
+
 /// Status line for a font pick: `None` when the pick already runs
 /// (the picker selection confirms it, so the status keeps showing any
 /// live failure instead of being erased by a no-op); otherwise the
 /// relaunch note. Pure in both args so tests never touch the
 /// process-wide [`EFFECTIVE_FONT`].
 fn font_pick_status(picked: FontFamily, effective: FontFamily) -> Option<String> {
-    if picked == effective {
-        None
-    } else {
+    if font_pending(picked, effective) {
         Some(format!(
             "Display font: {} saved (relaunch to apply).",
             picked.label()
         ))
+    } else {
+        None
     }
 }
 
@@ -1171,6 +1179,9 @@ pub enum Message {
     /// Installed font families arrived (async startup scan for the
     /// Settings picker; the window never waits for it).
     SystemFontsLoaded(Vec<String>),
+    /// One-click restart for a pending font pick (Appearance shows
+    /// the button only while the pick differs from the live font).
+    RelaunchNow,
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -4567,18 +4578,24 @@ impl AppState {
 
     /// Write the session snapshot (or clear it when the queue is empty).
     /// Ids only, one shot: restarts resolve rows via the track cache.
-    fn persist_queue(&mut self) {
+    /// Reports success so the relaunch path can cancel on a dead store
+    /// instead of exiting into a lost session.
+    fn persist_queue(&mut self) -> bool {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
-            return;
+            return false;
         };
         if self.queue.is_empty() {
-            let _ = store.clear_queue();
+            let ok = store.clear_queue().is_ok();
             self.queue_saved = None;
+            ok
         } else {
             let snap = self.queue_snapshot();
             if store.save_queue(&snap).is_ok() {
                 self.queue_saved = Some(snap);
                 self.queue_saved_at = Some(std::time::Instant::now());
+                true
+            } else {
+                false
             }
         }
     }
@@ -7557,12 +7574,19 @@ impl AppState {
     /// calls this on change, so drags settle without write storms;
     /// toggles land at once. Saved-state updates even when the store
     /// fails (a dead store retries nothing every tick).
-    fn persist_eq(&mut self) {
-        if let Ok(store) = LibraryStore::open(&self.library_path) {
-            let _ = store.set_pref("eq_gains", &EqPreset::gains_to_json(&self.eq_gains));
-            let _ = store.set_pref("eq_enabled", if self.eq_enabled { "1" } else { "0" });
-        }
+    fn persist_eq(&mut self) -> bool {
+        let ok = LibraryStore::open(&self.library_path)
+            .map(|store| {
+                store
+                    .set_pref("eq_gains", &EqPreset::gains_to_json(&self.eq_gains))
+                    .is_ok()
+                    && store
+                        .set_pref("eq_enabled", if self.eq_enabled { "1" } else { "0" })
+                        .is_ok()
+            })
+            .unwrap_or(false);
         self.eq_saved = Some((self.eq_preset.clone(), self.eq_gains, self.eq_enabled));
+        ok
     }
 
     /// One-line EQ backend note for Settings (honest on rodio builds).
@@ -9607,6 +9631,43 @@ impl AppState {
                 names.dedup();
                 self.system_font_rows = names;
                 self.font_rows = font_option_rows(&self.system_font_rows);
+            }
+            Message::RelaunchNow => {
+                // One-click restart for the pending font pick: the font
+                // pref is already stored. Identity + EQ flush first (a
+                // manual quit relies on the same savers, so this keeps
+                // parity with it); a failed save cancels instead of
+                // exiting into a lost session. Deliberately untestable
+                // (the success path diverges).
+                if !(self.persist_eq() && self.persist_queue()) {
+                    self.status = "Relaunch cancelled: could not save the session.".into();
+                    yutu_core::app_log::warn(
+                        "relaunch",
+                        format_args!("session save failed, staying put"),
+                    );
+                } else {
+                    match std::env::current_exe() {
+                        Ok(exe) => match std::process::Command::new(&exe).spawn() {
+                            Ok(_) => std::process::exit(0),
+                            Err(e) => {
+                                self.status =
+                                    "Relaunch failed: quit and start the app manually.".into();
+                                yutu_core::app_log::warn(
+                                    "relaunch",
+                                    format_args!("spawn {} failed: {e}", exe.display()),
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            self.status =
+                                "Relaunch failed: quit and start the app manually.".into();
+                            yutu_core::app_log::warn(
+                                "relaunch",
+                                format_args!("current_exe failed: {e}"),
+                            );
+                        }
+                    }
+                }
             }
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
@@ -14268,6 +14329,19 @@ impl AppState {
                 } else {
                     text("").size(1).into()
                 };
+                // Pending pick: one click restarts into the new font
+                // (the queue snapshot restores paused, so nothing a
+                // manual quit would keep is lost).
+                let relaunch_button: iced::Element<'_, Message> =
+                    if font_pending(self.font_family, effective_font()) {
+                        button(btn_text("Relaunch now to apply", 12))
+                            .style(hover_row)
+                            .on_press(Message::RelaunchNow)
+                            .padding(5)
+                            .into()
+                    } else {
+                        text("").size(1).into()
+                    };
                 column![
                     text("Settings").size(22),
                     text("Playback").size(17),
@@ -14302,6 +14376,7 @@ impl AppState {
                         |name: String| Message::FontFamilyChanged(FontFamily::from_label(&name)),
                     )
                     .width(Fill),
+                    relaunch_button,
                     stale_font_note,
                     column![
                         text(format!("Interface scale: {:.0}%", self.ui_scale * 100.0)).size(13),
@@ -20898,6 +20973,23 @@ mod tests {
         assert!(!is_font_missing(
             FontFamily::Custom(intern_font_name("DejaVu Sans")),
             &system
+        ));
+    }
+
+    #[test]
+    fn font_pending_rule() {
+        assert!(!font_pending(FontFamily::Inter, FontFamily::Inter));
+        assert!(!font_pending(FontFamily::System, FontFamily::System));
+        assert!(font_pending(FontFamily::System, FontFamily::Inter));
+        let (a, b) = (
+            FontFamily::Custom(intern_font_name("DejaVu Sans")),
+            FontFamily::Custom(intern_font_name("Noto Sans")),
+        );
+        assert!(!font_pending(a, a));
+        assert!(font_pending(a, b));
+        assert!(font_pending(
+            FontFamily::Custom(intern_font_name("DejaVu Sans")),
+            FontFamily::Inter
         ));
     }
 
