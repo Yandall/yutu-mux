@@ -1,5 +1,6 @@
 //! yutu-core: models, backend trait, mock fixtures, auth + library store.
 
+pub mod app_log;
 pub mod auth;
 pub mod backend;
 pub mod discovery;

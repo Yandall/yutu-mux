@@ -90,7 +90,9 @@
 - **LRC blank lines survive parsing** as stanza separators (empty-text
   markers), rendered as vertical gaps.
 - **Status text**: full last-action log in debug builds; **release shows
-  failures only**. In-app error panel is debug-only UI (stderr always).
+  failures only** (either flips on with the `debug-panel` feature, e.g.
+  `cargo run --features debug-panel`). In-app error panel is debug-only UI
+  (stderr always).
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -136,7 +138,8 @@
 ## 6. Features & build matrix
 
 - `yutu-ui` default = `["submit", "innertube", "mpv", "lyrics"]`
-  (the real app).
+  (the real app). Opt-in `debug-panel` shows the debug UI (error panel,
+  cache census, full status text) in any build, for user bug reports.
 - `--no-default-features` = offline/rodio-only compile check. Must stay
   green; gate Innertube-only UI (`cookie_section`, etc.) with
   `#[cfg(feature = "innertube")]`.
@@ -215,12 +218,14 @@ cargo test -p yutu-ui --no-default-features
   suggestions, recommendations, thumb pickers.
 - `crates/yutu-core/src/auth.rs`: OAuth device flow + `OAuthPersist` +
   cookie auth (redacted Debug).
+- `crates/yutu-core/src/app_log.rs`: file logging (`<data>/logs/`,
+  7-day retention) + stderr mirror; every prod `eprintln!` routes here.
 - `crates/yutu-core/src/models.rs`: Track/Album/Artist.
 - `crates/yutu-core/src/ytdlp.rs`: yt-dlp resolver flags.
 - `crates/yutu-core/src/lyrics_providers.rs`: `parse_lrc`, `line_at`,
   LRCLIB fetch.
 - `crates/yutu-ui/assets/icons/`: Lucide SVGs + attribution README.
-- `src/main.rs`: MPRIS serve + watch loop wiring.
+- `src/main.rs`: MPRIS serve + watch loop wiring, log init, panic hook.
 
 ## 10. Known judgment calls / quirks (don't "fix" blindly)
 

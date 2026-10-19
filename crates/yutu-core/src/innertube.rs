@@ -108,7 +108,10 @@ where
             }
             Err(e) => {
                 failed += 1;
-                eprintln!("[yutu-import] {what} page failed ({failed} so far): {e}");
+                crate::app_log::warn(
+                    "yutu-import",
+                    format_args!("{what} page failed ({failed} so far): {e}"),
+                );
             }
         }
     }
@@ -116,7 +119,10 @@ where
         return Err(format!("{what} failed: no pages loaded"));
     }
     if failed > 0 {
-        eprintln!("[yutu-import] {what}: partial import ({pages} pages, {failed} failed)");
+        crate::app_log::warn(
+            "yutu-import",
+            format_args!("{what}: partial import ({pages} pages, {failed} failed)"),
+        );
     }
     Ok((out, failed))
 }
@@ -428,7 +434,10 @@ impl InnertubeBackend {
         if !failed {
             return Ok(out);
         }
-        eprintln!("[yutu-import] playlist tracks: typed parse failed, retrying tolerantly");
+        crate::app_log::warn(
+            "yutu-import",
+            "playlist tracks: typed parse failed, retrying tolerantly",
+        );
         failed = match &self.inner {
             Inner::Anonymous(client) => {
                 stream_raw_tracks(client, &query, &mut on_page, &mut out).await
@@ -1063,7 +1072,10 @@ impl InnertubeBackend {
             Err(StreamError::PoTokenRequired { .. }) => {
                 let bin = botguard_bin.to_string();
                 let video_id = req.video_id.clone();
-                eprintln!("[yutu-stream] PO-gated; minting via sidecar {bin}");
+                crate::app_log::info(
+                    "yutu-stream",
+                    format_args!("PO-gated; minting via sidecar {bin}"),
+                );
                 let minted = tokio::task::spawn_blocking({
                     let video_id = video_id.clone();
                     move || crate::pot::fetch_po_token(&bin, &video_id)
@@ -1071,10 +1083,13 @@ impl InnertubeBackend {
                 .await
                 .map_err(|e| StreamError::Network(format!("sidecar task: {e}")))?
                 .map_err(StreamError::Network)?;
-                eprintln!(
-                    "[yutu-stream] minted {} token(s), snapshot={}",
-                    minted.tokens.len(),
-                    minted.tokens.is_empty()
+                crate::app_log::info(
+                    "yutu-stream",
+                    format_args!(
+                        "minted {} token(s), snapshot={}",
+                        minted.tokens.len(),
+                        minted.tokens.is_empty()
+                    ),
                 );
                 // Token order (content- vs session-bound) is undocumented, so
                 // try each minted token as the player poToken in turn.
@@ -1082,10 +1097,16 @@ impl InnertubeBackend {
                     client: "web_music",
                 };
                 for (i, content_token) in minted.tokens.iter().enumerate() {
-                    eprintln!("[yutu-stream] player POST attempt with token #{i}");
+                    crate::app_log::info(
+                        "yutu-stream",
+                        format_args!("player POST attempt with token #{i}"),
+                    );
                     match raw_player_with_token(&video_id, content_token).await {
                         Err(e) => {
-                            eprintln!("[yutu-stream] token #{i} POST failed: {e}");
+                            crate::app_log::warn(
+                                "yutu-stream",
+                                format_args!("token #{i} POST failed: {e}"),
+                            );
                             last_err = e;
                         }
                         Ok(raw) => {
@@ -1093,16 +1114,22 @@ impl InnertubeBackend {
                                 serde_json::from_str(&raw).map_err(|e| {
                                     StreamError::Network(format!("token player JSON: {e}"))
                                 })?;
-                            eprintln!(
-                                "[yutu-stream] token #{i} playability={}",
-                                value
-                                    .pointer("/playabilityStatus/status")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("?"),
+                            crate::app_log::info(
+                                "yutu-stream",
+                                format_args!(
+                                    "token #{i} playability={}",
+                                    value
+                                        .pointer("/playabilityStatus/status")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("?"),
+                                ),
                             );
                             match extract_audio_url(&value) {
                                 Some(url) => {
-                                    eprintln!("[yutu-stream] token #{i} yielded URL");
+                                    crate::app_log::info(
+                                        "yutu-stream",
+                                        format_args!("token #{i} yielded URL"),
+                                    );
                                     return Ok(ResolvedStream {
                                         url,
                                         pot_token: minted.tokens.get(1).cloned(),
@@ -1111,7 +1138,10 @@ impl InnertubeBackend {
                                 None => {
                                     last_err =
                                         classify_no_url(&value, StreamClient::WebMusic, &video_id);
-                                    eprintln!("[yutu-stream] token #{i} no URL: {last_err}");
+                                    crate::app_log::warn(
+                                        "yutu-stream",
+                                        format_args!("token #{i} no URL: {last_err}"),
+                                    );
                                 }
                             }
                         }
@@ -1155,7 +1185,10 @@ where
             }
             Err(e) => {
                 failed = true;
-                eprintln!("[yutu-import] playlist tracks page failed: {e}");
+                crate::app_log::warn(
+                    "yutu-import",
+                    format_args!("playlist tracks page failed: {e}"),
+                );
                 break;
             }
         }
@@ -1192,7 +1225,10 @@ where
             }
             Err(e) => {
                 failed = true;
-                eprintln!("[yutu-import] playlist tracks raw page failed: {e}");
+                crate::app_log::warn(
+                    "yutu-import",
+                    format_args!("playlist tracks raw page failed: {e}"),
+                );
                 break;
             }
         }
@@ -1226,7 +1262,7 @@ where
             }
             Err(e) => {
                 failed = true;
-                eprintln!("[yutu-playlist] setVideoId page failed: {e}");
+                crate::app_log::warn("yutu-playlist", format_args!("setVideoId page failed: {e}"));
                 break;
             }
         }
@@ -1347,7 +1383,7 @@ async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String,
         .text()
         .await
         .map_err(|e| StreamError::Network(format!("token player body: {e}")))?;
-    eprintln!("[yutu-stream] player POST HTTP {status}");
+    crate::app_log::info("yutu-stream", format_args!("player POST HTTP {status}"));
     if !status.is_success() {
         return Err(classify_player_error(
             &format!("{status} {text}"),
