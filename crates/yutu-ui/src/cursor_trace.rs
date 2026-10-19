@@ -1,14 +1,14 @@
-//! TEMPORARY diagnostic (cursor-hand hunt): caps the cursor vote of a
-//! subtree at arrow and logs where hand votes originate.
+//! Cursor-hand hunt: logs where hand votes originate, without changing
+//! any vote.
 //!
-//! Wrap the view root and every `Pointer` vote becomes `Idle`, so if the
-//! hand in empty space disappears the leak was a real vote from our
-//! tree; if it persists with zero `cursor-trace` lines in the log, the
-//! votes are innocent and the cause is outside the widget tree. Every
-//! transition into `Pointer` is logged with position and route, so the
-//! surviving log names the widget area when the leak is real.
+//! Wrap the view root and every transition into a `Pointer` vote is
+//! logged as `[cursor-trace]` with position and route. Votes pass
+//! through untouched (buttons show hands, rows show arrows), so this
+//! is pure observation: if the hand appears where nothing clickable
+//! lives, the log line names the position to investigate.
 //!
-//! Revert by deleting this module and its single use in `view()`.
+//! Delete this module and its single use in `view()` once the hunt
+//! ends: it exists only for the empty-space-hand investigation.
 
 use iced::advanced::layout::{self, Layout, Node};
 use iced::advanced::mouse;
@@ -18,27 +18,29 @@ use iced::advanced::widget::{self, Tree};
 use iced::advanced::{Clipboard, Shell};
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Cap a subtree's cursor at the arrow; trace hand votes to the log.
-pub struct CursorCap<'a, Message> {
+/// Pass-through wrapper that traces hand votes to the log.
+pub struct CursorTrace<'a, Message> {
     content: Element<'a, Message>,
     where_built: String,
     last: std::cell::Cell<mouse::Interaction>,
 }
 
-/// Wrap `content`: hand votes inside become arrow votes, and each new
-/// hand vote is logged as `[cursor-trace]` with position and context.
-pub fn cap_cursor<'a, Message>(
+/// Wrap `content`: hand votes inside are logged with position, votes
+/// themselves unchanged.
+pub fn trace_cursor<'a, Message>(
     content: Element<'a, Message>,
     where_built: String,
-) -> CursorCap<'a, Message> {
-    CursorCap {
+) -> CursorTrace<'a, Message> {
+    CursorTrace {
         content,
         where_built,
         last: std::cell::Cell::new(mouse::Interaction::None),
     }
 }
 
-impl<'a, Message> widget::Widget<Message, iced::Theme, iced::Renderer> for CursorCap<'a, Message> {
+impl<'a, Message> widget::Widget<Message, iced::Theme, iced::Renderer>
+    for CursorTrace<'a, Message>
+{
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
@@ -143,11 +145,7 @@ impl<'a, Message> widget::Widget<Message, iced::Theme, iced::Renderer> for Curso
                 }
             }
         }
-        // The experiment: no hand anywhere, whatever the tree votes.
-        match vote {
-            mouse::Interaction::Pointer => mouse::Interaction::Idle,
-            other => other,
-        }
+        vote
     }
 
     fn overlay<'b>(
@@ -164,11 +162,11 @@ impl<'a, Message> widget::Widget<Message, iced::Theme, iced::Renderer> for Curso
     }
 }
 
-impl<'a, Message> From<CursorCap<'a, Message>> for Element<'a, Message>
+impl<'a, Message> From<CursorTrace<'a, Message>> for Element<'a, Message>
 where
     Message: 'a,
 {
-    fn from(cap: CursorCap<'a, Message>) -> Self {
-        Element::new(cap)
+    fn from(trace: CursorTrace<'a, Message>) -> Self {
+        Element::new(trace)
     }
 }
