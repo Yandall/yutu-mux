@@ -131,7 +131,10 @@ pub async fn raw_search_filtered(
     match post_search(query, auth, Some(kind.params())).await {
         Ok(text) => parse_search_all(&text),
         Err(SearchFail::Auth) if auth.authed() => {
-            eprintln!("[yutu-search] authed filtered search rejected: retrying anonymous");
+            crate::app_log::warn(
+                "yutu-search",
+                "authed filtered search rejected: retrying anonymous",
+            );
             let text = post_search(query, &SearchAuth::anonymous(), Some(kind.params()))
                 .await
                 .map_err(|e| e.message())?;
@@ -164,7 +167,7 @@ pub async fn raw_search_all(query: &str, auth: &SearchAuth) -> Result<SearchAll,
     match post_search(query, auth, None).await {
         Ok(text) => parse_search_all(&text),
         Err(SearchFail::Auth) if auth.authed() => {
-            eprintln!("[yutu-search] authed search rejected: retrying anonymous");
+            crate::app_log::warn("yutu-search", "authed search rejected: retrying anonymous");
             let text = post_search(query, &SearchAuth::anonymous(), None)
                 .await
                 .map_err(|e| e.message())?;

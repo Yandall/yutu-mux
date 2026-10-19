@@ -8,6 +8,9 @@
   disk-file handles instead of byte copies, shared HTTP clients,
   history/lyrics/URL maps capped, debug cache census in Settings,
   mimalloc global allocator (prompt page return, lower footprint)
+- Debug tooling: `debug-panel` feature shows the in-app debug UI in any
+  build; week-long file logging (`<data>/logs`, panics included) for
+  future bug reports
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

@@ -87,7 +87,7 @@ fn drive(state: SharedPlayer) {
     }) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("macos media: controls unavailable: {e}");
+            yutu_core::app_log::error("macos-media", format_args!("controls unavailable: {e}"));
             return;
         }
     };
@@ -103,7 +103,7 @@ fn drive(state: SharedPlayer) {
         })
         .is_err()
     {
-        eprintln!("macos media: remote commands unavailable");
+        yutu_core::app_log::error("macos-media", "remote commands unavailable");
         return;
     }
     let mut last_meta = MediaMeta::default();
@@ -130,7 +130,7 @@ fn drive(state: SharedPlayer) {
                 duration: Some(Duration::from_secs(u64::from(meta.length_secs))),
             };
             if controls.set_metadata(metadata).is_err() {
-                eprintln!("macos media: metadata push failed");
+                yutu_core::app_log::error("macos-media", "metadata push failed");
             }
         }
         // Playback re-pushes only on real change (frozen pause/stop
@@ -151,7 +151,7 @@ fn drive(state: SharedPlayer) {
                 PlaybackStatus::Stopped => MediaPlayback::Stopped,
             };
             if controls.set_playback(playback).is_err() {
-                eprintln!("macos media: playback push failed");
+                yutu_core::app_log::error("macos-media", "playback push failed");
             }
         }
     }

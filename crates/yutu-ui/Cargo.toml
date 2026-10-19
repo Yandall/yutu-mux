@@ -23,6 +23,10 @@ innertube = ["yutu-core/innertube"]
 submit = ["yutu-core/submit"]
 mpv = ["yutu-player/mpv"]
 lyrics = ["yutu-core/lyrics"]
+# Opt-in debug UI in any build (error panel, cache census, full status
+# text): `cargo run --features debug-panel`. Debug builds show it
+# without the flag; release builds hide it without the flag.
+debug-panel = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

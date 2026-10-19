@@ -3296,7 +3296,7 @@ async fn hydrate_one(id: String) -> Vec<Track> {
     match backend.recommendations_for(&id).await {
         Ok(tracks) => tracks.into_iter().filter(|t| t.id == id).collect(),
         Err(e) => {
-            eprintln!("[yutu-hydrate] {id}: {e}");
+            yutu_core::app_log::warn("yutu-hydrate", format_args!("{id}: {e}"));
             Vec::new()
         }
     }
@@ -3323,28 +3323,41 @@ async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
                 Err(first) => {
                     let msg = first.to_string();
                     if msg.contains("403") {
-                        eprintln!("[yutu-stream] chunked fetch 403 ({msg}); re-resolving once");
+                        yutu_core::app_log::warn(
+                            "yutu-stream",
+                            format_args!("chunked fetch 403 ({msg}); re-resolving once"),
+                        );
                         if let Ok(fresh) = yutu_core::resolve_audio_url(&bin, video_id) {
                             if let Ok(bytes) = yutu_player::fetch_bytes(&fresh).await {
                                 return Ok(bytes);
                             }
                         }
-                        eprintln!("[yutu-stream] fresh URL also failed; yt-dlp direct download");
+                        yutu_core::app_log::warn(
+                            "yutu-stream",
+                            "fresh URL also failed; yt-dlp direct download",
+                        );
                         match yutu_core::download_audio_bytes(&bin, video_id) {
                             Ok(bytes) => return Ok(bytes),
                             Err(e) => {
-                                eprintln!(
-                                    "[yutu-stream] yt-dlp download failed ({e}); trying raw probes"
+                                yutu_core::app_log::warn(
+                                    "yutu-stream",
+                                    format_args!("yt-dlp download failed ({e}); trying raw probes"),
                                 );
                             }
                         }
                     } else {
-                        eprintln!("[yutu-stream] yt-dlp path failed ({msg}); trying raw probes");
+                        yutu_core::app_log::warn(
+                            "yutu-stream",
+                            format_args!("yt-dlp path failed ({msg}); trying raw probes"),
+                        );
                     }
                 }
             },
             Err(e) => {
-                eprintln!("[yutu-stream] yt-dlp path failed ({e}); trying raw probes");
+                yutu_core::app_log::warn(
+                    "yutu-stream",
+                    format_args!("yt-dlp path failed ({e}); trying raw probes"),
+                );
             }
         }
     }
@@ -3862,11 +3875,14 @@ impl AppState {
     pub fn with_library_path(library_path: String) -> (Self, iced::Task<Message>) {
         let audio = match AudioOut::try_new() {
             Some(a) => {
-                eprintln!("audio backend: {}", a.backend_name());
+                yutu_core::app_log::info(
+                    "yutu-audio",
+                    format_args!("backend: {}", a.backend_name()),
+                );
                 Some(a)
             }
             None => {
-                eprintln!("audio unavailable: no output device");
+                yutu_core::app_log::error("yutu-audio", "unavailable: no output device");
                 None
             }
         };
@@ -4718,6 +4734,13 @@ impl AppState {
         self.resolve_attempts += 1;
         if self.resolve_attempts < MAX_RESOLVE_ATTEMPTS {
             self.loading_track = Some(failed_id.clone());
+            yutu_core::app_log::warn(
+                "yutu-play",
+                format_args!(
+                    "resolve failed for {failed_id} ({err}); retrying ({}/{MAX_RESOLVE_ATTEMPTS})",
+                    self.resolve_attempts
+                ),
+            );
             self.status = format!(
                 "Stream failed, retrying ({}/{MAX_RESOLVE_ATTEMPTS})…",
                 self.resolve_attempts
@@ -4744,6 +4767,8 @@ impl AppState {
         }
         // Same song (repeat loop) or end of line: stop loudly instead
         // of cycling, and pin the end flag so Tick never retriggers.
+        // (The give-up error above is the log entry for this stop too:
+        // one entry per dead track, never per retry.)
         self.end_advanced = true;
         self.status = format!("Playback failed for {title}: {err} (end of queue).");
         self.publish_mpris();
@@ -6534,13 +6559,14 @@ impl AppState {
     }
 
     /// In-app error log: the same lines that go to stderr (capped at 30).
-    /// Debug-only UI (release builds keep stderr, not the panel).
+    /// Debug-only UI unless the `debug-panel` feature is enabled
+    /// (release builds keep stderr, not the panel, without it).
     fn error_section(&self) -> iced::Element<'_, Message> {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
         {
             return iced::widget::text("").size(1).into();
         }
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
         {
             use iced::widget::{column, text};
             let body: iced::Element<'_, Message> = if self.error_log.is_empty() {
@@ -6563,16 +6589,17 @@ impl AppState {
         }
     }
 
-    /// Debug-only cache census: every map here is capped and the
+    /// Debug-only cache census (or with the `debug-panel` feature):
+    /// every map here is capped and the
     /// renderer trims its own textures per frame, so a long session
     /// plateaus instead of growing. Release builds hide it with the
     /// error panel above.
     fn cache_section(&self) -> iced::Element<'_, Message> {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
         {
             return iced::widget::text("").size(1).into();
         }
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
         {
             use iced::widget::{column, text};
             column![
@@ -6859,10 +6886,12 @@ impl AppState {
         self.lazy_image(url.as_deref(), size)
     }
 
-    /// Record a playback/fetch failure for the Settings error log (capped)
-    /// and stderr (same line, so journald and the in-app log agree).
+    /// Record a playback/fetch failure for the Settings error log (capped),
+    /// the log file, and stderr (same event, so journald, the file, and
+    /// the in-app log agree; file/stderr lines carry `[time] [LEVEL]`
+    /// prefixes the panel entry omits).
     fn log_error(&mut self, msg: String) {
-        eprintln!("[yutu-play] {msg}");
+        yutu_core::app_log::error("yutu-play", &msg);
         if self.error_log.len() >= 30 {
             self.error_log.remove(0);
         }
@@ -7105,14 +7134,15 @@ impl AppState {
         iced::Task::batch(tasks)
     }
 
-    /// Player-bar status text: the full last-action log in debug builds;
-    /// release builds only surface failures (no action chatter).
+    /// Player-bar status text: the full last-action log in debug builds
+    /// (or with the `debug-panel` feature); release builds only surface
+    /// failures (no action chatter).
     fn status_text(&self) -> String {
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
         {
             self.status.clone()
         }
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
         {
             if self.status.to_lowercase().contains("fail") {
                 self.status.clone()
@@ -9461,7 +9491,10 @@ impl AppState {
                         }
                     }
                     None => {
-                        eprintln!("[yutu-import] playlist {index}: {arrived} songs arrived");
+                        yutu_core::app_log::info(
+                            "yutu-import",
+                            format_args!("playlist {index}: {arrived} songs arrived"),
+                        );
                         if let Some(c) = count {
                             self.import_expected += c;
                         }
@@ -9657,9 +9690,12 @@ impl AppState {
                     Ok(login) => {
                         // Terminal copy: the URL is clickable there; the
                         // Settings panel shows it as text (Iced copy TBA).
-                        eprintln!(
-                            "[yutu-login] open {} and enter {}",
-                            login.verification_url, login.user_code
+                        yutu_core::app_log::info(
+                            "yutu-login",
+                            format_args!(
+                                "open {} and enter {}",
+                                login.verification_url, login.user_code
+                            ),
                         );
                         self.google_login = Some(login);
                         self.status =
@@ -9902,7 +9938,10 @@ impl AppState {
                     && self.eof_idle(raw_pos, raw_dur)
                     && self.advance_queue()
                 {
-                    eprintln!("[yutu-play] backend went idle after audible playback: advancing");
+                    yutu_core::app_log::info(
+                        "yutu-play",
+                        "backend went idle after audible playback: advancing",
+                    );
                     self.end_advanced = true;
                     self.publish_mpris();
                     tasks.push(self.play_current_task());
@@ -10065,16 +10104,16 @@ impl AppState {
                     .filter(|id| !self.catalog.contains_key(id))
                     .collect();
                 if !still_missing.is_empty() {
-                    eprintln!(
-                        "[yutu-hydrate] {} still missing after batch",
-                        still_missing.len()
+                    yutu_core::app_log::warn(
+                        "yutu-hydrate",
+                        format_args!("{} still missing after batch", still_missing.len()),
                     );
                     for id in still_missing {
                         Self::note_failed(&mut self.hydrate_cooldown, id);
                     }
                 }
                 let n = registered.len();
-                eprintln!("[yutu-hydrate] restored {n} track(s)");
+                yutu_core::app_log::info("yutu-hydrate", format_args!("restored {n} track(s)"));
                 // Nudge the status only when Favorites was empty before:
                 // otherwise this is a silent background heal.
                 if self.favorite_tracks().len() <= n {
@@ -10293,8 +10332,9 @@ impl AppState {
                     return yutu_core::InnertubeBackend::connect_with_oauth(&persist);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[yutu-login] saved OAuth token unusable ({e}): trying cookie session"
+                    yutu_core::app_log::warn(
+                        "yutu-login",
+                        format_args!("saved OAuth token unusable ({e}): trying cookie session"),
                     );
                 }
             }
@@ -10938,7 +10978,10 @@ impl AppState {
                 if let Ok(auth) = yutu_core::CookieAuth::from_file(std::path::Path::new(&path)) {
                     if let Err(e) = auth.save_to_file(std::path::Path::new(&cookie_session_path()))
                     {
-                        eprintln!("[yutu-login] session stash failed: {e}");
+                        yutu_core::app_log::error(
+                            "yutu-login",
+                            format_args!("session stash failed: {e}"),
+                        );
                     }
                 }
                 Self::persist_base_pull(&library_path, &base);
