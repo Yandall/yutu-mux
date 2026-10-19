@@ -270,12 +270,106 @@ fn btn_icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'static,
         .into()
 }
 
+/// Display font (Settings Appearance, persisted pref `font_family`):
+/// bundled Inter by default so Linux and macOS render the same
+/// outlines; System keeps the old platform-sans behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontFamily {
+    Inter,
+    System,
+}
+
+impl FontFamily {
+    const ALL: &[Self] = &[Self::Inter, Self::System];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inter => "Inter (bundled)",
+            Self::System => "System",
+        }
+    }
+
+    fn stored(self) -> &'static str {
+        match self {
+            Self::Inter => "inter",
+            Self::System => "system",
+        }
+    }
+
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_lowercase().as_str() {
+            "system" => Self::System,
+            _ => Self::Inter,
+        }
+    }
+
+    fn to_iced_font(self) -> iced::Font {
+        match self {
+            Self::Inter => iced::Font::with_name("Inter"),
+            Self::System => iced::Font::default(),
+        }
+    }
+}
+
+/// Startup-effective display family. Iced fixes the default font at
+/// launch, so the Settings pick writes the pref and takes effect on
+/// relaunch; button and bold fonts read this (not live state) so a
+/// pending pick never mixes two families in one session.
+static EFFECTIVE_FONT: std::sync::OnceLock<FontFamily> = std::sync::OnceLock::new();
+
+fn effective_font() -> FontFamily {
+    *EFFECTIVE_FONT.get_or_init(|| FontFamily::Inter)
+}
+
+/// Status line for a font pick: `None` when the pick already runs
+/// (the `●` marker confirms it, so the status keeps showing any live
+/// failure instead of being erased by a no-op); otherwise the
+/// relaunch note. Pure in both args so tests never touch the
+/// process-wide [`EFFECTIVE_FONT`].
+fn font_pick_status(picked: FontFamily, effective: FontFamily) -> Option<String> {
+    if picked == effective {
+        None
+    } else {
+        Some(format!(
+            "Display font: {} saved (relaunch to apply).",
+            picked.label()
+        ))
+    }
+}
+
+/// UI scale bounds (Settings Appearance slider): the application
+/// scale factor, so text and controls grow together and rows never
+/// overflow. Persisted pref `ui_scale`, applies instantly.
+pub const UI_SCALE_MIN: f32 = 0.8;
+pub const UI_SCALE_MAX: f32 = 1.5;
+pub const UI_SCALE_DEFAULT: f32 = 1.0;
+
+/// Clamp a stored scale into range (non-finite falls back to 1.0:
+/// a NaN must never reach the renderer).
+fn clamp_scale(raw: f32) -> f32 {
+    if raw.is_finite() {
+        raw.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+    } else {
+        UI_SCALE_DEFAULT
+    }
+}
+
 /// Button-weight font (one step above body): shared by button
 /// labels and button rows so the weight cannot drift per site.
+/// Family follows the startup-effective pick (see [`EFFECTIVE_FONT`]).
 fn medium_font() -> iced::Font {
     iced::Font {
         weight: iced::font::Weight::Medium,
-        ..iced::Font::default()
+        ..effective_font().to_iced_font()
+    }
+}
+
+/// Bold-weight font: same family rule as [`medium_font`] (play and
+/// shuffle pills plus the live lyric line used to pin SansSerif).
+fn bold_font() -> iced::Font {
+    iced::Font {
+        weight: iced::font::Weight::Bold,
+        ..effective_font().to_iced_font()
     }
 }
 
@@ -949,6 +1043,12 @@ pub enum Message {
     AnimationsToggled(bool),
     /// Animation duration in ms 20..=400 (Settings slider).
     AnimMsChanged(f32),
+    /// Display font pick (Settings Appearance): persisted, takes
+    /// effect on relaunch (the renderer font is fixed at startup).
+    FontFamilyChanged(FontFamily),
+    /// UI scale 0.8..=1.5 (Settings Appearance slider): persisted,
+    /// applies instantly through the application scale factor.
+    UiScaleChanged(f32),
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -1760,6 +1860,12 @@ pub struct AppState {
     /// a duration in ms for panel glides.
     animations_enabled: bool,
     anim_ms: u64,
+    /// Display font pick (persisted pref `font_family`; relaunch to
+    /// apply, since the renderer font is fixed at startup).
+    font_family: FontFamily,
+    /// UI scale 0.8..=1.5 (persisted pref `ui_scale`; instant via
+    /// the application scale factor).
+    ui_scale: f32,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     drawer_scroll: f32,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
@@ -3980,6 +4086,8 @@ impl AppState {
             drawer_anim: 0.0,
             animations_enabled: true,
             anim_ms: ANIM_DEFAULT_MS,
+            font_family: FontFamily::Inter,
+            ui_scale: UI_SCALE_DEFAULT,
             drawer_scroll: 0.0,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
@@ -4088,6 +4196,20 @@ impl AppState {
                 .and_then(|v| v.parse::<u64>().ok())
             {
                 state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
+            }
+        }
+        // Display prefs survive restarts (garbage falls back to the
+        // defaults; the scale clamps into range and rejects NaN, which
+        // must never reach the renderer). The family applies on
+        // relaunch (the renderer font is fixed at startup).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(raw) = store.get_pref("font_family").unwrap_or(None) {
+                state.font_family = FontFamily::parse(&raw);
+            }
+            if let Some(raw) = store.get_pref("ui_scale").unwrap_or(None) {
+                if let Ok(parsed) = raw.parse::<f32>() {
+                    state.ui_scale = clamp_scale(parsed);
+                }
             }
         }
         // EQ curve survives restarts (garbage falls back to Flat): the
@@ -5324,10 +5446,7 @@ impl AppState {
         button(
             row![
                 btn_icon("play", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::default()
-                }),
+                text(label).size(13).font(bold_font()),
             ]
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center),
@@ -5345,10 +5464,7 @@ impl AppState {
         button(
             row![
                 btn_icon("shuffle", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::default()
-                }),
+                text(label).size(13).font(bold_font()),
             ]
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center),
@@ -9333,6 +9449,26 @@ impl AppState {
                     let _ = store.set_pref("anim_ms", &ms.to_string());
                 }
             }
+            Message::FontFamilyChanged(family) => {
+                self.font_family = family;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("font_family", family.stored());
+                }
+                // The renderer font is fixed at startup: a changed pick
+                // notes the relaunch, a re-pick of the live one leaves
+                // the status alone (release builds show failures only,
+                // so a no-op must never erase a visible failure).
+                if let Some(note) = font_pick_status(family, effective_font()) {
+                    self.status = note;
+                }
+            }
+            Message::UiScaleChanged(scale) => {
+                let scale = clamp_scale(scale);
+                self.ui_scale = scale;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("ui_scale", &scale.to_string());
+                }
+            }
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
             }
@@ -13060,10 +13196,7 @@ impl AppState {
                             text(l.text.clone())
                                 .size(19)
                                 .line_height(iced::widget::text::LineHeight::Relative(1.4),)
-                                .font(iced::Font {
-                                    weight: iced::font::Weight::Bold,
-                                    ..iced::Font::default()
-                                })
+                                .font(bold_font())
                                 .color(SPOT_GREEN),
                         ]
                         .spacing(10)
@@ -14008,6 +14141,39 @@ impl AppState {
                         .size(12)
                         .color(MUTED),
                     eq_panel,
+                    text("Appearance").size(17),
+                    text("Display font (takes effect on relaunch)").size(13),
+                    row(FontFamily::ALL
+                        .iter()
+                        .map(|f| {
+                            let label = if *f == self.font_family {
+                                format!("● {}", f.label())
+                            } else {
+                                f.label().to_string()
+                            };
+                            button(btn_text(label, 12))
+                                .style(hover_row)
+                                .on_press(Message::FontFamilyChanged(*f))
+                                .padding(5)
+                                .into()
+                        })
+                        .collect::<Vec<iced::Element<'_, Message>>>())
+                    .spacing(4),
+                    column![
+                        text(format!("Interface scale: {:.0}%", self.ui_scale * 100.0)).size(13),
+                        slider(
+                            UI_SCALE_MIN..=UI_SCALE_MAX,
+                            self.ui_scale,
+                            Message::UiScaleChanged
+                        )
+                        .step(0.05_f32)
+                        .style(themed_slider)
+                        .width(Fill),
+                        text("Scales text and controls together, applies instantly.")
+                            .size(12)
+                            .color(MUTED),
+                    ]
+                    .spacing(4),
                     text("Animations").size(17),
                     checkbox(self.animations_enabled)
                         .label("Enable animations (off = panels snap instantly)")
@@ -15265,6 +15431,16 @@ impl AppState {
 }
 
 pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
+    // Display startup: the bundled Inter faces always register (the
+    // System pick just leaves them unused) and the stored family
+    // picks the renderer default. Scale reads live state, so the
+    // slider applies instantly; the family is startup-fixed.
+    let startup_family = LibraryStore::open(&default_library_path())
+        .ok()
+        .and_then(|store| store.get_pref("font_family").unwrap_or(None))
+        .map(|raw| FontFamily::parse(&raw))
+        .unwrap_or(FontFamily::Inter);
+    let _ = EFFECTIVE_FONT.set(startup_family);
     iced::application(
         move || {
             let (mut state, task) = AppState::new();
@@ -15276,6 +15452,11 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         AppState::view,
     )
     .title("yutu-mux")
+    .font(include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice())
+    .default_font(startup_family.to_iced_font())
+    .scale_factor(|state: &AppState| clamp_scale(state.ui_scale))
     .theme(AppState::theme)
     .subscription(AppState::subscription)
     .run()
@@ -20464,6 +20645,92 @@ mod tests {
         let _ = store.set_pref("anim_ms", "junk");
         let (fallback, _) = AppState::with_library_path(s.library_path.clone());
         assert_eq!(fallback.anim_ms, ANIM_DEFAULT_MS);
+    }
+
+    #[test]
+    fn font_prefs_default_parse_and_persist() {
+        // Inter renders the same outlines on Linux and macOS, so it is
+        // the default; System keeps the old platform-sans behavior.
+        let s = test_state();
+        assert_eq!(s.font_family, FontFamily::Inter);
+        assert_eq!(FontFamily::parse("system"), FontFamily::System);
+        assert_eq!(FontFamily::parse("SYSTEM "), FontFamily::System);
+        assert_eq!(FontFamily::parse("junk"), FontFamily::Inter);
+        assert_eq!(FontFamily::parse(""), FontFamily::Inter);
+        // The choice persists: a fresh state on the same library path
+        // reopens with it (garbage falls back to the default).
+        let mut s = s;
+        let _ = s.update(Message::FontFamilyChanged(FontFamily::System));
+        assert_eq!(s.font_family, FontFamily::System);
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.font_family, FontFamily::System);
+        let Ok(store) = LibraryStore::open(&s.library_path) else {
+            panic!("test library must open");
+        };
+        let _ = store.set_pref("font_family", "junk");
+        let (fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(fallback.font_family, FontFamily::Inter);
+    }
+
+    #[test]
+    fn font_change_status_names_the_restart() {
+        // Pure in both args: no test depends on the process-wide
+        // effective family (only run() sets it, and tests never do).
+        assert_eq!(font_pick_status(FontFamily::Inter, FontFamily::Inter), None);
+        assert_eq!(
+            font_pick_status(FontFamily::System, FontFamily::System),
+            None
+        );
+        let note = font_pick_status(FontFamily::System, FontFamily::Inter)
+            .expect("changed pick must note the restart");
+        assert!(note.contains("relaunch"), "{note}");
+        // The no-op pick leaves the status alone (release builds show
+        // failures only, so it must never erase a visible failure).
+        let mut s = test_state();
+        let before = s.status.clone();
+        let _ = s.update(Message::FontFamilyChanged(FontFamily::Inter));
+        assert_eq!(s.status, before);
+        let _ = s.update(Message::FontFamilyChanged(FontFamily::System));
+        assert!(s.status.contains("relaunch"), "{}", s.status);
+    }
+
+    #[test]
+    fn ui_scale_clamp_persist_and_nan_fallback() {
+        let s = test_state();
+        assert_eq!(s.ui_scale, UI_SCALE_DEFAULT);
+        assert_eq!(clamp_scale(99.0), UI_SCALE_MAX);
+        assert_eq!(clamp_scale(0.01), UI_SCALE_MIN);
+        assert_eq!(clamp_scale(f32::NAN), UI_SCALE_DEFAULT);
+        assert_eq!(clamp_scale(f32::INFINITY), UI_SCALE_DEFAULT);
+        // The slider clamps into range and persists across restarts.
+        let mut s = s;
+        let _ = s.update(Message::UiScaleChanged(99.0));
+        assert_eq!(s.ui_scale, UI_SCALE_MAX);
+        let _ = s.update(Message::UiScaleChanged(0.01));
+        assert_eq!(s.ui_scale, UI_SCALE_MIN);
+        let _ = s.update(Message::UiScaleChanged(1.25));
+        assert_eq!(s.ui_scale, 1.25);
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.ui_scale, 1.25);
+        let Ok(store) = LibraryStore::open(&s.library_path) else {
+            panic!("test library must open");
+        };
+        let _ = store.set_pref("ui_scale", "junk");
+        let (fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(fallback.ui_scale, UI_SCALE_DEFAULT);
+        let _ = store.set_pref("ui_scale", "NaN");
+        let (nan_fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(nan_fallback.ui_scale, UI_SCALE_DEFAULT);
+    }
+
+    #[test]
+    fn button_fonts_follow_the_effective_family() {
+        // Explicit-weight fonts must share the body family (a pinned
+        // SansSerif here would split buttons from Inter body text).
+        assert_eq!(medium_font().weight, iced::font::Weight::Medium);
+        assert_eq!(bold_font().weight, iced::font::Weight::Bold);
+        assert_eq!(medium_font().family, effective_font().to_iced_font().family);
+        assert_eq!(bold_font().family, effective_font().to_iced_font().family);
     }
 
     #[test]
