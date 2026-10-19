@@ -1,11 +1,9 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
-mod cursor_trace;
 mod eq_graph;
 mod row_button;
 mod seek_bar;
 
-use cursor_trace::trace_cursor;
 use row_button::row_button;
 
 use std::collections::{HashMap, HashSet};
@@ -15248,13 +15246,7 @@ impl AppState {
         // Always a Stack (even with one layer): flipping between bare
         // content and Stack would rebuild all widget state (search focus
         // and cursor included) every time a popup appears or vanishes.
-        // Cursor-hand hunt: trace hand-vote positions to the log
-        // without changing any vote (see cursor_trace).
-        trace_cursor(
-            Stack::with_children(layers).into(),
-            format!("{:?}", self.route),
-        )
-        .into()
+        Stack::with_children(layers).into()
     }
 
     /// Now Playing sheet that overlays the center column (drawer slide).
