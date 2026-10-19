@@ -11,6 +11,8 @@
 - Debug tooling: `debug-panel` feature shows the in-app debug UI in any
   build; week-long file logging (`<data>/logs`, panics included) for
   future bug reports
+- Cursor: content surfaces (rows, cards, menus) show the arrow;
+  small controls keep the pointing hand
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

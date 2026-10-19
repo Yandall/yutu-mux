@@ -206,5 +206,6 @@ Done: user can plausibly replace Spotify for daily listening.
 67. Round 56: diet follow-up (w120 row rasters everywhere, row/card key split, history/lyrics/URL caps, debug cache census; 3 review rounds, all HIGH fixed)
 68. Round 57: mimalloc global allocator (prompt page return for the macOS footprint number)
 69. Round 58: debug tooling (debug-panel feature for the in-app debug UI; week-long file logging with panic hook; all prod prints routed through it)
+70. Round 59: arrow cursor on content surfaces (RowButton widget: real button semantics, Idle cursor; controls keep the hand)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
