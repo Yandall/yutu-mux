@@ -11525,6 +11525,28 @@ impl AppState {
         iced::Theme::Dark
     }
 
+    /// Window title: the live song as "title · artist" (house
+    /// separator, same as the Playing status), plain app name when the
+    /// queue is empty. Iced queries it live, so no message or task is
+    /// needed. Paused and stopped keep naming the song (the queue is
+    /// still the session); only an empty queue falls back.
+    pub fn window_title(&self) -> String {
+        match self.queue.current() {
+            Some(t) => {
+                let title = t.title.trim();
+                let artist = t.artist.trim();
+                if title.is_empty() {
+                    "yutu-mux".to_string()
+                } else if artist.is_empty() {
+                    title.to_string()
+                } else {
+                    format!("{title} · {artist}")
+                }
+            }
+            None => "yutu-mux".to_string(),
+        }
+    }
+
     fn is_nav(&self, route: &Route) -> bool {
         std::mem::discriminant(&self.route) == std::mem::discriminant(route)
     }
@@ -15670,7 +15692,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         AppState::update,
         AppState::view,
     )
-    .title("yutu-mux")
+    .title(|state: &AppState| state.window_title())
     .font(include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice())
     .font(include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice())
     .font(include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice())
@@ -17484,6 +17506,29 @@ mod tests {
         assert!(s.queue.is_empty());
         assert!(!s.restored_pending);
         assert_eq!(s.status, "Ready: search for music.");
+    }
+
+    #[test]
+    fn window_title_names_the_live_song() {
+        let mut s = test_state();
+        assert_eq!(s.window_title(), "yutu-mux");
+        s.queue.push(mk_track("v1", "Song", "A"));
+        assert_eq!(s.window_title(), "Song · A");
+        // Artistless rows fall back to the bare title (no dangling
+        // separator); paused keeps naming the song.
+        s.queue.push(mk_track("v2", "Solo", ""));
+        assert!(s.queue.jump_to(1));
+        assert_eq!(s.window_title(), "Solo");
+        s.paused = true;
+        assert_eq!(s.window_title(), "Solo");
+        // Padded or empty titles never leak whitespace or dangling
+        // separators into the title bar.
+        s.queue.push(mk_track("v3", "  Spaced  ", "  B  "));
+        assert!(s.queue.jump_to(2));
+        assert_eq!(s.window_title(), "Spaced · B");
+        s.queue.push(mk_track("v4", "", "Nobody"));
+        assert!(s.queue.jump_to(3));
+        assert_eq!(s.window_title(), "yutu-mux");
     }
 
     #[test]
