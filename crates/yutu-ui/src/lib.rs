@@ -1,7 +1,10 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
 mod eq_graph;
+mod row_button;
 mod seek_bar;
+
+use row_button::row_button;
 
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
@@ -555,9 +558,9 @@ fn menu_item(
     label: String,
     msg: Message,
 ) -> iced::Element<'static, Message> {
-    use iced::widget::{button, row};
+    use iced::widget::row;
     use iced::Fill;
-    button(
+    row_button(
         row![
             btn_icon(icon_name, 14.0, iced::Color::WHITE),
             btn_text(label, 14),
@@ -5365,7 +5368,7 @@ impl AppState {
         hovered: bool,
         play: Message,
     ) -> iced::Element<'_, Message> {
-        use iced::widget::{button, container, stack};
+        use iced::widget::{container, stack};
         let art: iced::Element<'_, Message> = if hovered {
             stack![
                 self.thumb(t),
@@ -5384,7 +5387,7 @@ impl AppState {
         } else {
             self.thumb(t)
         };
-        button(art)
+        row_button(art)
             .style(row_click)
             .on_press(play)
             .padding(0)
@@ -5481,15 +5484,15 @@ impl AppState {
     /// Fixed standard size with single-line truncated labels: long titles
     /// crop instead of stretching the card, so every card aligns.
     fn album_card(&self, a: &Album) -> iced::Element<'_, Message> {
+        use iced::widget::column;
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column};
         use iced::Fill;
         let cover = self.album_cover(a);
         let sub = match a.year {
             Some(y) => format!("{} · {}", a.artist, y),
             None => a.artist.clone(),
         };
-        button(
+        row_button(
             column![
                 self.art_thumb(cover.as_deref(), HOME_PICK_ART),
                 column![
@@ -5521,8 +5524,8 @@ impl AppState {
     /// Artist card with photo (search grids).
     /// Same fixed standard size as album cards and home picks.
     fn artist_card(&self, a: &Artist) -> iced::Element<'_, Message> {
+        use iced::widget::column;
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column};
         use iced::Fill;
         // 544 card key (grid sweeps warm it; the stager only stages
         // small row rasters).
@@ -5530,7 +5533,7 @@ impl AppState {
             .thumbnail_url
             .as_deref()
             .map(|u| yutu_core::hires_thumb_url(u, 544));
-        button(
+        row_button(
             column![
                 self.art_thumb(photo.as_deref(), HOME_PICK_ART),
                 column![
@@ -11266,11 +11269,11 @@ impl AppState {
         mouse_area(
             container(
                 row![
-                    button(self.thumb(t))
+                    row_button(self.thumb(t))
                         .style(row_click)
                         .on_press(play_here)
                         .padding(2),
-                    button(Self::btn_track_text_single(
+                    row_button(Self::btn_track_text_single(
                         &t.title,
                         &t.artist,
                         14,
@@ -11313,7 +11316,7 @@ impl AppState {
     /// the play count.
     fn suggest_track_row(&self, t: &Track, selected: bool) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, mouse_area, row};
+        use iced::widget::{column, container, mouse_area, row};
         use iced::Fill;
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
@@ -11326,7 +11329,7 @@ impl AppState {
         };
         mouse_area(
             container(
-                button(
+                row_button(
                     row![
                         self.thumb_sized(t, 32.0),
                         column![
@@ -11547,13 +11550,13 @@ impl AppState {
         };
         container(
             row![
-                button(self.art_thumb(cover.as_deref(), 96.0))
+                row_button(self.art_thumb(cover.as_deref(), 96.0))
                     .style(row_click)
                     .on_press(Message::OpenAlbum(a.id.clone()))
                     .padding(0),
                 column![
                     text("Top result").size(12).color(MUTED),
-                    button(btn_text(a.title.clone(), 20))
+                    row_button(btn_text(a.title.clone(), 20))
                         .style(row_click)
                         .on_press(Message::OpenAlbum(a.id.clone()))
                         .padding(0)
@@ -11609,13 +11612,13 @@ impl AppState {
         };
         container(
             row![
-                button(self.art_thumb(photo.as_deref(), 96.0))
+                row_button(self.art_thumb(photo.as_deref(), 96.0))
                     .style(row_click)
                     .on_press(Message::OpenArtist(a.id.clone()))
                     .padding(0),
                 column![
                     text("Top result").size(12).color(MUTED),
-                    button(btn_text(a.name.clone(), 20))
+                    row_button(btn_text(a.name.clone(), 20))
                         .style(row_click)
                         .on_press(Message::OpenArtist(a.id.clone()))
                         .padding(0)
@@ -11691,7 +11694,7 @@ impl AppState {
     /// the album; the hover `…` (or right-click) opens its menu.
     fn search_album_row(&self, a: &Album) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, mouse_area, row};
+        use iced::widget::{column, container, mouse_area, row};
         use iced::Fill;
         let cover = self.album_row_cover(a);
         let sub = match a.year {
@@ -11702,11 +11705,11 @@ impl AppState {
         mouse_area(
             container(
                 row![
-                    button(self.art_thumb(cover.as_deref(), 40.0))
+                    row_button(self.art_thumb(cover.as_deref(), 40.0))
                         .style(row_click)
                         .on_press(Message::OpenAlbum(a.id.clone()))
                         .padding(0),
-                    button(
+                    row_button(
                         column![
                             btn_text(truncate_title(&a.title, 45), 14)
                                 .color(iced::Color::WHITE)
@@ -11748,7 +11751,7 @@ impl AppState {
     /// the artist; the hover `…` (or right-click) opens its menu.
     fn search_artist_row(&self, a: &Artist) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, mouse_area, row};
+        use iced::widget::{column, container, mouse_area, row};
         use iced::Fill;
         // Per-hit key (not the name-merged photo): duplicate artist
         // names must never alias each other's art.
@@ -11757,11 +11760,11 @@ impl AppState {
         mouse_area(
             container(
                 row![
-                    button(self.art_thumb(photo.as_deref(), 40.0))
+                    row_button(self.art_thumb(photo.as_deref(), 40.0))
                         .style(row_click)
                         .on_press(Message::OpenArtist(a.id.clone()))
                         .padding(0),
-                    button(
+                    row_button(
                         column![
                             btn_text(truncate_title(&a.name, 45), 14)
                                 .color(iced::Color::WHITE)
@@ -11814,18 +11817,18 @@ impl AppState {
     /// Clicking the art or title plays it too (there is no playlist
     /// detail page: playing is the open action).
     fn search_playlist_hero(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{column, container, row, text};
         use iced::Fill;
         let sub = format!("Playlist · {} · {}", p.author, p.detail);
         container(
             row![
-                button(self.playlist_art(p, 96.0))
+                row_button(self.playlist_art(p, 96.0))
                     .style(row_click)
                     .on_press(Message::PlaySearchPlaylist(p.id.clone()))
                     .padding(0),
                 column![
                     text("Top result").size(12).color(MUTED),
-                    button(btn_text(p.title.clone(), 20))
+                    row_button(btn_text(p.title.clone(), 20))
                         .style(row_click)
                         .on_press(Message::PlaySearchPlaylist(p.id.clone()))
                         .padding(0)
@@ -11857,18 +11860,18 @@ impl AppState {
     /// the playlist; the hover `…` (or right-click) opens its menu.
     fn search_playlist_row(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{button, column, container, mouse_area, row};
+        use iced::widget::{column, container, mouse_area, row};
         use iced::Fill;
         let sub = format!("Playlist · {} · {}", p.author, p.detail);
         let hovered = self.hovered_search_playlist.as_deref() == Some(p.id.as_str());
         mouse_area(
             container(
                 row![
-                    button(self.art_thumb(Self::playlist_row_art(p).as_deref(), 40.0))
+                    row_button(self.art_thumb(Self::playlist_row_art(p).as_deref(), 40.0))
                         .style(row_click)
                         .on_press(Message::PlaySearchPlaylist(p.id.clone()))
                         .padding(0),
-                    button(
+                    row_button(
                         column![
                             btn_text(truncate_title(&p.title, 45), 14)
                                 .color(iced::Color::WHITE)
@@ -11989,7 +11992,7 @@ impl AppState {
                 let pl_id = pl.id.clone();
                 let pl_hover = pl.id.clone();
                 mouse_area(
-                    button(
+                    row_button(
                         row![
                             art,
                             column![
@@ -12329,7 +12332,7 @@ impl AppState {
                     container(
                         row![
                             self.thumb(t),
-                            button(Self::btn_track_text_single(
+                            row_button(Self::btn_track_text_single(
                                 &t.title,
                                 &t.artist,
                                 12,
@@ -12425,7 +12428,7 @@ impl AppState {
                                     container(
                                         row![
                                             self.thumb(t),
-                                            button(Self::btn_track_text_single(
+                                            row_button(Self::btn_track_text_single(
                                                 &t.title,
                                                 &t.artist,
                                                 12,
@@ -12476,7 +12479,7 @@ impl AppState {
             let pos = self.queue.position();
             let mut rail: Vec<iced::Element<'_, Message>> = Vec::new();
             for (i, t) in self.queue.items().iter().enumerate().take(6) {
-                let btn: iced::Element<'_, Message> = button(self.thumb_sized(t, 32.0))
+                let btn: iced::Element<'_, Message> = row_button(self.thumb_sized(t, 32.0))
                     .style(hover_row)
                     .on_press(Message::QueueJump(i))
                     .padding(2)
@@ -12499,7 +12502,7 @@ impl AppState {
             );
             for (i, t) in self.autoplay.iter().enumerate().take(4) {
                 rail.push(
-                    button(self.thumb_sized(t, 32.0))
+                    row_button(self.thumb_sized(t, 32.0))
                         .style(hover_row)
                         .on_press(Message::PlayAutoplay(i))
                         .padding(2)
@@ -13043,7 +13046,7 @@ impl AppState {
     /// construction below exactly (gaps, pitches, current-row size):
     /// keep the two in sync when this layout changes.
     fn lyrics_content(&self, id: &str) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, row, text};
+        use iced::widget::{column, row, text};
         match self.lyrics_cache.get(id) {
             Some(cached) if cached.instrumental => {
                 text("[Instrumental]").size(14).color(MUTED).into()
@@ -13092,7 +13095,7 @@ impl AppState {
                         .align_y(iced::alignment::Vertical::Center)
                         .into()
                     };
-                    let row_el: iced::Element<'_, Message> = button(line)
+                    let row_el: iced::Element<'_, Message> = row_button(line)
                         .style(hover_row)
                         .on_press(Message::SeekToMs(ms))
                         .padding(4)
@@ -13385,7 +13388,7 @@ impl AppState {
                         .map(|t| {
                             let menu_id = t.id.clone();
                             mouse_area(
-                                button(
+                                row_button(
                                     column![
                                         self.thumb_hero(t, HOME_PICK_ART),
                                         column![
@@ -13476,7 +13479,7 @@ impl AppState {
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row![
-                        button(
+                        row_button(
                             column![
                                 btn_text("Weekly Mix", 15),
                                 btn_text(format!("{weekly_n} tracks"), 12).color(MUTED),
@@ -13488,7 +13491,7 @@ impl AppState {
                         .style(card_button)
                         .on_press(Message::PlayWeeklyMix)
                         .padding(0),
-                        button(
+                        row_button(
                             column![
                                 btn_text("Forgotten Favorites", 15),
                                 btn_text(format!("{forgotten_n} tracks"), 12).color(MUTED),
@@ -13674,11 +13677,11 @@ impl AppState {
                         mouse_area(
                             container(
                                 row![
-                                    button(self.thumb(t))
+                                    row_button(self.thumb(t))
                                         .style(row_click)
                                         .on_press(Message::QueueJump(i))
                                         .padding(2),
-                                    button(Self::btn_track_text_single(
+                                    row_button(Self::btn_track_text_single(
                                         &format!(
                                             "{marker}{}. {}",
                                             i + 1,
@@ -13704,7 +13707,7 @@ impl AppState {
                                         .style(hover_row)
                                         .on_press(Message::QueueDown(i))
                                         .padding(5),
-                                    button(
+                                    row_button(
                                         btn_text(fmt_time(t.duration_secs as f64), 12).color(MUTED),
                                     )
                                     .style(row_click)
@@ -13739,7 +13742,7 @@ impl AppState {
                         mouse_area(
                             container(
                                 row![
-                                    button(Self::btn_track_text_single(
+                                    row_button(Self::btn_track_text_single(
                                         &format!("{}. {}", i + 1, truncate_title(&t.title, 55)),
                                         &t.artist,
                                         13,
@@ -14356,7 +14359,7 @@ impl AppState {
     /// Search popup content, if the gate holds (window-level layer above
     /// the drawer; dismissed by scrim, Esc, navigation, or any action).
     fn suggest_popup(&self) -> Option<iced::Element<'_, Message>> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{column, container, row, text};
         use iced::Fill;
         let qnow = self.search_query.trim().to_string();
         if !(self.show_suggest
@@ -14371,7 +14374,7 @@ impl AppState {
                 .iter()
                 .enumerate()
                 .map(|(i, sug)| {
-                    button(
+                    row_button(
                         row![
                             btn_icon("search", 13.0, MUTED),
                             btn_text(sug.clone(), 13).width(Fill),
@@ -14425,7 +14428,7 @@ impl AppState {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, mouse_area, row, text, Row, Stack};
+        use iced::widget::{column, container, mouse_area, row, text, Row, Stack};
         use iced::Fill;
         // The drawer covers the center body only: header (search) stays
         // visible at all times. Fully open it replaces the body so
@@ -14545,7 +14548,7 @@ impl AppState {
                     )
                 };
                 let mut items: Vec<iced::Element<'_, Message>> = vec![
-                    button(
+                    row_button(
                         row![
                             btn_icon("play", 14.0, iced::Color::WHITE),
                             btn_text("Play now", 14)
@@ -14559,7 +14562,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("list-plus", 14.0, iced::Color::WHITE),
                             btn_text("Play next", 14)
@@ -14573,7 +14576,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("plus", 14.0, iced::Color::WHITE),
                             btn_text("Add to queue", 14)
@@ -14587,7 +14590,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("radio", 14.0, iced::Color::WHITE),
                             btn_text("Start mix", 14)
@@ -14601,7 +14604,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("mic", 14.0, iced::Color::WHITE),
                             btn_text("Lyrics", 14)
@@ -14615,7 +14618,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             heart_icon(self.liked.contains(&t.id), 14.0, heart_color),
                             btn_text(heart, 14)
@@ -14635,7 +14638,7 @@ impl AppState {
                         } else {
                             (MUTED, "Don't recommend")
                         };
-                        button(
+                        row_button(
                             row![
                                 thumbs_down_icon(disliked, 14.0, thumb_color),
                                 btn_text(thumb_label, 14)
@@ -14649,7 +14652,7 @@ impl AppState {
                         .width(Fill)
                         .into()
                     },
-                    button(
+                    row_button(
                         row![
                             btn_icon(dl_icon, 14.0, iced::Color::WHITE),
                             btn_text(dl_label, 14)
@@ -14663,7 +14666,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("disc", 14.0, iced::Color::WHITE),
                             btn_text("Go to album", 14)
@@ -14677,7 +14680,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("user-round", 14.0, iced::Color::WHITE),
                             btn_text("Go to artist", 14)
@@ -14694,7 +14697,7 @@ impl AppState {
                 ];
                 if self.queue.items().iter().any(|q| q.id == t.id) {
                     items.push(
-                        button(
+                        row_button(
                             row![
                                 btn_icon("trash", 14.0, iced::Color::WHITE),
                                 btn_text("Remove from queue", 14)
@@ -14712,7 +14715,7 @@ impl AppState {
                 }
                 if let Some(ai) = self.autoplay.iter().position(|q| q.id == t.id) {
                     items.push(
-                        button(
+                        row_button(
                             row![
                                 btn_icon("trash", 14.0, iced::Color::WHITE),
                                 btn_text("Remove from autoplay", 14)
@@ -14746,7 +14749,7 @@ impl AppState {
                 let sub_open = self.submenu_playlists_for.as_deref() == Some(t.id.as_str());
                 let toggle_idx = items.len();
                 items.push(
-                    button(
+                    row_button(
                         row![
                             btn_icon("queue", 14.0, iced::Color::WHITE),
                             btn_text(format!("Playlists ({})", membership.len()), 14).width(Fill),
@@ -14852,7 +14855,7 @@ impl AppState {
                             .into(),
                         );
                         fly_rows.push(
-                            button(
+                            row_button(
                                 row(row_items)
                                     .spacing(8)
                                     .align_y(iced::alignment::Vertical::Center),
@@ -14926,7 +14929,7 @@ impl AppState {
                 let pid2b = p.id.clone();
                 let pid3 = p.id.clone();
                 let items: Vec<iced::Element<'_, Message>> = vec![
-                    button(
+                    row_button(
                         row![
                             btn_icon("play", 14.0, iced::Color::WHITE),
                             btn_text("Play", 14),
@@ -14940,7 +14943,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("plus", 14.0, iced::Color::WHITE),
                             btn_text("Add to queue", 14),
@@ -14954,7 +14957,7 @@ impl AppState {
                     .padding(8)
                     .width(Fill)
                     .into(),
-                    button(
+                    row_button(
                         row![
                             btn_icon("shuffle", 14.0, iced::Color::WHITE),
                             btn_text("Shuffle play", 14),
@@ -14973,7 +14976,7 @@ impl AppState {
                 if pid3 != Self::FAVORITES_ID && pid3 != Self::DOWNLOADED_ID {
                     let pid4 = pid3.clone();
                     pl_items.push(
-                        button(
+                        row_button(
                             row![
                                 btn_icon("trash", 14.0, iced::Color::WHITE),
                                 btn_text("Delete playlist", 14),
