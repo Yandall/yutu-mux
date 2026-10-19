@@ -192,7 +192,7 @@ async fn post_search(
     if let Some(params) = params {
         body["params"] = serde_json::Value::String(params.to_string());
     }
-    let mut request = reqwest::Client::new()
+    let mut request = crate::shared_client()
         .post(SEARCH_URL)
         .header("User-Agent", USER_AGENT)
         .header("X-Origin", ORIGIN)

@@ -15,6 +15,15 @@ pub mod scrobble;
 pub mod stream;
 pub mod ytdlp;
 
+/// Shared HTTP client for Innertube POSTs (search, player): one pool per
+/// process instead of one per request (a search fans out to five POSTs,
+/// and a fresh client per POST burns handshakes plus pool memory).
+#[cfg(feature = "innertube")]
+pub(crate) fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 #[cfg(feature = "innertube")]
 pub use auth::{begin_google_login, poll_google_login, GoogleLogin, OAuthPersist};
 pub use auth::{AuthState, CookieAuth};

@@ -1333,7 +1333,7 @@ fn parse_leading_count(text: &str) -> Option<usize> {
 /// which upstream 0.3 cannot express: hence this bypass exists.
 async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String, StreamError> {
     let body = player_request_body(video_id, Some(po_token));
-    let response = reqwest::Client::new()
+    let response = crate::shared_client()
         .post(PLAYER_URL)
         .header("User-Agent", USER_AGENT)
         .header("X-Origin", "https://music.youtube.com")
