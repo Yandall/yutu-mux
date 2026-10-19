@@ -209,6 +209,6 @@ Done: user can plausibly replace Spotify for daily listening.
 70. Round 59: arrow cursor on content surfaces (RowButton widget: real button semantics, Idle cursor; controls keep the hand)
 71. Round 60: empty-space hand root-caused (seek-bar canvas voted Pointer globally; now hover-gated) via cursor sampler + vote tracing; tracer removed
 72. Round 61: Library nav button removed from the sidebar (route/page stays for fallbacks + tests)
-73. Round 62: bundled Inter font + Appearance prefs (family Inter/System with relaunch note, instant 80-150% interface scale; both survive restarts)
+73. Round 62: bundled Inter font + Appearance prefs (system family picker with async scan, instant 80-150% interface scale; both survive restarts)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
