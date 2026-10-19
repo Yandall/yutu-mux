@@ -38,7 +38,9 @@ pub fn x_to_value(x: f32, max: f32, width: f32) -> f32 {
 
 /// The canvas program: current value + max (fresh props per view),
 /// dragging flag in state. Press/move publish previews only on real
-/// changes; release commits. Cursor is always Pointer.
+/// changes; release commits. Cursor is Pointer on hover (and while
+/// dragging, even off-bounds); it abstains otherwise so ancestor votes
+/// win elsewhere.
 pub struct SeekBar {
     pub value: f32,
     pub max: f32,
@@ -112,11 +114,21 @@ impl Program<Message> for SeekBar {
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
-        _bounds: Rectangle,
-        _cursor: iced::mouse::Cursor,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: iced::mouse::Cursor,
     ) -> iced::mouse::Interaction {
-        iced::mouse::Interaction::Pointer
+        // Gated on hover: the canvas widget forwards our vote without
+        // checking bounds, so an unconditional Pointer wins the
+        // ancestor max-merge everywhere (hand over rows and empty
+        // space, outranking Idle but losing to Text/Grab). Dragging
+        // keeps the hand even off-bounds (update pins overshoots to
+        // the bar edge, so leaving mid-drag is routine).
+        if *state || cursor.is_over(bounds) {
+            iced::mouse::Interaction::Pointer
+        } else {
+            iced::mouse::Interaction::None
+        }
     }
 
     fn draw(
@@ -190,6 +202,39 @@ mod tests {
         assert_eq!(x_to_value(500.0, 200.0, 400.0), 200.0);
         assert_eq!(x_to_value(200.0, 0.0, 400.0), 0.0);
         assert_eq!(value_to_x(50.0, 200.0, 0.0), KNOB_R);
+    }
+
+    #[test]
+    fn cursor_is_pointer_only_over_the_bar() {
+        // Regression: the canvas widget forwards our vote without
+        // checking bounds, so an unconditional Pointer won the ancestor
+        // max-merge everywhere (hand over rows and empty space).
+        let bar = SeekBar {
+            value: 10.0,
+            max: 200.0,
+        };
+        assert_eq!(
+            bar.mouse_interaction(&false, bounds(), Cursor::Available(Point::new(300.0, 13.0))),
+            mouse::Interaction::Pointer
+        );
+        assert_eq!(
+            bar.mouse_interaction(
+                &false,
+                bounds(),
+                Cursor::Available(Point::new(300.0, 300.0))
+            ),
+            mouse::Interaction::None
+        );
+        assert_eq!(
+            bar.mouse_interaction(&false, bounds(), Cursor::Unavailable),
+            mouse::Interaction::None
+        );
+        // Dragging keeps the hand even off-bounds (overshoot pins to
+        // the bar edge instead of dropping the drag).
+        assert_eq!(
+            bar.mouse_interaction(&true, bounds(), Cursor::Available(Point::new(300.0, 300.0))),
+            mouse::Interaction::Pointer
+        );
     }
 
     #[test]
