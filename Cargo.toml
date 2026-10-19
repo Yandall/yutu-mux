@@ -29,6 +29,11 @@ tokio = { version = "1", features = ["rt", "macros", "signal"] }
 # them; only Rust allocations route here, libmpv/ffmpeg keep theirs).
 mimalloc = "0.1"
 
+[features]
+# Forwarded to yutu-ui (the binary itself has no code-gated code):
+# `cargo run --features debug-panel` from the workspace root.
+debug-panel = ["yutu-ui/debug-panel"]
+
 [profile.release]
 lto = true
 strip = true
