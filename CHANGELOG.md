@@ -14,6 +14,8 @@
 - Cursor: content surfaces (rows, cards, menus) show the arrow;
   small controls keep the pointing hand; the seek bar only votes
   the hand over itself (it used to win everywhere)
+- Sidebar: Library nav button removed (route stays for
+  delete-fallbacks; playlists + creation untouched)
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and
