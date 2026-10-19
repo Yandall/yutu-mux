@@ -16,6 +16,11 @@
   the hand over itself (it used to win everywhere)
 - Sidebar: Library nav button removed (route stays for
   delete-fallbacks; playlists + creation untouched)
+- Appearance: bundled Inter (same outlines on Linux and macOS;
+  CJK and friends still fall back per glyph) with a Settings
+  picker over every installed family (async scan, one-click
+  in-app relaunch to apply) plus an instant 80-150% interface scale; both survive
+  restarts
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

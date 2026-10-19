@@ -270,12 +270,233 @@ fn btn_icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'static,
         .into()
 }
 
+/// Display font (Settings Appearance, persisted pref `font_family`):
+/// bundled Inter by default so Linux and macOS render the same
+/// outlines; System keeps the old platform-sans behavior; Custom is
+/// any installed family picked from the system list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontFamily {
+    Inter,
+    System,
+    /// An installed family by name (interned, see [`intern_font_name`]).
+    Custom(&'static str),
+}
+
+impl FontFamily {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inter => "Inter (bundled)",
+            Self::System => "System default",
+            Self::Custom(name) => name,
+        }
+    }
+
+    fn stored(self) -> String {
+        match self {
+            Self::Inter => "inter".to_string(),
+            Self::System => "system".to_string(),
+            Self::Custom(name) => format!("name:{name}"),
+        }
+    }
+
+    fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("system") {
+            Self::System
+        } else if raw.len() >= 5 && raw[..5].eq_ignore_ascii_case("name:") {
+            // The prefix is ASCII, so byte index 5 is a boundary.
+            if raw[5..].trim().is_empty() {
+                Self::Inter
+            } else {
+                Self::Custom(intern_font_name(&raw[5..]))
+            }
+        } else {
+            // "inter", legacy values, and junk all default to Inter.
+            Self::Inter
+        }
+    }
+
+    /// Map a picker row back (the two heads are special; every other
+    /// row is a raw installed family name).
+    fn from_label(label: &str) -> Self {
+        if label == Self::Inter.label() {
+            Self::Inter
+        } else if label == Self::System.label() {
+            Self::System
+        } else if label.trim().is_empty() {
+            Self::Inter
+        } else {
+            Self::Custom(intern_font_name(label))
+        }
+    }
+
+    fn to_iced_font(self) -> iced::Font {
+        match self {
+            Self::Inter => iced::Font::with_name("Inter"),
+            Self::System => iced::Font::default(),
+            Self::Custom(name) => iced::Font::with_name(name),
+        }
+    }
+}
+
+/// Interned font names: `Family::Name` needs `&'static str`, so a
+/// picked name leaks exactly once (a handful per session at most,
+/// never per frame). Lock-poisoning falls back to the inner map,
+/// same as the icon cache.
+static INTERNED_FONTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, &'static str>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn intern_font_name(raw: &str) -> &'static str {
+    // Absurd lengths never name a real family: cap the leak (the
+    // floor keeps the cut on a char boundary).
+    let trimmed = raw.trim();
+    let mut end = trimmed.len().min(256);
+    while !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    let short = &trimmed[..end];
+    let mut cache = INTERNED_FONTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hit) = cache.get(short) {
+        return hit;
+    }
+    let leaked: &'static str = Box::leak(short.to_owned().into_boxed_str());
+    cache.insert(short.to_owned(), leaked);
+    leaked
+}
+
+/// Family names from a font database: first family per face,
+/// deduplicated and sorted (pure helper, unit-tested with a
+/// memory-loaded database).
+fn family_names_of(db: &fontdb::Database) -> Vec<String> {
+    let mut names: Vec<String> = db
+        .faces()
+        .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+        .filter(|name| !name.trim().is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Installed system families, scanned once at startup on a
+/// blocking thread (fontdb reads the OS font directories: the same
+/// source iced resolves names through, so every row renders). The
+/// window never waits for it: Settings shows the two pinned heads
+/// until the list lands.
+fn system_font_task() -> iced::Task<Message> {
+    iced::Task::perform(
+        async move {
+            tokio::task::spawn_blocking(|| {
+                let mut db = fontdb::Database::new();
+                db.load_system_fonts();
+                family_names_of(&db)
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::SystemFontsLoaded,
+    )
+}
+
+/// Picker rows: the two pinned heads plus installed families (an
+/// installed "Inter", if any, is covered by the bundled head).
+fn font_option_rows(system: &[String]) -> Vec<String> {
+    let mut options = vec![
+        FontFamily::Inter.label().to_string(),
+        FontFamily::System.label().to_string(),
+    ];
+    options.extend(
+        system
+            .iter()
+            .filter(|name| {
+                name.as_str() != FontFamily::Inter.label()
+                    && name.as_str() != FontFamily::System.label()
+                    && name.as_str() != "Inter"
+            })
+            .cloned(),
+    );
+    options
+}
+
+/// True when the picked custom family is gone from the installed
+/// list (bundled Inter always counts as present; an empty list means
+/// the startup scan has not landed yet, not that fonts are missing).
+fn is_font_missing(family: FontFamily, system: &[String]) -> bool {
+    match family {
+        FontFamily::Custom(name) => {
+            name != "Inter" && !system.is_empty() && !system.iter().any(|n| n == name)
+        }
+        FontFamily::Inter | FontFamily::System => false,
+    }
+}
+
+/// Startup-effective display family. Iced fixes the default font at
+/// launch, so the Settings pick writes the pref and takes effect on
+/// relaunch; button and bold fonts read this (not live state) so a
+/// pending pick never mixes two families in one session.
+static EFFECTIVE_FONT: std::sync::OnceLock<FontFamily> = std::sync::OnceLock::new();
+
+fn effective_font() -> FontFamily {
+    *EFFECTIVE_FONT.get_or_init(|| FontFamily::Inter)
+}
+
+/// True when the pick differs from the startup-effective family
+/// (the renderer font is fixed at launch, so only a relaunch can
+/// apply it). Single rule behind both the status note and the
+/// relaunch button below.
+fn font_pending(picked: FontFamily, effective: FontFamily) -> bool {
+    picked != effective
+}
+
+/// Status line for a font pick: `None` when the pick already runs
+/// (the picker selection confirms it, so the status keeps showing any
+/// live failure instead of being erased by a no-op); otherwise the
+/// relaunch note. Pure in both args so tests never touch the
+/// process-wide [`EFFECTIVE_FONT`].
+fn font_pick_status(picked: FontFamily, effective: FontFamily) -> Option<String> {
+    if font_pending(picked, effective) {
+        Some(format!(
+            "Display font: {} saved (relaunch to apply).",
+            picked.label()
+        ))
+    } else {
+        None
+    }
+}
+
+/// UI scale bounds (Settings Appearance slider): the application
+/// scale factor, so text and controls grow together and rows never
+/// overflow. Persisted pref `ui_scale`, applies instantly.
+pub const UI_SCALE_MIN: f32 = 0.8;
+pub const UI_SCALE_MAX: f32 = 1.5;
+pub const UI_SCALE_DEFAULT: f32 = 1.0;
+
+/// Clamp a stored scale into range (non-finite falls back to 1.0:
+/// a NaN must never reach the renderer).
+fn clamp_scale(raw: f32) -> f32 {
+    if raw.is_finite() {
+        raw.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+    } else {
+        UI_SCALE_DEFAULT
+    }
+}
+
 /// Button-weight font (one step above body): shared by button
 /// labels and button rows so the weight cannot drift per site.
+/// Family follows the startup-effective pick (see [`EFFECTIVE_FONT`]).
 fn medium_font() -> iced::Font {
     iced::Font {
         weight: iced::font::Weight::Medium,
-        ..iced::Font::default()
+        ..effective_font().to_iced_font()
+    }
+}
+
+/// Bold-weight font: same family rule as [`medium_font`] (play and
+/// shuffle pills plus the live lyric line used to pin SansSerif).
+fn bold_font() -> iced::Font {
+    iced::Font {
+        weight: iced::font::Weight::Bold,
+        ..effective_font().to_iced_font()
     }
 }
 
@@ -949,6 +1170,18 @@ pub enum Message {
     AnimationsToggled(bool),
     /// Animation duration in ms 20..=400 (Settings slider).
     AnimMsChanged(f32),
+    /// Display font pick (Settings Appearance): persisted, takes
+    /// effect on relaunch (the renderer font is fixed at startup).
+    FontFamilyChanged(FontFamily),
+    /// UI scale 0.8..=1.5 (Settings Appearance slider): persisted,
+    /// applies instantly through the application scale factor.
+    UiScaleChanged(f32),
+    /// Installed font families arrived (async startup scan for the
+    /// Settings picker; the window never waits for it).
+    SystemFontsLoaded(Vec<String>),
+    /// One-click restart for a pending font pick (Appearance shows
+    /// the button only while the pick differs from the live font).
+    RelaunchNow,
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -1760,6 +1993,19 @@ pub struct AppState {
     /// a duration in ms for panel glides.
     animations_enabled: bool,
     anim_ms: u64,
+    /// Display font pick (persisted pref `font_family`; relaunch to
+    /// apply, since the renderer font is fixed at startup).
+    font_family: FontFamily,
+    /// UI scale 0.8..=1.5 (persisted pref `ui_scale`; instant via
+    /// the application scale factor).
+    ui_scale: f32,
+    /// Installed families for the font picker (async startup scan;
+    /// empty until it lands).
+    system_font_rows: Vec<String>,
+    /// Picker rows (pinned heads plus installed families): rebuilt
+    /// when the scan lands, borrowed by the view (never rebuilt or
+    /// cloned per frame).
+    font_rows: Vec<String>,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     drawer_scroll: f32,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
@@ -3980,6 +4226,10 @@ impl AppState {
             drawer_anim: 0.0,
             animations_enabled: true,
             anim_ms: ANIM_DEFAULT_MS,
+            font_family: FontFamily::Inter,
+            ui_scale: UI_SCALE_DEFAULT,
+            system_font_rows: Vec::new(),
+            font_rows: font_option_rows(&[]),
             drawer_scroll: 0.0,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
@@ -4090,6 +4340,20 @@ impl AppState {
                 state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
             }
         }
+        // Display prefs survive restarts (garbage falls back to the
+        // defaults; the scale clamps into range and rejects NaN, which
+        // must never reach the renderer). The family applies on
+        // relaunch (the renderer font is fixed at startup).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(raw) = store.get_pref("font_family").unwrap_or(None) {
+                state.font_family = FontFamily::parse(&raw);
+            }
+            if let Some(raw) = store.get_pref("ui_scale").unwrap_or(None) {
+                if let Ok(parsed) = raw.parse::<f32>() {
+                    state.ui_scale = clamp_scale(parsed);
+                }
+            }
+        }
         // EQ curve survives restarts (garbage falls back to Flat): the
         // name re-derives from the gains, so nothing stored can lie;
         // the backend push stays silent (startup status belongs to
@@ -4166,7 +4430,7 @@ impl AppState {
         // Session restore last: the catalog is warm, so saved ids
         // resolve to full rows with art.
         state.restore_queue();
-        (state, iced::Task::none())
+        (state, system_font_task())
     }
 
     /// Browser-style navigation: records back history, clears forward.
@@ -4314,18 +4578,24 @@ impl AppState {
 
     /// Write the session snapshot (or clear it when the queue is empty).
     /// Ids only, one shot: restarts resolve rows via the track cache.
-    fn persist_queue(&mut self) {
+    /// Reports success so the relaunch path can cancel on a dead store
+    /// instead of exiting into a lost session.
+    fn persist_queue(&mut self) -> bool {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
-            return;
+            return false;
         };
         if self.queue.is_empty() {
-            let _ = store.clear_queue();
+            let ok = store.clear_queue().is_ok();
             self.queue_saved = None;
+            ok
         } else {
             let snap = self.queue_snapshot();
             if store.save_queue(&snap).is_ok() {
                 self.queue_saved = Some(snap);
                 self.queue_saved_at = Some(std::time::Instant::now());
+                true
+            } else {
+                false
             }
         }
     }
@@ -5324,10 +5594,7 @@ impl AppState {
         button(
             row![
                 btn_icon("play", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::default()
-                }),
+                text(label).size(13).font(bold_font()),
             ]
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center),
@@ -5345,10 +5612,7 @@ impl AppState {
         button(
             row![
                 btn_icon("shuffle", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::default()
-                }),
+                text(label).size(13).font(bold_font()),
             ]
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center),
@@ -7310,12 +7574,19 @@ impl AppState {
     /// calls this on change, so drags settle without write storms;
     /// toggles land at once. Saved-state updates even when the store
     /// fails (a dead store retries nothing every tick).
-    fn persist_eq(&mut self) {
-        if let Ok(store) = LibraryStore::open(&self.library_path) {
-            let _ = store.set_pref("eq_gains", &EqPreset::gains_to_json(&self.eq_gains));
-            let _ = store.set_pref("eq_enabled", if self.eq_enabled { "1" } else { "0" });
-        }
+    fn persist_eq(&mut self) -> bool {
+        let ok = LibraryStore::open(&self.library_path)
+            .map(|store| {
+                store
+                    .set_pref("eq_gains", &EqPreset::gains_to_json(&self.eq_gains))
+                    .is_ok()
+                    && store
+                        .set_pref("eq_enabled", if self.eq_enabled { "1" } else { "0" })
+                        .is_ok()
+            })
+            .unwrap_or(false);
         self.eq_saved = Some((self.eq_preset.clone(), self.eq_gains, self.eq_enabled));
+        ok
     }
 
     /// One-line EQ backend note for Settings (honest on rodio builds).
@@ -9331,6 +9602,71 @@ impl AppState {
                 self.anim_ms = ms;
                 if let Ok(store) = LibraryStore::open(&self.library_path) {
                     let _ = store.set_pref("anim_ms", &ms.to_string());
+                }
+            }
+            Message::FontFamilyChanged(family) => {
+                self.font_family = family;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("font_family", &family.stored());
+                }
+                // The renderer font is fixed at startup: a changed pick
+                // notes the relaunch, a re-pick of the live one leaves
+                // the status alone (release builds show failures only,
+                // so a no-op must never erase a visible failure).
+                if let Some(note) = font_pick_status(family, effective_font()) {
+                    self.status = note;
+                }
+            }
+            Message::UiScaleChanged(scale) => {
+                let scale = clamp_scale(scale);
+                self.ui_scale = scale;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("ui_scale", &scale.to_string());
+                }
+            }
+            Message::SystemFontsLoaded(mut names) => {
+                // Belt and braces (the task already sorts): picker rows
+                // stay ordered and unique whatever arrived.
+                names.sort();
+                names.dedup();
+                self.system_font_rows = names;
+                self.font_rows = font_option_rows(&self.system_font_rows);
+            }
+            Message::RelaunchNow => {
+                // One-click restart for the pending font pick: the font
+                // pref is already stored. Identity + EQ flush first (a
+                // manual quit relies on the same savers, so this keeps
+                // parity with it); a failed save cancels instead of
+                // exiting into a lost session. Deliberately untestable
+                // (the success path diverges).
+                if !(self.persist_eq() && self.persist_queue()) {
+                    self.status = "Relaunch cancelled: could not save the session.".into();
+                    yutu_core::app_log::warn(
+                        "relaunch",
+                        format_args!("session save failed, staying put"),
+                    );
+                } else {
+                    match std::env::current_exe() {
+                        Ok(exe) => match std::process::Command::new(&exe).spawn() {
+                            Ok(_) => std::process::exit(0),
+                            Err(e) => {
+                                self.status =
+                                    "Relaunch failed: quit and start the app manually.".into();
+                                yutu_core::app_log::warn(
+                                    "relaunch",
+                                    format_args!("spawn {} failed: {e}", exe.display()),
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            self.status =
+                                "Relaunch failed: quit and start the app manually.".into();
+                            yutu_core::app_log::warn(
+                                "relaunch",
+                                format_args!("current_exe failed: {e}"),
+                            );
+                        }
+                    }
                 }
             }
             Message::SidebarFilterChanged(f) => {
@@ -13060,10 +13396,7 @@ impl AppState {
                             text(l.text.clone())
                                 .size(19)
                                 .line_height(iced::widget::text::LineHeight::Relative(1.4),)
-                                .font(iced::Font {
-                                    weight: iced::font::Weight::Bold,
-                                    ..iced::Font::default()
-                                })
+                                .font(bold_font())
                                 .color(SPOT_GREEN),
                         ]
                         .spacing(10)
@@ -13347,8 +13680,8 @@ impl AppState {
     fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{
-            button, checkbox, column, container, mouse_area, row, scrollable, slider, text,
-            text_input, toggler,
+            button, checkbox, column, container, mouse_area, pick_list, row, scrollable, slider,
+            text, text_input, toggler,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -13982,6 +14315,33 @@ impl AppState {
                 .padding(12)
                 .width(Fill)
                 .into();
+                // Uninstalled pick: the stored custom family is gone, so
+                // body text silently uses the fallback until repicked
+                // (bundled Inter and System can never go missing).
+                let stale_font_note: iced::Element<'_, Message> = if is_font_missing(
+                    self.font_family,
+                    &self.system_font_rows,
+                ) {
+                    text("That family is no longer installed: text falls back until you pick another.")
+                            .size(12)
+                            .color(MUTED)
+                            .into()
+                } else {
+                    text("").size(1).into()
+                };
+                // Pending pick: one click restarts into the new font
+                // (the queue snapshot restores paused, so nothing a
+                // manual quit would keep is lost).
+                let relaunch_button: iced::Element<'_, Message> =
+                    if font_pending(self.font_family, effective_font()) {
+                        button(btn_text("Relaunch now to apply", 12))
+                            .style(hover_row)
+                            .on_press(Message::RelaunchNow)
+                            .padding(5)
+                            .into()
+                    } else {
+                        text("").size(1).into()
+                    };
                 column![
                     text("Settings").size(22),
                     text("Playback").size(17),
@@ -14008,6 +14368,31 @@ impl AppState {
                         .size(12)
                         .color(MUTED),
                     eq_panel,
+                    text("Appearance").size(17),
+                    text("Display font (takes effect on relaunch)").size(13),
+                    pick_list(
+                        self.font_rows.as_slice(),
+                        Some(self.font_family.label().to_string()),
+                        |name: String| Message::FontFamilyChanged(FontFamily::from_label(&name)),
+                    )
+                    .width(Fill),
+                    relaunch_button,
+                    stale_font_note,
+                    column![
+                        text(format!("Interface scale: {:.0}%", self.ui_scale * 100.0)).size(13),
+                        slider(
+                            UI_SCALE_MIN..=UI_SCALE_MAX,
+                            self.ui_scale,
+                            Message::UiScaleChanged
+                        )
+                        .step(0.05_f32)
+                        .style(themed_slider)
+                        .width(Fill),
+                        text("Scales text and controls together, applies instantly.")
+                            .size(12)
+                            .color(MUTED),
+                    ]
+                    .spacing(4),
                     text("Animations").size(17),
                     checkbox(self.animations_enabled)
                         .label("Enable animations (off = panels snap instantly)")
@@ -15265,6 +15650,16 @@ impl AppState {
 }
 
 pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
+    // Display startup: the bundled Inter faces always register (the
+    // System pick just leaves them unused) and the stored family
+    // picks the renderer default. Scale reads live state, so the
+    // slider applies instantly; the family is startup-fixed.
+    let startup_family = LibraryStore::open(&default_library_path())
+        .ok()
+        .and_then(|store| store.get_pref("font_family").unwrap_or(None))
+        .map(|raw| FontFamily::parse(&raw))
+        .unwrap_or(FontFamily::Inter);
+    let _ = EFFECTIVE_FONT.set(startup_family);
     iced::application(
         move || {
             let (mut state, task) = AppState::new();
@@ -15276,6 +15671,11 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         AppState::view,
     )
     .title("yutu-mux")
+    .font(include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice())
+    .default_font(startup_family.to_iced_font())
+    .scale_factor(|state: &AppState| clamp_scale(state.ui_scale))
     .theme(AppState::theme)
     .subscription(AppState::subscription)
     .run()
@@ -20464,6 +20864,194 @@ mod tests {
         let _ = store.set_pref("anim_ms", "junk");
         let (fallback, _) = AppState::with_library_path(s.library_path.clone());
         assert_eq!(fallback.anim_ms, ANIM_DEFAULT_MS);
+    }
+
+    #[test]
+    fn font_prefs_default_parse_and_persist() {
+        // Inter renders the same outlines on Linux and macOS, so it is
+        // the default; System keeps the old platform-sans behavior.
+        let s = test_state();
+        assert_eq!(s.font_family, FontFamily::Inter);
+        assert_eq!(FontFamily::parse("system"), FontFamily::System);
+        assert_eq!(FontFamily::parse("SYSTEM "), FontFamily::System);
+        assert_eq!(FontFamily::parse("junk"), FontFamily::Inter);
+        assert_eq!(FontFamily::parse(""), FontFamily::Inter);
+        assert_eq!(FontFamily::parse("name:"), FontFamily::Inter);
+        assert_eq!(
+            FontFamily::parse("NAME:DejaVu Sans"),
+            FontFamily::parse("name:DejaVu Sans")
+        );
+        // Custom families round-trip through storage.
+        let custom = FontFamily::parse("name:DejaVu Sans");
+        assert_eq!(custom, FontFamily::Custom(intern_font_name("DejaVu Sans")));
+        assert_eq!(FontFamily::parse(&custom.stored()), custom);
+        assert_eq!(custom.label(), "DejaVu Sans");
+        // Picker rows map back: heads are special, the rest is raw.
+        assert_eq!(FontFamily::from_label("Inter (bundled)"), FontFamily::Inter);
+        assert_eq!(FontFamily::from_label("System default"), FontFamily::System);
+        assert_eq!(FontFamily::from_label("DejaVu Sans"), custom);
+        // Interning leaks once: the same name returns one pointer.
+        let (a, b) = (
+            intern_font_name("DejaVu Sans"),
+            intern_font_name("DejaVu Sans"),
+        );
+        assert!(std::ptr::eq(a, b));
+        // The choice persists: a fresh state on the same library path
+        // reopens with it (garbage falls back to the default).
+        let mut s = s;
+        let _ = s.update(Message::FontFamilyChanged(custom));
+        assert_eq!(s.font_family, custom);
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.font_family, custom);
+        let Ok(store) = LibraryStore::open(&s.library_path) else {
+            panic!("test library must open");
+        };
+        let _ = store.set_pref("font_family", "junk");
+        let (fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(fallback.font_family, FontFamily::Inter);
+    }
+
+    #[test]
+    fn system_family_rows_come_sorted_and_deduped() {
+        // Memory-loaded database (no system scan): the bundled faces
+        // share one family, so three loads collapse to one row.
+        let mut db = fontdb::Database::new();
+        for bytes in [
+            include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice(),
+            include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice(),
+            include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice(),
+        ] {
+            db.load_font_data(bytes.to_vec());
+        }
+        assert_eq!(family_names_of(&db), vec!["Inter".to_string()]);
+        assert!(family_names_of(&fontdb::Database::new()).is_empty());
+        // The picker heads the list with the two pinned rows; an
+        // installed Inter stays covered by the bundled head.
+        let rows = font_option_rows(&[
+            "DejaVu Sans".to_string(),
+            "Inter".to_string(),
+            "DejaVu Sans".to_string(),
+        ]);
+        assert_eq!(rows[0], "Inter (bundled)");
+        assert_eq!(rows[1], "System default");
+        assert!(rows.contains(&"DejaVu Sans".to_string()));
+        assert!(!rows.iter().any(|r| r == "Inter"));
+        // The async scan lands through the message (heads only until
+        // then, since tests never run the startup task).
+        let mut s = test_state();
+        assert_eq!(
+            s.font_rows,
+            vec!["Inter (bundled)".to_string(), "System default".to_string()]
+        );
+        let _ = s.update(Message::SystemFontsLoaded(vec![
+            "B".to_string(),
+            "A".to_string(),
+            "A".to_string(),
+        ]));
+        assert_eq!(s.system_font_rows, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(s.font_rows[2..], ["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn missing_font_note_only_for_gone_custom_families() {
+        let system = vec!["DejaVu Sans".to_string()];
+        assert!(!is_font_missing(FontFamily::Inter, &system));
+        assert!(!is_font_missing(FontFamily::System, &system));
+        // Bundled Inter renders without any installed namesake.
+        assert!(!is_font_missing(
+            FontFamily::Custom(intern_font_name("Inter")),
+            &system
+        ));
+        assert!(!is_font_missing(
+            FontFamily::Custom(intern_font_name("Gone")),
+            &[]
+        ));
+        assert!(is_font_missing(
+            FontFamily::Custom(intern_font_name("Gone")),
+            &system
+        ));
+        assert!(!is_font_missing(
+            FontFamily::Custom(intern_font_name("DejaVu Sans")),
+            &system
+        ));
+    }
+
+    #[test]
+    fn font_pending_rule() {
+        assert!(!font_pending(FontFamily::Inter, FontFamily::Inter));
+        assert!(!font_pending(FontFamily::System, FontFamily::System));
+        assert!(font_pending(FontFamily::System, FontFamily::Inter));
+        let (a, b) = (
+            FontFamily::Custom(intern_font_name("DejaVu Sans")),
+            FontFamily::Custom(intern_font_name("Noto Sans")),
+        );
+        assert!(!font_pending(a, a));
+        assert!(font_pending(a, b));
+        assert!(font_pending(
+            FontFamily::Custom(intern_font_name("DejaVu Sans")),
+            FontFamily::Inter
+        ));
+    }
+
+    #[test]
+    fn font_change_status_names_the_restart() {
+        // Pure in both args: no test depends on the process-wide
+        // effective family (only run() sets it, and tests never do).
+        assert_eq!(font_pick_status(FontFamily::Inter, FontFamily::Inter), None);
+        assert_eq!(
+            font_pick_status(FontFamily::System, FontFamily::System),
+            None
+        );
+        let note = font_pick_status(FontFamily::System, FontFamily::Inter)
+            .expect("changed pick must note the restart");
+        assert!(note.contains("relaunch"), "{note}");
+        // The no-op pick leaves the status alone (release builds show
+        // failures only, so it must never erase a visible failure).
+        let mut s = test_state();
+        let before = s.status.clone();
+        let _ = s.update(Message::FontFamilyChanged(FontFamily::Inter));
+        assert_eq!(s.status, before);
+        let _ = s.update(Message::FontFamilyChanged(FontFamily::System));
+        assert!(s.status.contains("relaunch"), "{}", s.status);
+    }
+
+    #[test]
+    fn ui_scale_clamp_persist_and_nan_fallback() {
+        let s = test_state();
+        assert_eq!(s.ui_scale, UI_SCALE_DEFAULT);
+        assert_eq!(clamp_scale(99.0), UI_SCALE_MAX);
+        assert_eq!(clamp_scale(0.01), UI_SCALE_MIN);
+        assert_eq!(clamp_scale(f32::NAN), UI_SCALE_DEFAULT);
+        assert_eq!(clamp_scale(f32::INFINITY), UI_SCALE_DEFAULT);
+        // The slider clamps into range and persists across restarts.
+        let mut s = s;
+        let _ = s.update(Message::UiScaleChanged(99.0));
+        assert_eq!(s.ui_scale, UI_SCALE_MAX);
+        let _ = s.update(Message::UiScaleChanged(0.01));
+        assert_eq!(s.ui_scale, UI_SCALE_MIN);
+        let _ = s.update(Message::UiScaleChanged(1.25));
+        assert_eq!(s.ui_scale, 1.25);
+        let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(reopened.ui_scale, 1.25);
+        let Ok(store) = LibraryStore::open(&s.library_path) else {
+            panic!("test library must open");
+        };
+        let _ = store.set_pref("ui_scale", "junk");
+        let (fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(fallback.ui_scale, UI_SCALE_DEFAULT);
+        let _ = store.set_pref("ui_scale", "NaN");
+        let (nan_fallback, _) = AppState::with_library_path(s.library_path.clone());
+        assert_eq!(nan_fallback.ui_scale, UI_SCALE_DEFAULT);
+    }
+
+    #[test]
+    fn button_fonts_follow_the_effective_family() {
+        // Explicit-weight fonts must share the body family (a pinned
+        // SansSerif here would split buttons from Inter body text).
+        assert_eq!(medium_font().weight, iced::font::Weight::Medium);
+        assert_eq!(bold_font().weight, iced::font::Weight::Bold);
+        assert_eq!(medium_font().family, effective_font().to_iced_font().family);
+        assert_eq!(bold_font().family, effective_font().to_iced_font().family);
     }
 
     #[test]
