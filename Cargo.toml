@@ -24,6 +24,10 @@ yutu-ui = { path = "crates/yutu-ui" }
 yutu-desktop = { path = "crates/yutu-desktop" }
 iced = { version = "0.14", features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "macros", "signal"] }
+# Prompt page return on free (the system allocator retains freed spans,
+# which inflates the macOS footprint long after the churn that made
+# them; only Rust allocations route here, libmpv/ffmpeg keep theirs).
+mimalloc = "0.1"
 
 [profile.release]
 lto = true

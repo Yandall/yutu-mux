@@ -1409,8 +1409,19 @@ const ART_SWEEP_CAP: usize = 48;
 /// In-flight fetch ceiling (sweeps pause past it; completions chain).
 const ART_INFLIGHT_CAP: usize = 48;
 /// In-memory handle cap (evicted entries re-resolve from disk, which
-/// the cache keeps, so dropping here never blanks rows).
-const ART_MEM_CAP: usize = 500;
+/// the cache keeps, so dropping here never blanks rows). Sized for one
+/// viewport plus overscan: visible covers decode once, the rest reads
+/// from disk on scroll (cheap) instead of pinning decoded textures.
+const ART_MEM_CAP: usize = 128;
+/// Playback history cap (drives Home picks, which read the last 8):
+/// very long sessions must not grow it without bound.
+const HISTORY_CAP: usize = 500;
+/// Lyrics cache cap (entries are KBs of text; a dropped half refetches
+/// on demand, never in a loop: plays fetch once per need).
+const LYRICS_CACHE_CAP: usize = 100;
+/// Resolved stream-URL cap (entries expire in hours; the sweep below
+/// drops the dead ones first).
+const URL_CACHE_CAP: usize = 200;
 /// On-disk art cache cap (LRU by mtime, pruned at most every interval).
 const ART_CACHE_MAX_BYTES: u64 = 150 * 1024 * 1024;
 const ART_PRUNE_MIN_SECS: u64 = 300;
@@ -2053,50 +2064,48 @@ impl AppState {
                 ..bundle.filtered
             },
         };
-        let art_urls: Vec<String> = bundle
+        // Row keys for collection hits: every list row renders the
+        // small raster, so stage it (heroes, cards, and menus warm
+        // their own 544px keys on demand via sweeps and menu opens:
+        // staging both would double-fetch under the task gates).
+        // Album rows share `album_row_cover` exactly (the catalog
+        // already holds this bundle's tracks, registered above);
+        // artists/playlists use the hit's own thumb, like their views.
+        let mut seen = std::collections::HashSet::new();
+        let mut art_urls: Vec<String> = Vec::new();
+        for a in bundle
             .filtered
             .albums
             .iter()
+            .chain(bundle.all.albums.iter())
+        {
+            // `album_row_cover` returns the rewritten key already.
+            if let Some(url) = self.album_row_cover(a) {
+                if seen.insert(url.clone()) {
+                    art_urls.push(url);
+                }
+            }
+        }
+        for u in bundle
+            .filtered
+            .artists
+            .iter()
+            .chain(bundle.all.artists.iter())
             .filter_map(|a| a.thumbnail_url.clone())
             .chain(
                 bundle
                     .filtered
-                    .artists
-                    .iter()
-                    .filter_map(|a| a.thumbnail_url.clone()),
-            )
-            .chain(
-                bundle
-                    .filtered
                     .playlists
                     .iter()
+                    .chain(bundle.all.playlists.iter())
                     .filter_map(|p| p.thumbnail_url.clone()),
             )
-            .chain(
-                bundle
-                    .all
-                    .albums
-                    .iter()
-                    .filter_map(|a| a.thumbnail_url.clone()),
-            )
-            .chain(
-                bundle
-                    .all
-                    .artists
-                    .iter()
-                    .filter_map(|a| a.thumbnail_url.clone()),
-            )
-            .chain(
-                bundle
-                    .all
-                    .playlists
-                    .iter()
-                    .filter_map(|p| p.thumbnail_url.clone()),
-            )
-            // Hi-res keys: display sites show the 544px rewrite and
-            // art_thumb is an exact-key lookup, so warm what is shown.
-            .map(|u| yutu_core::hires_thumb_url(&u, 544))
-            .collect();
+            .map(|u| Self::row_art_url(&u))
+        {
+            if seen.insert(u.clone()) {
+                art_urls.push(u);
+            }
+        }
         let mut tasks = self.artwork_tasks(&bundle.filtered.tracks);
         tasks.extend(self.artwork_tasks(&bundle.all.tracks));
         tasks.extend(self.artwork_tasks_for_urls(&art_urls));
@@ -2375,15 +2384,26 @@ impl AppState {
         if !need_meta.is_empty() {
             tasks.push(Self::hydrate_task(need_meta));
         }
-        // Artwork: visible rows plus sidebar covers, disk-first. Both URL
-        // keys are warmed (rows read the raw thumb, hero cards read the
-        // 544px key): warming only one leaves the other placeholder.
-        // The right panel shows on every route, so its head warms too.
+        // Artwork: visible rows plus sidebar covers, disk-first. Row
+        // slots carry the row raster (what rows render); hero keys warm
+        // only for hero displays, so the same image is never fetched at
+        // two rasters. The right panel shows on every route, so its head
+        // warms too.
         let mut art_tracks = self.visible_tracks_for_art();
         art_tracks.extend(self.sidebar_cover_tracks());
         art_tracks.extend(self.queue.items().iter().take(6).cloned());
         art_tracks.extend(self.autoplay.iter().take(2).cloned());
         tasks.extend(self.artwork_tasks(&art_tracks));
+        // Home-pick cards render heroes but live in the horizontal strip
+        // (no sweep slots of their own): warm them here on the Home
+        // route, deduped by the usual memory/in-flight/disk gates.
+        if matches!(self.route, Route::Home) {
+            for t in self.home_pick_tracks() {
+                if let Some(task) = self.large_art_task(&t) {
+                    tasks.push(task);
+                }
+            }
+        }
         // Viewport sweeps for the scrolled lists (forced: new content
         // must fetch its window without waiting for a scroll event).
         for key in ["body", "home", "queue"] {
@@ -4512,13 +4532,52 @@ impl AppState {
         let _ = store.remove_from_playlist(playlist_id, track_id);
     }
 
+    /// Cache fetched lyrics, capped: entries are KBs of text, but a
+    /// very long session must not pin every verse ever viewed. A dropped
+    /// half refetches on demand, never in a loop (plays fetch once per
+    /// need behind the `lyrics_loading` guard). The playing track and
+    /// the open lyrics page are never evicted (dropping what is on
+    /// screen would blank it until the next navigation).
+    fn cache_lyrics(&mut self, id: String, lyrics: yutu_core::LyricsResult) {
+        if self.lyrics_cache.len() >= LYRICS_CACHE_CAP {
+            let protect_playing = self.queue.current().map(|t| t.id.clone());
+            let protect_page = match &self.route {
+                Route::Lyrics(page) => Some(page.clone()),
+                _ => None,
+            };
+            let drop: Vec<String> = self
+                .lyrics_cache
+                .keys()
+                .filter(|k| {
+                    Some(k.as_str()) != protect_playing.as_deref()
+                        && Some(k.as_str()) != protect_page.as_deref()
+                })
+                .take(LYRICS_CACHE_CAP / 2)
+                .cloned()
+                .collect();
+            for key in drop {
+                self.lyrics_cache.remove(&key);
+            }
+        }
+        self.lyrics_cache.insert(id, lyrics);
+    }
+
+    /// Record a play in history, capped: Home picks read the last 8,
+    /// so anything past the cap is dead weight in long sessions.
+    fn push_history(&mut self, id: String) {
+        self.history.push(id);
+        if self.history.len() > HISTORY_CAP {
+            self.history.drain(..self.history.len() - HISTORY_CAP);
+        }
+    }
+
     /// Click-to-play: queue the track, jump to it, and fetch real audio.
     /// The fetch task completes in `StreamResolved`; the tone is gone.
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
         let track = self.resolve_for_play(&track);
         self.absorb_autoplay(&track.id);
         self.playing_from = "Single".into();
-        self.history.push(track.id.clone());
+        self.push_history(track.id.clone());
         self.persist_play(&track.id);
         self.queue.push(track);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
@@ -4553,14 +4612,16 @@ impl AppState {
         Self::hero_art_url(merged)
     }
 
-    /// Fetch the hero artwork unless cached/in-flight (drawer hero): the
-    /// large URL first, falling back to the small one like the hero does.
-    /// Catalog-aware so stale rows warm the same key they display.
+    /// Fetch the hero artwork unless cached/in-flight/cooled (drawer
+    /// hero): the large URL first, falling back to the small one like
+    /// the hero does. Catalog-aware so stale rows warm the same key
+    /// they display.
     fn large_art_task(&mut self, t: &Track) -> Option<iced::Task<Message>> {
         let url = self.hero_art_for(t)?;
         if self.art_mem(&url).is_some()
             || self.artwork_loading.contains(&url)
             || artwork_file_exists(&url)
+            || Self::cooled(&self.artwork_failed, &url)
         {
             return None;
         }
@@ -5017,7 +5078,7 @@ impl AppState {
         if let Some(art) = self.large_art_task(t) {
             tasks.push(art);
         }
-        // Warm rows ahead (current + next 5, both keys): art lands without
+        // Warm rows ahead (current + next 5, thumbs): art lands without
         // waiting for another payload, and failures retry since
         // ArtworkReady clears the loading flag on error.
         if let Some(pos) = self.queue.position() {
@@ -5038,7 +5099,7 @@ impl AppState {
             {
                 // Downloaded lyrics render with no network.
                 if let Some(cached) = load_lyrics(&t.id) {
-                    self.lyrics_cache.insert(t.id.clone(), cached);
+                    self.cache_lyrics(t.id.clone(), cached);
                 } else {
                     self.lyrics_loading = Some(t.id.clone());
                     tasks.push(Self::lyrics_task(t.clone()));
@@ -5120,7 +5181,7 @@ impl AppState {
             return false;
         }
         let t = self.autoplay.remove(0);
-        self.history.push(t.id.clone());
+        self.push_history(t.id.clone());
         self.persist_play(&t.id);
         self.queue.push(t);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
@@ -5438,7 +5499,8 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{button, column};
         use iced::Fill;
-        // Same hires key stage_search warms (raw would placeholder).
+        // 544 card key (grid sweeps warm it; the stager only stages
+        // small row rasters).
         let photo = a
             .thumbnail_url
             .as_deref()
@@ -5469,25 +5531,36 @@ impl AppState {
         .into()
     }
 
+    /// Cover source for an album: API art first, else the first known
+    /// track's. Shared by the card-size and row-size keys below so the
+    /// source never drifts.
+    fn album_cover_source(&self, album: &Album) -> Option<String> {
+        album.thumbnail_url.clone().or_else(|| {
+            self.catalog
+                .values()
+                .find(|t| t.album.as_deref() == Some(album.title.as_str()))
+                .and_then(|t| t.thumbnail_url.clone())
+        })
+    }
+
     /// Cover for an album: API art first, else the first known track's.
     fn album_cover(&self, album: &Album) -> Option<String> {
         // Hi-res for 140px+ cards and detail headers (hires passes
         // non-YTM hosts through unchanged, so tests stay green).
-        album
-            .thumbnail_url
-            .clone()
-            .or_else(|| {
-                self.catalog
-                    .values()
-                    .find(|t| t.album.as_deref() == Some(album.title.as_str()))
-                    .and_then(|t| t.thumbnail_url.clone())
-            })
+        self.album_cover_source(album)
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 
-    /// Photo for an artist: last search payload first, else catalog.
-    /// Hi-res for 140px+ cards and the detail header.
-    fn artist_photo(&self, name: &str) -> Option<String> {
+    /// Row-size album cover (list rows render at 40px): same source,
+    /// small raster (row slots warm this key, never the 544 one).
+    fn album_row_cover(&self, album: &Album) -> Option<String> {
+        self.album_cover_source(album)
+            .map(|u| Self::row_art_url(&u))
+    }
+
+    /// Photo source for an artist: last search payload first, else
+    /// catalog. Shared by the card-size and row-size keys below.
+    fn artist_photo_source(&self, name: &str) -> Option<String> {
         self.results
             .artists
             .iter()
@@ -5499,6 +5572,12 @@ impl AppState {
                     .find(|t| t.artist == name)
                     .and_then(|t| t.thumbnail_url.clone())
             })
+    }
+
+    /// Photo for an artist: last search payload first, else catalog.
+    /// Hi-res for 140px+ cards and the detail header.
+    fn artist_photo(&self, name: &str) -> Option<String> {
+        self.artist_photo_source(name)
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 
@@ -5522,9 +5601,9 @@ impl AppState {
             tracks.iter().map(|t| t.id.as_str()).collect();
         self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
         let first_new = self.queue.len();
-        // Warm art for the incoming head (~6 tracks: 2 keys each under
-        // the 12-task cap); the rest paints as the ahead-window reaches
-        // them on advance. Deduped, so repeats cost nothing.
+        // Warm art for the incoming head (thumbs, 12 tracks under the
+        // task cap); the rest paints as the ahead-window reaches them
+        // on advance. Deduped, so repeats cost nothing.
         let art_tasks = self.artwork_tasks(&tracks);
         // Resolve in memory first, persist once: per-track SQLite traffic
         // (open + fsync each) freezes the GUI on long playlists.
@@ -5604,30 +5683,15 @@ impl AppState {
     }
 
     /// Fetch missing artwork for freshly seen tracks (cap: 12 per payload,
-    /// deduped by URL, never refetched once attempted).
+    /// deduped by URL, never refetched once attempted). Row raster only:
+    /// rows render it, and hero cards warm their own 544px key on
+    /// demand, so warming both here would download every cover twice.
     fn artwork_tasks(&mut self, tracks: &[Track]) -> Vec<iced::Task<Message>> {
-        // Both resolutions, deduped first. Two keys per track means the
-        // 12-task cap covers about 6 fresh tracks per payload, not 12.
-        // The large side uses the hero URL so rows share the drawer cache
-        // key instead of downloading the same image twice.
         let mut seen = std::collections::HashSet::new();
         let urls: Vec<String> = tracks
             .iter()
-            .flat_map(|t| {
-                [
-                    t.thumbnail_url.clone(),
-                    // Hero key for small-only tracks so the drawer shares
-                    // the row fetch instead of warming late.
-                    t.thumbnail_large_url
-                        .clone()
-                        .map(|u| yutu_core::hires_thumb_url(&u, 544))
-                        .or(t
-                            .thumbnail_url
-                            .clone()
-                            .map(|u| yutu_core::hires_thumb_url(&u, 544))),
-                ]
-            })
-            .flatten()
+            .filter_map(|t| t.thumbnail_url.as_deref())
+            .map(Self::row_art_url)
             .filter(|u| seen.insert(u.clone()))
             .collect();
         self.artwork_tasks_for_urls(&urls)
@@ -5791,30 +5855,6 @@ impl AppState {
         urls
     }
 
-    /// Both art keys for one track (row reads the raw thumb, heroes
-    /// read the 544px key): slots warm both so neither flashes later.
-    fn track_art_keys(t: &Track) -> Vec<String> {
-        let mut urls = Vec::new();
-        if let Some(u) = t.thumbnail_url.clone() {
-            urls.push(u);
-        }
-        let hero = t
-            .thumbnail_large_url
-            .clone()
-            .map(|u| yutu_core::hires_thumb_url(&u, 544))
-            .or_else(|| {
-                t.thumbnail_url
-                    .clone()
-                    .map(|u| yutu_core::hires_thumb_url(&u, 544))
-            });
-        if let Some(h) = hero {
-            if !urls.contains(&h) {
-                urls.push(h);
-            }
-        }
-        urls
-    }
-
     /// Home "Jump back in" picks (single source for the grid view and
     /// the art visibility slots): recent history, else liked tracks.
     fn home_pick_tracks(&self) -> Vec<Track> {
@@ -5839,16 +5879,18 @@ impl AppState {
     }
 
     /// Uniform rows of tracks as art slots (`pitch` includes spacing
-    /// and dividers): one entry per track per key.
+    /// and dividers): one entry per track (the row raster rows render;
+    /// heroes warm on demand via [`large_art_task`]).
     fn track_row_slots(tracks: &[Track], y0: f32, pitch: f32) -> Vec<(String, f32)> {
-        let mut slots = Vec::new();
-        for (i, t) in tracks.iter().enumerate() {
-            let y = y0 + i as f32 * pitch;
-            for url in Self::track_art_keys(t) {
-                slots.push((url, y));
-            }
-        }
-        slots
+        tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                t.thumbnail_url
+                    .as_deref()
+                    .map(|u| (Self::row_art_url(u), y0 + i as f32 * pitch))
+            })
+            .collect()
     }
 
     /// Estimated text block height (line height ~1.35): mixed-page
@@ -5907,13 +5949,14 @@ impl AppState {
                     slots.extend(Self::track_row_slots(&hits, y, ROW_PITCH));
                     y += (hits.len().min(6) as f32) * ROW_PITCH + 4.0 + 24.0 + 12.0;
                 }
-                // Picks grid (same order as the view).
+                // Picks grid (same order as the view): the cards render
+                // the hero key (`thumb_hero`), so only it is warmed.
                 y += Self::text_h(19.0) + 12.0;
                 let picks = self.home_pick_tracks();
                 let cols = self.grid_cols();
                 for (i, t) in picks.iter().enumerate() {
                     let gy = y + (i / cols) as f32 * GRID_PITCH;
-                    for url in Self::track_art_keys(t) {
+                    if let Some(url) = Self::hero_art_url(t) {
                         slots.push((url, gy));
                     }
                 }
@@ -5928,7 +5971,8 @@ impl AppState {
                             let y = BODY_PAD + CHIPS_H + 10.0;
                             match hero {
                                 SearchHit::Song(t) => {
-                                    for url in Self::track_art_keys(t) {
+                                    // The hero card renders the 544px key.
+                                    if let Some(url) = Self::hero_art_url(t) {
                                         slots.push((url, y));
                                     }
                                 }
@@ -5962,30 +6006,27 @@ impl AppState {
                                 BODY_PAD + CHIPS_H + 10.0 + HERO_H + 10.0 + i as f32 * ROW_PITCH;
                             match hit {
                                 SearchHit::Song(t) => {
-                                    for url in Self::track_art_keys(t) {
+                                    // Mixed rows render the row raster.
+                                    if let Some(url) =
+                                        t.thumbnail_url.as_deref().map(Self::row_art_url)
+                                    {
                                         slots.push((url, y));
                                     }
                                 }
                                 SearchHit::Album(a) => {
-                                    if let Some(url) = self.album_cover(a) {
+                                    if let Some(url) = self.album_row_cover(a) {
                                         slots.push((url, y));
                                     }
                                 }
                                 SearchHit::Artist(a) => {
-                                    if let Some(url) = a
-                                        .thumbnail_url
-                                        .as_deref()
-                                        .map(|u| yutu_core::hires_thumb_url(u, 544))
+                                    if let Some(url) =
+                                        a.thumbnail_url.as_deref().map(Self::row_art_url)
                                     {
                                         slots.push((url, y));
                                     }
                                 }
                                 SearchHit::Playlist(p) => {
-                                    if let Some(url) = p
-                                        .thumbnail_url
-                                        .as_deref()
-                                        .map(|u| yutu_core::hires_thumb_url(u, 544))
-                                    {
+                                    if let Some(url) = Self::playlist_row_art(p) {
                                         slots.push((url, y));
                                     }
                                 }
@@ -6029,11 +6070,7 @@ impl AppState {
                         // Playlist rows (same order as the view).
                         for (i, p) in self.results.playlists.iter().enumerate() {
                             let y = BODY_PAD + CHIPS_H + 10.0 + i as f32 * ROW_PITCH;
-                            if let Some(url) = p
-                                .thumbnail_url
-                                .as_deref()
-                                .map(|u| yutu_core::hires_thumb_url(u, 544))
-                            {
+                            if let Some(url) = Self::playlist_row_art(p) {
                                 slots.push((url, y));
                             }
                         }
@@ -6526,6 +6563,37 @@ impl AppState {
         }
     }
 
+    /// Debug-only cache census: every map here is capped and the
+    /// renderer trims its own textures per frame, so a long session
+    /// plateaus instead of growing. Release builds hide it with the
+    /// error panel above.
+    fn cache_section(&self) -> iced::Element<'_, Message> {
+        #[cfg(not(debug_assertions))]
+        {
+            return iced::widget::text("").size(1).into();
+        }
+        #[cfg(debug_assertions)]
+        {
+            use iced::widget::{column, text};
+            column![
+                text("Memory caches (all capped)").size(17),
+                text(format!(
+                    "art mem {} · catalog {} · lyrics {} · stream urls {} · history {} · searches {}",
+                    self.artwork.len(),
+                    self.catalog.len(),
+                    self.lyrics_cache.len(),
+                    self.url_cache.len(),
+                    self.history.len(),
+                    self.search_cache.len(),
+                ))
+                .size(12)
+                .color(MUTED),
+            ]
+            .spacing(4)
+            .into()
+        }
+    }
+
     /// Offline builds: cookie import needs the innertube feature.
     #[cfg(not(feature = "innertube"))]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
@@ -6726,7 +6794,7 @@ impl AppState {
         if size >= Self::HIRES_MIN_PX {
             yutu_core::hires_thumb_url(url, 544)
         } else {
-            url.to_string()
+            Self::row_art_url(url)
         }
     }
 
@@ -6746,20 +6814,32 @@ impl AppState {
     }
 
     /// Display size at/above which track art uses the 544px hero key
-    /// instead of the raw small URL (song rows stay low-res). Focal
+    /// instead of the row raster (song rows stay low-res). Focal
     /// sub-64 headers (home picks 52, menu headers 56) deliberately
     /// use thumb_hero anyway: they are card headers, not rows, and the
     /// hero key is already warmed, so the extra fetch pays once.
     const HIRES_MIN_PX: f32 = 64.0;
+    /// Row art raster width: rows render at 32-58px, so a 120px server
+    /// raster stays crisp on hidpi while decoding to ~57KB RGBA (a
+    /// 544px hero costs ~1.2MB and upstream thumbs can be larger
+    /// still). One rule for every row site, so fetch keys match
+    /// display keys and the same cover is never held at two sizes.
+    const ROW_ART_W: u32 = 120;
+
+    /// Row art key for a raw thumbnail URL (pass-through when the URL
+    /// carries no YTM size suffix).
+    fn row_art_url(url: &str) -> String {
+        yutu_core::hires_thumb_url(url, Self::ROW_ART_W)
+    }
 
     /// Art URL for a display size: catalog merged, hero at/above the
-    /// threshold, raw small below it.
+    /// threshold, row raster below it.
     fn art_url_for(&self, t: &Track, display_px: f32) -> Option<String> {
         let merged = self.catalog.get(&t.id).unwrap_or(t);
         if display_px >= Self::HIRES_MIN_PX {
             Self::hero_art_url(merged)
         } else {
-            merged.thumbnail_url.clone()
+            merged.thumbnail_url.clone().map(|u| Self::row_art_url(&u))
         }
     }
 
@@ -6774,7 +6854,7 @@ impl AppState {
     fn thumb_sized(&self, track: &Track, size: f32) -> iced::Element<'_, Message> {
         // Catalog wins on art: queued/stored rows may predate the fetch.
         // At/above HIRES_MIN_PX the hero key is used (same key the
-        // fetch warms), below it the raw small URL.
+        // fetch warms), below it the row raster.
         let url = self.art_url_for(track, size);
         self.lazy_image(url.as_deref(), size)
     }
@@ -7447,6 +7527,24 @@ impl AppState {
         v
     }
 
+    /// Album header cover (180px): hires of the first track thumb, else
+    /// the album thumb. Shared by the album view and `OpenAlbum` warming
+    /// so the key never drifts (row slots only warm row rasters now).
+    fn album_header_cover(&self, id: &str) -> Option<String> {
+        let title = self.resolve_album_title(id);
+        self.album_tracks(id)
+            .first()
+            .and_then(|t| t.thumbnail_url.clone())
+            .or_else(|| {
+                self.results
+                    .albums
+                    .iter()
+                    .find(|a| a.title == title)
+                    .and_then(|a| a.thumbnail_url.clone())
+            })
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
+    }
+
     /// Display label for a search-result playlist id (title when known).
     /// Live lookup only runs on innertube builds; tests exercise it on
     /// every configuration.
@@ -7891,9 +7989,15 @@ impl AppState {
             }
             Message::OpenAlbum(id) => {
                 self.close_menu();
-                self.go(Route::Album(id));
+                self.go(Route::Album(id.clone()));
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                // The 180px header renders the hires key while row slots
+                // only warm row rasters: warm it here (shared key helper).
+                let mut tasks = vec![self.ensure_visible_tasks()];
+                if let Some(url) = self.album_header_cover(&id) {
+                    tasks.extend(self.artwork_tasks_for_urls(&[url]));
+                }
+                return iced::Task::batch(tasks);
             }
             Message::OpenPlaylist(id) => {
                 // Canonicalise: pre-migration sessions may hand a browse id.
@@ -7912,7 +8016,7 @@ impl AppState {
                     if needs {
                         // Downloaded lyrics open with no network.
                         if let Some(cached) = load_lyrics(&id) {
-                            self.lyrics_cache.insert(id, cached);
+                            self.cache_lyrics(id, cached);
                         } else {
                             match self.find_track(&id) {
                                 None => {
@@ -7944,7 +8048,7 @@ impl AppState {
                         if self.downloaded.contains(&track_id) {
                             save_lyrics(&track_id, &lyrics);
                         }
-                        self.lyrics_cache.insert(track_id, lyrics);
+                        self.cache_lyrics(track_id, lyrics);
                     }
                     Err(e) => {
                         self.status = format!("Lyrics failed: {e}");
@@ -7970,6 +8074,13 @@ impl AppState {
                         // when the in-memory handle is gone, online or off.
                         self.maybe_prune_artwork();
                         save_artwork(&url, &bytes);
+                        // The file is the source of truth from here: the
+                        // handle points at it instead of pinning a copy
+                        // of the encoded bytes in RAM (iced decodes once
+                        // and caches the texture per path).
+                        let handle = artwork_path_for(&url)
+                            .map(iced::widget::image::Handle::from_path)
+                            .unwrap_or_else(|| iced::widget::image::Handle::from_bytes(bytes));
                         if self.artwork.len() >= ART_MEM_CAP {
                             // Drop expired covers first: a browsing burst
                             // must not nuke hot entries while stale ones
@@ -7977,22 +8088,30 @@ impl AppState {
                             self.artwork
                                 .retain(|_, (_, at)| art_age_fresh(at.elapsed()));
                             if self.artwork.len() >= ART_MEM_CAP {
-                                self.artwork.clear();
+                                // Oldest half goes (not everything: a full
+                                // clear would refetch the viewport at once
+                                // and spike back to the cap immediately).
+                                let mut oldest: Vec<(std::time::Instant, String)> = self
+                                    .artwork
+                                    .iter()
+                                    .map(|(k, (_, at))| (*at, k.clone()))
+                                    .collect();
+                                oldest.sort();
+                                let drop_n =
+                                    (self.artwork.len() - ART_MEM_CAP + 1).max(ART_MEM_CAP / 2);
+                                for (_, key) in oldest.into_iter().take(drop_n) {
+                                    self.artwork.remove(&key);
+                                }
                             }
                         }
-                        self.artwork.insert(
-                            url,
-                            (
-                                iced::widget::image::Handle::from_bytes(bytes),
-                                std::time::Instant::now(),
-                            ),
-                        );
+                        self.artwork
+                            .insert(url, (handle, std::time::Instant::now()));
                     }
                 }
-                // Cover the rest of the screenful: the batch cap (12 tasks
-                // for ~6 two-key tracks) leaves remainder that only an
-                // arrival can pick up. Self-terminating: memory, in-flight,
-                // disk, and cooldown gates make this a no-op when done.
+                // Cover the rest of the screenful: the batch cap (12 tasks)
+                // leaves remainder that only an arrival can pick up.
+                // Self-terminating: memory, in-flight, disk, and cooldown
+                // gates make this a no-op when done.
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
             }
@@ -8409,7 +8528,7 @@ impl AppState {
                         self.playing_from = "Single + autoplay".into();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
-                        self.history.push(id.clone());
+                        self.push_history(id.clone());
                         self.persist_play(&id);
                         self.apply_volume();
                         self.publish_mpris();
@@ -8851,7 +8970,15 @@ impl AppState {
             }
             Message::OpenContext(id) => {
                 self.show_suggest = false;
-                self.open_menu(id);
+                self.open_menu(id.clone());
+                // The menu header renders the 544px hero while rows only
+                // warm the row raster (menus never scroll-sweep): warm it
+                // here so the header never placeholders for its lifetime.
+                if let Some(t) = self.find_track(&id) {
+                    if let Some(task) = self.large_art_task(&t) {
+                        return task;
+                    }
+                }
             }
             Message::TogglePlaylistSubmenu(id) => {
                 // Click-toggle: hover-open fights the frozen menu anchor.
@@ -8872,16 +8999,63 @@ impl AppState {
                 }
             }
             Message::OpenPlaylistMenu(id) => {
-                self.open_pl_menu(id);
+                self.open_pl_menu(id.clone());
+                // Same hero-header contract as track menus: warm the
+                // first resolved track's hero (the unknown-track
+                // fallback reads the row raster, already warmed).
+                if let Some(task) = self
+                    .find_playlist(&id)
+                    .and_then(|p| p.tracks.first().cloned())
+                    .and_then(|t| self.find_track(&t.id))
+                    .and_then(|t| self.large_art_task(&t))
+                {
+                    return task;
+                }
             }
             Message::OpenAlbumMenu(id) => {
-                self.open_coll_for(CollectionMenu::Album(id));
+                self.open_coll_for(CollectionMenu::Album(id.clone()));
+                // Menu headers render the 544 key (rows warm the small
+                // raster now, and menus never sweep): warm it on open.
+                if let Some(url) = self
+                    .results
+                    .albums
+                    .iter()
+                    .find(|a| a.id == id)
+                    .and_then(|a| self.album_cover(a))
+                {
+                    self.publish_mpris();
+                    return iced::Task::batch(self.artwork_tasks_for_urls(&[url]));
+                }
             }
             Message::OpenArtistMenu(id) => {
-                self.open_coll_for(CollectionMenu::Artist(id));
+                self.open_coll_for(CollectionMenu::Artist(id.clone()));
+                // Same contract (the menu reads the hit thumb at 544).
+                if let Some(url) = self
+                    .results
+                    .artists
+                    .iter()
+                    .find(|a| a.id == id)
+                    .and_then(|a| a.thumbnail_url.clone())
+                    .map(|u| yutu_core::hires_thumb_url(&u, 544))
+                {
+                    self.publish_mpris();
+                    return iced::Task::batch(self.artwork_tasks_for_urls(&[url]));
+                }
             }
             Message::OpenSearchPlaylistMenu(id) => {
-                self.open_coll_for(CollectionMenu::Playlist(id));
+                self.open_coll_for(CollectionMenu::Playlist(id.clone()));
+                // Same contract (`playlist_art` at menu size).
+                if let Some(url) = self
+                    .results
+                    .playlists
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| p.thumbnail_url.clone())
+                    .map(|u| yutu_core::hires_thumb_url(&u, 544))
+                {
+                    self.publish_mpris();
+                    return iced::Task::batch(self.artwork_tasks_for_urls(&[url]));
+                }
             }
             Message::PlayPlaylist(id) => {
                 self.close_menu();
@@ -9781,6 +9955,16 @@ impl AppState {
                     }
                     Ok(url) => {
                         if let Some(expires) = url_expiry(&url) {
+                            // Sweep dead entries first (URLs expire in
+                            // hours), then cap: unbounded sessions must
+                            // not pin a URL per song ever played.
+                            let now = now_unix() as u64;
+                            self.url_cache.retain(|_, (_, exp)| *exp > now);
+                            if self.url_cache.len() >= URL_CACHE_CAP {
+                                if let Some(key) = self.url_cache.keys().next().cloned() {
+                                    self.url_cache.remove(&key);
+                                }
+                            }
                             self.url_cache
                                 .insert(track_id.clone(), (url.clone(), expires));
                         }
@@ -11466,7 +11650,7 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{button, column, container, mouse_area, row};
         use iced::Fill;
-        let cover = self.album_cover(a);
+        let cover = self.album_row_cover(a);
         let sub = match a.year {
             Some(y) => format!("Album · {} · {}", a.artist, y),
             None => format!("Album · {}", a.artist),
@@ -11523,10 +11707,9 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{button, column, container, mouse_area, row};
         use iced::Fill;
-        let photo = a
-            .thumbnail_url
-            .as_deref()
-            .map(|u| yutu_core::hires_thumb_url(u, 544));
+        // Per-hit key (not the name-merged photo): duplicate artist
+        // names must never alias each other's art.
+        let photo = a.thumbnail_url.as_deref().map(Self::row_art_url);
         let hovered = self.hovered_artist.as_deref() == Some(a.id.as_str());
         mouse_area(
             container(
@@ -11576,6 +11759,12 @@ impl AppState {
             .as_deref()
             .map(|u| yutu_core::hires_thumb_url(u, 544));
         self.art_thumb(url.as_deref(), size)
+    }
+
+    /// Row-size playlist art (list rows render at 40px): small raster
+    /// (row slots warm this key; hero and menu keep the 544px key).
+    fn playlist_row_art(p: &PlaylistHit) -> Option<String> {
+        p.thumbnail_url.as_deref().map(Self::row_art_url)
     }
 
     /// Playlist hero: art, type-led subtitle, Play + Shuffle pills.
@@ -11632,7 +11821,7 @@ impl AppState {
         mouse_area(
             container(
                 row![
-                    button(self.playlist_art(p, 40.0))
+                    button(self.art_thumb(Self::playlist_row_art(p).as_deref(), 40.0))
                         .style(row_click)
                         .on_press(Message::PlaySearchPlaylist(p.id.clone()))
                         .padding(0),
@@ -13837,6 +14026,7 @@ impl AppState {
                     text("Sync (web changes into the app)").size(17),
                     self.sync_section(),
                     self.error_section(),
+                    self.cache_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
                         .color(MUTED),
@@ -13925,19 +14115,9 @@ impl AppState {
                     .and_then(|a| a.year)
                     .map(|y| y.to_string())
                     .unwrap_or_default();
-                // One policy: the same hires key album_cover returns and
-                // stage_search warms (raw would placeholder on some paths).
-                let cover = tracks
-                    .first()
-                    .and_then(|t| t.thumbnail_url.clone())
-                    .or_else(|| {
-                        self.results
-                            .albums
-                            .iter()
-                            .find(|a| a.title == title)
-                            .and_then(|a| a.thumbnail_url.clone())
-                    })
-                    .map(|u| yutu_core::hires_thumb_url(&u, 544));
+                // One policy (see `album_header_cover`): the header and
+                // its warming share the key, so it never placeholders.
+                let cover = self.album_header_cover(id);
                 let rows: Vec<iced::Element<'_, Message>> = tracks
                     .iter()
                     .enumerate()
@@ -16725,6 +16905,9 @@ mod tests {
         };
         let url = s.album_cover(&ytm).expect("hires");
         assert!(url.contains("=w544-h544"), "{url}");
+        // Row variants share the source at the small display raster.
+        let row = s.album_row_cover(&ytm).expect("row");
+        assert!(row.contains("=w120-h120"), "{row}");
         // Artist photos rewrite the same way.
         s.results.artists.push(yutu_core::Artist {
             id: "r1".into(),
@@ -17520,10 +17703,61 @@ mod tests {
     }
 
     #[test]
+    fn menu_open_warms_the_hero_header_key() {
+        // Regression: row slots warm the row raster only, but menu
+        // headers render the 544px hero (menus never scroll-sweep).
+        redirect_art_cache();
+        let mut s = test_state();
+        let t = Track {
+            id: "menu-hero".into(),
+            title: "Menu Hero".into(),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: Some("https://example.invalid/ms=w60-h60-l90-rj".into()),
+            thumbnail_large_url: Some("https://example.invalid/ml=w120-h120-l90-rj".into()),
+            plays: None,
+        };
+        let hero = yutu_core::hires_thumb_url(t.thumbnail_large_url.as_deref().unwrap(), 544);
+        s.catalog.insert(t.id.clone(), t);
+        let _ = s.update(Message::OpenContext("menu-hero".into()));
+        assert!(
+            s.artwork_loading.contains(&hero),
+            "menu header hero must warm on open"
+        );
+    }
+
+    #[test]
+    fn failed_hero_cools_down_like_failed_thumbs() {
+        // `large_art_task` must respect the failure cooldown, or every
+        // chained re-scan refetches dead heroes in a loop.
+        redirect_art_cache();
+        let mut s = test_state();
+        let url = "https://example.invalid/dead-hero=w60-h60-l90-rj".to_string();
+        let t = Track {
+            id: "dead-hero".into(),
+            title: "Dead Hero".into(),
+            artist: "Someone".into(),
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: Some(url.clone()),
+            thumbnail_large_url: None,
+            plays: None,
+        };
+        s.catalog.insert(t.id.clone(), t.clone());
+        let hero = yutu_core::hires_thumb_url(&url, 544);
+        let _ = s.update(Message::ArtworkReady {
+            url: hero.clone(),
+            result: Err("404".into()),
+        });
+        assert!(s.large_art_task(&t).is_none());
+    }
+
+    #[test]
     fn lazy_warmer_covers_hero_keys_for_home_cards() {
         // Regression: Home "Jump back in" cards read the 544px hero key
-        // (thumb_hero), but the lazy warmer only queued the raw thumb, so
-        // covers stayed placeholder until a play warmed both keys.
+        // (thumb_hero), but the lazy warmer only queued the row raster, so
+        // covers stayed placeholder until a play warmed the hero.
         let mut s = test_state();
         let t = Track {
             id: "hero-card".into(),
@@ -17542,7 +17776,7 @@ mod tests {
         let _ = s.ensure_visible_tasks();
         assert!(s
             .artwork_loading
-            .contains("https://example.invalid/s=w60-h60-l90-rj"));
+            .contains("https://example.invalid/s=w120-h120-l90-rj"));
         assert!(
             s.artwork_loading.contains(&hero),
             "hero key must warm or Home cards never leave placeholder"
@@ -17583,7 +17817,7 @@ mod tests {
 
     #[test]
     fn artwork_ready_chains_the_capped_remainder() {
-        // Batch cap (12 tasks for ~6 two-key tracks) leaves remainder;
+        // Batch cap (12 tasks per sweep) leaves remainder on long lists;
         // each arrival re-scans visible so the rest still loads.
         redirect_art_cache();
         let mut s = test_state();
@@ -17643,7 +17877,7 @@ mod tests {
         dir
     }
 
-    /// Track with both art keys (rows read the raw thumb, heroes the
+    /// Track with both art keys (rows read the row raster, heroes the
     /// 544px key, like real search hits).
     fn art_track(id: &str) -> Track {
         Track {
@@ -17680,7 +17914,9 @@ mod tests {
         let _ = s.update(Message::Scrolled("body", 1200.0));
         assert!(s.artwork_loading.iter().any(|u| u.contains("sw13.jpg")));
         assert!(!s.artwork_loading.iter().any(|u| u.contains("sw29.jpg")));
-        // Completing the head lets the next sweep progress the tail.
+        // Completing the head lets the next sweep progress the tail
+        // (single thumb key per row now: each 12-task batch covers
+        // twice the rows the old two-key batches did).
         for url in s.artwork_loading.clone() {
             let _ = s.update(Message::ArtworkReady {
                 url,
@@ -17688,7 +17924,7 @@ mod tests {
             });
         }
         let _ = s.update(Message::Scrolled("body", 1320.0));
-        assert!(s.artwork_loading.iter().any(|u| u.contains("sw24.jpg")));
+        assert!(s.artwork_loading.iter().any(|u| u.contains("sw25.jpg")));
         assert_eq!(
             s.scroll_offsets.get("body").copied().unwrap_or(-1.0),
             1320.0
@@ -17704,7 +17940,8 @@ mod tests {
         s.search_filter = SearchFilter::Songs;
         s.results.tracks = vec![art_track("a"), art_track("b"), art_track("c")];
         let slots = s.art_slots("body");
-        // Chips + spacing head, then exact 54px pitch per row.
+        // Chips + spacing head, then exact 54px pitch per row: one
+        // thumb slot per row (heroes warm on demand, never per row).
         let ya: Vec<f32> = slots
             .iter()
             .filter(|(u, _)| u.contains("/a.jpg"))
@@ -17715,8 +17952,8 @@ mod tests {
             .filter(|(u, _)| u.contains("/b.jpg"))
             .map(|(_, y)| *y)
             .collect();
-        assert_eq!(ya.len(), 2);
-        assert!((ya[0] - 64.0).abs() < 0.01);
+        assert_eq!(ya, vec![64.0]);
+        assert_eq!(yb.len(), 1);
         assert!((yb[0] - ya[0] - 54.0).abs() < 0.01);
     }
 
@@ -17729,6 +17966,7 @@ mod tests {
             s.queue.push(art_track(id));
         }
         let slots = s.art_slots("queue");
+        // One thumb slot per row (heroes warm on demand).
         let y0: Vec<f32> = slots
             .iter()
             .filter(|(u, _)| u.contains("q0.jpg"))
@@ -17739,9 +17977,9 @@ mod tests {
             .filter(|(u, _)| u.contains("q1.jpg"))
             .map(|(_, y)| *y)
             .collect();
-        assert_eq!(y0, vec![0.0, 0.0]);
+        assert_eq!(y0, vec![0.0]);
         // 58px rows + 5px hairlines between (never leading).
-        assert_eq!(y1.len(), 2);
+        assert_eq!(y1.len(), 1);
         assert!(y1.iter().all(|y| (y - 63.0).abs() < 0.01));
     }
 
@@ -17886,6 +18124,105 @@ mod tests {
         // The TTL comparison itself is pinned by
         // `art_age_fresh_spans_the_ttl` (past `Instant`s cannot be
         // fabricated hermetically: `Instant` is uptime, not wall time).
+    }
+
+    #[test]
+    fn history_and_lyrics_caches_stay_capped() {
+        redirect_art_cache();
+        let mut s = test_state();
+        for i in 0..HISTORY_CAP + 50 {
+            s.push_history(format!("h{i}"));
+        }
+        assert_eq!(s.history.len(), HISTORY_CAP);
+        assert_eq!(s.history.last().unwrap(), "h549");
+        #[cfg(feature = "lyrics")]
+        {
+            for i in 0..LYRICS_CACHE_CAP + 10 {
+                s.cache_lyrics(
+                    format!("l{i}"),
+                    yutu_core::LyricsResult {
+                        instrumental: false,
+                        synced: vec![],
+                        plain: String::new(),
+                    },
+                );
+            }
+            assert!(s.lyrics_cache.len() <= LYRICS_CACHE_CAP);
+        }
+    }
+
+    #[test]
+    fn album_menu_open_warms_the_header_key() {
+        // Coll menus never sweep: the 544 header key warms on open
+        // (rows stage the small raster only).
+        redirect_art_cache();
+        let mut s = test_state();
+        s.results.albums.push(Album {
+            id: "ma1".into(),
+            title: "Menu Album".into(),
+            artist: "Someone".into(),
+            year: None,
+            thumbnail_url: Some("https://example.invalid/ma=w60-h60-l90-rj".into()),
+        });
+        let _ = s.update(Message::OpenAlbumMenu("ma1".into()));
+        assert!(s.coll_menu.is_some());
+        assert!(
+            s.artwork_loading.iter().any(|u| u.contains("=w544-h544")),
+            "menu 544 key must warm on open"
+        );
+    }
+
+    #[test]
+    fn stage_search_warms_row_rasters_not_heroes() {
+        // Staging both rasters double-fetches under the task gates;
+        // rows display the small key, heroes warm on demand.
+        redirect_art_cache();
+        let mut s = test_state();
+        let bundle = bundle_of(SearchResults {
+            tracks: vec![],
+            albums: vec![Album {
+                id: "sa1".into(),
+                title: "Staged".into(),
+                artist: "Someone".into(),
+                year: None,
+                thumbnail_url: Some("https://example.invalid/sa=w60-h60-l90-rj".into()),
+            }],
+            artists: vec![],
+            playlists: vec![],
+        });
+        let _ = s.stage_search(bundle);
+        assert!(s.artwork_loading.iter().any(|u| u.contains("sa=w120-h120")));
+        assert!(
+            !s.artwork_loading.iter().any(|u| u.contains("=w544-h544")),
+            "staged coll keys stay small"
+        );
+    }
+
+    #[test]
+    fn mem_cap_evicts_oldest_half_not_everything() {
+        redirect_art_cache();
+        let mut s = test_state();
+        for i in 0..ART_MEM_CAP {
+            s.artwork.insert(
+                format!("https://example.invalid/old-{i}.jpg"),
+                (
+                    iced::widget::image::Handle::from_bytes(vec![0u8; 600]),
+                    std::time::Instant::now(),
+                ),
+            );
+        }
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x00, 0x10];
+        jpeg.resize(1024, 0);
+        let fresh = "https://example.invalid/fresh.jpg".to_string();
+        let _ = s.update(Message::ArtworkReady {
+            url: fresh.clone(),
+            result: Ok(jpeg),
+        });
+        // Half the stale entries go (amortized), the fresh arrival stays,
+        // and the cap holds: the old `clear()` refetched the viewport at
+        // once and spiked straight back to the cap.
+        assert_eq!(s.artwork.len(), ART_MEM_CAP / 2 + 1);
+        assert!(s.art_mem(&fresh).is_some());
     }
 
     #[test]
@@ -20051,6 +20388,10 @@ mod tests {
         s.catalog.insert("m1".into(), ytm.clone());
         let hero = s.art_url_for(&ytm, 96.0).expect("hero");
         assert!(hero.contains("=w544-h544"), "{hero}");
+        // Rows take the small display raster, not the raw upstream URL
+        // (bounds per-image decode cost on long lists).
+        let row = s.art_url_for(&ytm, 40.0).expect("row");
+        assert!(row.contains("=w120-h120"), "{row}");
     }
 
     #[test]

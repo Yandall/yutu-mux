@@ -2,6 +2,13 @@ use std::sync::{Arc, Mutex};
 use yutu_desktop::mpris::{MprisPlayer, PlaybackStatus, SharedPlayer};
 use yutu_desktop::NowPlaying;
 
+/// Process-wide allocator: returns freed pages to the OS promptly, so
+/// image/audio churn does not linger as retained footprint (the macOS
+/// "Memory" column counts retained + compressed pages, not just the
+/// resident set in "Real Memory").
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Best-effort MPRIS advertisement on a helper thread. Any failure
 /// (headless, no bus) is a logged no-op: the GUI runs regardless.
 /// The shared handle is also handed to the UI, which publishes the current
