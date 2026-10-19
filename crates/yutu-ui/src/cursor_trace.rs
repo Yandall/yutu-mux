@@ -1,11 +1,13 @@
-//! Cursor-hand hunt: logs where hand votes originate, without changing
+//! Cursor-hand hunt: logs what the tree actually votes, without changing
 //! any vote.
 //!
-//! Wrap the view root and every transition into a `Pointer` vote is
-//! logged as `[cursor-trace]` with position and route. Votes pass
-//! through untouched (buttons show hands, rows show arrows), so this
-//! is pure observation: if the hand appears where nothing clickable
-//! lives, the log line names the position to investigate.
+//! Wrap the view root and every cursor-vote transition is logged as
+//! `[cursor-trace]` with the vote name, position, and route, e.g.
+//! `Idle vote at (512, 300) on Settings`. Compare with what the screen
+//! shows: log says `Idle` but screen shows hand means the platform
+//! renders the default cursor wrong (outside our tree); log says
+//! `Pointer` where nothing clickable lives means a real leaking vote
+//! (the position names the widget area to investigate).
 //!
 //! Delete this module and its single use in `view()` once the hunt
 //! ends: it exists only for the empty-space-hand investigation.
@@ -125,25 +127,18 @@ impl<'a, Message> widget::Widget<Message, iced::Theme, iced::Renderer>
             .content
             .as_widget()
             .mouse_interaction(tree, layout, cursor, viewport, renderer);
-        // Transitions only: hovering one control must not spam the log
-        // at event rate.
+        // Transitions only: holding still over one control must not
+        // spam the log at event rate.
         if vote != self.last.get() {
             self.last.set(vote);
-            if vote == mouse::Interaction::Pointer {
-                match cursor.position() {
-                    Some(pos) => yutu_core::app_log::info(
-                        "cursor-trace",
-                        format_args!(
-                            "Pointer vote at ({:.0}, {:.0}) on {}",
-                            pos.x, pos.y, self.where_built
-                        ),
-                    ),
-                    None => yutu_core::app_log::info(
-                        "cursor-trace",
-                        format_args!("Pointer vote (off-window) on {}", self.where_built),
-                    ),
-                }
-            }
+            let at = match cursor.position() {
+                Some(pos) => format!("({:.0}, {:.0})", pos.x, pos.y),
+                None => "(off-window)".to_string(),
+            };
+            yutu_core::app_log::info(
+                "cursor-trace",
+                format_args!("{:?} vote at {at} on {}", vote, self.where_built),
+            );
         }
         vote
     }
