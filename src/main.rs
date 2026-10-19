@@ -25,14 +25,14 @@ fn spawn_mpris(state: SharedPlayer) {
         {
             Ok(rt) => rt,
             Err(e) => {
-                eprintln!("mpris: no async runtime: {e}");
+                yutu_core::app_log::warn("mpris", format_args!("no async runtime: {e}"));
                 return;
             }
         };
         let conn = match rt.block_on(yutu_desktop::mpris::serve(state.clone())) {
             Ok(conn) => conn,
             Err(e) => {
-                eprintln!("mpris unavailable: {e}");
+                yutu_core::app_log::warn("mpris", format_args!("unavailable: {e}"));
                 return;
             }
         };
@@ -50,6 +50,15 @@ fn spawn_mpris(state: SharedPlayer) {
 }
 
 fn main() -> iced::Result {
+    // File logging first (everything below lands in today's log, kept
+    // a week): panics are chained into it too, so a wedge or crash
+    // always leaves a trail even when stderr is lost (Finder launch).
+    yutu_core::app_log::init(&format!("{}/logs", yutu_ui::data_dir()));
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        yutu_core::app_log::log_panic("panic", &info.to_string());
+        default_hook(info);
+    }));
     let state: SharedPlayer = Arc::new(Mutex::new(MprisPlayer::new(
         NowPlaying::default(),
         PlaybackStatus::Stopped,
