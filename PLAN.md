@@ -208,5 +208,6 @@ Done: user can plausibly replace Spotify for daily listening.
 69. Round 58: debug tooling (debug-panel feature for the in-app debug UI; week-long file logging with panic hook; all prod prints routed through it)
 70. Round 59: arrow cursor on content surfaces (RowButton widget: real button semantics, Idle cursor; controls keep the hand)
 71. Round 60: empty-space hand root-caused (seek-bar canvas voted Pointer globally; now hover-gated) via cursor sampler + vote tracing; tracer removed
+72. Round 61: Library nav button removed from the sidebar (route/page stays for fallbacks + tests)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

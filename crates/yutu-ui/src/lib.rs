@@ -11908,8 +11908,8 @@ impl AppState {
         .into()
     }
 
-    /// YTM-style sidebar: Home + Search, Library with playlist search,
-    /// inline new-playlist creation, and an expand/collapse rail.
+    /// YTM-style sidebar: Home + Search nav, playlist search, inline
+    /// new-playlist creation, and an expand/collapse rail.
     /// Queue/Recent live in the right panel; Settings lives in the header.
     fn sidebar_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, text, text_input};
@@ -11937,10 +11937,6 @@ impl AppState {
                     button(btn_icon("search", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Search)))
                         .on_press(Message::Navigate(Route::Search))
-                        .padding(10),
-                    button(btn_icon("library", 18.0, iced::Color::WHITE))
-                        .style(nav_style(self.is_nav(&Route::Library)))
-                        .on_press(Message::Navigate(Route::Library))
                         .padding(10),
                 ]
                 .spacing(2),
@@ -12068,18 +12064,6 @@ impl AppState {
                     .width(Fill),
                 ]
                 .spacing(2),
-                row![button(
-                    row![
-                        btn_icon("library", 14.0, iced::Color::WHITE),
-                        btn_text("Library", 14),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
-                )
-                .style(nav_style(self.is_nav(&Route::Library)))
-                .on_press(Message::Navigate(Route::Library))
-                .padding(4)
-                .width(Fill),],
                 text_input("Filter playlists…", &self.sidebar_filter)
                     .style(rounded_input)
                     .on_input(Message::SidebarFilterChanged)
@@ -14869,7 +14853,7 @@ impl AppState {
                     }
                     if fly_rows.is_empty() {
                         fly_rows.push(
-                            text("No playlists yet: create one in Library.")
+                            text("No playlists yet: create one in the sidebar.")
                                 .size(12)
                                 .color(MUTED)
                                 .into(),
