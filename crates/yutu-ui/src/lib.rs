@@ -1085,6 +1085,9 @@ pub enum Message {
         requested: Vec<String>,
         tracks: Vec<Track>,
     },
+    /// Explicit no-op (cursor sampler buttons): hovering is the test,
+    /// clicking must change nothing.
+    Noop,
 }
 
 /// Which playlist push a [`Message::ServerPlaylistSynced`] reports, so
@@ -6624,6 +6627,50 @@ impl AppState {
         }
     }
 
+    /// Debug-only cursor sampler (or with the `debug-panel` feature):
+    /// one row per cursor state plus the two button kinds, so a broken
+    /// cursor theme on the machine can be told apart from a wrong vote
+    /// in our tree. Hover each row and compare with its label.
+    fn cursor_section(&self) -> iced::Element<'_, Message> {
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        {
+            return iced::widget::text("").size(1).into();
+        }
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        {
+            use iced::mouse::Interaction;
+            use iced::widget::{button, column, container, mouse_area, text};
+            use iced::Fill;
+            let sampler = |label: &str, interaction: Interaction| {
+                mouse_area(
+                    container(text(format!("{label} (should show {label})")).size(12))
+                        .padding(4)
+                        .width(Fill),
+                )
+                .interaction(interaction)
+            };
+            column![
+                text("Cursor sampler (hover each row)").size(17),
+                sampler("arrow", Interaction::Idle),
+                sampler("pointing hand", Interaction::Pointer),
+                sampler("text beam", Interaction::Text),
+                sampler("grab hand", Interaction::Grab),
+                sampler("crosshair", Interaction::Crosshair),
+                sampler("wait", Interaction::Wait),
+                button(text("plain button (should show pointing hand)").size(12))
+                    .on_press(Message::Noop)
+                    .padding(4)
+                    .width(Fill),
+                row_button(text("row button (should show arrow)").size(12))
+                    .on_press(Message::Noop)
+                    .padding(4)
+                    .width(Fill),
+            ]
+            .spacing(2)
+            .into()
+        }
+    }
+
     /// Offline builds: cookie import needs the innertube feature.
     #[cfg(not(feature = "innertube"))]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
@@ -8763,6 +8810,9 @@ impl AppState {
                 self.hovered_auto = None;
                 self.hover_remove = None;
             }
+            // Cursor sampler buttons: hovering is the test, clicking
+            // changes nothing by design.
+            Message::Noop => {}
             Message::RemoveHover(h) => {
                 self.hover_remove = h;
             }
@@ -14073,6 +14123,7 @@ impl AppState {
                     self.sync_section(),
                     self.error_section(),
                     self.cache_section(),
+                    self.cursor_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
                         .size(12)
                         .color(MUTED),
@@ -18242,6 +18293,15 @@ mod tests {
             !s.artwork_loading.iter().any(|u| u.contains("=w544-h544")),
             "staged coll keys stay small"
         );
+    }
+
+    #[test]
+    fn cursor_sampler_builds_without_state() {
+        // The sampler is pure view code (hover is the test); building it
+        // must never depend on playback or network state.
+        let mut s = test_state();
+        let _ = s.cursor_section();
+        let _ = s.update(Message::Noop);
     }
 
     #[test]
