@@ -1822,15 +1822,17 @@ fn fmt_time(secs: f64) -> String {
 }
 
 /// Play count plus duration for song rows ("213M plays · 3:45",
-/// muted): blank duration when zero, blank count when the source
-/// carried none (album, playlist, and radio rows often lack it), so
-/// those rows keep their exact current layout.
+/// muted): raw All results carry no durations, so a zero one never
+/// appends "· 0:00" (bare count instead). Blank count renders the
+/// bare duration (blank when zero); blank both renders blank, so
+/// count-less rows keep their exact current layout.
 fn song_meta(plays: Option<&str>, duration_secs: u32) -> String {
     let duration = fmt_time(duration_secs as f64);
     match (
         plays.map(str::trim).filter(|s| !s.is_empty()),
         duration_secs,
     ) {
+        (Some(p), 0) => p.to_string(),
         (Some(p), _) => format!("{p} · {duration}"),
         (None, 0) => String::new(),
         (None, _) => duration,
@@ -11831,6 +11833,17 @@ impl AppState {
         }
     }
 
+    /// Hero song subtitle ("Song · artist · album"): empty parts drop
+    /// out, so album-less hits never dangle a trailing separator.
+    fn hero_song_subtitle(artist: &str, album: Option<&str>) -> String {
+        ["Song", artist.trim()]
+            .into_iter()
+            .chain(album.map(str::trim))
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
     /// Track hero: the previous top-result card, now with the result
     /// type in the subtitle (the mixed list has no sections).
     fn search_track_hero(&self, t: &Track) -> iced::Element<'_, Message> {
@@ -11848,13 +11861,9 @@ impl AppState {
                     column![
                         text("Top result").size(12).color(MUTED),
                         text(t.title.clone()).size(20),
-                        text(format!(
-                            "Song · {} · {}",
-                            t.artist,
-                            t.album.clone().unwrap_or_default()
-                        ))
-                        .size(13)
-                        .color(MUTED),
+                        text(Self::hero_song_subtitle(&t.artist, t.album.as_deref()))
+                            .size(13)
+                            .color(MUTED),
                         row![
                             button(
                                 row![
@@ -17209,13 +17218,28 @@ mod tests {
 
     #[test]
     fn song_meta_combines_plays_and_duration() {
-        // Popup idiom ("213M plays · 3:45"); count-less rows keep the
-        // bare duration (blank when zero).
+        // Popup idiom ("213M plays · 3:45"); raw All results carry
+        // no durations, so a zero one leaves the bare count (never
+        // "· 0:00"). Count-less rows keep the bare duration (blank
+        // when zero).
         assert_eq!(song_meta(Some("213M plays"), 225), "213M plays · 3:45");
-        assert_eq!(song_meta(Some("1B plays"), 0), "1B plays · 0:00");
+        assert_eq!(song_meta(Some("1B plays"), 0), "1B plays");
         assert_eq!(song_meta(None, 225), "3:45");
         assert_eq!(song_meta(None, 0), "");
         assert_eq!(song_meta(Some("  "), 225), "3:45");
+    }
+
+    #[test]
+    fn hero_song_subtitle_skips_empty_parts() {
+        assert_eq!(
+            AppState::hero_song_subtitle("Queen", Some("A Night at the Opera")),
+            "Song · Queen · A Night at the Opera"
+        );
+        assert_eq!(AppState::hero_song_subtitle("Queen", None), "Song · Queen");
+        assert_eq!(
+            AppState::hero_song_subtitle("Queen", Some("  ")),
+            "Song · Queen"
+        );
     }
 
     #[test]

@@ -1531,8 +1531,17 @@ fn song_to_track(song: &SearchResultSong) -> Track {
         duration_secs: parse_duration_secs(&song.duration),
         thumbnail_url: pick_thumb_url(&song.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
-        plays: (!song.plays.trim().is_empty()).then(|| song.plays.clone()),
+        plays: is_play_count(&song.plays).then(|| song.plays.clone()),
     }
+}
+
+/// True when the server text is a real play/view count ("213M plays",
+/// "120K views"): the same flex column sometimes carries an upload
+/// date ("Nov 12, 2025", podcast episodes), which must never pose as
+/// a count downstream. Empty fails the keyword test on its own.
+fn is_play_count(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("play") || lower.contains("view")
 }
 
 /// Map one `search_albums` hit to our [`Album`]. The API year is a plain
@@ -1879,6 +1888,24 @@ pub fn parse_watch_playlist_fixture(json: &str) -> Vec<Track> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_count_filter_keeps_counts_drops_dates() {
+        for raw in [
+            "213M plays",
+            "1B plays",
+            "120K views",
+            "55K views",
+            "1 play",
+        ] {
+            assert!(is_play_count(raw), "{raw}");
+        }
+        // Upload dates ride the same column (podcast episodes): they
+        // are not counts and must never render as one.
+        for raw in ["Nov 12, 2025", "2025", "", "  "] {
+            assert!(!is_play_count(raw), "{raw}");
+        }
+    }
 
     #[test]
     fn po_token_mapping_covers_403_and_botguard() {
