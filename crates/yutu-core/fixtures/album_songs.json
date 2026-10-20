@@ -1,0 +1,22 @@
+[
+  {
+    "video_id": "a1Track0001",
+    "track_no": 1,
+    "duration": "2:59",
+    "plays": "100M plays",
+    "library_management": null,
+    "title": "First Song",
+    "like_status": "INDIFFERENT",
+    "explicit": "NotExplicit"
+  },
+  {
+    "video_id": "a1Track0002",
+    "track_no": 2,
+    "duration": "4:21",
+    "plays": "50M plays",
+    "library_management": null,
+    "title": "Second Song",
+    "like_status": "INDIFFERENT",
+    "explicit": "NotExplicit"
+  }
+]

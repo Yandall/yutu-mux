@@ -26,6 +26,9 @@
 - Play counts on song rows (search, artist, album: "213M plays ·
   duration" in the duration slot; rows without counts unchanged;
   upload dates never pose as counts, zero durations stay bare)
+- Live artist Popular (true server rank with counts) and album
+  tracklists (`track_no` order with counts): fetched once per page
+  on open (anonymous works), catalog fallback offline and on failure
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

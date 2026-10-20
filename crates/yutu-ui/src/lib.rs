@@ -1182,6 +1182,16 @@ pub enum Message {
     /// One-click restart for a pending font pick (Appearance shows
     /// the button only while the pick differs from the live font).
     RelaunchNow,
+    /// Live artist top songs arrived (server rank with play counts).
+    ArtistTopLoaded {
+        channel_id: String,
+        result: Result<Vec<Track>, String>,
+    },
+    /// Live album tracklist arrived (`track_no` order with counts).
+    AlbumLiveLoaded {
+        album_id: String,
+        result: Result<Vec<Track>, String>,
+    },
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -2026,6 +2036,28 @@ pub struct AppState {
     /// when the scan lands, borrowed by the view (never rebuilt or
     /// cloned per frame).
     font_rows: Vec<String>,
+    /// Live artist top songs: server-ranked ids per channel id (play
+    /// counts included). Merged into the catalog on arrival; views
+    /// prefer these over the alphabetical catalog fallback.
+    artist_top: HashMap<String, Vec<String>>,
+    /// Live album tracklists: `track_no`-ordered ids per album browse
+    /// id. Same merge-then-prefer rule as [`Self::artist_top`].
+    album_live: HashMap<String, Vec<String>>,
+    /// Route-to-browse aliases (name/title routes → channel/album
+    /// browse ids): written at fetch launch and arrival, so cached
+    /// lists survive later searches replacing `results` (which the
+    /// resolvers read first). Plain overwrites (latest wins); tiny
+    /// strings, so no cap needed unlike the lists below.
+    artist_alias: HashMap<String, String>,
+    album_alias: HashMap<String, String>,
+    /// Insertion order for the two live-list maps above (FIFO eviction
+    /// past the cap; `HashMap` alone cannot age keys).
+    artist_top_order: Vec<String>,
+    album_live_order: Vec<String>,
+    /// In-flight detail fetches (channel / album browse id): arrival
+    /// clears only its own marker, so quick page hops never strand it.
+    artist_loading: Option<String>,
+    album_loading: Option<String>,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     drawer_scroll: f32,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
@@ -2505,16 +2537,14 @@ impl AppState {
                 .find_playlist(id)
                 .map(|p| p.tracks.iter().take(15).map(|t| t.id.clone()).collect())
                 .unwrap_or_default(),
-            Route::Artist(id) => {
-                let name = self.resolve_artist_name(id);
-                self.artist_tracks(&name)
-                    .into_iter()
-                    .take(CAP)
-                    .map(|t| t.id)
-                    .collect()
-            }
+            Route::Artist(id) => self
+                .artist_display_tracks(id)
+                .into_iter()
+                .take(CAP)
+                .map(|t| t.id)
+                .collect(),
             Route::Album(id) => self
-                .album_tracks(id)
+                .album_display_tracks(id)
                 .into_iter()
                 .take(CAP)
                 .map(|t| t.id)
@@ -4250,6 +4280,14 @@ impl AppState {
             ui_scale: UI_SCALE_DEFAULT,
             system_font_rows: Vec::new(),
             font_rows: font_option_rows(&[]),
+            artist_top: HashMap::new(),
+            album_live: HashMap::new(),
+            artist_alias: HashMap::new(),
+            album_alias: HashMap::new(),
+            artist_top_order: Vec::new(),
+            album_live_order: Vec::new(),
+            artist_loading: None,
+            album_loading: None,
             drawer_scroll: 0.0,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
@@ -5943,11 +5981,11 @@ impl AppState {
         let (tracks, label) = match &self.route {
             Route::Artist(id) => {
                 let name = self.resolve_artist_name(id);
-                (self.artist_tracks(&name), format!("Artist {name}"))
+                (self.artist_display_tracks(id), format!("Artist {name}"))
             }
             Route::Album(id) => {
                 let title = self.resolve_album_title(id);
-                (self.album_tracks(id), format!("Album {title}"))
+                (self.album_display_tracks(id), format!("Album {title}"))
             }
             Route::PlaylistDetail(id) => match self.find_playlist(id) {
                 Some(p) => (p.tracks.clone(), format!("Playlist {}", p.title)),
@@ -6412,7 +6450,11 @@ impl AppState {
                 if let Some(url) = self.artist_photo(&name) {
                     slots.push((url, BODY_PAD));
                 }
-                let popular: Vec<Track> = self.artist_tracks(&name).into_iter().take(10).collect();
+                let popular: Vec<Track> = self
+                    .artist_display_tracks(id)
+                    .into_iter()
+                    .take(10)
+                    .collect();
                 let pop_y0 = BODY_PAD + 160.0 + 12.0 + SECTION_H;
                 slots.extend(Self::track_row_slots(&popular, pop_y0, ROW_PITCH));
                 let grid_y0 = pop_y0 + popular.len() as f32 * ROW_PITCH + 12.0 + SECTION_H;
@@ -6429,7 +6471,7 @@ impl AppState {
                 slots
             }
             Route::Album(id) => {
-                let rows = self.album_tracks(id);
+                let rows = self.album_display_tracks(id);
                 Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)
             }
             Route::Library => {
@@ -7784,6 +7826,50 @@ impl AppState {
         v
     }
 
+    /// Channel browse id for an artist route: real search ids pass
+    /// through, bare names resolve via the searched artists, then via
+    /// recorded aliases and the live cache itself (later searches may
+    /// replace `results` while a cached list survives). Unknown names
+    /// mean catalog-only.
+    fn artist_channel_id(&self, route_id: &str) -> Option<String> {
+        if self.results.artists.iter().any(|a| a.id == route_id) {
+            return Some(route_id.to_string());
+        }
+        if let Some(hit) = self
+            .results
+            .artists
+            .iter()
+            .find(|a| a.name == route_id)
+            .map(|a| a.id.clone())
+        {
+            return Some(hit);
+        }
+        if let Some(hit) = self.artist_alias.get(route_id) {
+            return Some(hit.clone());
+        }
+        // Direct channel route whose results were replaced since.
+        if self.artist_top.contains_key(route_id) {
+            return Some(route_id.to_string());
+        }
+        None
+    }
+
+    /// Displayed artist songs: live server-ranked top songs when
+    /// fetched (keyed by channel browse id, so name routes share the
+    /// one fetch), else the catalog fallback (alphabetical, counts
+    /// only where a search provided them).
+    fn artist_display_tracks(&self, route_id: &str) -> Vec<Track> {
+        if let Some(channel) = self.artist_channel_id(route_id) {
+            if let Some(ids) = self.artist_top.get(&channel) {
+                let live: Vec<Track> = ids.iter().filter_map(|id| self.find_track(id)).collect();
+                if !live.is_empty() {
+                    return live;
+                }
+            }
+        }
+        self.artist_tracks(&self.resolve_artist_name(route_id))
+    }
+
     fn artist_albums(&self, artist: &str) -> Vec<Album> {
         let mut albums: Vec<Album> = self
             .results
@@ -7849,6 +7935,143 @@ impl AppState {
             .collect();
         v.sort_by(|a, b| a.title.cmp(&b.title));
         v
+    }
+
+    /// Album browse id for an album route: real search ids pass
+    /// through, synthetic `ax-` cards and plain titles resolve via the
+    /// searched albums (disambiguated by the catalog owner when titles
+    /// collide across artists), then via recorded aliases and the live
+    /// cache itself. Unknown titles mean catalog-only.
+    fn album_browse_id(&self, route_id: &str) -> Option<String> {
+        if self.results.albums.iter().any(|a| a.id == route_id) {
+            return Some(route_id.to_string());
+        }
+        let title = match route_id.strip_prefix("ax-") {
+            Some(rest) => rest.to_string(),
+            None => self.resolve_album_title(route_id),
+        };
+        let mut candidates = self.results.albums.iter().filter(|a| a.title == title);
+        if let Some(first) = candidates.next() {
+            // Duplicate titles across artists: prefer the one owning
+            // catalog tracks under this title.
+            let owner = self
+                .catalog
+                .values()
+                .find(|t| t.album.as_deref() == Some(title.as_str()))
+                .map(|t| t.artist.clone());
+            if let Some(owner) = owner {
+                if let Some(hit) = std::iter::once(first)
+                    .chain(candidates)
+                    .find(|a| a.artist == owner)
+                {
+                    return Some(hit.id.clone());
+                }
+            }
+            return Some(first.id.clone());
+        }
+        if let Some(hit) = self
+            .album_alias
+            .get(route_id)
+            .or_else(|| self.album_alias.get(&title))
+        {
+            return Some(hit.clone());
+        }
+        // Direct album route whose results were replaced since.
+        if self.album_live.contains_key(route_id) {
+            return Some(route_id.to_string());
+        }
+        None
+    }
+
+    /// Displayed album songs: live `track_no`-ordered tracklist when
+    /// fetched (keyed by album browse id), else the catalog fallback
+    /// (alphabetical).
+    fn album_display_tracks(&self, route_id: &str) -> Vec<Track> {
+        if let Some(browse) = self.album_browse_id(route_id) {
+            if let Some(ids) = self.album_live.get(&browse) {
+                let live: Vec<Track> = ids.iter().filter_map(|id| self.find_track(id)).collect();
+                if !live.is_empty() {
+                    return live;
+                }
+            }
+        }
+        self.album_tracks(route_id)
+    }
+
+    /// Capped detail-cache insert (live lists + id aliases): past 64
+    /// keys the oldest goes. Detail pages are small, so this bounds
+    /// long sessions without LRU machinery (same posture as the
+    /// search-cache and artwork caps).
+    fn capped_detail_insert(
+        map: &mut HashMap<String, Vec<String>>,
+        order: &mut Vec<String>,
+        key: String,
+        value: Vec<String>,
+    ) {
+        if !map.contains_key(&key) {
+            order.push(key.clone());
+            while order.len() > 64 {
+                let old = order.remove(0);
+                map.remove(&old);
+            }
+        }
+        map.insert(key, value);
+    }
+
+    /// Alias insert (route/title → browse id): latest wins so a
+    /// corrected browse id repairs a stale one in-session. Trims and
+    /// drops empties (a blank artist name must never claim a FIFO slot
+    /// or resolve). Plain `HashMap` insert: aliases are tiny strings,
+    /// capped only by distinct pages visited.
+    fn alias_insert(map: &mut HashMap<String, String>, key: String, value: String) {
+        let (key, value) = (key.trim().to_string(), value.trim().to_string());
+        if !key.is_empty() && !value.is_empty() {
+            map.insert(key, value);
+        }
+    }
+
+    /// Merge live detail tracks into the catalog without clobbering:
+    /// existing art, durations, albums, and counts survive non-empty
+    /// live fields; live values fill only blanks. Memory-first, then a
+    /// blank-preserving SQLite write-through (titles for brand-new ids
+    /// survive restarts; the `tracks` table carries no plays column, so
+    /// counts themselves re-fetch on revisit). Returns the
+    /// server-ordered ids for the view.
+    fn merge_live_tracks(&mut self, tracks: Vec<Track>) -> Vec<String> {
+        let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+        for t in tracks {
+            match self.catalog.get_mut(&t.id) {
+                Some(existing) => {
+                    if existing.thumbnail_url.is_none() {
+                        existing.thumbnail_url = t.thumbnail_url.clone();
+                    }
+                    if existing.thumbnail_large_url.is_none() {
+                        existing.thumbnail_large_url = t.thumbnail_large_url.clone();
+                    }
+                    if existing.duration_secs == 0 {
+                        existing.duration_secs = t.duration_secs;
+                    }
+                    if existing.plays.is_none() {
+                        existing.plays = t.plays.clone();
+                    }
+                    if existing.album.is_none() {
+                        existing.album = t.album.clone();
+                    }
+                }
+                None => {
+                    self.catalog.insert(t.id.clone(), t);
+                }
+            }
+        }
+        // Write-through of the MERGED rows (never the raw live ones):
+        // blank-preserving upsert, so stored art is safe and new ids
+        // keep their titles across restarts.
+        let merged: Vec<Track> = ids
+            .iter()
+            .filter_map(|id| self.catalog.get(id).cloned())
+            .collect();
+        self.cache_tracks(&merged);
+        ids
     }
 
     /// Album header cover (180px): hires of the first track thumb, else
@@ -8307,9 +8530,31 @@ impl AppState {
             }
             Message::OpenArtist(id) => {
                 self.close_menu();
-                self.go(Route::Artist(id));
+                self.go(Route::Artist(id.clone()));
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                #[cfg(feature = "innertube")]
+                {
+                    let mut tasks = vec![self.ensure_visible_tasks()];
+                    // Live top songs (server rank + counts): once per
+                    // channel id; the catalog fallback paints instantly
+                    // meanwhile and wins again on fetch failure. The
+                    // route alias keeps later name routes resolving
+                    // after searches replace `results`.
+                    if let Some(channel) = self.artist_channel_id(&id) {
+                        Self::alias_insert(&mut self.artist_alias, id.clone(), channel.clone());
+                        if !self.artist_top.contains_key(&channel)
+                            && self.artist_loading.as_deref() != Some(channel.as_str())
+                        {
+                            self.artist_loading = Some(channel.clone());
+                            tasks.push(Self::artist_top_task(channel));
+                        }
+                    }
+                    return iced::Task::batch(tasks);
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    return self.ensure_visible_tasks();
+                }
             }
             Message::OpenAlbum(id) => {
                 self.close_menu();
@@ -8318,6 +8563,21 @@ impl AppState {
                 // The 180px header renders the hires key while row slots
                 // only warm row rasters: warm it here (shared key helper).
                 let mut tasks = vec![self.ensure_visible_tasks()];
+                #[cfg(feature = "innertube")]
+                {
+                    // Live tracklist (`track_no` order + counts): same
+                    // once-per-id rule as artist top songs, plus the
+                    // route alias for later title routes.
+                    if let Some(browse) = self.album_browse_id(&id) {
+                        Self::alias_insert(&mut self.album_alias, id.clone(), browse.clone());
+                        if !self.album_live.contains_key(&browse)
+                            && self.album_loading.as_deref() != Some(browse.as_str())
+                        {
+                            self.album_loading = Some(browse.clone());
+                            tasks.push(Self::album_live_task(browse));
+                        }
+                    }
+                }
                 if let Some(url) = self.album_header_cover(&id) {
                     tasks.extend(self.artwork_tasks_for_urls(&[url]));
                 }
@@ -8564,13 +8824,14 @@ impl AppState {
             }
             Message::PlayArtistShuffled(name) => {
                 self.close_menu();
-                let tracks = self.artist_tracks(&name);
+                // Same list as the page shows (live rank when fetched).
+                let tracks = self.artist_display_tracks(&name);
                 return self.shuffle_tracks(tracks, &format!("Artist {name}"));
             }
             Message::PlayAlbumShuffled(id) => {
                 self.close_menu();
                 let title = self.resolve_album_title(&id);
-                let tracks = self.album_tracks(&id);
+                let tracks = self.album_display_tracks(&id);
                 return self.shuffle_tracks(tracks, &format!("Album {title}"));
             }
             Message::PlaySearchPlaylist(id) => {
@@ -9652,6 +9913,72 @@ impl AppState {
                 self.system_font_rows = names;
                 self.font_rows = font_option_rows(&self.system_font_rows);
             }
+            Message::ArtistTopLoaded { channel_id, result } => {
+                // The keyed cache makes staleness a non-issue (a revisit
+                // reuses it, no refetch); the marker only scopes the
+                // failure status to the page still awaiting it.
+                let watching = self.artist_loading.as_deref() == Some(channel_id.as_str());
+                if watching {
+                    self.artist_loading = None;
+                }
+                match result {
+                    Ok(tracks) => {
+                        for t in &tracks {
+                            Self::alias_insert(
+                                &mut self.artist_alias,
+                                t.artist.clone(),
+                                channel_id.clone(),
+                            );
+                        }
+                        let ids = self.merge_live_tracks(tracks);
+                        // Empty answers stay uncached: the next visit
+                        // retries instead of locking in the fallback.
+                        if !ids.is_empty() {
+                            Self::capped_detail_insert(
+                                &mut self.artist_top,
+                                &mut self.artist_top_order,
+                                channel_id,
+                                ids,
+                            );
+                        }
+                    }
+                    // "failed" keeps it visible in release builds
+                    // (status shows failures only); the catalog
+                    // fallback stays on screen regardless.
+                    Err(e) => {
+                        if watching {
+                            self.status = format!("Live top songs failed ({e}).");
+                        }
+                    }
+                }
+            }
+            Message::AlbumLiveLoaded { album_id, result } => {
+                let watching = self.album_loading.as_deref() == Some(album_id.as_str());
+                if watching {
+                    self.album_loading = None;
+                }
+                match result {
+                    Ok(tracks) => {
+                        for title in tracks.iter().filter_map(|t| t.album.clone()) {
+                            Self::alias_insert(&mut self.album_alias, title, album_id.clone());
+                        }
+                        let ids = self.merge_live_tracks(tracks);
+                        if !ids.is_empty() {
+                            Self::capped_detail_insert(
+                                &mut self.album_live,
+                                &mut self.album_live_order,
+                                album_id,
+                                ids,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if watching {
+                            self.status = format!("Live album songs failed ({e}).");
+                        }
+                    }
+                }
+            }
             Message::RelaunchNow => {
                 // One-click restart for the pending font pick: the font
                 // pref is already stored. Identity + EQ flush first (a
@@ -10535,6 +10862,41 @@ impl AppState {
         )
     }
 
+    /// Live artist top songs for a channel id (server rank + counts).
+    /// Anonymous fallback when signed out (artist browse needs no
+    /// login).
+    #[cfg(feature = "innertube")]
+    fn artist_top_task(channel_id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = async {
+                    let backend = Self::detail_backend().await?;
+                    backend.artist_top_songs(&channel_id).await
+                }
+                .await;
+                (channel_id, result)
+            },
+            |(channel_id, result)| Message::ArtistTopLoaded { channel_id, result },
+        )
+    }
+
+    /// Live album tracklist for an album browse id (`track_no` order
+    /// + counts). Same anonymous fallback as [`Self::artist_top_task`].
+    #[cfg(feature = "innertube")]
+    fn album_live_task(album_id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = async {
+                    let backend = Self::detail_backend().await?;
+                    backend.album_tracklist(&album_id).await
+                }
+                .await;
+                (album_id, result)
+            },
+            |(album_id, result)| Message::AlbumLiveLoaded { album_id, result },
+        )
+    }
+
     /// Resolve a track to a stream URL fast (yt-dlp only, no download).
     /// mpv plays the URL progressively; the rodio path uses `resolve_task`
     /// (full bytes) instead. A hung yt-dlp cannot wedge the loader: the
@@ -10705,6 +11067,19 @@ impl AppState {
             .await;
         }
         Err("sign in first (cookies or Google)".into())
+    }
+
+    /// Backend for detail fetches (artist top songs, album tracklists):
+    /// saved login first, anonymous fallback (both endpoints are
+    /// `AuthToken`, so signed-out users still get live lists).
+    #[cfg(feature = "innertube")]
+    async fn detail_backend() -> Result<yutu_core::InnertubeBackend, String> {
+        match Self::session_backend().await {
+            Ok(backend) => Ok(backend),
+            Err(_) => yutu_core::InnertubeBackend::connect_anonymous()
+                .await
+                .map_err(|e| format!("connect failed: {e}")),
+        }
     }
 
     /// Auth headers for raw search, mirroring [`Self::session_backend`]
@@ -14503,15 +14878,30 @@ impl AppState {
                 let tracks = self.artist_tracks(&name);
                 let albums = self.artist_albums(&name);
                 let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
-                let popular: Vec<iced::Element<'_, Message>> = tracks
-                    .iter()
-                    .take(10)
-                    .enumerate()
-                    .map(|(i, t)| self.numbered_track_row(t, i + 1))
-                    .collect();
+                // Popular prefers the live server rank (true popularity
+                // with counts); the catalog fallback is alphabetical.
+                // A loading fetch with nothing to show yet notes it.
+                let display = self.artist_display_tracks(id);
+                let loading_live = self.artist_channel_id(id).is_some_and(|c| {
+                    self.artist_loading.as_deref() == Some(c.as_str())
+                        && !self.artist_top.contains_key(&c)
+                });
+                let popular: Vec<iced::Element<'_, Message>> = if display.is_empty() && loading_live
+                {
+                    vec![text("Loading top songs…").color(MUTED).into()]
+                } else {
+                    display
+                        .iter()
+                        .take(10)
+                        .enumerate()
+                        .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                        .collect()
+                };
                 let cards: Vec<iced::Element<'_, Message>> =
                     albums.iter().take(5).map(|a| self.album_card(a)).collect();
-                let radio_btn: iced::Element<'_, Message> = match tracks.first() {
+                // Radio seeds from the displayed list (live top hit when
+                // fetched); header counts stay library-scoped by design.
+                let radio_btn: iced::Element<'_, Message> = match display.first() {
                     None => text("").size(1).into(),
                     Some(seed) => button(
                         row![
@@ -14568,7 +14958,9 @@ impl AppState {
             }
             Route::Album(id) => {
                 let title = self.resolve_album_title(id);
-                let tracks = self.album_tracks(id);
+                // Live `track_no`-ordered tracklist when fetched, else
+                // the catalog fallback (alphabetical).
+                let tracks = self.album_display_tracks(id);
                 let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
                 let artist = tracks.first().map(|t| t.artist.clone()).unwrap_or_default();
                 let year = self
@@ -14582,11 +14974,19 @@ impl AppState {
                 // One policy (see `album_header_cover`): the header and
                 // its warming share the key, so it never placeholders.
                 let cover = self.album_header_cover(id);
-                let rows: Vec<iced::Element<'_, Message>> = tracks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| self.numbered_track_row(t, i + 1))
-                    .collect();
+                let loading_live = self.album_browse_id(id).is_some_and(|b| {
+                    self.album_loading.as_deref() == Some(b.as_str())
+                        && !self.album_live.contains_key(&b)
+                });
+                let rows: Vec<iced::Element<'_, Message>> = if tracks.is_empty() && loading_live {
+                    vec![text("Loading album songs…").color(MUTED).into()]
+                } else {
+                    tracks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                        .collect()
+                };
                 let meta = if year.is_empty() {
                     format!(
                         "{} · {} songs · {}",
@@ -17612,6 +18012,145 @@ mod tests {
             result: Err("offline".into()),
         });
         assert_eq!(s.pending_resume, None);
+    }
+
+    #[test]
+    fn artist_live_top_merges_order_and_counts() {
+        let mut s = test_state();
+        // Catalog row with art but no count; live rows bring counts.
+        let mut cached = mk_track("v1", "Song", "Queen");
+        cached.thumbnail_url = Some("http://art".into());
+        cached.duration_secs = 0;
+        s.catalog.insert("v1".into(), cached);
+        s.results.artists.push(Artist {
+            id: "UCqueen".into(),
+            name: "Queen".into(),
+            thumbnail_url: None,
+        });
+        // Resolvers: direct id, name fallback, unknown none.
+        assert_eq!(s.artist_channel_id("UCqueen").as_deref(), Some("UCqueen"));
+        assert_eq!(s.artist_channel_id("Queen").as_deref(), Some("UCqueen"));
+        assert_eq!(s.artist_channel_id("Nobody"), None);
+        // Display falls back to the catalog before the fetch lands.
+        let fallback = s.artist_display_tracks("UCqueen");
+        assert_eq!(fallback.len(), 1);
+        assert!(fallback[0].plays.is_none());
+        // Arrival merges in server order (art kept, blanks filled).
+        let mut live = mk_track("v1", "Song", "Queen");
+        live.plays = Some("76M plays".into());
+        live.duration_secs = 200;
+        let mut fresh = mk_track("v9", "New Hit", "Queen");
+        fresh.plays = Some("1M plays".into());
+        s.artist_loading = Some("UCqueen".into());
+        let _ = s.update(Message::ArtistTopLoaded {
+            channel_id: "UCqueen".into(),
+            result: Ok(vec![fresh, live]),
+        });
+        assert_eq!(s.artist_loading, None);
+        let shown = s.artist_display_tracks("UCqueen");
+        assert_eq!(
+            shown.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec!["v9", "v1"]
+        );
+        let merged = s.find_track("v1").expect("merged");
+        assert_eq!(merged.plays.as_deref(), Some("76M plays"));
+        assert_eq!(merged.thumbnail_url.as_deref(), Some("http://art"));
+        assert_eq!(merged.duration_secs, 200);
+        // Failures name the failure only for the page still awaiting
+        // them (release builds show failures only); a stale arrival
+        // for a page already left leaves the status alone.
+        s.artist_loading = Some("UCzz".into());
+        let _ = s.update(Message::ArtistTopLoaded {
+            channel_id: "UCzz".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("failed"), "{}", s.status);
+        s.status = "Ready.".into();
+        s.artist_loading = Some("UCother".into());
+        let _ = s.update(Message::ArtistTopLoaded {
+            channel_id: "UCzz".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.status, "Ready.");
+        assert_eq!(s.artist_display_tracks("UCqueen").len(), 2);
+        // Cache survives later searches replacing `results`: direct
+        // channel routes self-resolve, name routes use aliases.
+        s.results.artists.clear();
+        assert_eq!(s.artist_display_tracks("UCqueen").len(), 2);
+        assert_eq!(s.artist_display_tracks("Queen").len(), 2);
+    }
+
+    #[test]
+    fn album_live_tracklist_merges_track_order_and_counts() {
+        let mut s = test_state();
+        let mut cached = mk_track("v1", "First", "Queen");
+        cached.album = Some("Test Album".into());
+        s.catalog.insert("v1".into(), cached);
+        s.results.albums.push(Album {
+            id: "MPREalbum".into(),
+            title: "Test Album".into(),
+            artist: "Queen".into(),
+            year: None,
+            thumbnail_url: None,
+        });
+        // Resolvers: direct id, title fallback, synthetic cards
+        // upgrade via their title, unknown none.
+        assert_eq!(s.album_browse_id("MPREalbum").as_deref(), Some("MPREalbum"));
+        assert_eq!(
+            s.album_browse_id("Test Album").as_deref(),
+            Some("MPREalbum")
+        );
+        assert_eq!(
+            s.album_browse_id("ax-Test Album").as_deref(),
+            Some("MPREalbum")
+        );
+        assert_eq!(s.album_browse_id("Unknown"), None);
+        // Arrival merges in `track_no` order with counts and durations.
+        let mut second = mk_track("v2", "Second", "Queen");
+        second.plays = Some("50M plays".into());
+        second.duration_secs = 261;
+        second.album = Some("Test Album".into());
+        let mut first = mk_track("v1", "First", "Queen");
+        first.plays = Some("100M plays".into());
+        first.duration_secs = 179;
+        first.album = Some("Test Album".into());
+        s.album_loading = Some("MPREalbum".into());
+        let _ = s.update(Message::AlbumLiveLoaded {
+            album_id: "MPREalbum".into(),
+            result: Ok(vec![first, second]),
+        });
+        assert_eq!(s.album_loading, None);
+        let shown = s.album_display_tracks("MPREalbum");
+        assert_eq!(
+            shown.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec!["v1", "v2"]
+        );
+        assert_eq!(shown[0].plays.as_deref(), Some("100M plays"));
+        assert_eq!(shown[1].duration_secs, 261);
+        // Cache survives later searches replacing `results` (direct
+        // routes self-resolve, title routes use aliases).
+        s.results.albums.clear();
+        assert_eq!(s.album_display_tracks("MPREalbum").len(), 2);
+        assert_eq!(s.album_display_tracks("Test Album").len(), 2);
+    }
+
+    #[test]
+    fn album_browse_id_disambiguates_duplicate_titles() {
+        let mut s = test_state();
+        for (id, artist) in [("MPREa", "Queen"), ("MPREb", "ABBA")] {
+            s.results.albums.push(Album {
+                id: id.into(),
+                title: "Greatest Hits".into(),
+                artist: artist.into(),
+                year: None,
+                thumbnail_url: None,
+            });
+        }
+        // The catalog owner wins over first-match.
+        let mut t = mk_track("v1", "Song", "ABBA");
+        t.album = Some("Greatest Hits".into());
+        s.catalog.insert("v1".into(), t);
+        assert_eq!(s.album_browse_id("Greatest Hits").as_deref(), Some("MPREb"));
     }
 
     #[test]

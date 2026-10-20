@@ -212,5 +212,6 @@ Done: user can plausibly replace Spotify for daily listening.
 73. Round 62: bundled Inter font + Appearance prefs (system family picker with async scan, one-click relaunch for the pending pick, instant 80-150% interface scale; both survive restarts)
 74. Round 63: window title names the live song ("title · artist", app name when the queue is empty)
 75. Round 64: play counts on song rows (search, artist, album via one meta cell; count-less rows pixel-identical)
+76. Round 65: live artist top songs + album tracklists (server rank/order with counts, once-per-id fetch, catalog fallback offline and on failure)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
