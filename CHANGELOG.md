@@ -23,6 +23,8 @@
   restarts
 - Window title names the live song ("title · artist", app name
   when the queue is empty)
+- Play counts on song rows (search, artist, album: "213M plays ·
+  duration" in the duration slot; rows without counts unchanged)
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

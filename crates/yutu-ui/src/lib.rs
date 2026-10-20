@@ -1821,15 +1821,33 @@ fn fmt_time(secs: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
-/// Duration text for search rows: raw All results carry no durations,
-/// so a zero one renders blank, never "0:00".
-fn duration_text(secs: u32) -> iced::Element<'static, Message> {
-    use iced::widget::text;
-    if secs > 0 {
-        text(fmt_time(secs as f64)).size(12).color(MUTED).into()
-    } else {
-        text("").size(12).into()
+/// Play count plus duration for song rows ("213M plays · 3:45",
+/// muted): blank duration when zero, blank count when the source
+/// carried none (album, playlist, and radio rows often lack it), so
+/// those rows keep their exact current layout.
+fn song_meta(plays: Option<&str>, duration_secs: u32) -> String {
+    let duration = fmt_time(duration_secs as f64);
+    match (
+        plays.map(str::trim).filter(|s| !s.is_empty()),
+        duration_secs,
+    ) {
+        (Some(p), _) => format!("{p} · {duration}"),
+        (None, 0) => String::new(),
+        (None, _) => duration,
     }
+}
+
+/// Right-side meta cell for song rows (same "{plays} · {duration}"
+/// idiom as the search popup): one widget in the duration slot, so
+/// count-less rows render pixel-identical to before.
+fn song_meta_text(plays: Option<&str>, duration_secs: u32) -> iced::Element<'static, Message> {
+    use iced::widget::text;
+    use iced::widget::text::Wrapping;
+    text(song_meta(plays, duration_secs))
+        .size(12)
+        .color(MUTED)
+        .wrapping(Wrapping::None)
+        .into()
 }
 
 pub struct AppState {
@@ -5724,7 +5742,7 @@ impl AppState {
                     text(format!("{n}")).size(13).color(MUTED).width(28),
                     self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    duration_text(t.duration_secs),
+                    song_meta_text(t.plays.as_deref(), t.duration_secs),
                     heart,
                     more,
                 ]
@@ -11554,7 +11572,7 @@ impl AppState {
     /// One compact track row: green play, title/artist, heart. All other
     /// actions live on detail screens: this killed the button-soup.
     fn track_row(&self, t: &Track) -> iced::Element<'_, Message> {
-        use iced::widget::{button, container, mouse_area, row, text};
+        use iced::widget::{button, container, mouse_area, row};
         use iced::Fill;
         let heart_color = if self.liked.contains(&t.id) {
             SPOT_GREEN
@@ -11572,7 +11590,7 @@ impl AppState {
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    song_meta_text(t.plays.as_deref(), t.duration_secs),
                     button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                         .style(hover_row)
                         .on_press(Message::Like(t.id.clone()))
@@ -12027,7 +12045,7 @@ impl AppState {
                         14,
                         iced::Color::WHITE
                     ),
-                    duration_text(t.duration_secs),
+                    song_meta_text(t.plays.as_deref(), t.duration_secs),
                     heart,
                     more,
                 ]
@@ -17190,6 +17208,17 @@ mod tests {
     }
 
     #[test]
+    fn song_meta_combines_plays_and_duration() {
+        // Popup idiom ("213M plays · 3:45"); count-less rows keep the
+        // bare duration (blank when zero).
+        assert_eq!(song_meta(Some("213M plays"), 225), "213M plays · 3:45");
+        assert_eq!(song_meta(Some("1B plays"), 0), "1B plays · 0:00");
+        assert_eq!(song_meta(None, 225), "3:45");
+        assert_eq!(song_meta(None, 0), "");
+        assert_eq!(song_meta(Some("  "), 225), "3:45");
+    }
+
+    #[test]
     fn search_rows_hover_and_collection_menus() {
         use yutu_core::{Album, Artist};
         let mut s = test_state();
@@ -17222,6 +17251,15 @@ mod tests {
         let _ = s.search_playlist_row(&pl);
         let _ = s.search_song_row(&t);
         let _ = s.numbered_track_row(&t, 1);
+        let _ = s.track_row(&t);
+        // Play-count rows build with and without counts (search and
+        // catalog hits carry "213M plays"; album, playlist, and radio
+        // rows often carry none and must keep their layout).
+        let mut played = mk_track("v2", "Toxicity", "System of a Down");
+        played.plays = Some("213M plays".into());
+        let _ = s.search_song_row(&played);
+        let _ = s.numbered_track_row(&played, 2);
+        let _ = s.track_row(&played);
         s.hovered_album = Some("al1".into());
         s.hovered_artist = Some("ar1".into());
         s.hovered_search_playlist = Some("PL1".into());
