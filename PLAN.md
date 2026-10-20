@@ -210,5 +210,6 @@ Done: user can plausibly replace Spotify for daily listening.
 71. Round 60: empty-space hand root-caused (seek-bar canvas voted Pointer globally; now hover-gated) via cursor sampler + vote tracing; tracer removed
 72. Round 61: Library nav button removed from the sidebar (route/page stays for fallbacks + tests)
 73. Round 62: bundled Inter font + Appearance prefs (system family picker with async scan, one-click relaunch for the pending pick, instant 80-150% interface scale; both survive restarts)
+74. Round 63: window title names the live song ("title · artist", app name when the queue is empty)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

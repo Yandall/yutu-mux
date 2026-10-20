@@ -21,6 +21,8 @@
   picker over every installed family (async scan, one-click
   in-app relaunch to apply) plus an instant 80-150% interface scale; both survive
   restarts
+- Window title names the live song ("title · artist", app name
+  when the queue is empty)
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and
