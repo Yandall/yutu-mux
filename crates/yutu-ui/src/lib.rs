@@ -8546,6 +8546,10 @@ impl AppState {
                             && self.artist_loading.as_deref() != Some(channel.as_str())
                         {
                             self.artist_loading = Some(channel.clone());
+                            yutu_core::app_log::info(
+                                "live-detail",
+                                format_args!("artist top fetch: {channel}"),
+                            );
                             tasks.push(Self::artist_top_task(channel));
                         }
                     }
@@ -8574,6 +8578,10 @@ impl AppState {
                             && self.album_loading.as_deref() != Some(browse.as_str())
                         {
                             self.album_loading = Some(browse.clone());
+                            yutu_core::app_log::info(
+                                "live-detail",
+                                format_args!("album tracklist fetch: {browse}"),
+                            );
                             tasks.push(Self::album_live_task(browse));
                         }
                     }
@@ -9923,6 +9931,13 @@ impl AppState {
                 }
                 match result {
                     Ok(tracks) => {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!(
+                                "artist top arrived: {channel_id} ({} songs)",
+                                tracks.len()
+                            ),
+                        );
                         for t in &tracks {
                             Self::alias_insert(
                                 &mut self.artist_alias,
@@ -9946,6 +9961,10 @@ impl AppState {
                     // (status shows failures only); the catalog
                     // fallback stays on screen regardless.
                     Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("artist top failed: {channel_id} ({e})"),
+                        );
                         if watching {
                             self.status = format!("Live top songs failed ({e}).");
                         }
@@ -9959,6 +9978,13 @@ impl AppState {
                 }
                 match result {
                     Ok(tracks) => {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!(
+                                "album tracklist arrived: {album_id} ({} songs)",
+                                tracks.len()
+                            ),
+                        );
                         for title in tracks.iter().filter_map(|t| t.album.clone()) {
                             Self::alias_insert(&mut self.album_alias, title, album_id.clone());
                         }
@@ -9973,6 +9999,10 @@ impl AppState {
                         }
                     }
                     Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("album tracklist failed: {album_id} ({e})"),
+                        );
                         if watching {
                             self.status = format!("Live album songs failed ({e}).");
                         }
