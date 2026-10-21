@@ -38,10 +38,11 @@ use std::path::Path;
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::oauth::OAuthToken;
 use ytmapi_rs::auth::BrowserToken;
-use ytmapi_rs::common::{PlaylistID, Thumbnail, VideoID, YoutubeID};
+use ytmapi_rs::common::{AlbumID, ArtistChannelID, PlaylistID, Thumbnail, VideoID, YoutubeID};
 use ytmapi_rs::parse::{
-    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultFeaturedPlaylist,
-    SearchResultPlaylist, SearchResultSong, TableListSong, WatchPlaylistTrack,
+    AlbumSong, ArtistSong, PlaylistItem, SearchResultAlbum, SearchResultArtist,
+    SearchResultFeaturedPlaylist, SearchResultPlaylist, SearchResultSong, TableListSong,
+    WatchPlaylistTrack,
 };
 use ytmapi_rs::query::GetSongTrackingUrlQuery;
 use ytmapi_rs::YtMusic;
@@ -302,6 +303,101 @@ impl InnertubeBackend {
                 .map_err(|e| format!("search artists failed: {e}"))?,
         };
         Ok(artists.iter().map(artist_to_artist).collect())
+    }
+
+    /// Live artist top songs in server rank order with play counts
+    /// (see [`artist_song_to_track`]). Artist browse is `AuthToken`,
+    /// so anonymous backends get full results, not an error.
+    pub async fn artist_top_songs(&self, channel_id: &str) -> Result<Vec<Track>, String> {
+        let artist = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?,
+        };
+        Ok(artist
+            .top_releases
+            .songs
+            .map(|s| s.results)
+            .unwrap_or_default()
+            .iter()
+            .map(artist_song_to_track)
+            .collect())
+    }
+
+    /// Full artist top-songs shelf in server rank order with play
+    /// counts (`track_no`-style rank, durations, albums, and thumbs;
+    /// see [`crate::raw_browse`]). The typed shelf behind
+    /// [`Self::artist_top_songs`] only carries 5 songs; the shelf's
+    /// own browse id resolves the whole list (100 rows). Anonymous
+    /// (global counts, no personalization). Falls back to the typed
+    /// 5-song shelf when the raw list comes back empty.
+    pub async fn artist_top_full(&self, channel_id: &str) -> Result<Vec<Track>, String> {
+        let browse_id = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?
+                .top_releases
+                .songs
+                .map(|s| s.browse_id.get_raw().to_string()),
+            Inner::Cookie(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?
+                .top_releases
+                .songs
+                .map(|s| s.browse_id.get_raw().to_string()),
+            Inner::OAuth(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?
+                .top_releases
+                .songs
+                .map(|s| s.browse_id.get_raw().to_string()),
+        };
+        if let Some(browse) = browse_id {
+            if let Ok(full) = crate::raw_browse::raw_shelf_tracklist(&browse).await {
+                if !full.is_empty() {
+                    return Ok(full);
+                }
+            }
+        }
+        self.artist_top_songs(channel_id).await
+    }
+
+    /// Live album tracklist in `track_no` order with play counts (see
+    /// [`album_song_to_track`]). Same auth story as
+    /// [`Self::artist_top_songs`]: the album browse works anonymously.
+    pub async fn album_tracklist(&self, album_id: &str) -> Result<Vec<Track>, String> {
+        let album = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_album(AlbumID::from_raw(album_id))
+                .await
+                .map_err(|e| format!("album songs failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_album(AlbumID::from_raw(album_id))
+                .await
+                .map_err(|e| format!("album songs failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_album(AlbumID::from_raw(album_id))
+                .await
+                .map_err(|e| format!("album songs failed: {e}"))?,
+        };
+        let artist = join_names(album.artists.iter().map(|a| a.name.as_str()));
+        Ok(album
+            .tracks
+            .iter()
+            .map(|t| album_song_to_track(t, &artist, &album.title))
+            .collect())
     }
 
     /// Live community playlist search, same endpoint family as
@@ -1536,12 +1632,13 @@ fn song_to_track(song: &SearchResultSong) -> Track {
 }
 
 /// True when the server text is a real play/view count ("213M plays",
-/// "120K views"): the same flex column sometimes carries an upload
-/// date ("Nov 12, 2025", podcast episodes), which must never pose as
-/// a count downstream. Empty fails the keyword test on its own.
-fn is_play_count(raw: &str) -> bool {
+/// "120M views", "2.7B plays", "2725 M reproducciones"): the same flex
+/// column sometimes carries an upload date ("Nov 12, 2025", podcast
+/// episodes), which must never pose as a count downstream. Empty fails
+/// the keyword test on its own.
+pub(crate) fn is_play_count(raw: &str) -> bool {
     let lower = raw.to_lowercase();
-    lower.contains("play") || lower.contains("view")
+    lower.contains("play") || lower.contains("view") || lower.contains("reprodu")
 }
 
 /// Map one `search_albums` hit to our [`Album`]. The API year is a plain
@@ -1591,6 +1688,41 @@ fn featured_to_hit(f: &SearchResultFeaturedPlaylist) -> PlaylistHit {
         author: f.author.clone(),
         detail: f.songs.clone(),
         thumbnail_url: pick_thumb_url(&f.thumbnails),
+    }
+}
+
+/// Map one artist top song to our [`Track`]: server rank order is the
+/// true Popular list, and `plays` survives (unlike table listings).
+/// Upstream carries no duration or thumbs here, so rows render the
+/// bare count (like duration-less search All rows) and art warms from
+/// whatever the catalog already holds for the id.
+fn artist_song_to_track(song: &ArtistSong) -> Track {
+    Track {
+        id: song.video_id.get_raw().to_string(),
+        title: song.title.clone(),
+        artist: join_names(song.artists.iter().map(|a| a.name.as_str())),
+        album: Some(song.album.name.clone()).filter(|name| !name.is_empty()),
+        duration_secs: 0,
+        thumbnail_url: None,
+        thumbnail_large_url: None,
+        plays: is_play_count(&song.plays).then(|| song.plays.clone()),
+    }
+}
+
+/// Map one album track to our [`Track`]: `track_no` order is the true
+/// album order, and `plays` survives. Upstream carries no thumbs or
+/// per-row artist (the album context owns both), so the caller passes
+/// the album artist and art warms from the catalog like artist songs.
+fn album_song_to_track(song: &AlbumSong, artist: &str, album: &str) -> Track {
+    Track {
+        id: song.video_id.get_raw().to_string(),
+        title: song.title.clone(),
+        artist: artist.to_string(),
+        album: Some(album.to_string()).filter(|name| !name.is_empty()),
+        duration_secs: parse_duration_secs(&song.duration),
+        thumbnail_url: None,
+        thumbnail_large_url: None,
+        plays: is_play_count(&song.plays).then(|| song.plays.clone()),
     }
 }
 
@@ -1855,6 +1987,32 @@ pub fn parse_library_songs_fixture(json: &str) -> Vec<Track> {
         .unwrap_or_default()
 }
 
+/// Fixture/test helper: parse a saved artist top-songs response (a JSON
+/// array of `ArtistSong`, see `fixtures/artist_songs.json`) into our
+/// [`Track`]s using the same [`artist_song_to_track`] mapping as the live
+/// [`InnertubeBackend::artist_top_songs`] path. Unparseable JSON → empty vec.
+pub fn parse_artist_songs_fixture(json: &str) -> Vec<Track> {
+    serde_json::from_str::<Vec<ArtistSong>>(json)
+        .map(|songs| songs.iter().map(artist_song_to_track).collect())
+        .unwrap_or_default()
+}
+
+/// Fixture/test helper: parse a saved album tracklist response (a JSON
+/// array of `AlbumSong`, see `fixtures/album_songs.json`) with the same
+/// [`album_song_to_track`] mapping as [`InnertubeBackend::album_tracklist`].
+/// The album context (artist + title) rides alongside because upstream
+/// rows carry neither. Unparseable JSON → empty vec.
+pub fn parse_album_songs_fixture(json: &str, artist: &str, album: &str) -> Vec<Track> {
+    serde_json::from_str::<Vec<AlbumSong>>(json)
+        .map(|songs| {
+            songs
+                .iter()
+                .map(|s| album_song_to_track(s, artist, album))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Split library rows (see
 /// [`InnertubeBackend::library_songs_with_status`]) into liked and
 /// disliked id sets for sync reconciliation. `Indifferent` rows land in
@@ -1897,6 +2055,8 @@ mod tests {
             "120K views",
             "55K views",
             "1 play",
+            "2725 M reproducciones",
+            "1,2 M reproduções",
         ] {
             assert!(is_play_count(raw), "{raw}");
         }
@@ -1905,6 +2065,40 @@ mod tests {
         for raw in ["Nov 12, 2025", "2025", "", "  "] {
             assert!(!is_play_count(raw), "{raw}");
         }
+    }
+
+    #[test]
+    fn artist_songs_fixture_keeps_order_counts_and_artists() {
+        let tracks = parse_artist_songs_fixture(include_str!("../fixtures/artist_songs.json"));
+        assert_eq!(tracks.len(), 2);
+        // Server rank order survives (Popular is this order, not
+        // alphabetical); counts survive; artists join like search.
+        assert_eq!(tracks[0].title, "Bicycle Race");
+        assert_eq!(tracks[0].artist, "Queen");
+        assert_eq!(tracks[0].plays.as_deref(), Some("76M plays"));
+        assert_eq!(tracks[0].album.as_deref(), Some("The Game"));
+        // No duration or thumbs upstream: rows render the bare count
+        // with a placeholder cover.
+        assert_eq!(tracks[0].duration_secs, 0);
+        assert!(tracks[0].thumbnail_url.is_none());
+        // The date riding the plays column is dropped (not a count).
+        assert_eq!(tracks[1].plays, None);
+    }
+
+    #[test]
+    fn album_songs_fixture_keeps_track_order_counts_and_context() {
+        let tracks = parse_album_songs_fixture(
+            include_str!("../fixtures/album_songs.json"),
+            "Queen",
+            "Test Album",
+        );
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].title, "First Song");
+        assert_eq!(tracks[0].artist, "Queen");
+        assert_eq!(tracks[0].album.as_deref(), Some("Test Album"));
+        assert_eq!(tracks[0].duration_secs, 179);
+        assert_eq!(tracks[0].plays.as_deref(), Some("100M plays"));
+        assert_eq!(tracks[1].plays.as_deref(), Some("50M plays"));
     }
 
     #[test]
@@ -2641,6 +2835,94 @@ mod tests {
     }
 
     // ---- Live-network tests: always `#[ignore]`; CI runs offline. ----
+
+    #[tokio::test]
+    #[ignore = "live network: anonymous full top-songs shelf"]
+    async fn live_artist_top_full() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let artists = backend
+            .search_artists("Queen")
+            .await
+            .expect("search artists");
+        let queen = artists
+            .iter()
+            .find(|a| a.name == "Queen")
+            .expect("Queen in artist results");
+        let top = backend
+            .artist_top_full(&queen.id)
+            .await
+            .expect("full top songs");
+        // Full shelf, not the 5-song typed head.
+        assert!(top.len() > 5, "expected full shelf, got {}", top.len());
+        assert!(
+            top.iter().all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry id and title: {top:?}"
+        );
+        // Playlist rows carry durations + albums; most rows carry counts.
+        assert!(top.iter().any(|t| t.duration_secs > 0));
+        assert!(top.iter().any(|t| t.album.is_some()));
+        let counted = top.iter().filter(|t| t.plays.is_some()).count();
+        assert!(counted * 2 >= top.len(), "expected counts on most rows");
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: anonymous artist top songs with play counts"]
+    async fn live_artist_top_songs() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let artists = backend
+            .search_artists("Queen")
+            .await
+            .expect("search artists");
+        let queen = artists
+            .iter()
+            .find(|a| a.name == "Queen")
+            .expect("Queen in artist results");
+        let top = backend
+            .artist_top_songs(&queen.id)
+            .await
+            .expect("top songs");
+        assert!(!top.is_empty(), "expected top songs for Queen");
+        assert!(
+            top.iter().all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry id and title: {top:?}"
+        );
+        assert!(
+            top.iter().any(|t| t.plays.is_some()),
+            "expected some play counts: {top:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: anonymous album tracklist with play counts"]
+    async fn live_album_tracklist() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let albums = backend
+            .search_albums("A Night at the Opera Queen")
+            .await
+            .expect("search albums");
+        let album = albums
+            .iter()
+            .find(|a| a.title == "A Night At The Opera" || a.title == "A Night at the Opera")
+            .expect("album in results");
+        let tracks = backend.album_tracklist(&album.id).await.expect("tracklist");
+        assert!(!tracks.is_empty(), "expected album tracks");
+        assert!(
+            tracks
+                .iter()
+                .all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry id and title: {tracks:?}"
+        );
+        assert!(
+            tracks.iter().any(|t| t.plays.is_some()),
+            "expected some play counts: {tracks:?}"
+        );
+    }
 
     #[tokio::test]
     #[ignore = "live network: anonymous Innertube suggestions"]

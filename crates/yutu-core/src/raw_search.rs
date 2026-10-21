@@ -17,7 +17,7 @@ use crate::models::{Album, Artist, MixedRef, PlaylistHit, SearchAll, TopHit, Top
 
 const SEARCH_URL: &str =
     "https://music.youtube.com/youtubei/v1/search?alt=json&prettyPrint=false&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
-const ORIGIN: &str = "https://music.youtube.com";
+pub(crate) const ORIGIN: &str = "https://music.youtube.com";
 
 /// Auth headers for raw search. Anonymous needs none; OAuth sends a
 /// bearer token and cookie sessions send the cookie + `SAPISIDHASH`
@@ -1219,5 +1219,24 @@ mod tests {
         let auth = SearchAuth::cookie("SID=x; SAPISID=mysecret; HSID=y".into());
         assert_eq!(auth.sapisid(), Some("mysecret"));
         assert!(SearchAuth::anonymous().sapisid().is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "live network: filtered artist search resolves Queen"]
+    async fn live_filtered_artist_search_finds_queen() {
+        // Guards the "Go to artist" resolve path for names the page
+        // search never showed as a card: the Artists tab must still
+        // carry the channel id.
+        let bundle =
+            raw_search_filtered("queen", &SearchAuth::anonymous(), SearchFilterKind::Artists)
+                .await
+                .expect("filtered artist search");
+        assert!(
+            bundle
+                .artists
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case("queen")),
+            "Queen missing from filtered artists"
+        );
     }
 }
