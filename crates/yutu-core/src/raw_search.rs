@@ -1220,4 +1220,23 @@ mod tests {
         assert_eq!(auth.sapisid(), Some("mysecret"));
         assert!(SearchAuth::anonymous().sapisid().is_none());
     }
+
+    #[tokio::test]
+    #[ignore = "live network: filtered artist search resolves Queen"]
+    async fn live_filtered_artist_search_finds_queen() {
+        // Guards the "Go to artist" resolve path for names the page
+        // search never showed as a card: the Artists tab must still
+        // carry the channel id.
+        let bundle =
+            raw_search_filtered("queen", &SearchAuth::anonymous(), SearchFilterKind::Artists)
+                .await
+                .expect("filtered artist search");
+        assert!(
+            bundle
+                .artists
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case("queen")),
+            "Queen missing from filtered artists"
+        );
+    }
 }

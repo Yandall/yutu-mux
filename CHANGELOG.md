@@ -30,10 +30,12 @@
   tracklists (`track_no` order with counts): fetched once per page
   on open (anonymous works), catalog fallback offline and on failure;
   artist pages show the head 5 plus a "Show more" full ranked shelf
-  (title, artist, album, plays, duration); "Go to artist/album"
-  entries funnel through the same fetch, resolving bare names via
-  scoped search when no card provided the id; a loading row stands in
-  while fetching so the page never flashes the stale catalog first;
+  (title, artist, album, plays, duration; head paints from the fast
+  typed fetch, the 100-row shelf loads only on expand); "Go to
+  artist/album" entries funnel through the same fetch, resolving bare
+  names via scoped search when no card provided the id; a loading row
+  stands in while fetching so the page never flashes the stale catalog
+  first;
   artist pages show the head 5 plus a "Show all" full ranked list
   (title, artist, album, plays, duration); "Go to artist/album"
   entries funnel through the same fetch, resolving bare names via
