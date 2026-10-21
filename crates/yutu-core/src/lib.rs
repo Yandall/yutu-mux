@@ -11,6 +11,8 @@ pub mod lyrics_providers;
 pub mod models;
 pub mod pot;
 #[cfg(feature = "innertube")]
+pub mod raw_browse;
+#[cfg(feature = "innertube")]
 pub mod raw_search;
 pub mod scrobble;
 pub mod stream;
