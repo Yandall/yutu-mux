@@ -28,7 +28,15 @@
   upload dates never pose as counts, zero durations stay bare)
 - Live artist Popular (true server rank with counts) and album
   tracklists (`track_no` order with counts): fetched once per page
-  on open (anonymous works), catalog fallback offline and on failure
+  on open (anonymous works), catalog fallback offline and on failure;
+  artist pages show the head 5 plus a "Show all" full ranked shelf
+  (title, artist, album, plays, duration); "Go to artist/album"
+  entries funnel through the same fetch, resolving bare names via
+  scoped search when no card provided the id;
+  artist pages show the head 5 plus a "Show all" full ranked list
+  (title, artist, album, plays, duration); "Go to artist/album"
+  entries funnel through the same fetch, resolving bare names via
+  scoped search when no card provided the id
 - macOS Now Playing + media keys (Control Center metadata, headset
   commands) via a souvlaki driver; Linux MPRIS untouched, no UI changes
 - EQ curve persists: preset, gains, and bypass survive restarts and

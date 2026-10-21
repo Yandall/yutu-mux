@@ -333,6 +333,47 @@ impl InnertubeBackend {
             .collect())
     }
 
+    /// Full artist top-songs shelf in server rank order with play
+    /// counts (`track_no`-style rank, durations, albums, and thumbs;
+    /// see [`crate::raw_browse`]). The typed shelf behind
+    /// [`Self::artist_top_songs`] only carries 5 songs; the shelf's
+    /// own browse id resolves the whole list (100 rows). Anonymous
+    /// (global counts, no personalization). Falls back to the typed
+    /// 5-song shelf when the raw list comes back empty.
+    pub async fn artist_top_full(&self, channel_id: &str) -> Result<Vec<Track>, String> {
+        let browse_id = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?
+                .top_releases
+                .songs
+                .map(|s| s.browse_id.get_raw().to_string()),
+            Inner::Cookie(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?
+                .top_releases
+                .songs
+                .map(|s| s.browse_id.get_raw().to_string()),
+            Inner::OAuth(client) => client
+                .get_artist(ArtistChannelID::from_raw(channel_id))
+                .await
+                .map_err(|e| format!("artist songs failed: {e}"))?
+                .top_releases
+                .songs
+                .map(|s| s.browse_id.get_raw().to_string()),
+        };
+        if let Some(browse) = browse_id {
+            if let Ok(full) = crate::raw_browse::raw_shelf_tracklist(&browse).await {
+                if !full.is_empty() {
+                    return Ok(full);
+                }
+            }
+        }
+        self.artist_top_songs(channel_id).await
+    }
+
     /// Live album tracklist in `track_no` order with play counts (see
     /// [`album_song_to_track`]). Same auth story as
     /// [`Self::artist_top_songs`]: the album browse works anonymously.
@@ -1591,12 +1632,13 @@ fn song_to_track(song: &SearchResultSong) -> Track {
 }
 
 /// True when the server text is a real play/view count ("213M plays",
-/// "120K views"): the same flex column sometimes carries an upload
-/// date ("Nov 12, 2025", podcast episodes), which must never pose as
-/// a count downstream. Empty fails the keyword test on its own.
-fn is_play_count(raw: &str) -> bool {
+/// "120M views", "2.7B plays", "2725 M reproducciones"): the same flex
+/// column sometimes carries an upload date ("Nov 12, 2025", podcast
+/// episodes), which must never pose as a count downstream. Empty fails
+/// the keyword test on its own.
+pub(crate) fn is_play_count(raw: &str) -> bool {
     let lower = raw.to_lowercase();
-    lower.contains("play") || lower.contains("view")
+    lower.contains("play") || lower.contains("view") || lower.contains("reprodu")
 }
 
 /// Map one `search_albums` hit to our [`Album`]. The API year is a plain
@@ -2013,6 +2055,8 @@ mod tests {
             "120K views",
             "55K views",
             "1 play",
+            "2725 M reproducciones",
+            "1,2 M reproduções",
         ] {
             assert!(is_play_count(raw), "{raw}");
         }
@@ -2793,6 +2837,37 @@ mod tests {
     // ---- Live-network tests: always `#[ignore]`; CI runs offline. ----
 
     #[tokio::test]
+    #[ignore = "live network: anonymous full top-songs shelf"]
+    async fn live_artist_top_full() {
+        let backend = InnertubeBackend::connect_anonymous()
+            .await
+            .expect("anonymous connect");
+        let artists = backend
+            .search_artists("Queen")
+            .await
+            .expect("search artists");
+        let queen = artists
+            .iter()
+            .find(|a| a.name == "Queen")
+            .expect("Queen in artist results");
+        let top = backend
+            .artist_top_full(&queen.id)
+            .await
+            .expect("full top songs");
+        // Full shelf, not the 5-song typed head.
+        assert!(top.len() > 5, "expected full shelf, got {}", top.len());
+        assert!(
+            top.iter().all(|t| !t.id.is_empty() && !t.title.is_empty()),
+            "tracks must carry id and title: {top:?}"
+        );
+        // Playlist rows carry durations + albums; most rows carry counts.
+        assert!(top.iter().any(|t| t.duration_secs > 0));
+        assert!(top.iter().any(|t| t.album.is_some()));
+        let counted = top.iter().filter(|t| t.plays.is_some()).count();
+        assert!(counted * 2 >= top.len(), "expected counts on most rows");
+    }
+
+    #[tokio::test]
     #[ignore = "live network: anonymous artist top songs with play counts"]
     async fn live_artist_top_songs() {
         let backend = InnertubeBackend::connect_anonymous()
@@ -3087,35 +3162,5 @@ mod tests {
             .expect("anonymous connect");
         let lines = backend.song_lyrics(&video_id).await.expect("lyrics");
         assert!(!lines.is_empty(), "expected lyric lines for {video_id}");
-    }
-}
-
-#[cfg(test)]
-mod probe_tests {
-    #[tokio::test]
-    #[ignore = "live probe: top songs shelf size and browse id"]
-    async fn probe_top_songs_shelf() {
-        use ytmapi_rs::common::YoutubeID;
-        use ytmapi_rs::YtMusic;
-        let yt = YtMusic::new_unauthenticated().await.unwrap();
-        let artists = yt.search_artists("Queen").await.unwrap();
-        let queen = artists.iter().find(|a| a.artist == "Queen").unwrap();
-        let ga = yt.get_artist(&queen.browse_id).await.unwrap();
-        let songs = ga.top_releases.songs.expect("songs shelf");
-        eprintln!("SHELF COUNT: {}", songs.results.len());
-        eprintln!("BROWSE ID: {}", songs.browse_id.get_raw());
-        for s in songs.results.iter().take(8) {
-            eprintln!("- {} | {}", s.title, s.plays);
-        }
-        let pl = yt.get_playlist_tracks(&songs.browse_id).await;
-        match pl {
-            Ok(tracks) => {
-                eprintln!("PLAYLIST QUERY COUNT: {}", tracks.len());
-                for t in tracks.iter().take(8) {
-                    eprintln!("- {:?}", t);
-                }
-            }
-            Err(e) => eprintln!("PLAYLIST QUERY FAILED: {e}"),
-        }
     }
 }

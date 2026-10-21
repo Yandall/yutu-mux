@@ -1195,6 +1195,7 @@ pub enum Message {
     /// Bare artist name resolved to a channel id (scoped search);
     /// chains into the top-songs fetch.
     ArtistChannelResolved {
+        route_id: String,
         name: String,
         result: Result<String, String>,
     },
@@ -1205,6 +1206,9 @@ pub enum Message {
         title: String,
         result: Result<String, String>,
     },
+    /// Artist page "Show all": expand Popular to the full server-ranked
+    /// list (one-way; navigating away and back collapses).
+    ArtistTopExpand,
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -2075,6 +2079,9 @@ pub struct AppState {
     /// a time per kind, chained into the list fetch on success.
     artist_resolving: Option<String>,
     album_resolving: Option<String>,
+    /// Full top-songs list expanded (artist page "Show all"): reset
+    /// on every page open; the collapsed Popular shows the head.
+    artist_expanded: bool,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     drawer_scroll: f32,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
@@ -4307,6 +4314,7 @@ impl AppState {
             album_loading: None,
             artist_resolving: None,
             album_resolving: None,
+            artist_expanded: false,
             drawer_scroll: 0.0,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
@@ -7853,11 +7861,20 @@ impl AppState {
     fn open_artist(&mut self, route_id: String) -> iced::Task<Message> {
         self.go(Route::Artist(route_id.clone()));
         self.publish_mpris();
+        // Fresh page: Popular collapses to the head (the cached list
+        // stays, so expanding again costs no fetch).
+        self.artist_expanded = false;
+        // Aliases record unconditionally (pure, offline-safe): later
+        // searches replacing `results` must keep resolving.
+        if let Some(channel) = self.artist_channel_id(&route_id) {
+            let name = self.resolve_artist_name(&route_id);
+            Self::alias_insert(&mut self.artist_alias, route_id.clone(), channel.clone());
+            Self::alias_insert(&mut self.artist_alias, name, channel.clone());
+        }
         #[cfg(feature = "innertube")]
         {
             let mut tasks = vec![self.ensure_visible_tasks()];
             if let Some(channel) = self.artist_channel_id(&route_id) {
-                Self::alias_insert(&mut self.artist_alias, route_id, channel.clone());
                 if !self.artist_top.contains_key(&channel)
                     && self.artist_loading.as_deref() != Some(channel.as_str())
                 {
@@ -7866,7 +7883,7 @@ impl AppState {
                         "live-detail",
                         format_args!("artist top fetch: {channel}"),
                     );
-                    tasks.push(Self::artist_top_task(channel));
+                    tasks.push(Self::artist_top_full_task(channel));
                 }
             } else {
                 yutu_core::app_log::info(
@@ -7875,14 +7892,17 @@ impl AppState {
                 );
                 if self.artist_resolving.as_deref() != Some(route_id.as_str()) {
                     self.artist_resolving = Some(route_id.clone());
-                    tasks.push(Self::artist_resolve_task(route_id));
+                    tasks.push(Self::artist_resolve_task(
+                        route_id.clone(),
+                        self.resolve_artist_name(&route_id),
+                    ));
                 }
             }
-            return iced::Task::batch(tasks);
+            iced::Task::batch(tasks)
         }
         #[cfg(not(feature = "innertube"))]
         {
-            return self.ensure_visible_tasks();
+            self.ensure_visible_tasks()
         }
     }
 
@@ -7895,10 +7915,19 @@ impl AppState {
         // The 180px header renders the hires key while row slots
         // only warm row rasters: warm it here (shared key helper).
         let mut tasks = vec![self.ensure_visible_tasks()];
+        // Aliases record unconditionally (pure, offline-safe): later
+        // title routes must keep resolving after `results` churn.
+        let title = match route_id.strip_prefix("ax-") {
+            Some(rest) => rest.to_string(),
+            None => self.resolve_album_title(&route_id),
+        };
+        if let Some(browse) = self.album_browse_id(&route_id) {
+            Self::alias_insert(&mut self.album_alias, route_id.clone(), browse.clone());
+            Self::alias_insert(&mut self.album_alias, title.clone(), browse.clone());
+        }
         #[cfg(feature = "innertube")]
         {
             if let Some(browse) = self.album_browse_id(&route_id) {
-                Self::alias_insert(&mut self.album_alias, route_id.clone(), browse.clone());
                 if !self.album_live.contains_key(&browse)
                     && self.album_loading.as_deref() != Some(browse.as_str())
                 {
@@ -7914,10 +7943,6 @@ impl AppState {
                     "live-detail",
                     format_args!("album tracklist skipped, no browse id for route: {route_id}"),
                 );
-                let title = match route_id.strip_prefix("ax-") {
-                    Some(rest) => rest.to_string(),
-                    None => self.resolve_album_title(&route_id),
-                };
                 let owner = self
                     .catalog
                     .values()
@@ -7937,6 +7962,9 @@ impl AppState {
 
     /// Exact artist name match (case-insensitive) for the resolve
     /// fallback: first-hit guessing would land on the wrong artist.
+    /// Pure helper (offline tests cover it); only the task needs the
+    /// network feature.
+    #[cfg_attr(not(feature = "innertube"), allow(dead_code))]
     fn pick_artist_channel(artists: &[Artist], name: &str) -> Option<String> {
         artists
             .iter()
@@ -7946,6 +7974,9 @@ impl AppState {
 
     /// Album browse match for the resolve fallback: exact title first,
     /// disambiguated by the catalog owner when titles collide.
+    /// Pure helper (offline tests cover it); only the task needs the
+    /// network feature.
+    #[cfg_attr(not(feature = "innertube"), allow(dead_code))]
     fn pick_album_browse(albums: &[Album], title: &str, owner: Option<&str>) -> Option<String> {
         let mut candidates = albums.iter().filter(|a| a.title == title);
         let first = candidates.next()?;
@@ -7959,6 +7990,61 @@ impl AppState {
             return None;
         }
         Some(first.id.clone())
+    }
+
+    /// "artist · album" subtitle for top-song rows (either side may
+    /// be blank upstream): empty parts drop out, never a dangling
+    /// separator. Mirrors [`Self::hero_song_subtitle`].
+    fn artist_album_sub(artist: &str, album: Option<&str>) -> String {
+        let artist = artist.trim();
+        let album = album.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("");
+        match (artist.is_empty(), album.is_empty()) {
+            (false, false) => format!("{artist} · {album}"),
+            (false, true) => artist.to_string(),
+            (true, false) => album.to_string(),
+            (true, true) => String::new(),
+        }
+    }
+
+    /// Artist top-song row: rank, art, title + "artist · album"
+    /// subtitle, plays + duration, song actions. Same shape as
+    /// [`Self::numbered_track_row`] (the shared Popular look) with the
+    /// album column YouTube shows.
+    fn artist_top_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area, row, text};
+        use iced::Fill;
+        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let hover_id = t.id.clone();
+        let (heart, more) = self.song_actions(t, hovered);
+        mouse_area(
+            container(
+                row![
+                    text(format!("{n}")).size(13).color(MUTED).width(28),
+                    self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
+                    Self::track_text_single(
+                        &t.title,
+                        &Self::artist_album_sub(&t.artist, t.album.as_deref()),
+                        14,
+                        iced::Color::WHITE
+                    ),
+                    song_meta_text(t.plays.as_deref(), t.duration_secs),
+                    heart,
+                    more,
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(4),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_right_press(Message::OpenContext(t.id.clone()))
+        .on_enter(Message::TrackHover(Some(hover_id)))
+        .on_exit(Message::TrackHover(None))
+        .into()
     }
 
     /// Channel browse id for an artist route: real search ids pass
@@ -7989,18 +8075,23 @@ impl AppState {
         None
     }
 
+    /// Live server-ranked top songs when fetched (None when absent):
+    /// the ranked UI (Popular head + full list) reads this; PLAY,
+    /// warming, and the radio seed read [`Self::artist_display_tracks`].
+    fn artist_live_tracks(&self, route_id: &str) -> Option<Vec<Track>> {
+        let channel = self.artist_channel_id(route_id)?;
+        let ids = self.artist_top.get(&channel)?;
+        let live: Vec<Track> = ids.iter().filter_map(|id| self.find_track(id)).collect();
+        (!live.is_empty()).then_some(live)
+    }
+
     /// Displayed artist songs: live server-ranked top songs when
     /// fetched (keyed by channel browse id, so name routes share the
     /// one fetch), else the catalog fallback (alphabetical, counts
     /// only where a search provided them).
     fn artist_display_tracks(&self, route_id: &str) -> Vec<Track> {
-        if let Some(channel) = self.artist_channel_id(route_id) {
-            if let Some(ids) = self.artist_top.get(&channel) {
-                let live: Vec<Track> = ids.iter().filter_map(|id| self.find_track(id)).collect();
-                if !live.is_empty() {
-                    return live;
-                }
-            }
+        if let Some(live) = self.artist_live_tracks(route_id) {
+            return live;
         }
         self.artist_tracks(&self.resolve_artist_name(route_id))
     }
@@ -8154,14 +8245,27 @@ impl AppState {
     }
 
     /// Alias insert (route/title → browse id): latest wins so a
-    /// corrected browse id repairs a stale one in-session. Trims and
-    /// drops empties (a blank artist name must never claim a FIFO slot
-    /// or resolve). Plain `HashMap` insert: aliases are tiny strings,
-    /// capped only by distinct pages visited.
+    /// corrected browse id repairs a stale one in-session. Skips
+    /// blank keys (a blank upstream name must never resolve).
+    /// Recorded only at fetch launch (fresh context), never on
+    /// arrival, so a late response for a same-titled page cannot
+    /// poison lookups for the page being viewed. Plain `HashMap`
+    /// insert: aliases are tiny strings, capped only by distinct
+    /// pages visited.
     fn alias_insert(map: &mut HashMap<String, String>, key: String, value: String) {
-        let (key, value) = (key.trim().to_string(), value.trim().to_string());
-        if !key.is_empty() && !value.is_empty() {
+        if !key.trim().is_empty() && !value.trim().is_empty() {
             map.insert(key, value);
+        }
+    }
+
+    /// True when the current route is the detail page whose browse id
+    /// is `browse` (artist pages match channel ids, album pages album
+    /// ids): arrival statuses must not leak onto pages already left.
+    fn route_shows_browse(&self, browse: &str, artist: bool) -> bool {
+        match &self.route {
+            Route::Artist(rid) if artist => self.artist_channel_id(rid).as_deref() == Some(browse),
+            Route::Album(rid) if !artist => self.album_browse_id(rid).as_deref() == Some(browse),
+            _ => false,
         }
     }
 
@@ -10018,13 +10122,6 @@ impl AppState {
                                 tracks.len()
                             ),
                         );
-                        for t in &tracks {
-                            Self::alias_insert(
-                                &mut self.artist_alias,
-                                t.artist.clone(),
-                                channel_id.clone(),
-                            );
-                        }
                         let ids = self.merge_live_tracks(tracks);
                         // Empty answers stay uncached: the next visit
                         // retries instead of locking in the fallback.
@@ -10039,13 +10136,14 @@ impl AppState {
                     }
                     // "failed" keeps it visible in release builds
                     // (status shows failures only); the catalog
-                    // fallback stays on screen regardless.
+                    // fallback stays on screen regardless. Stays on
+                    // the page that launched it.
                     Err(e) => {
                         yutu_core::app_log::warn(
                             "live-detail",
                             format_args!("artist top failed: {channel_id} ({e})"),
                         );
-                        if watching {
+                        if watching && self.route_shows_browse(&channel_id, true) {
                             self.status = format!("Live top songs failed ({e}).");
                         }
                     }
@@ -10065,9 +10163,6 @@ impl AppState {
                                 tracks.len()
                             ),
                         );
-                        for title in tracks.iter().filter_map(|t| t.album.clone()) {
-                            Self::alias_insert(&mut self.album_alias, title, album_id.clone());
-                        }
                         let ids = self.merge_live_tracks(tracks);
                         if !ids.is_empty() {
                             Self::capped_detail_insert(
@@ -10083,17 +10178,23 @@ impl AppState {
                             "live-detail",
                             format_args!("album tracklist failed: {album_id} ({e})"),
                         );
-                        if watching {
+                        if watching && self.route_shows_browse(&album_id, false) {
                             self.status = format!("Live album songs failed ({e}).");
                         }
                     }
                 }
             }
-            Message::ArtistChannelResolved { name, result } => {
-                let watching = self.artist_resolving.as_deref() == Some(name.as_str());
+            Message::ArtistChannelResolved {
+                route_id,
+                name,
+                result,
+            } => {
+                let watching = self.artist_resolving.as_deref() == Some(route_id.as_str());
                 if watching {
                     self.artist_resolving = None;
                 }
+                // Statuses stay on the page that launched them.
+                let showing = matches!(&self.route, Route::Artist(rid) if rid == &route_id);
                 match result {
                     Ok(channel) => {
                         yutu_core::app_log::info(
@@ -10101,9 +10202,13 @@ impl AppState {
                             format_args!("artist resolved: {name} -> {channel}"),
                         );
                         Self::alias_insert(&mut self.artist_alias, name, channel.clone());
+                        Self::alias_insert(&mut self.artist_alias, route_id, channel.clone());
                         if !self.artist_top.contains_key(&channel) {
                             self.artist_loading = Some(channel.clone());
-                            return Self::artist_top_task(channel);
+                            #[cfg(feature = "innertube")]
+                            {
+                                return Self::artist_top_full_task(channel);
+                            }
                         }
                     }
                     Err(e) => {
@@ -10111,7 +10216,7 @@ impl AppState {
                             "live-detail",
                             format_args!("artist resolve failed: {name} ({e})"),
                         );
-                        if watching {
+                        if watching && showing {
                             self.status = format!("Artist lookup failed ({e}).");
                         }
                     }
@@ -10126,6 +10231,7 @@ impl AppState {
                 if watching {
                     self.album_resolving = None;
                 }
+                let showing = matches!(&self.route, Route::Album(rid) if rid == &route_id);
                 match result {
                     Ok(browse) => {
                         yutu_core::app_log::info(
@@ -10136,7 +10242,10 @@ impl AppState {
                         Self::alias_insert(&mut self.album_alias, title, browse.clone());
                         if !self.album_live.contains_key(&browse) {
                             self.album_loading = Some(browse.clone());
-                            return Self::album_live_task(browse);
+                            #[cfg(feature = "innertube")]
+                            {
+                                return Self::album_live_task(browse);
+                            }
                         }
                     }
                     Err(e) => {
@@ -10144,11 +10253,14 @@ impl AppState {
                             "live-detail",
                             format_args!("album resolve failed: {title} ({e})"),
                         );
-                        if watching {
+                        if watching && showing {
                             self.status = format!("Album lookup failed ({e}).");
                         }
                     }
                 }
+            }
+            Message::ArtistTopExpand => {
+                self.artist_expanded = true;
             }
             Message::RelaunchNow => {
                 // One-click restart for the pending font pick: the font
@@ -11033,16 +11145,17 @@ impl AppState {
         )
     }
 
-    /// Live artist top songs for a channel id (server rank + counts).
+    /// Live artist top songs for a channel id (full server-ranked
+    /// shelf with counts, falling back to the 5-song head).
     /// Anonymous fallback when signed out (artist browse needs no
     /// login).
     #[cfg(feature = "innertube")]
-    fn artist_top_task(channel_id: String) -> iced::Task<Message> {
+    fn artist_top_full_task(channel_id: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let result = async {
                     let backend = Self::detail_backend().await?;
-                    backend.artist_top_songs(&channel_id).await
+                    backend.artist_top_full(&channel_id).await
                 }
                 .await;
                 (channel_id, result)
@@ -11072,7 +11185,7 @@ impl AppState {
     /// (exact name match only): unblocks "Go to artist" name routes
     /// when no search card provided the channel.
     #[cfg(feature = "innertube")]
-    fn artist_resolve_task(name: String) -> iced::Task<Message> {
+    fn artist_resolve_task(route_id: String, name: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
                 let result = async {
@@ -11082,9 +11195,13 @@ impl AppState {
                         .ok_or_else(|| format!("no artist named {name}"))
                 }
                 .await;
-                (name, result)
+                (route_id, name, result)
             },
-            |(name, result)| Message::ArtistChannelResolved { name, result },
+            |(route_id, name, result)| Message::ArtistChannelResolved {
+                route_id,
+                name,
+                result,
+            },
         )
     }
 
@@ -15100,21 +15217,57 @@ impl AppState {
                 // Popular prefers the live server rank (true popularity
                 // with counts); the catalog fallback is alphabetical.
                 // A loading fetch with nothing to show yet notes it.
-                let display = self.artist_display_tracks(id);
+                // Live shows the head plus a "Show all" expander for the
+                // full ranked shelf (album column included, like YTM).
+                // One build: the ranked branch reads the live vec, the
+                // fallback reads the header `tracks` (no double clone).
+                let live = self.artist_live_tracks(id);
+                let display: &[Track] = match &live {
+                    Some(songs) => songs,
+                    None => &tracks,
+                };
                 let loading_live = self.artist_channel_id(id).is_some_and(|c| {
                     self.artist_loading.as_deref() == Some(c.as_str())
                         && !self.artist_top.contains_key(&c)
                 });
-                let popular: Vec<iced::Element<'_, Message>> = if display.is_empty() && loading_live
-                {
-                    vec![text("Loading top songs…").color(MUTED).into()]
+                let (popular, show_all): (
+                    Vec<iced::Element<'_, Message>>,
+                    iced::Element<'_, Message>,
+                ) = if display.is_empty() && loading_live {
+                    (
+                        vec![text("Loading top songs…").color(MUTED).into()],
+                        text("").size(1).into(),
+                    )
+                } else if let Some(songs) = &live {
+                    // Collapsed shows the head (YTM shows 5); the
+                    // button reveals the full ranked shelf.
+                    let expanded = self.artist_expanded || songs.len() <= 5;
+                    let more = if !expanded {
+                        button(btn_text(format!("Show all {} songs", songs.len()), 12))
+                            .style(hover_row)
+                            .on_press(Message::ArtistTopExpand)
+                            .padding(4)
+                            .into()
+                    } else {
+                        text("").size(1).into()
+                    };
+                    let rows: Vec<iced::Element<'_, Message>> =
+                        (if expanded { &songs[..] } else { &songs[..5] })
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| self.artist_top_row(t, i + 1))
+                            .collect();
+                    (rows, more)
                 } else {
-                    display
-                        .iter()
-                        .take(10)
-                        .enumerate()
-                        .map(|(i, t)| self.numbered_track_row(t, i + 1))
-                        .collect()
+                    (
+                        display
+                            .iter()
+                            .take(10)
+                            .enumerate()
+                            .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                            .collect(),
+                        text("").size(1).into(),
+                    )
                 };
                 let cards: Vec<iced::Element<'_, Message>> =
                     albums.iter().take(5).map(|a| self.album_card(a)).collect();
@@ -15163,6 +15316,7 @@ impl AppState {
                     .spacing(16)
                     .align_y(iced::alignment::Vertical::Center),
                     Self::section("Popular", popular),
+                    show_all,
                     Self::section(
                         "Albums",
                         if cards.is_empty() {
@@ -17836,6 +17990,159 @@ mod tests {
     }
 
     #[test]
+    fn artist_album_sub_skips_empty_parts() {
+        assert_eq!(
+            AppState::artist_album_sub("Queen", Some("A Night At The Opera")),
+            "Queen · A Night At The Opera"
+        );
+        assert_eq!(AppState::artist_album_sub("Queen", None), "Queen");
+        assert_eq!(AppState::artist_album_sub("Queen", Some("  ")), "Queen");
+        assert_eq!(AppState::artist_album_sub("", Some("Jazz")), "Jazz");
+        assert_eq!(AppState::artist_album_sub("", None), "");
+    }
+
+    #[test]
+    fn artist_top_expand_and_reset() {
+        let mut s = test_state();
+        assert!(!s.artist_expanded);
+        let _ = s.update(Message::ArtistTopExpand);
+        assert!(s.artist_expanded);
+        // Every page open collapses (cached list keeps the expand free).
+        let _ = s.update(Message::OpenArtist("UCx".into()));
+        assert!(!s.artist_expanded);
+        assert!(matches!(s.route, Route::Artist(_)));
+    }
+
+    #[test]
+    fn pick_helpers_match_exact_only() {
+        let artists = vec![
+            Artist {
+                id: "UCq".into(),
+                name: "Queen".into(),
+                thumbnail_url: None,
+            },
+            Artist {
+                id: "UCf".into(),
+                name: "Queens of the Stone Age".into(),
+                thumbnail_url: None,
+            },
+        ];
+        assert_eq!(
+            AppState::pick_artist_channel(&artists, "queen").as_deref(),
+            Some("UCq")
+        );
+        assert_eq!(AppState::pick_artist_channel(&artists, "Que"), None);
+        let albums = vec![
+            Album {
+                id: "MPREa".into(),
+                title: "Greatest Hits".into(),
+                artist: "Queen".into(),
+                year: None,
+                thumbnail_url: None,
+            },
+            Album {
+                id: "MPREb".into(),
+                title: "Greatest Hits".into(),
+                artist: "ABBA".into(),
+                year: None,
+                thumbnail_url: None,
+            },
+        ];
+        assert_eq!(
+            AppState::pick_album_browse(&albums, "Greatest Hits", Some("ABBA")).as_deref(),
+            Some("MPREb")
+        );
+        assert_eq!(
+            AppState::pick_album_browse(&albums, "Greatest Hits", Some("Nobody")),
+            None
+        );
+        assert_eq!(
+            AppState::pick_album_browse(&albums, "Greatest Hits", None).as_deref(),
+            Some("MPREa")
+        );
+        assert_eq!(AppState::pick_album_browse(&albums, "Unknown", None), None);
+    }
+
+    #[test]
+    fn artist_resolve_chains_into_top_fetch() {
+        let mut s = test_state();
+        s.artist_resolving = Some("Queen".into());
+        let _ = s.update(Message::ArtistChannelResolved {
+            route_id: "Queen".into(),
+            name: "Queen".into(),
+            result: Ok("UCq".into()),
+        });
+        assert_eq!(s.artist_resolving, None);
+        assert_eq!(s.artist_alias.get("Queen").map(String::as_str), Some("UCq"));
+        assert_eq!(s.artist_loading.as_deref(), Some("UCq"));
+        // Failures name the failure only for the page still showing.
+        s.route = Route::Artist("Queen".into());
+        s.artist_resolving = Some("Queen".into());
+        let _ = s.update(Message::ArtistChannelResolved {
+            route_id: "Queen".into(),
+            name: "Queen".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("failed"), "{}", s.status);
+        s.status = "Ready.".into();
+        s.route = Route::Home;
+        s.artist_resolving = Some("Y".into());
+        let _ = s.update(Message::ArtistChannelResolved {
+            route_id: "Y".into(),
+            name: "Y".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.status, "Ready.");
+    }
+
+    #[test]
+    fn album_resolve_chains_into_tracklist_fetch() {
+        let mut s = test_state();
+        s.album_resolving = Some("Test Album".into());
+        let _ = s.update(Message::AlbumBrowseResolved {
+            route_id: "Test Album".into(),
+            title: "Test Album".into(),
+            result: Ok("MPREt".into()),
+        });
+        assert_eq!(s.album_resolving, None);
+        assert_eq!(
+            s.album_alias.get("Test Album").map(String::as_str),
+            Some("MPREt")
+        );
+        assert_eq!(s.album_loading.as_deref(), Some("MPREt"));
+        // Failures name the failure only for the page still showing.
+        s.route = Route::Album("Zed".into());
+        s.album_resolving = Some("Zed".into());
+        let _ = s.update(Message::AlbumBrowseResolved {
+            route_id: "Zed".into(),
+            title: "Zed".into(),
+            result: Err("offline".into()),
+        });
+        assert!(s.status.contains("failed"), "{}", s.status);
+        s.status = "Ready.".into();
+        s.route = Route::Home;
+        s.album_resolving = Some("Y".into());
+        let _ = s.update(Message::AlbumBrowseResolved {
+            route_id: "Y".into(),
+            title: "Y".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.status, "Ready.");
+    }
+
+    #[test]
+    fn open_track_entries_funnel_to_detail_routes() {
+        let mut s = test_state();
+        let mut t = mk_track("v1", "Song", "Queen");
+        t.album = Some("Test Album".into());
+        s.catalog.insert("v1".into(), t);
+        let _ = s.update(Message::OpenTrackArtist("v1".into()));
+        assert!(matches!(s.route, Route::Artist(_)));
+        let _ = s.update(Message::OpenTrackAlbum("v1".into()));
+        assert!(matches!(s.route, Route::Album(_)));
+    }
+
+    #[test]
     fn song_meta_combines_plays_and_duration() {
         // Popup idiom ("213M plays · 3:45"); raw All results carry
         // no durations, so a zero one leaves the bare count (never
@@ -17903,6 +18210,12 @@ mod tests {
         let _ = s.search_song_row(&played);
         let _ = s.numbered_track_row(&played, 2);
         let _ = s.track_row(&played);
+        // Top-song rows build with and without the album subtitle.
+        let mut with_album = mk_track("v3", "Bicycle Race", "Queen");
+        with_album.album = Some("Jazz".into());
+        with_album.plays = Some("76M plays".into());
+        let _ = s.artist_top_row(&with_album, 5);
+        let _ = s.artist_top_row(&played, 6);
         s.hovered_album = Some("al1".into());
         s.hovered_artist = Some("ar1".into());
         s.hovered_search_playlist = Some("PL1".into());
@@ -18275,9 +18588,15 @@ mod tests {
         assert_eq!(merged.plays.as_deref(), Some("76M plays"));
         assert_eq!(merged.thumbnail_url.as_deref(), Some("http://art"));
         assert_eq!(merged.duration_secs, 200);
-        // Failures name the failure only for the page still awaiting
-        // them (release builds show failures only); a stale arrival
-        // for a page already left leaves the status alone.
+        // Failures name the failure only for the page still showing
+        // it (release builds show failures only); arrivals for pages
+        // already left (wrong marker or wrong route) stay quiet.
+        s.results.artists.push(Artist {
+            id: "UCzz".into(),
+            name: "Zed".into(),
+            thumbnail_url: None,
+        });
+        s.route = Route::Artist("UCzz".into());
         s.artist_loading = Some("UCzz".into());
         let _ = s.update(Message::ArtistTopLoaded {
             channel_id: "UCzz".into(),
@@ -18291,9 +18610,17 @@ mod tests {
             result: Err("offline".into()),
         });
         assert_eq!(s.status, "Ready.");
-        assert_eq!(s.artist_display_tracks("UCqueen").len(), 2);
-        // Cache survives later searches replacing `results`: direct
-        // channel routes self-resolve, name routes use aliases.
+        s.status = "Ready.".into();
+        s.route = Route::Home;
+        s.artist_loading = Some("UCzz".into());
+        let _ = s.update(Message::ArtistTopLoaded {
+            channel_id: "UCzz".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(s.status, "Ready.");
+        // Cache + aliases survive later searches replacing `results`
+        // (aliases record at open; direct routes self-resolve anyway).
+        let _ = s.update(Message::OpenArtist("UCqueen".into()));
         s.results.artists.clear();
         assert_eq!(s.artist_display_tracks("UCqueen").len(), 2);
         assert_eq!(s.artist_display_tracks("Queen").len(), 2);
@@ -18346,8 +18673,9 @@ mod tests {
         );
         assert_eq!(shown[0].plays.as_deref(), Some("100M plays"));
         assert_eq!(shown[1].duration_secs, 261);
-        // Cache survives later searches replacing `results` (direct
-        // routes self-resolve, title routes use aliases).
+        // Cache + aliases survive later searches replacing `results`
+        // (recorded at open; direct routes self-resolve anyway).
+        let _ = s.update(Message::OpenAlbum("MPREalbum".into()));
         s.results.albums.clear();
         assert_eq!(s.album_display_tracks("MPREalbum").len(), 2);
         assert_eq!(s.album_display_tracks("Test Album").len(), 2);
