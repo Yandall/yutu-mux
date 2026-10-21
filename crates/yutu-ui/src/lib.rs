@@ -8552,6 +8552,11 @@ impl AppState {
                             );
                             tasks.push(Self::artist_top_task(channel));
                         }
+                    } else {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!("artist top skipped, no browse id for route: {id}"),
+                        );
                     }
                     return iced::Task::batch(tasks);
                 }
@@ -8584,6 +8589,11 @@ impl AppState {
                             );
                             tasks.push(Self::album_live_task(browse));
                         }
+                    } else {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!("album tracklist skipped, no browse id for route: {id}"),
+                        );
                     }
                 }
                 if let Some(url) = self.album_header_cover(&id) {
