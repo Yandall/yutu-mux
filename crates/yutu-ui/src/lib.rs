@@ -8209,17 +8209,22 @@ impl AppState {
         None
     }
 
+    /// Live `track_no`-ordered tracklist when fetched (None when
+    /// absent): the view reads this; PLAY and warming read
+    /// [`Self::album_display_tracks`].
+    fn album_live_tracks(&self, route_id: &str) -> Option<Vec<Track>> {
+        let browse = self.album_browse_id(route_id)?;
+        let ids = self.album_live.get(&browse)?;
+        let live: Vec<Track> = ids.iter().filter_map(|id| self.find_track(id)).collect();
+        (!live.is_empty()).then_some(live)
+    }
+
     /// Displayed album songs: live `track_no`-ordered tracklist when
     /// fetched (keyed by album browse id), else the catalog fallback
     /// (alphabetical).
     fn album_display_tracks(&self, route_id: &str) -> Vec<Track> {
-        if let Some(browse) = self.album_browse_id(route_id) {
-            if let Some(ids) = self.album_live.get(&browse) {
-                let live: Vec<Track> = ids.iter().filter_map(|id| self.find_track(id)).collect();
-                if !live.is_empty() {
-                    return live;
-                }
-            }
+        if let Some(live) = self.album_live_tracks(route_id) {
+            return live;
         }
         self.album_tracks(route_id)
     }
@@ -8256,6 +8261,32 @@ impl AppState {
         if !key.trim().is_empty() && !value.trim().is_empty() {
             map.insert(key, value);
         }
+    }
+
+    /// True while the live artist list is still on its way (fetch or
+    /// resolve in flight, nothing cached): the view shows a loading
+    /// row instead of the stale catalog fallback, so the page never
+    /// flashes two versions. Offline and failed fetches never set the
+    /// markers, so they fall straight through to the catalog.
+    fn artist_list_pending(&self, route_id: &str) -> bool {
+        if self.artist_live_tracks(route_id).is_some() {
+            return false;
+        }
+        let loading = self
+            .artist_channel_id(route_id)
+            .is_some_and(|c| self.artist_loading.as_deref() == Some(c.as_str()));
+        loading || self.artist_resolving.as_deref() == Some(route_id)
+    }
+
+    /// Same rule for album tracklists (see [`Self::artist_list_pending`]).
+    fn album_list_pending(&self, route_id: &str) -> bool {
+        if self.album_live_tracks(route_id).is_some() {
+            return false;
+        }
+        let loading = self
+            .album_browse_id(route_id)
+            .is_some_and(|b| self.album_loading.as_deref() == Some(b.as_str()));
+        loading || self.album_resolving.as_deref() == Some(route_id)
     }
 
     /// True when the current route is the detail page whose browse id
@@ -15226,14 +15257,14 @@ impl AppState {
                     Some(songs) => songs,
                     None => &tracks,
                 };
-                let loading_live = self.artist_channel_id(id).is_some_and(|c| {
-                    self.artist_loading.as_deref() == Some(c.as_str())
-                        && !self.artist_top.contains_key(&c)
-                });
+                // Pending fetch (nothing cached yet): the loading row
+                // stands in for the catalog fallback, so the page never
+                // flashes the stale list before the live one lands.
+                let pending = self.artist_list_pending(id);
                 let (popular, show_all): (
                     Vec<iced::Element<'_, Message>>,
                     iced::Element<'_, Message>,
-                ) = if display.is_empty() && loading_live {
+                ) = if pending {
                     (
                         vec![text("Loading top songs…").color(MUTED).into()],
                         text("").size(1).into(),
@@ -15332,8 +15363,15 @@ impl AppState {
             Route::Album(id) => {
                 let title = self.resolve_album_title(id);
                 // Live `track_no`-ordered tracklist when fetched, else
-                // the catalog fallback (alphabetical).
-                let tracks = self.album_display_tracks(id);
+                // the catalog fallback (alphabetical). Pending fetch:
+                // the loading row stands in for the catalog fallback
+                // (same no-flash rule as artist Popular).
+                let live = self.album_live_tracks(id);
+                let pending = self.album_list_pending(id);
+                let tracks: Vec<Track> = match live {
+                    Some(songs) => songs,
+                    None => self.album_tracks(id),
+                };
                 let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
                 let artist = tracks.first().map(|t| t.artist.clone()).unwrap_or_default();
                 let year = self
@@ -15347,11 +15385,7 @@ impl AppState {
                 // One policy (see `album_header_cover`): the header and
                 // its warming share the key, so it never placeholders.
                 let cover = self.album_header_cover(id);
-                let loading_live = self.album_browse_id(id).is_some_and(|b| {
-                    self.album_loading.as_deref() == Some(b.as_str())
-                        && !self.album_live.contains_key(&b)
-                });
-                let rows: Vec<iced::Element<'_, Message>> = if tracks.is_empty() && loading_live {
+                let rows: Vec<iced::Element<'_, Message>> = if pending {
                     vec![text("Loading album songs…").color(MUTED).into()]
                 } else {
                     tracks
@@ -18140,6 +18174,44 @@ mod tests {
         assert!(matches!(s.route, Route::Artist(_)));
         let _ = s.update(Message::OpenTrackAlbum("v1".into()));
         assert!(matches!(s.route, Route::Album(_)));
+    }
+
+    #[test]
+    fn detail_pending_only_while_fetch_in_flight() {
+        let mut s = test_state();
+        // Nothing cached, nothing in flight: catalog paints, no loading
+        // row (offline and failed fetches never set the markers).
+        assert!(!s.artist_list_pending("UCx"));
+        assert!(!s.album_list_pending("MPREx"));
+        s.results.artists.push(Artist {
+            id: "UCx".into(),
+            name: "X".into(),
+            thumbnail_url: None,
+        });
+        s.artist_loading = Some("UCx".into());
+        assert!(s.artist_list_pending("UCx"));
+        // Cached: never pending (instant live page, no flash).
+        s.artist_top.insert("UCx".into(), vec!["v1".into()]);
+        s.catalog.insert("v1".into(), mk_track("v1", "Song", "X"));
+        assert!(!s.artist_list_pending("UCx"));
+        // Resolving marker: pending even before the channel is known.
+        s.artist_top.clear();
+        s.artist_loading = None;
+        s.artist_resolving = Some("X".into());
+        assert!(s.artist_list_pending("X"));
+        // Album mirror.
+        s.results.albums.push(Album {
+            id: "MPREx".into(),
+            title: "A".into(),
+            artist: "X".into(),
+            year: None,
+            thumbnail_url: None,
+        });
+        s.album_loading = Some("MPREx".into());
+        assert!(s.album_list_pending("MPREx"));
+        s.album_loading = None;
+        s.album_resolving = Some("A".into());
+        assert!(s.album_list_pending("A"));
     }
 
     #[test]
