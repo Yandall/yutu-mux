@@ -211,5 +211,7 @@ Done: user can plausibly replace Spotify for daily listening.
 72. Round 61: Library nav button removed from the sidebar (route/page stays for fallbacks + tests)
 73. Round 62: bundled Inter font + Appearance prefs (system family picker with async scan, one-click relaunch for the pending pick, instant 80-150% interface scale; both survive restarts)
 74. Round 63: window title names the live song ("title · artist", app name when the queue is empty)
+75. Round 64: play counts on song rows (search, artist, album via one meta cell; count-less rows pixel-identical)
+76. Round 65: live artist top songs + album tracklists (server rank/order with counts, once-per-id fetch, catalog fallback offline and on failure; "Show more" full ranked artist list with album column; name/title routes resolve via scoped search when cards are missing; loading row instead of the stale catalog while fetching; head paints from the typed 5-song fetch, full 100-row shelf loads only on expand)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
