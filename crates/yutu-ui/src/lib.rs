@@ -1192,6 +1192,19 @@ pub enum Message {
         album_id: String,
         result: Result<Vec<Track>, String>,
     },
+    /// Bare artist name resolved to a channel id (scoped search);
+    /// chains into the top-songs fetch.
+    ArtistChannelResolved {
+        name: String,
+        result: Result<String, String>,
+    },
+    /// Bare album title resolved to a browse id (scoped search);
+    /// chains into the tracklist fetch.
+    AlbumBrowseResolved {
+        route_id: String,
+        title: String,
+        result: Result<String, String>,
+    },
     SidebarFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
@@ -2058,6 +2071,10 @@ pub struct AppState {
     /// clears only its own marker, so quick page hops never strand it.
     artist_loading: Option<String>,
     album_loading: Option<String>,
+    /// In-flight bare-name resolves (route id): one scoped search at
+    /// a time per kind, chained into the list fetch on success.
+    artist_resolving: Option<String>,
+    album_resolving: Option<String>,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     drawer_scroll: f32,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
@@ -4288,6 +4305,8 @@ impl AppState {
             album_live_order: Vec::new(),
             artist_loading: None,
             album_loading: None,
+            artist_resolving: None,
+            album_resolving: None,
             drawer_scroll: 0.0,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
@@ -7826,6 +7845,122 @@ impl AppState {
         v
     }
 
+    /// Open an artist page (every entry point funnels here so the
+    /// live top-songs fetch fires exactly once per browse id): catalog
+    /// paints instantly, the server rank swaps in on arrival. Bare
+    /// names without a known channel resolve through a scoped artist
+    /// search first, then chain into the same fetch.
+    fn open_artist(&mut self, route_id: String) -> iced::Task<Message> {
+        self.go(Route::Artist(route_id.clone()));
+        self.publish_mpris();
+        #[cfg(feature = "innertube")]
+        {
+            let mut tasks = vec![self.ensure_visible_tasks()];
+            if let Some(channel) = self.artist_channel_id(&route_id) {
+                Self::alias_insert(&mut self.artist_alias, route_id, channel.clone());
+                if !self.artist_top.contains_key(&channel)
+                    && self.artist_loading.as_deref() != Some(channel.as_str())
+                {
+                    self.artist_loading = Some(channel.clone());
+                    yutu_core::app_log::info(
+                        "live-detail",
+                        format_args!("artist top fetch: {channel}"),
+                    );
+                    tasks.push(Self::artist_top_task(channel));
+                }
+            } else {
+                yutu_core::app_log::info(
+                    "live-detail",
+                    format_args!("artist top skipped, no browse id for route: {route_id}"),
+                );
+                if self.artist_resolving.as_deref() != Some(route_id.as_str()) {
+                    self.artist_resolving = Some(route_id.clone());
+                    tasks.push(Self::artist_resolve_task(route_id));
+                }
+            }
+            return iced::Task::batch(tasks);
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            return self.ensure_visible_tasks();
+        }
+    }
+
+    /// Open an album page (same funnel rule as [`Self::open_artist`]:
+    /// live `track_no` tracklist once per browse id, title routes
+    /// resolving through a scoped album search when unknown).
+    fn open_album(&mut self, route_id: String) -> iced::Task<Message> {
+        self.go(Route::Album(route_id.clone()));
+        self.publish_mpris();
+        // The 180px header renders the hires key while row slots
+        // only warm row rasters: warm it here (shared key helper).
+        let mut tasks = vec![self.ensure_visible_tasks()];
+        #[cfg(feature = "innertube")]
+        {
+            if let Some(browse) = self.album_browse_id(&route_id) {
+                Self::alias_insert(&mut self.album_alias, route_id.clone(), browse.clone());
+                if !self.album_live.contains_key(&browse)
+                    && self.album_loading.as_deref() != Some(browse.as_str())
+                {
+                    self.album_loading = Some(browse.clone());
+                    yutu_core::app_log::info(
+                        "live-detail",
+                        format_args!("album tracklist fetch: {browse}"),
+                    );
+                    tasks.push(Self::album_live_task(browse));
+                }
+            } else {
+                yutu_core::app_log::info(
+                    "live-detail",
+                    format_args!("album tracklist skipped, no browse id for route: {route_id}"),
+                );
+                let title = match route_id.strip_prefix("ax-") {
+                    Some(rest) => rest.to_string(),
+                    None => self.resolve_album_title(&route_id),
+                };
+                let owner = self
+                    .catalog
+                    .values()
+                    .find(|t| t.album.as_deref() == Some(title.as_str()))
+                    .map(|t| t.artist.clone());
+                if self.album_resolving.as_deref() != Some(route_id.as_str()) {
+                    self.album_resolving = Some(route_id.clone());
+                    tasks.push(Self::album_resolve_task(route_id.clone(), title, owner));
+                }
+            }
+        }
+        if let Some(url) = self.album_header_cover(&route_id) {
+            tasks.extend(self.artwork_tasks_for_urls(&[url]));
+        }
+        iced::Task::batch(tasks)
+    }
+
+    /// Exact artist name match (case-insensitive) for the resolve
+    /// fallback: first-hit guessing would land on the wrong artist.
+    fn pick_artist_channel(artists: &[Artist], name: &str) -> Option<String> {
+        artists
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name.trim()))
+            .map(|a| a.id.clone())
+    }
+
+    /// Album browse match for the resolve fallback: exact title first,
+    /// disambiguated by the catalog owner when titles collide.
+    fn pick_album_browse(albums: &[Album], title: &str, owner: Option<&str>) -> Option<String> {
+        let mut candidates = albums.iter().filter(|a| a.title == title);
+        let first = candidates.next()?;
+        if let Some(owner) = owner {
+            if let Some(hit) = std::iter::once(first)
+                .chain(candidates)
+                .find(|a| a.artist == owner)
+            {
+                return Some(hit.id.clone());
+            }
+            return None;
+        }
+        Some(first.id.clone())
+    }
+
     /// Channel browse id for an artist route: real search ids pass
     /// through, bare names resolve via the searched artists, then via
     /// recorded aliases and the live cache itself (later searches may
@@ -8530,76 +8665,11 @@ impl AppState {
             }
             Message::OpenArtist(id) => {
                 self.close_menu();
-                self.go(Route::Artist(id.clone()));
-                self.publish_mpris();
-                #[cfg(feature = "innertube")]
-                {
-                    let mut tasks = vec![self.ensure_visible_tasks()];
-                    // Live top songs (server rank + counts): once per
-                    // channel id; the catalog fallback paints instantly
-                    // meanwhile and wins again on fetch failure. The
-                    // route alias keeps later name routes resolving
-                    // after searches replace `results`.
-                    if let Some(channel) = self.artist_channel_id(&id) {
-                        Self::alias_insert(&mut self.artist_alias, id.clone(), channel.clone());
-                        if !self.artist_top.contains_key(&channel)
-                            && self.artist_loading.as_deref() != Some(channel.as_str())
-                        {
-                            self.artist_loading = Some(channel.clone());
-                            yutu_core::app_log::info(
-                                "live-detail",
-                                format_args!("artist top fetch: {channel}"),
-                            );
-                            tasks.push(Self::artist_top_task(channel));
-                        }
-                    } else {
-                        yutu_core::app_log::info(
-                            "live-detail",
-                            format_args!("artist top skipped, no browse id for route: {id}"),
-                        );
-                    }
-                    return iced::Task::batch(tasks);
-                }
-                #[cfg(not(feature = "innertube"))]
-                {
-                    return self.ensure_visible_tasks();
-                }
+                return self.open_artist(id);
             }
             Message::OpenAlbum(id) => {
                 self.close_menu();
-                self.go(Route::Album(id.clone()));
-                self.publish_mpris();
-                // The 180px header renders the hires key while row slots
-                // only warm row rasters: warm it here (shared key helper).
-                let mut tasks = vec![self.ensure_visible_tasks()];
-                #[cfg(feature = "innertube")]
-                {
-                    // Live tracklist (`track_no` order + counts): same
-                    // once-per-id rule as artist top songs, plus the
-                    // route alias for later title routes.
-                    if let Some(browse) = self.album_browse_id(&id) {
-                        Self::alias_insert(&mut self.album_alias, id.clone(), browse.clone());
-                        if !self.album_live.contains_key(&browse)
-                            && self.album_loading.as_deref() != Some(browse.as_str())
-                        {
-                            self.album_loading = Some(browse.clone());
-                            yutu_core::app_log::info(
-                                "live-detail",
-                                format_args!("album tracklist fetch: {browse}"),
-                            );
-                            tasks.push(Self::album_live_task(browse));
-                        }
-                    } else {
-                        yutu_core::app_log::info(
-                            "live-detail",
-                            format_args!("album tracklist skipped, no browse id for route: {id}"),
-                        );
-                    }
-                }
-                if let Some(url) = self.album_header_cover(&id) {
-                    tasks.extend(self.artwork_tasks_for_urls(&[url]));
-                }
-                return iced::Task::batch(tasks);
+                return self.open_album(id);
             }
             Message::OpenPlaylist(id) => {
                 // Canonicalise: pre-migration sessions may hand a browse id.
@@ -9799,7 +9869,7 @@ impl AppState {
                 self.close_menu();
                 match self.find_track(&id) {
                     Some(t) => match t.album.clone() {
-                        Some(album) => self.go(Route::Album(album)),
+                        Some(album) => return self.open_album(album),
                         None => {
                             self.status = format!("No album for {} · {}.", t.title, t.artist);
                         }
@@ -9812,7 +9882,7 @@ impl AppState {
             Message::OpenTrackArtist(id) => {
                 self.close_menu();
                 match self.find_track(&id) {
-                    Some(t) => self.go(Route::Artist(t.artist.clone())),
+                    Some(t) => return self.open_artist(t.artist.clone()),
                     None => {
                         return self.unknown_track_task(&id);
                     }
@@ -10015,6 +10085,67 @@ impl AppState {
                         );
                         if watching {
                             self.status = format!("Live album songs failed ({e}).");
+                        }
+                    }
+                }
+            }
+            Message::ArtistChannelResolved { name, result } => {
+                let watching = self.artist_resolving.as_deref() == Some(name.as_str());
+                if watching {
+                    self.artist_resolving = None;
+                }
+                match result {
+                    Ok(channel) => {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!("artist resolved: {name} -> {channel}"),
+                        );
+                        Self::alias_insert(&mut self.artist_alias, name, channel.clone());
+                        if !self.artist_top.contains_key(&channel) {
+                            self.artist_loading = Some(channel.clone());
+                            return Self::artist_top_task(channel);
+                        }
+                    }
+                    Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("artist resolve failed: {name} ({e})"),
+                        );
+                        if watching {
+                            self.status = format!("Artist lookup failed ({e}).");
+                        }
+                    }
+                }
+            }
+            Message::AlbumBrowseResolved {
+                route_id,
+                title,
+                result,
+            } => {
+                let watching = self.album_resolving.as_deref() == Some(route_id.as_str());
+                if watching {
+                    self.album_resolving = None;
+                }
+                match result {
+                    Ok(browse) => {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!("album resolved: {title} -> {browse}"),
+                        );
+                        Self::alias_insert(&mut self.album_alias, route_id, browse.clone());
+                        Self::alias_insert(&mut self.album_alias, title, browse.clone());
+                        if !self.album_live.contains_key(&browse) {
+                            self.album_loading = Some(browse.clone());
+                            return Self::album_live_task(browse);
+                        }
+                    }
+                    Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("album resolve failed: {title} ({e})"),
+                        );
+                        if watching {
+                            self.status = format!("Album lookup failed ({e}).");
                         }
                     }
                 }
@@ -10934,6 +11065,54 @@ impl AppState {
                 (album_id, result)
             },
             |(album_id, result)| Message::AlbumLiveLoaded { album_id, result },
+        )
+    }
+
+    /// Bare artist name → channel id through a scoped artist search
+    /// (exact name match only): unblocks "Go to artist" name routes
+    /// when no search card provided the channel.
+    #[cfg(feature = "innertube")]
+    fn artist_resolve_task(name: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = async {
+                    let backend = Self::detail_backend().await?;
+                    let artists = backend.search_artists(&name).await?;
+                    Self::pick_artist_channel(&artists, &name)
+                        .ok_or_else(|| format!("no artist named {name}"))
+                }
+                .await;
+                (name, result)
+            },
+            |(name, result)| Message::ArtistChannelResolved { name, result },
+        )
+    }
+
+    /// Bare album title → browse id through a scoped album search
+    /// (exact title, owner-disambiguated): unblocks title routes with
+    /// no known browse id.
+    #[cfg(feature = "innertube")]
+    fn album_resolve_task(
+        route_id: String,
+        title: String,
+        owner: Option<String>,
+    ) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = async {
+                    let backend = Self::detail_backend().await?;
+                    let albums = backend.search_albums(&title).await?;
+                    Self::pick_album_browse(&albums, &title, owner.as_deref())
+                        .ok_or_else(|| format!("no album titled {title}"))
+                }
+                .await;
+                (route_id, title, result)
+            },
+            |(route_id, title, result)| Message::AlbumBrowseResolved {
+                route_id,
+                title,
+                result,
+            },
         )
     }
 

@@ -1221,3 +1221,86 @@ mod tests {
         assert!(SearchAuth::anonymous().sapisid().is_none());
     }
 }
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "live probe: shelf playlist browse raw rows"]
+    async fn probe_shelf_browse_rows() {
+        let body = serde_json::json!({
+            "context": { "client": {
+                "clientName": "WEB_REMIX",
+                "clientVersion": crate::innertube::WEB_REMIX_VERSION,
+                "user": {},
+            } },
+            "browseId": "VLOLAK5uy_k1shthGfZd9raDVyW94KdQI-Mv1zbvGsQ",
+        });
+        let text = crate::shared_client()
+            .post("https://music.youtube.com/youtubei/v1/browse?alt=json&prettyPrint=false&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30")
+            .header("User-Agent", crate::innertube::USER_AGENT)
+            .header("X-Origin", ORIGIN)
+            .header("Origin", ORIGIN)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        eprintln!("BYTES: {}", text.len());
+        for pat in ["reproducciones", "plays", "views", "Plays", "Views"] {
+            eprintln!("COUNT[{pat}]: {}", text.matches(pat).count());
+        }
+        let root: Value = serde_json::from_str(&text).unwrap();
+        let items = root
+            .pointer("/contents/singleColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents/0/musicShelfRenderer/contents")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        eprintln!(
+            "TOP KEYS: {:?}",
+            root.as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>())
+        );
+        fn find_paths(v: &Value, path: &str, out: &mut Vec<String>) {
+            if out.len() >= 15 {
+                return;
+            }
+            match v {
+                Value::Object(m) => {
+                    for (k, vv) in m {
+                        let p = format!("{path}/{k}");
+                        if k == "musicResponsiveListItemRenderer"
+                            || k == "musicPlaylistShelfRenderer"
+                            || k == "musicShelfRenderer"
+                        {
+                            out.push(p.clone());
+                        }
+                        find_paths(vv, &p, out);
+                    }
+                }
+                Value::Array(a) => {
+                    for (i, vv) in a.iter().enumerate().take(2) {
+                        find_paths(vv, &format!("{path}[{i}]"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut paths = Vec::new();
+        find_paths(&root, "", &mut paths);
+        let items = root
+            .pointer("/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        eprintln!("ITEMS: {}", items.len());
+        if let Some(first) = items.first() {
+            let s = serde_json::to_string(first).unwrap();
+            eprintln!("FIRST ROW: {}", &s[..s.len().min(6000)]);
+        }
+    }
+}

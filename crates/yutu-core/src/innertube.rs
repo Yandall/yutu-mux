@@ -3089,3 +3089,33 @@ mod tests {
         assert!(!lines.is_empty(), "expected lyric lines for {video_id}");
     }
 }
+
+#[cfg(test)]
+mod probe_tests {
+    #[tokio::test]
+    #[ignore = "live probe: top songs shelf size and browse id"]
+    async fn probe_top_songs_shelf() {
+        use ytmapi_rs::common::YoutubeID;
+        use ytmapi_rs::YtMusic;
+        let yt = YtMusic::new_unauthenticated().await.unwrap();
+        let artists = yt.search_artists("Queen").await.unwrap();
+        let queen = artists.iter().find(|a| a.artist == "Queen").unwrap();
+        let ga = yt.get_artist(&queen.browse_id).await.unwrap();
+        let songs = ga.top_releases.songs.expect("songs shelf");
+        eprintln!("SHELF COUNT: {}", songs.results.len());
+        eprintln!("BROWSE ID: {}", songs.browse_id.get_raw());
+        for s in songs.results.iter().take(8) {
+            eprintln!("- {} | {}", s.title, s.plays);
+        }
+        let pl = yt.get_playlist_tracks(&songs.browse_id).await;
+        match pl {
+            Ok(tracks) => {
+                eprintln!("PLAYLIST QUERY COUNT: {}", tracks.len());
+                for t in tracks.iter().take(8) {
+                    eprintln!("- {:?}", t);
+                }
+            }
+            Err(e) => eprintln!("PLAYLIST QUERY FAILED: {e}"),
+        }
+    }
+}
