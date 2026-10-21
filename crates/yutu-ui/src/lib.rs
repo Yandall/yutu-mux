@@ -15243,7 +15243,7 @@ impl AppState {
                     // button reveals the full ranked shelf.
                     let expanded = self.artist_expanded || songs.len() <= 5;
                     let more = if !expanded {
-                        button(btn_text(format!("Show all {} songs", songs.len()), 12))
+                        button(btn_text("Show more", 12))
                             .style(hover_row)
                             .on_press(Message::ArtistTopExpand)
                             .padding(4)
