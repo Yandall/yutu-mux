@@ -879,6 +879,38 @@ pub enum RightTab {
     Recent,
 }
 
+/// Click behavior for a numbered song row: plain `PlayNow`, or play
+/// from here (clicked song plus the suffix behind it, like
+/// playlists) anchored at a list position. The route id re-resolves
+/// the displayed list at click time, so live arrivals between render
+/// and click still queue what the row showed.
+#[derive(Debug, Clone)]
+pub(crate) enum RowPlay {
+    Now,
+    ArtistAt(String),
+    AlbumAt(String),
+}
+
+impl RowPlay {
+    fn message(&self, track_id: &str, n: usize) -> Message {
+        // `n` is the 1-based row number; suffixes are 0-based.
+        let index = n.saturating_sub(1);
+        match self {
+            Self::Now => Message::PlayNow(track_id.to_string()),
+            Self::ArtistAt(id) => Message::PlayArtistAt {
+                artist_id: id.clone(),
+                index,
+                track_id: track_id.to_string(),
+            },
+            Self::AlbumAt(id) => Message::PlayAlbumAt {
+                album_id: id.clone(),
+                index,
+                track_id: track_id.to_string(),
+            },
+        }
+    }
+}
+
 /// Search page type filter (chip row above the results). The backend
 /// returns songs, albums, artists and community playlists, so those
 /// are the only chips: no empty categories.
@@ -1151,6 +1183,23 @@ pub enum Message {
     QueuePlaylist(String),
     /// Shuffle a playlist then play from the top.
     ShufflePlaylist(String),
+    /// Play an artist page list from the clicked song on (clicked song
+    /// plus the suffix behind it, like playlists). The clicked id
+    /// anchors the suffix: catalog inserts between render and click
+    /// must never shift the head to a different song. Index is the
+    /// fallback when the id left the list.
+    PlayArtistAt {
+        artist_id: String,
+        index: usize,
+        track_id: String,
+    },
+    /// Play an album tracklist from the clicked song on (same
+    /// suffix rule as playlists).
+    PlayAlbumAt {
+        album_id: String,
+        index: usize,
+        track_id: String,
+    },
     /// Toggle the playlist flyout for a track (menu stays open).
     TogglePlaylistSubmenu(String),
     CursorMoved(iced::Point),
@@ -5814,17 +5863,23 @@ impl AppState {
         }
     }
 
-    fn numbered_track_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
+    fn numbered_track_row(
+        &self,
+        t: &Track,
+        n: usize,
+        play: &RowPlay,
+    ) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
         let (heart, more) = self.song_actions(t, hovered);
+        let play_msg = play.message(&t.id, n);
         mouse_area(
             container(
                 row![
                     text(format!("{n}")).size(13).color(MUTED).width(28),
-                    self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
+                    self.art_play_button(t, hovered, play_msg),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
                     song_meta_text(t.plays.as_deref(), t.duration_secs),
                     heart,
@@ -8027,17 +8082,18 @@ impl AppState {
     /// subtitle, plays + duration, song actions. Same shape as
     /// [`Self::numbered_track_row`] (the shared Popular look) with the
     /// album column YouTube shows.
-    fn artist_top_row(&self, t: &Track, n: usize) -> iced::Element<'_, Message> {
+    fn artist_top_row(&self, t: &Track, n: usize, artist_id: &str) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
         let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
         let hover_id = t.id.clone();
         let (heart, more) = self.song_actions(t, hovered);
+        let play_msg = RowPlay::ArtistAt(artist_id.to_string()).message(&t.id, n);
         mouse_area(
             container(
                 row![
                     text(format!("{n}")).size(13).color(MUTED).width(28),
-                    self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
+                    self.art_play_button(t, hovered, play_msg),
                     Self::track_text_single(
                         &t.title,
                         &Self::artist_album_sub(&t.artist, t.album.as_deref()),
@@ -9070,6 +9126,81 @@ impl AppState {
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 self.drag = None;
+                return self.queue_many(tracks, &label);
+            }
+            Message::PlayArtistAt {
+                artist_id,
+                index,
+                track_id,
+            } => {
+                self.close_menu();
+                // Same-song no-op (app contract): clicking the live
+                // track's own row never restarts audio.
+                if self.queue.current().is_some_and(|t| t.id == track_id) {
+                    return iced::Task::none();
+                }
+                self.cancel_drag();
+                // Same suffix rule as playlists: the displayed list
+                // (live rank when fetched) plays from the clicked song.
+                // The clicked id anchors the head: catalog inserts
+                // between render and click fall back to the index.
+                // Label from the queued songs (never a stale resolve).
+                let display = self.artist_display_tracks(&artist_id);
+                let start = display
+                    .iter()
+                    .position(|t| t.id == track_id)
+                    .unwrap_or(index.min(display.len()));
+                let tracks: Vec<Track> = display.into_iter().skip(start).collect();
+                let label = format!(
+                    "Artist {}",
+                    tracks
+                        .first()
+                        .map(|t| t.artist.clone())
+                        .unwrap_or_else(|| self.resolve_artist_name(&artist_id))
+                );
+                if tracks.is_empty() {
+                    self.status = format!("{label}: nothing to play.");
+                    return iced::Task::none();
+                }
+                self.queue.clear();
+                self.autoplay.clear();
+                self.autoplay_for = None;
+                return self.queue_many(tracks, &label);
+            }
+            Message::PlayAlbumAt {
+                album_id,
+                index,
+                track_id,
+            } => {
+                self.close_menu();
+                // Same-song no-op (app contract): clicking the live
+                // track's own row never restarts audio.
+                if self.queue.current().is_some_and(|t| t.id == track_id) {
+                    return iced::Task::none();
+                }
+                self.cancel_drag();
+                // Same suffix rule as playlists: the displayed tracklist
+                // (`track_no` order when live) plays from the click.
+                let display = self.album_display_tracks(&album_id);
+                let start = display
+                    .iter()
+                    .position(|t| t.id == track_id)
+                    .unwrap_or(index.min(display.len()));
+                let tracks: Vec<Track> = display.into_iter().skip(start).collect();
+                let label = format!(
+                    "Album {}",
+                    tracks
+                        .first()
+                        .and_then(|t| t.album.clone())
+                        .unwrap_or_else(|| self.resolve_album_title(&album_id))
+                );
+                if tracks.is_empty() {
+                    self.status = format!("{label}: nothing to play.");
+                    return iced::Task::none();
+                }
+                self.queue.clear();
+                self.autoplay.clear();
+                self.autoplay_for = None;
                 return self.queue_many(tracks, &label);
             }
             Message::PlayArtistShuffled(name) => {
@@ -14782,7 +14913,7 @@ impl AppState {
                                 .tracks
                                 .iter()
                                 .enumerate()
-                                .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                                .map(|(i, t)| self.numbered_track_row(t, i + 1, &RowPlay::Now))
                                 .collect();
                             let list: iced::Element<'_, Message> = if songs.is_empty() {
                                 text(format!("No songs for “{query}”.")).color(MUTED).into()
@@ -15416,19 +15547,21 @@ impl AppState {
                         (if expanded { &songs[..] } else { &songs[..5] })
                             .iter()
                             .enumerate()
-                            .map(|(i, t)| self.artist_top_row(t, i + 1))
+                            .map(|(i, t)| self.artist_top_row(t, i + 1, id))
                             .collect();
                     if expanded && !full && fetching_full {
                         rows.push(text("Loading all songs…").color(MUTED).into());
                     }
                     (rows, more)
                 } else {
+                    // Catalog fallback: same suffix rule, alphabetical.
+                    let play = RowPlay::ArtistAt(id.to_string());
                     (
                         display
                             .iter()
                             .take(10)
                             .enumerate()
-                            .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                            .map(|(i, t)| self.numbered_track_row(t, i + 1, &play))
                             .collect(),
                         text("").size(1).into(),
                     )
@@ -15518,13 +15651,14 @@ impl AppState {
                 // One policy (see `album_header_cover`): the header and
                 // its warming share the key, so it never placeholders.
                 let cover = self.album_header_cover(id);
+                let play = RowPlay::AlbumAt(id.to_string());
                 let rows: Vec<iced::Element<'_, Message>> = if pending {
                     vec![text("Loading album songs…").color(MUTED).into()]
                 } else {
                     tracks
                         .iter()
                         .enumerate()
-                        .map(|(i, t)| self.numbered_track_row(t, i + 1))
+                        .map(|(i, t)| self.numbered_track_row(t, i + 1, &play))
                         .collect()
                 };
                 let meta = if year.is_empty() {
@@ -18181,6 +18315,109 @@ mod tests {
     }
 
     #[test]
+    fn row_play_maps_rows_to_messages() {
+        // 1-based row numbers become 0-based suffix offsets.
+        match RowPlay::Now.message("v1", 3) {
+            Message::PlayNow(id) => assert_eq!(id, "v1"),
+            _ => panic!("wrong message"),
+        }
+        match RowPlay::ArtistAt("UCq".into()).message("v1", 2) {
+            Message::PlayArtistAt {
+                artist_id,
+                index,
+                track_id,
+            } => {
+                assert_eq!(artist_id, "UCq");
+                assert_eq!(index, 1);
+                assert_eq!(track_id, "v1");
+            }
+            _ => panic!("wrong message"),
+        }
+        match RowPlay::AlbumAt("MPREa".into()).message("v1", 1) {
+            Message::PlayAlbumAt {
+                album_id,
+                index,
+                track_id,
+            } => {
+                assert_eq!(album_id, "MPREa");
+                assert_eq!(index, 0);
+                assert_eq!(track_id, "v1");
+            }
+            _ => panic!("wrong message"),
+        }
+    }
+
+    #[test]
+    fn play_artist_at_queues_clicked_plus_suffix() {
+        let mut s = test_state();
+        for (i, title) in ["A Song", "B Song", "C Song"].iter().enumerate() {
+            let mut t = mk_track(&format!("v{}", i + 1), title, "Queen");
+            t.album = Some("Jazz".into());
+            s.catalog.insert(t.id.clone(), t);
+        }
+        s.results.artists.push(Artist {
+            id: "UCq".into(),
+            name: "Queen".into(),
+            thumbnail_url: None,
+        });
+        // Catalog fallback is alphabetical: skip(1) plays B, C.
+        let _ = s.update(Message::PlayArtistAt {
+            artist_id: "Queen".into(),
+            index: 1,
+            track_id: "v2".into(),
+        });
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["v2", "v3"]);
+        // Same-song no-op (app contract): clicking the live track's
+        // own row never restarts audio (queue keeps its head).
+        let _ = s.update(Message::PlayArtistAt {
+            artist_id: "Queen".into(),
+            index: 0,
+            track_id: "v2".into(),
+        });
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["v2", "v3"]);
+        // A catalog insert between render and click (shifts the index)
+        // still starts at the clicked id, not the shifted offset.
+        let mut shifted = mk_track("v0", "0 Song", "Queen");
+        shifted.album = Some("Jazz".into());
+        s.catalog.insert(shifted.id.clone(), shifted);
+        s.queue.clear();
+        let _ = s.update(Message::PlayArtistAt {
+            artist_id: "Queen".into(),
+            index: 1,
+            track_id: "v2".into(),
+        });
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["v2", "v3"]);
+        // Out of range with a missing id: status names it, queue kept.
+        let _ = s.update(Message::PlayArtistAt {
+            artist_id: "Queen".into(),
+            index: 9,
+            track_id: "gone".into(),
+        });
+        assert!(s.status.contains("nothing to play"), "{}", s.status);
+        assert_eq!(s.queue.items().len(), 2);
+    }
+
+    #[test]
+    fn play_album_at_queues_clicked_plus_suffix() {
+        let mut s = test_state();
+        for (i, title) in ["A Song", "B Song", "C Song"].iter().enumerate() {
+            let mut t = mk_track(&format!("v{}", i + 1), title, "Queen");
+            t.album = Some("Jazz".into());
+            s.catalog.insert(t.id.clone(), t);
+        }
+        let _ = s.update(Message::PlayAlbumAt {
+            album_id: "Jazz".into(),
+            index: 0,
+            track_id: "v1".into(),
+        });
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["v1", "v2", "v3"]);
+    }
+
+    #[test]
     fn pick_helpers_match_exact_only() {
         let artists = vec![
             Artist {
@@ -18473,7 +18710,7 @@ mod tests {
         let _ = s.search_artist_row(&artist);
         let _ = s.search_playlist_row(&pl);
         let _ = s.search_song_row(&t);
-        let _ = s.numbered_track_row(&t, 1);
+        let _ = s.numbered_track_row(&t, 1, &RowPlay::Now);
         let _ = s.track_row(&t);
         // Play-count rows build with and without counts (search and
         // catalog hits carry "213M plays"; album, playlist, and radio
@@ -18481,14 +18718,14 @@ mod tests {
         let mut played = mk_track("v2", "Toxicity", "System of a Down");
         played.plays = Some("213M plays".into());
         let _ = s.search_song_row(&played);
-        let _ = s.numbered_track_row(&played, 2);
+        let _ = s.numbered_track_row(&played, 2, &RowPlay::Now);
         let _ = s.track_row(&played);
         // Top-song rows build with and without the album subtitle.
         let mut with_album = mk_track("v3", "Bicycle Race", "Queen");
         with_album.album = Some("Jazz".into());
         with_album.plays = Some("76M plays".into());
-        let _ = s.artist_top_row(&with_album, 5);
-        let _ = s.artist_top_row(&played, 6);
+        let _ = s.artist_top_row(&with_album, 5, "UCq");
+        let _ = s.artist_top_row(&played, 6, "UCq");
         s.hovered_album = Some("al1".into());
         s.hovered_artist = Some("ar1".into());
         s.hovered_search_playlist = Some("PL1".into());
@@ -18497,7 +18734,7 @@ mod tests {
         let _ = s.search_artist_row(&artist);
         let _ = s.search_playlist_row(&pl);
         let _ = s.search_song_row(&t);
-        let _ = s.numbered_track_row(&t, 1);
+        let _ = s.numbered_track_row(&t, 1, &RowPlay::Now);
         // Liked heart stays on the row at rest.
         s.liked.insert("v1".into());
         s.hovered_track = None;
