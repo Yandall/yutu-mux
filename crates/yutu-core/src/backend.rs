@@ -39,6 +39,7 @@ impl MockBackend {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
             Track {
                 id: "m2".into(),
@@ -49,6 +50,7 @@ impl MockBackend {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
             Track {
                 id: "m3".into(),
@@ -59,6 +61,7 @@ impl MockBackend {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
             Track {
                 id: "m4".into(),
@@ -69,6 +72,7 @@ impl MockBackend {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
             Track {
                 id: "m5".into(),
@@ -79,6 +83,7 @@ impl MockBackend {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         ]
     }

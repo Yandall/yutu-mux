@@ -1660,6 +1660,7 @@ fn song_to_track(song: &SearchResultSong) -> Track {
         thumbnail_url: pick_thumb_url(&song.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
         plays: is_play_count(&song.plays).then(|| song.plays.clone()),
+        is_video: false,
     }
 }
 
@@ -1738,6 +1739,7 @@ fn artist_song_to_track(song: &ArtistSong) -> Track {
         thumbnail_url: None,
         thumbnail_large_url: None,
         plays: is_play_count(&song.plays).then(|| song.plays.clone()),
+        is_video: false,
     }
 }
 
@@ -1755,6 +1757,7 @@ fn album_song_to_track(song: &AlbumSong, artist: &str, album: &str) -> Track {
         thumbnail_url: None,
         thumbnail_large_url: None,
         plays: is_play_count(&song.plays).then(|| song.plays.clone()),
+        is_video: false,
     }
 }
 
@@ -1771,6 +1774,7 @@ fn table_song_to_track(song: &TableListSong) -> Track {
         thumbnail_url: pick_thumb_url(&song.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
         plays: None,
+        is_video: false,
     }
 }
 
@@ -1788,6 +1792,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             thumbnail_url: pick_thumb_url(&song.thumbnails),
             thumbnail_large_url: pick_large_thumb_url(&song.thumbnails),
             plays: None,
+            is_video: false,
         }),
         PlaylistItem::Video(video) => Some(Track {
             id: video.video_id.get_raw().to_string(),
@@ -1798,6 +1803,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             thumbnail_url: pick_thumb_url(&video.thumbnails),
             thumbnail_large_url: pick_large_thumb_url(&video.thumbnails),
             plays: None,
+            is_video: true,
         }),
         PlaylistItem::UploadSong(song) => Some(Track {
             id: song.video_id.get_raw().to_string(),
@@ -1812,6 +1818,7 @@ fn playlist_item_to_track(item: &PlaylistItem) -> Option<Track> {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         }),
         PlaylistItem::Episode(_) => None,
     }
@@ -1829,6 +1836,7 @@ fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
         thumbnail_url: pick_thumb_url(&track.thumbnails),
         thumbnail_large_url: pick_large_thumb_url(&track.thumbnails),
         plays: None,
+        is_video: false,
     }
 }
 
@@ -1912,6 +1920,7 @@ fn tolerant_row_to_track(item: &serde_json::Value) -> Option<Track> {
         thumbnail_url: small,
         thumbnail_large_url: large,
         plays: None,
+        is_video: false,
     })
 }
 
@@ -2293,6 +2302,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             }
         );
         // Multiple artists join the way the search API pre-joins them.
@@ -2320,6 +2330,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             }
         );
         assert_eq!(tracks[1].duration_secs, 186);

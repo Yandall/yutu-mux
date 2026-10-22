@@ -22,6 +22,12 @@ pub struct Track {
     /// persists it (stale counts must not survive restarts).
     #[serde(default)]
     pub plays: Option<String>,
+    /// True when the hit is a music video rather than a song. The raw
+    /// search keeps songs and videos in one `tracks` vec, so the UI
+    /// needs this to label rows (`Song` vs `Video`). Defaults to false
+    /// for old caches and non-search sources.
+    #[serde(default)]
+    pub is_video: bool,
 }
 
 /// Rewrite a YTM `=wNN-hNN` thumbnail URL to the requested width (same
@@ -167,6 +173,11 @@ pub struct TopHit {
     pub title: String,
     pub artist: String,
     pub thumbnail_url: Option<String>,
+    /// Play/view count from the card subtitle (e.g. `"1.6B views"`):
+    /// the hero is often synthesized with no shelf row, so the card is
+    /// the only source. Missing on older caches.
+    #[serde(default)]
+    pub plays: Option<String>,
 }
 
 /// Position of one row in the web mixed order: kind + id into the

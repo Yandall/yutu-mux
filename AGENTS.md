@@ -82,7 +82,9 @@
 - **EOF-idle advance**: at end-of-file the backend goes idle (raw 0/0)
   while metadata duration survives, so the threshold path can miss;
   a silent backend after heard playback (`heard_audio`, any nonzero
-  raw position) advances like the threshold path. New loads and both
+  raw position) advances like the threshold path. The `idle-active`
+  property is the second witness (the duration property can outlive
+  the file, so 0/0 alone can miss). New loads and both
   Stops clear `heard_audio`; paused/loading/never-heard never qualify.
 - **Lyrics `line_at`** = index of last line with `start_ms <= position`
   (binary search). Empty-text stanza markers share the next line's
