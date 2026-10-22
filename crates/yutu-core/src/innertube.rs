@@ -1493,21 +1493,53 @@ async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String,
 const PLAYER_URL: &str =
     "https://music.youtube.com/youtubei/v1/player?alt=json&prettyPrint=false&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
 pub(crate) const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0";
-/// Dummy WEB_REMIX version, same date-based spirit as upstream's fallback.
-pub(crate) const WEB_REMIX_VERSION: &str = "1.20261007.00.00";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
+
+/// Rolling WEB_REMIX version, same date-based spirit as upstream's
+/// fallback: the web client rolls this daily, and a stale pin drifts
+/// ranking. Format `1.YYYYMMDD.01.00`, from days since epoch (no date
+/// crate needed).
+pub(crate) fn web_remix_version() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0) as i64;
+    // Howard Hinnant's days-to-civil algorithm (days since 1970-01-01
+    // to Gregorian y/m/d).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = (if m <= 2 { y + 1 } else { y }) as u32;
+    format!("1.{y:04}{m:02}{d:02}.01.00")
+}
+
+/// Web client context exactly as music.youtube.com sends it: WEB_REMIX
+/// plus the rolling version and locale, with the safety-mode user as a
+/// `context` sibling (never nested inside `client`, which the server
+/// ignores).
+pub(crate) fn web_context() -> serde_json::Value {
+    serde_json::json!({
+        "client": {
+            "clientName": "WEB_REMIX",
+            "clientVersion": web_remix_version(),
+            "hl": "en",
+            "gl": "US",
+        },
+        "user": { "lockedSafetyMode": false },
+    })
+}
 
 /// Build the raw `player` body. `po_token = None` reproduces the plain probe;
 /// `Some` attaches `serviceIntegrityDimensions` per the BotGuard contract.
 fn player_request_body(video_id: &str, po_token: Option<&str>) -> serde_json::Value {
     let mut body = serde_json::json!({
-        "context": {
-            "client": {
-                "clientName": "WEB_REMIX",
-                "clientVersion": WEB_REMIX_VERSION,
-                "user": {},
-            },
-        },
+        "context": web_context(),
         "videoId": video_id,
         "playbackContext": {
             "contentPlaybackContext": {
@@ -2046,6 +2078,40 @@ pub fn parse_watch_playlist_fixture(json: &str) -> Vec<Track> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_context_matches_music_website_shape() {
+        // Rolling version tracks today (never a stale pin), and the
+        // context carries locale with the user as a sibling, exactly
+        // like music.youtube.com sends it.
+        let version = web_remix_version();
+        assert!(version.starts_with("1.20"), "{version}");
+        assert!(version.ends_with(".01.00"), "{version}");
+        let ctx = web_context();
+        assert_eq!(
+            ctx.pointer("/client/clientName").and_then(|v| v.as_str()),
+            Some("WEB_REMIX")
+        );
+        assert_eq!(
+            ctx.pointer("/client/hl").and_then(|v| v.as_str()),
+            Some("en")
+        );
+        assert_eq!(
+            ctx.pointer("/client/gl").and_then(|v| v.as_str()),
+            Some("US")
+        );
+        assert_eq!(
+            ctx.pointer("/client/clientVersion")
+                .and_then(|v| v.as_str()),
+            Some(version.as_str())
+        );
+        assert!(ctx.pointer("/client/user").is_none());
+        assert_eq!(
+            ctx.pointer("/user/lockedSafetyMode")
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
 
     #[test]
     fn play_count_filter_keeps_counts_drops_dates() {

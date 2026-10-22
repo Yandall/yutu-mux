@@ -28,11 +28,7 @@ const SHELF_TIMEOUT_SECS: u64 = 25;
 
 pub async fn raw_shelf_tracklist(browse_id: &str) -> Result<Vec<Track>, String> {
     let body = serde_json::json!({
-        "context": { "client": {
-            "clientName": "WEB_REMIX",
-            "clientVersion": crate::innertube::WEB_REMIX_VERSION,
-            "user": {},
-        } },
+        "context": crate::innertube::web_context(),
         "browseId": browse_id,
     });
     let send = crate::shared_client()
@@ -40,6 +36,7 @@ pub async fn raw_shelf_tracklist(browse_id: &str) -> Result<Vec<Track>, String> 
         .header("User-Agent", crate::innertube::USER_AGENT)
         .header("X-Origin", ORIGIN)
         .header("Origin", ORIGIN)
+        .header("Referer", "https://music.youtube.com/")
         .header("Content-Type", "application/json")
         .json(&body)
         .send();
