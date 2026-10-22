@@ -12,7 +12,7 @@
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 
-use crate::innertube::{parse_duration_secs, USER_AGENT, WEB_REMIX_VERSION};
+use crate::innertube::{parse_duration_secs, web_context, USER_AGENT};
 use crate::models::{Album, Artist, MixedRef, PlaylistHit, SearchAll, TopHit, TopKind, Track};
 
 const SEARCH_URL: &str =
@@ -182,14 +182,11 @@ async fn post_search(
     auth: &SearchAuth,
     params: Option<&str>,
 ) -> Result<String, SearchFail> {
+    // Same body the web client sends: unfiltered carries no `params`
+    // (the server ranks the mixed All order), filter tabs carry the
+    // tab's params, and the context pins WEB_REMIX plus locale.
     let mut body = serde_json::json!({
-        "context": {
-            "client": {
-                "clientName": "WEB_REMIX",
-                "clientVersion": WEB_REMIX_VERSION,
-                "user": {},
-            },
-        },
+        "context": web_context(),
         "query": query,
     });
     if let Some(params) = params {
@@ -200,6 +197,7 @@ async fn post_search(
         .header("User-Agent", USER_AGENT)
         .header("X-Origin", ORIGIN)
         .header("Origin", ORIGIN)
+        .header("Referer", "https://music.youtube.com/")
         .header("Content-Type", "application/json")
         .json(&body);
     if let Some(cookie) = &auth.cookie {
@@ -232,15 +230,20 @@ async fn post_search(
 /// Parse a raw unfiltered response into server order. Unknown sections
 /// and items are skipped; only a missing section list errors. Video
 /// rows duplicating a song row are dropped last (song versions win
-/// for streams and art); survivors keep exact server order.
+/// for streams and art); survivors keep exact server order. The top
+/// card's recording often has no shelf row (the canonical hit only
+/// exists as the card): it is synthesized from the card so the hero
+/// plays exactly what the server ranked.
 pub fn parse_search_all(text: &str) -> Result<SearchAll, String> {
     let root: Value = serde_json::from_str(text).map_err(|e| format!("search parse: {e}"))?;
     let sections = section_contents(&root).ok_or("search parse: no section list")?;
     let mut out = SearchAll::default();
     let mut rows: Vec<TrackRow> = Vec::new();
+    let mut top_art: Option<(Option<String>, Option<String>)> = None;
     for section in sections {
         if let Some(card) = section.get("musicCardShelfRenderer") {
             if let Some(top) = parse_top_card(card) {
+                top_art = Some(thumbs(card));
                 out.top = Some(top);
             }
         } else if let Some(item) = section.get("itemSectionRenderer") {
@@ -258,6 +261,7 @@ pub fn parse_search_all(text: &str) -> Result<SearchAll, String> {
         // Carousels, podcasts, episodes, profiles: skipped by design.
     }
     prefer_song_versions(&mut out, &rows);
+    synthesize_top_hit(&mut out, top_art);
     Ok(out)
 }
 
@@ -273,6 +277,83 @@ fn section_contents(root: &Value) -> Option<&Vec<Value>> {
         })
 }
 
+/// The server's top pick as a playable row: the canonical hit often
+/// has no shelf row (it only exists as the card), so without this the
+/// hero falls back to the first shelf row, a different result.
+/// Synthesized first in its typed vec (never in `mixed`, so no
+/// duplicate row renders); shelf rows keep exact server order.
+fn synthesize_top_hit(out: &mut SearchAll, top_art: Option<(Option<String>, Option<String>)>) {
+    let Some(top) = &out.top else { return };
+    if top.id.is_empty() {
+        return;
+    }
+    let (small, large) = top_art.unwrap_or((None, None));
+    let small = small.or_else(|| top.thumbnail_url.clone());
+    match top.kind {
+        TopKind::Song | TopKind::Video => {
+            if out.tracks.iter().any(|t| t.id == top.id) {
+                return;
+            }
+            out.tracks.insert(
+                0,
+                Track {
+                    id: top.id.clone(),
+                    title: top.title.clone(),
+                    artist: top.artist.clone(),
+                    album: None,
+                    duration_secs: 0,
+                    thumbnail_url: small,
+                    thumbnail_large_url: large,
+                    plays: None,
+                },
+            );
+        }
+        TopKind::Artist => {
+            if out.artists.iter().any(|a| a.id == top.id) {
+                return;
+            }
+            out.artists.insert(
+                0,
+                Artist {
+                    id: top.id.clone(),
+                    name: top.title.clone(),
+                    thumbnail_url: small,
+                },
+            );
+        }
+        TopKind::Album => {
+            if out.albums.iter().any(|a| a.id == top.id) {
+                return;
+            }
+            out.albums.insert(
+                0,
+                Album {
+                    id: top.id.clone(),
+                    title: top.title.clone(),
+                    artist: top.artist.clone(),
+                    year: None,
+                    thumbnail_url: small,
+                },
+            );
+        }
+        TopKind::Playlist => {
+            if out.playlists.iter().any(|p| p.id == top.id) {
+                return;
+            }
+            out.playlists.insert(
+                0,
+                PlaylistHit {
+                    id: top.id.clone(),
+                    title: top.title.clone(),
+                    author: top.artist.clone(),
+                    detail: String::new(),
+                    thumbnail_url: small,
+                },
+            );
+        }
+        TopKind::Other => {}
+    }
+}
 /// One content entry: flat item or old-style shelf (both tolerated so
 /// layout flip-flops never blank the page).
 fn push_content(out: &mut SearchAll, rows: &mut Vec<TrackRow>, content: &Value) {
@@ -445,10 +526,10 @@ fn same_track(song: &Track, video: &Track) -> bool {
 /// duplicating a song row are dropped (streams + art resolve to the
 /// song instead); survivors keep exact server order (nothing is
 /// re-sorted, only hidden twins). Videos without a song twin,
-/// libraries, playlists, and radio are untouched. The top hit is
-/// deliberately NOT retargeted: it carries no duration, so a long
-/// video could bind to a short song (wrong stream); the server's
-/// top pick plays as ranked.
+/// libraries, playlists, and radio are untouched. The top card keeps
+/// its own row (see `synthesize_top_hit`) and is never merged into
+/// a shelf twin: it carries no duration, so a long video could bind
+/// to a short song (wrong stream).
 fn prefer_song_versions(out: &mut SearchAll, rows: &[TrackRow]) {
     let songs: Vec<&Track> = rows.iter().filter(|r| r.song).map(|r| &r.track).collect();
     let dead: std::collections::HashSet<usize> = rows
@@ -471,6 +552,15 @@ fn prefer_song_versions(out: &mut SearchAll, rows: &[TrackRow]) {
     out.mixed = mixed;
 }
 
+/// Channel tokens that are not artists (user profiles, podcast
+/// entries): these channels must never be misfiled as artists.
+fn is_non_artist_channel(token: &str) -> bool {
+    matches!(
+        token.to_lowercase().as_str(),
+        "profile" | "profil" | "perfil" | "profilo" | "podcast" | "episode" | "episodio"
+    )
+}
+
 /// One flat item into the typed vecs + mixed order. Endpoint shape
 /// decides artists/albums/playlists (browse id prefix); songs and
 /// videos share the watch path and split on the player type, with the
@@ -478,6 +568,11 @@ fn prefer_song_versions(out: &mut SearchAll, rows: &[TrackRow]) {
 fn push_item(out: &mut SearchAll, rows: &mut Vec<TrackRow>, item: &Value, force: Option<u8>) {
     let title: String = flex_runs(item, 0).concat();
     if title.is_empty() {
+        return;
+    }
+    // Podcast episodes are not music: skip everywhere (unfiltered rows
+    // and forced filtered shelves alike), never as songs or videos.
+    if music_video_type(item).is_some_and(|t| t.contains("PODCAST")) {
         return;
     }
     let segs = segments(&flex_runs(item, 1));
@@ -492,6 +587,12 @@ fn push_item(out: &mut SearchAll, rows: &mut Vec<TrackRow>, item: &Value, force:
     let art = thumbs(item);
     if let Some(browse) = browse_id(item) {
         if browse.starts_with("UC") {
+            // Channels mix artists with user profiles: only artist
+            // tokens (or bare filtered-shelf rows, which omit the
+            // token) map; profiles never become artists.
+            if is_non_artist_channel(&first) {
+                return;
+            }
             out.artists.push(Artist {
                 id: browse,
                 name: title.clone(),
@@ -510,6 +611,10 @@ fn push_item(out: &mut SearchAll, rows: &mut Vec<TrackRow>, item: &Value, force:
             let id = out.albums.last().map(|a| a.id.clone()).unwrap_or_default();
             out.mixed.push(MixedRef { kind: 2, id });
         } else if browse.starts_with("VL") || browse.starts_with("PL") {
+            // Radio mixes (VLRDCLAK...) are stations, not playlists.
+            if browse.contains("RDCLAK") {
+                return;
+            }
             out.playlists.push(PlaylistHit {
                 id: browse,
                 title: title.clone(),
@@ -833,9 +938,15 @@ mod tests {
             top.thumbnail_url.as_deref(),
             Some("https://example.invalid/s")
         );
-        assert_eq!(out.tracks.len(), 1);
-        assert_eq!(out.tracks[0].id, "-cid1qHuy_U");
-        assert_eq!(out.tracks[0].plays.as_deref(), Some("2.1B plays"));
+        // The card recording has no shelf row, so it is synthesized
+        // first (hero plays the server pick, not the first shelf row);
+        // the shelf song keeps its counts behind it.
+        assert_eq!(out.tracks.len(), 2);
+        assert_eq!(out.tracks[0].id, "CSvFpBOe8eY");
+        assert_eq!(out.tracks[0].title, "Chop Suey!");
+        assert_eq!(out.tracks[0].artist, "System Of A Down");
+        assert_eq!(out.tracks[1].id, "-cid1qHuy_U");
+        assert_eq!(out.tracks[1].plays.as_deref(), Some("2.1B plays"));
         assert_eq!(out.artists.len(), 1);
         assert_eq!(out.artists[0].id, "UC123");
         assert_eq!(out.albums.len(), 1);
@@ -926,6 +1037,11 @@ mod tests {
                 serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "RDCLAK123"}}}),
             ),
             item(
+                "Presenting Someone",
+                vec!["Playlist", " • ", "YouTube Music", " • ", "67 songs"],
+                serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "VLRDCLAK123"}}}),
+            ),
+            item(
                 "Fan",
                 vec!["Playlist", " • ", "Fan", " • ", "5 views"],
                 serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "PL456"}}}),
@@ -935,6 +1051,116 @@ mod tests {
         assert_eq!(out.playlists.len(), 1);
         assert_eq!(out.playlists[0].id, "PL456");
         assert_eq!(out.mixed.len(), 1);
+    }
+
+    #[test]
+    fn podcast_episodes_and_profiles_never_misfile() {
+        // Episode rows (even in a forced Songs shelf) are skipped, not
+        // songs; profile channels are skipped, not artists.
+        let episode = || {
+            let mut extra = with_video("ep1");
+            // with_video marks OMV: episodes ride the podcast type.
+            extra["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]
+                ["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]
+                ["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]
+                ["musicVideoType"] = serde_json::json!("MUSIC_VIDEO_TYPE_PODCAST_EPISODE");
+            extra["playlistItemData"] = serde_json::json!({"videoId": "ep1"});
+            extra
+        };
+        let out = parse_search_all(&wrap(vec![
+            item(
+                "Show",
+                vec!["Episode", " • ", "Oct 30, 2019", " • ", "Pub"],
+                episode(),
+            ),
+            item(
+                "Fan",
+                vec!["Profile", " • ", "@fan"],
+                serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "UC999"}}}),
+            ),
+            item(
+                "Band",
+                vec!["Artist", " • ", "1M monthly audience"],
+                serde_json::json!({"navigationEndpoint": {"browseEndpoint": {"browseId": "UC111"}}}),
+            ),
+        ]))
+        .expect("parse");
+        assert!(out.tracks.is_empty());
+        assert_eq!(out.artists.len(), 1);
+        assert_eq!(out.artists[0].id, "UC111");
+        assert_eq!(
+            out.mixed
+                .iter()
+                .map(|m| (m.kind, m.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "UC111")]
+        );
+    }
+
+    #[test]
+    fn top_card_without_a_shelf_row_synthesizes_once() {
+        // Card video already shelved: no duplicate row.
+        let card = serde_json::json!({
+            "musicCardShelfRenderer": {
+                "title": {"runs": [{"text": "Hey"}]},
+                "subtitle": {"runs": [
+                    {"text": "Song"}, {"text": " • "}, {"text": "Band"},
+                ]},
+                "thumbnail": {"musicThumbnailRenderer": {"thumbnail": {"thumbnails": [
+                    {"url": "https://example.invalid/s", "width": 60, "height": 60},
+                ]}}},
+                "onTap": {"watchEndpoint": {"videoId": "v1"}},
+            },
+        });
+        let mut root: Value = serde_json::from_str(&wrap(vec![item(
+            "Hey",
+            vec!["Song", " • ", "Band"],
+            serde_json::json!({"playlistItemData": {"videoId": "v1"}}),
+        )]))
+        .expect("wrap parses");
+        root["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]
+            ["sectionListRenderer"]["contents"]
+            .as_array_mut()
+            .expect("sections")
+            .insert(0, card);
+        let out = parse_search_all(&root.to_string()).expect("parse");
+        assert_eq!(out.tracks.len(), 1);
+        assert_eq!(out.tracks[0].id, "v1");
+    }
+
+    #[test]
+    fn top_artist_card_without_a_shelf_row_synthesizes() {
+        // The ranked artist has no shelf row (only the card): it is
+        // synthesized so the hero resolves by id instead of falling
+        // back to the first shelf row.
+        let card = serde_json::json!({
+            "musicCardShelfRenderer": {
+                "title": {"runs": [{"text": "Héroes del Silencio"}]},
+                "subtitle": {"runs": [
+                    {"text": "Artist"}, {"text": " • "}, {"text": "7.02M monthly audience"},
+                ]},
+                "thumbnail": {"musicThumbnailRenderer": {"thumbnail": {"thumbnails": [
+                    {"url": "https://example.invalid/a", "width": 60, "height": 60},
+                ]}}},
+                "onTap": {"browseEndpoint": {"browseId": "UC123"}},
+            },
+        });
+        let mut root: Value = serde_json::from_str(&wrap(vec![item(
+            "Heroes",
+            vec!["Song", " • ", "Band"],
+            serde_json::json!({"playlistItemData": {"videoId": "v1"}}),
+        )]))
+        .expect("wrap parses");
+        root["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]
+            ["sectionListRenderer"]["contents"]
+            .as_array_mut()
+            .expect("sections")
+            .insert(0, card);
+        let out = parse_search_all(&root.to_string()).expect("parse");
+        assert_eq!(out.artists.len(), 1);
+        assert_eq!(out.artists[0].id, "UC123");
+        assert_eq!(out.artists[0].name, "Héroes del Silencio");
+        assert!(out.mixed.iter().all(|m| m.id != "UC123"));
     }
 
     #[test]
@@ -1055,7 +1281,11 @@ mod tests {
             .unwrap()
             .clear();
         let out = parse_search_all(&broken.to_string()).expect("parse");
-        assert!(out.tracks.is_empty() && out.mixed.is_empty());
+        // No shelf rows survive, but the top card still synthesizes its
+        // playable row (mixed stays empty: no duplicate row renders).
+        assert_eq!(out.tracks.len(), 1);
+        assert_eq!(out.tracks[0].id, "CSvFpBOe8eY");
+        assert!(out.mixed.is_empty());
         assert!(out.top.is_some());
     }
 

@@ -1790,7 +1790,6 @@ const LYRIC_VIEWPORT_PAD: f32 = 260.0;
 const LYRIC_RESUME_PX: f32 = 120.0;
 /// Sidebar sync spinner frames (verbatim loader glyph, one rotation
 /// step each): 60 steps at the ~60fps `Animate` tick is one turn/sec.
-#[cfg(feature = "innertube")]
 const SPINNER_STEPS: usize = 60;
 /// Shared lazy-art geometry: body padding, uniform row pitch (52px
 /// rows + 2px spacing), card grid pitch (200px cards + 10px wrap
@@ -2273,8 +2272,8 @@ pub struct AppState {
     /// Spinner frame for loading states: advanced one step per
     /// `Animate` tick while the pipeline runs (the ticker runs then,
     /// see [`Self::animating`]). Wraps around the precomputed frames.
-    /// Shared by the sidebar sync glyph and busy buttons.
-    #[cfg(feature = "innertube")]
+    /// Shared by the sidebar sync glyph, busy buttons, and the artist
+    /// Show-more loader.
     spin_frame: u64,
     /// Expected import songs (base songs plus known playlist totals) and
     /// playlist songs already finished: banner bar math. Per-list live
@@ -2385,21 +2384,6 @@ impl AppState {
             .iter()
             .find(|p| p.id == playlist_id)
             .is_some_and(|p| p.tracks.iter().any(|t| t.id == track_id))
-    }
-
-    /// Instant local matches from the known catalog: paints in the popup
-    /// on the same keystroke, then the live payload replaces it.
-    fn catalog_hits(&self, query: &str) -> Vec<Track> {
-        let q = query.to_lowercase();
-        let mut v: Vec<Track> = self
-            .catalog
-            .values()
-            .filter(|t| t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q))
-            .take(12)
-            .cloned()
-            .collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
     }
 
     /// Cached results for a normalized query (miss on absent or stale).
@@ -3301,10 +3285,57 @@ fn all_empty(all: &SearchAll) -> bool {
 
 /// Lowercase with edge punctuation trimmed, so "Chop Suey!" matches
 /// a "Chop Suey" top hit when resolving the hero play target.
+/// Diacritics fold too ("Héroes" matches "heroes"), like the server.
 fn norm_title(s: &str) -> String {
-    s.to_lowercase()
+    fold_diacritics(&s.to_lowercase())
         .trim_matches(|c: char| !c.is_alphanumeric())
         .to_string()
+}
+
+/// Accent-insensitive fold for search matching: the server ranks
+/// "Héroes del Silencio" first for "heroes", so the client narrow
+/// must too (a raw `contains` drops every accented hit). Latin
+/// diacritics map to their base letter; anything else passes through.
+fn fold_diacritics(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ȁ' | 'ȃ' => {
+                out.push('a')
+            }
+            'æ' => out.push_str("ae"),
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => out.push('c'),
+            'ď' | 'đ' | 'ð' => out.push('d'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' | 'ȅ' | 'ȇ' => {
+                out.push('e')
+            }
+            'ĝ' | 'ğ' | 'ġ' | 'ģ' => out.push('g'),
+            'ĥ' | 'ħ' => out.push('h'),
+            'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ǐ' | 'ȉ' | 'ȋ' => {
+                out.push('i')
+            }
+            'ĵ' => out.push('j'),
+            'ķ' => out.push('k'),
+            'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => out.push('l'),
+            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' | 'ǒ' | 'ȍ' | 'ȏ' => {
+                out.push('o')
+            }
+            'œ' => out.push_str("oe"),
+            'ŕ' | 'ŗ' | 'ř' => out.push('r'),
+            'ś' | 'ŝ' | 'ş' | 'š' => out.push('s'),
+            'ß' => out.push_str("ss"),
+            'ţ' | 'ť' | 'ŧ' => out.push('t'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ǔ' | 'ȕ' | 'ȗ' => {
+                out.push('u')
+            }
+            'ŵ' => out.push('w'),
+            'ý' | 'ÿ' | 'ŷ' => out.push('y'),
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Hero for the unified search list: the server's top hit resolved by
@@ -3442,42 +3473,49 @@ fn results_empty(results: &SearchResults) -> bool {
         && results.playlists.is_empty()
 }
 
+/// Accent-insensitive haystack match for a narrowed query `q`
+/// (already folded): "Héroes" matches a "heroes" query.
+fn hit_matches(text: &str, q: &str) -> bool {
+    fold_diacritics(&text.to_lowercase()).contains(q)
+}
+
 /// Order-preserving substring narrow of an unfiltered response (the
 /// keystroke path for the All tab): same predicates as
 /// `filter_results`, server order untouched. The top hit survives only
 /// while it still matches the narrower query.
 fn filter_all(base: &SearchAll, query: &str) -> SearchAll {
-    let q = query.to_lowercase();
+    let q = fold_diacritics(&query.to_lowercase());
     if q.trim().is_empty() {
         return SearchAll::default();
     }
     SearchAll {
-        top: base.top.clone().filter(|t| {
-            t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q)
-        }),
+        top: base
+            .top
+            .clone()
+            .filter(|t| hit_matches(&t.title, &q) || hit_matches(&t.artist, &q)),
         mixed: base.mixed.clone(),
         tracks: base
             .tracks
             .iter()
-            .filter(|t| t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q))
+            .filter(|t| hit_matches(&t.title, &q) || hit_matches(&t.artist, &q))
             .cloned()
             .collect(),
         artists: base
             .artists
             .iter()
-            .filter(|a| a.name.to_lowercase().contains(&q))
+            .filter(|a| hit_matches(&a.name, &q))
             .cloned()
             .collect(),
         albums: base
             .albums
             .iter()
-            .filter(|a| a.title.to_lowercase().contains(&q) || a.artist.to_lowercase().contains(&q))
+            .filter(|a| hit_matches(&a.title, &q) || hit_matches(&a.artist, &q))
             .cloned()
             .collect(),
         playlists: base
             .playlists
             .iter()
-            .filter(|p| p.title.to_lowercase().contains(&q) || p.author.to_lowercase().contains(&q))
+            .filter(|p| hit_matches(&p.title, &q) || hit_matches(&p.author, &q))
             .cloned()
             .collect(),
     }
@@ -3485,7 +3523,7 @@ fn filter_all(base: &SearchAll, query: &str) -> SearchAll {
 
 /// Case-insensitive substring filter over a full search result set.
 fn filter_results(base: &SearchResults, query: &str) -> SearchResults {
-    let q = query.to_lowercase();
+    let q = fold_diacritics(&query.to_lowercase());
     if q.trim().is_empty() {
         return SearchResults::default();
     }
@@ -3493,25 +3531,25 @@ fn filter_results(base: &SearchResults, query: &str) -> SearchResults {
         tracks: base
             .tracks
             .iter()
-            .filter(|t| t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q))
+            .filter(|t| hit_matches(&t.title, &q) || hit_matches(&t.artist, &q))
             .cloned()
             .collect(),
         albums: base
             .albums
             .iter()
-            .filter(|a| a.title.to_lowercase().contains(&q) || a.artist.to_lowercase().contains(&q))
+            .filter(|a| hit_matches(&a.title, &q) || hit_matches(&a.artist, &q))
             .cloned()
             .collect(),
         artists: base
             .artists
             .iter()
-            .filter(|a| a.name.to_lowercase().contains(&q))
+            .filter(|a| hit_matches(&a.name, &q))
             .cloned()
             .collect(),
         playlists: base
             .playlists
             .iter()
-            .filter(|p| p.title.to_lowercase().contains(&q) || p.author.to_lowercase().contains(&q))
+            .filter(|p| hit_matches(&p.title, &q) || hit_matches(&p.author, &q))
             .cloned()
             .collect(),
     }
@@ -4443,7 +4481,6 @@ impl AppState {
             import_active: false,
             #[cfg(feature = "innertube")]
             sync_active: false,
-            #[cfg(feature = "innertube")]
             spin_frame: 0,
             #[cfg(feature = "innertube")]
             import_expected: 0,
@@ -6826,10 +6863,10 @@ impl AppState {
     /// One spinning-loader frame: the verbatim loader glyph rotated
     /// `frame` steps (same precedent as the heart fill-flip: rotation
     /// applied at runtime, no custom drawing, no new asset files).
-    /// Shared by the sidebar spinner and busy buttons. The tint is the
-    /// caller's text color: glyphs must contrast their background
-    /// (white on red buttons, red on dark surfaces).
-    #[cfg(feature = "innertube")]
+    /// Shared by the sidebar spinner, busy buttons, and the artist
+    /// Show-more loader. The tint is the caller's text color: glyphs
+    /// must contrast their background (white on red buttons, red on
+    /// dark surfaces).
     fn spinner_frame(frame: u64, size: f32, color: iced::Color) -> iced::Element<'static, Message> {
         use iced::widget::svg;
         const LOADER: &str = include_str!("../assets/icons/loader-circle.svg");
@@ -7111,7 +7148,8 @@ impl AppState {
 
     /// True while any transition is still converging (drives the ticker).
     /// A running pipeline counts: spinners advance one frame per tick.
-    /// So does a lyrics follow glide (it settles on its own).
+    /// So does a lyrics follow glide (it settles on its own), and so
+    /// does the artist full-shelf fetch (its Show-more spinner turns).
     fn animating(&self) -> bool {
         self.sidebar_w != self.sidebar_target()
             || self.right_w != self.right_target()
@@ -7119,6 +7157,7 @@ impl AppState {
             || self.drag_gap != self.drag_gap_target()
             || self.scroll_fading()
             || self.pipeline_busy()
+            || self.artist_full_loading.is_some()
             || self.lyrics_gliding()
     }
 
@@ -8638,6 +8677,10 @@ impl AppState {
             }
             Message::SearchStay => {
                 self.show_suggest = false;
+                // Cancel any pending keystroke debounce: the explicit
+                // submit below owns this query, so the timer must not
+                // fire a duplicate search for it.
+                self.search_gen = self.search_gen.wrapping_add(1);
                 self.go(Route::Search);
                 let q = self.search_query.trim().to_string();
                 #[cfg(feature = "innertube")]
@@ -8669,6 +8712,9 @@ impl AppState {
                 self.all_results = filter_all(&self.search_all_base, &q);
             }
             Message::Search => {
+                // Same debounce cancel as SearchStay: the explicit submit
+                // owns this query.
+                self.search_gen = self.search_gen.wrapping_add(1);
                 let q = self.search_query.trim().to_string();
                 #[cfg(feature = "innertube")]
                 {
@@ -9882,10 +9928,11 @@ impl AppState {
                             *o = (*o - SCROLL_FADE_STEP).max(0.0);
                         }
                     }
-                    // Spinners advance while the pipeline runs (the frame
-                    // drives the rotated glyphs; nothing else moves).
+                    // Spinners advance while the pipeline runs or the
+                    // artist full shelf loads (the frame drives the
+                    // rotated glyphs; nothing else moves).
                     #[cfg(feature = "innertube")]
-                    if self.pipeline_busy() {
+                    if self.pipeline_busy() || self.artist_full_loading.is_some() {
                         self.spin_frame = self.spin_frame.wrapping_add(1);
                     }
                     // Lyrics follow glide: ease toward the verse target
@@ -10497,7 +10544,8 @@ impl AppState {
                 {
                     // Full shelf on demand (head already paints):
                     // cached full lists expand instantly, otherwise the
-                    // raw shelf fetches behind a loading row.
+                    // raw shelf fetches behind a spinner beside Show
+                    // more.
                     let channel = match &self.route {
                         Route::Artist(rid) => self.artist_channel_id(rid),
                         _ => None,
@@ -12091,7 +12139,10 @@ impl AppState {
 
     /// Shared keystroke/pick flow for the search input: keystrokes keep
     /// the popup open, picks close it. Either way the highlight resets
-    /// (it indexes the previous suggestion list).
+    /// (it indexes the previous suggestion list). One paint per query:
+    /// keystrokes clear the old rows and schedule the debounced live
+    /// search, so the live payload is the only paint (no premature
+    /// catalog snapshot that the server order then replaces).
     fn apply_search_input(&mut self, q: String, popup_open: bool) -> iced::Task<Message> {
         self.search_query = q.clone();
         let trimmed = q.trim().to_string();
@@ -12106,27 +12157,12 @@ impl AppState {
             self.searching = false;
         } else if trimmed.len() >= 2 {
             self.show_suggest = popup_open;
-            // Premature results: known tracks paint instantly.
-            let premature = self.catalog_hits(&trimmed);
-            self.results = SearchResults {
-                tracks: premature.clone(),
-                albums: Vec::new(),
-                artists: Vec::new(),
-                playlists: Vec::new(),
-            };
-            // Premature All mirrors the tracks with matching refs
-            // (hero + rows, same as a real response).
-            self.all_results = SearchAll {
-                tracks: premature.clone(),
-                mixed: premature
-                    .iter()
-                    .map(|t| yutu_core::MixedRef {
-                        kind: 0,
-                        id: t.id.clone(),
-                    })
-                    .collect(),
-                ..SearchAll::default()
-            };
+            // Clear, never preview: the live payload paints once below.
+            // Text suggestions stay until the fresh list lands (standard
+            // autocomplete); result rows clear so nothing stale or
+            // premature flashes before the server order arrives.
+            self.results = SearchResults::default();
+            self.all_results = SearchAll::default();
             #[cfg(feature = "innertube")]
             {
                 let gen = self.search_gen;
@@ -15528,11 +15564,12 @@ impl AppState {
                     )
                 } else if let Some(songs) = &live {
                     // Collapsed shows the head (YTM shows 5); expanded
-                    // shows the full shelf, with a loading tail while
-                    // the shelf fetch is still in flight. The button
-                    // shows whenever expanding would change something:
-                    // collapsed, or expanded-but-still-fetching-failed
-                    // (then it retries).
+                    // shows the full shelf, with a spinner beside the
+                    // button while the shelf fetch is in flight (extra
+                    // presses are no-ops). The button shows whenever
+                    // expanding would change something: collapsed, or
+                    // expanded-but-still-fetching-failed (then it
+                    // retries), or expanded-and-loading.
                     let expanded = self.artist_expanded || songs.len() <= 5;
                     let more = if !expanded || (!full && !fetching_full) {
                         button(btn_text("Show more", 12))
@@ -15540,18 +15577,26 @@ impl AppState {
                             .on_press(Message::ArtistTopExpand)
                             .padding(4)
                             .into()
+                    } else if fetching_full {
+                        row![
+                            button(btn_text("Show more", 12))
+                                .style(hover_row)
+                                .on_press(Message::ArtistTopExpand)
+                                .padding(4),
+                            Self::spinner_frame(self.spin_frame, 12.0, MUTED),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .into()
                     } else {
                         text("").size(1).into()
                     };
-                    let mut rows: Vec<iced::Element<'_, Message>> =
+                    let rows: Vec<iced::Element<'_, Message>> =
                         (if expanded { &songs[..] } else { &songs[..5] })
                             .iter()
                             .enumerate()
                             .map(|(i, t)| self.artist_top_row(t, i + 1, id))
                             .collect();
-                    if expanded && !full && fetching_full {
-                        rows.push(text("Loading all songs…").color(MUTED).into());
-                    }
                     (rows, more)
                 } else {
                     // Catalog fallback: same suffix rule, alphabetical.
@@ -16915,16 +16960,17 @@ mod tests {
         let _ = s.update(Message::SearchChanged("yesterday".into()));
         assert_eq!(s.results.tracks.len(), 1);
         assert_eq!(s.results.tracks[0].id, "v1");
-        // New keystrokes paint premature catalog hits instantly.
+        // New keystrokes clear the old rows and search once: no
+        // premature catalog snapshot flashes before the live payload.
         let _ = s.update(Message::HomeSearchChanged("come".into()));
-        assert!(s.results.tracks.iter().any(|t| t.id == "m1"));
-        // Failures for the current query report without clobbering.
+        assert!(s.results.tracks.is_empty());
+        // Failures for the current query report without painting.
         let _ = s.update(Message::SearchCompleted {
             query: "come".into(),
             result: Err("offline".into()),
         });
         assert!(s.status.contains("offline"));
-        assert!(s.results.tracks.iter().any(|t| t.id == "m1"));
+        assert!(s.results.tracks.is_empty());
         // Stale-query failures stay silent.
         let _ = s.update(Message::SearchCompleted {
             query: "ancient".into(),
@@ -17143,6 +17189,47 @@ mod tests {
         assert!(filter_all(&base, "xyz").tracks.is_empty());
         assert!(order_all_hits(&filter_all(&base, "xyz")).is_empty());
         assert!(filter_all(&base, "").tracks.is_empty());
+    }
+
+    #[test]
+    fn accented_hits_match_unaccented_queries() {
+        use yutu_core::{Artist, SearchAll};
+        assert_eq!(
+            fold_diacritics(&"Héroes del Silencio".to_lowercase()),
+            "heroes del silencio"
+        );
+        assert_eq!(fold_diacritics(&"Beyoncé".to_lowercase()), "beyonce");
+        assert_eq!(fold_diacritics(&"Motörhead".to_lowercase()), "motorhead");
+        assert!(hit_matches("Héroes del Silencio", "heroes"));
+        // The server-ranked accented artist survives the All narrow.
+        let all = SearchAll {
+            top: None,
+            tracks: vec![mk_track("v1", "Heroes", "David Bowie")],
+            artists: vec![Artist {
+                id: "a1".into(),
+                name: "Héroes del Silencio".into(),
+                thumbnail_url: None,
+            }],
+            albums: vec![],
+            playlists: vec![],
+            mixed: vec![],
+        };
+        let narrowed = filter_all(&all, "heroes");
+        assert_eq!(narrowed.artists.len(), 1);
+        assert_eq!(narrowed.artists[0].id, "a1");
+        // Same for the tab-depth narrow.
+        let filtered = SearchResults {
+            tracks: vec![],
+            albums: vec![],
+            artists: vec![Artist {
+                id: "a1".into(),
+                name: "Héroes del Silencio".into(),
+                thumbnail_url: None,
+            }],
+            playlists: vec![],
+        };
+        let narrowed = filter_results(&filtered, "heroes");
+        assert_eq!(narrowed.artists.len(), 1);
     }
 
     #[test]
@@ -18564,6 +18651,20 @@ mod tests {
         });
         assert!(!s.artist_full.contains("UCq"));
         assert_eq!(s.artist_display_tracks("UCq").len(), 1);
+        // Loading state renders the button with a spinner beside it
+        // (no text row, no panic) before the full shelf lands.
+        s.route = Route::Artist("Queen".into());
+        s.artist_expanded = true;
+        s.artist_full_loading = Some("UCq".into());
+        let _ = s.view();
+        // The ticker runs for the fetch: the spinner turns one frame
+        // per tick until the shelf lands.
+        #[cfg(feature = "innertube")]
+        {
+            let f0 = s.spin_frame;
+            let _ = s.update(Message::Animate);
+            assert_eq!(s.spin_frame, f0 + 1);
+        }
         // "Show more" fetch swaps in the full ranked shelf.
         let full: Vec<Track> = (0..8)
             .map(|i| {
@@ -18572,7 +18673,6 @@ mod tests {
                 t
             })
             .collect();
-        s.artist_full_loading = Some("UCq".into());
         let _ = s.update(Message::ArtistFullLoaded {
             channel_id: "UCq".into(),
             result: Ok(full),
@@ -20590,16 +20690,23 @@ mod tests {
     fn popup_warms_top_tracks_on_suggest() {
         redirect_art_cache();
         let mut s = test_state();
-        // Catalog art the premature popup rows can actually warm.
-        s.catalog.insert("come-1".into(), art_track("come-1"));
+        // Live top-track rows back the open popup: their art warms.
         let _ = s.update(Message::HomeSearchChanged("come".into()));
         assert!(s.show_suggest);
+        let _ = s.update(Message::SearchCompleted {
+            query: "come".into(),
+            result: Ok(Box::new(bundle_of(SearchResults {
+                tracks: vec![art_track("come-1")],
+                albums: Vec::new(),
+                artists: Vec::new(),
+                playlists: Vec::new(),
+            }))),
+        });
         let _ = s.update(Message::SuggestCompleted {
             gen: s.suggest_gen,
             result: Ok(vec!["come together".into()]),
         });
         assert!(s.show_suggest);
-        // Premature catalog tracks back the popup rows: their art warms.
         assert!(
             !s.artwork_loading.is_empty(),
             "open popup must warm its visible rows"
@@ -21191,7 +21298,7 @@ mod tests {
             gen,
             result: Ok(vec!["bonobo".into(), "bon iver".into()]),
         });
-        // Popup track rows come from premature catalog hits.
+        // Popup text rows come from the suggestion payload.
         assert!(s.suggest_open());
         // Arrows walk text suggestions first, then track rows, wrapping.
         let n = s.suggest_count();
@@ -21209,9 +21316,19 @@ mod tests {
         assert_eq!(s.search_query, "bonobo");
         assert!(!s.show_suggest);
         assert!(s.suggest_idx.is_none());
-        // Reopen on fixtures ("come" premature-matches catalog tracks),
-        // arrow to a track row, Enter plays it.
+        // Reopen with a landed live payload ("come" searches once,
+        // the completion paints the track row), arrow to it, Enter
+        // plays it.
         let _ = s.update(Message::HomeSearchChanged("come".into()));
+        let _ = s.update(Message::SearchCompleted {
+            query: "come".into(),
+            result: Ok(Box::new(bundle_of(SearchResults {
+                tracks: vec![mk_track("m1", "Come Together", "The Beatles")],
+                albums: Vec::new(),
+                artists: Vec::new(),
+                playlists: Vec::new(),
+            }))),
+        });
         let _ = s.update(Message::SuggestCompleted {
             gen: s.suggest_gen,
             result: Ok(vec!["come together".into()]),
