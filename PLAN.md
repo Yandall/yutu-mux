@@ -218,5 +218,6 @@ Done: user can plausibly replace Spotify for daily listening.
 79. Round 68: accent-insensitive search narrow ("heroes" keeps "Héroes del Silencio") plus rowless top-card synthesis for artist/album/playlist tops (hero no longer falls back to the first shelf row)
 80. Round 69: artist "Show more" loads behind a spinner beside the button (spinner_frame/SPINNER_STEPS/spin_frame ungated, shared pure-UI pieces) instead of a "Loading all songs…" text row; the Animate ticker runs and the frame advances while the full-shelf fetch is in flight (it was static before)
 81. Round 70: next-song advance hardened (mpv `idle-active` is a second EOF witness besides the 0/0 clock, so a stale duration property cannot wedge the queue; threshold advances now log like the idle net; diagnosed from logs showing only idle-seek errors with successes silent)
+82. Round 71: back button restarts past 3s (instant seek to 00:00, no reload) and steps to the previous song inside them; head-of-queue restarts instead of reloading; bar/key/widget share `prev_task`
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.
