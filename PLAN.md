@@ -214,5 +214,8 @@ Done: user can plausibly replace Spotify for daily listening.
 75. Round 64: play counts on song rows (search, artist, album via one meta cell; count-less rows pixel-identical)
 76. Round 65: live artist top songs + album tracklists (server rank/order with counts, once-per-id fetch, catalog fallback offline and on failure; "Show more" full ranked artist list with album column; name/title routes resolve via scoped search when cards are missing; loading row instead of the stale catalog while fetching; head paints from the typed 5-song fetch, full 100-row shelf loads only on expand)
 77. Round 66: play-from-here on album/artist rows (clicked song plus the suffix behind it, like playlists; RowPlay keeps search rows on plain PlayNow)
+78. Round 67: search paints once and matches the website (premature catalog snapshot removed, debounce/submit deduped; WEB_REMIX plus rolling version, hl/gl, safety-mode user sibling, Referer; top-card recording synthesized when rowless; podcast episodes, profile channels, and radio mixes no longer misfiled)
+79. Round 68: accent-insensitive search narrow ("heroes" keeps "Héroes del Silencio") plus rowless top-card synthesis for artist/album/playlist tops (hero no longer falls back to the first shelf row)
+80. Round 69: artist "Show more" loads behind a spinner beside the button (spinner_frame/SPINNER_STEPS/spin_frame ungated, shared pure-UI pieces) instead of a "Loading all songs…" text row; the Animate ticker runs and the frame advances while the full-shelf fetch is in flight (it was static before)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

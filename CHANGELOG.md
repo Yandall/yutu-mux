@@ -369,6 +369,27 @@
 - Queue text is a compact auto-height block (title up to 2 lines +
   artist line) centered in the fixed row, so short rows no longer hug
   the top and long names truncate instead of crowding the artist
+- Search paints once and matches the website: keystrokes clear the old
+  rows and show the loading state instead of flashing an alphabetical
+  catalog snapshot that the server order then replaces, and explicit
+  submits cancel the pending debounce so one query never fires twice.
+  The request mirrors music.youtube.com (WEB_REMIX plus rolling
+  version, `hl`/`gl` locale, safety-mode user sibling, Referer). The
+  top card's recording is now playable even when it has no shelf row
+  (the hero used to fall back to the first shelf row, a different
+  recording); podcast episodes never pose as songs/videos, user
+  profiles never pose as artists, and radio mixes never pose as
+  playlists
+- Accent-insensitive search matching plus rowless top-card synthesis
+  for every result kind: "heroes" keeps "Héroes del Silencio" (a raw
+  substring narrow dropped every accented hit, so the artist never
+  rendered), and artist/album/playlist top cards synthesize their row
+  like song cards already did (the hero fell back to the first shelf
+  row when the ranked pick had no row)
+- Artist "Show more" loads behind a spinner beside the button instead
+  of a "Loading all songs…" text row under the list (the Animate
+  ticker now runs while the full-shelf fetch is in flight, so the
+  icon actually turns)
 
 ## 0.1.0
 
