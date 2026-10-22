@@ -247,6 +247,19 @@ impl MpvBackend {
         !idle
     }
 
+    /// `true` when mpv holds no file (empty playlist after EOF or stop).
+    /// This is the EOF net's second witness besides the 0/0 clock: the
+    /// `duration` property can outlive the file on some builds, so a
+    /// stale duration plus a zeroed `time-pos` would otherwise never
+    /// advance. Property read failures conservatively report `false`
+    /// (clock-only behavior, never a false skip).
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.mpv
+            .get_property::<bool>("idle-active")
+            .unwrap_or(false)
+    }
+
     fn cleanup_temp_files(&self) {
         if let Ok(mut guard) = self.temp_files.lock() {
             for path in guard.drain(..) {
@@ -328,6 +341,22 @@ mod tests {
         assert_eq!(segs.len(), BAND_COUNT);
         assert!(segs[0].ends_with("g=12"), "got {}", segs[0]);
         assert!(segs[9].ends_with("g=-12"), "got {}", segs[9]);
+    }
+
+    #[test]
+    fn fresh_backend_is_idle_with_zero_clock() {
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        // No file loaded: idle witness on, clock at zero, not playing.
+        assert!(backend.is_idle());
+        assert_eq!(backend.position_secs(), 0.0);
+        assert_eq!(backend.duration_secs(), 0.0);
+        assert!(!backend.is_playing());
     }
 
     /// Minimal 0.1s mono 16-bit 44.1kHz WAV, built by hand (no deps).

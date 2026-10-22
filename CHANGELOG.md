@@ -47,7 +47,10 @@
   commit on release; advances never fire mid-drag, shuffle starts off
 - Gapless-feeling track ends: a backend gone silent after audible
   playback advances like the threshold path (frozen tails and short
-  reads no longer wedge the queue on silence)
+  reads no longer wedge the queue on silence); the mpv idle signal is
+  a second witness, so a stale duration property cannot block the end
+  either, and threshold advances now log like the idle net for the
+  next bug report
 - Audible, customizable EQ: bands are now 1-octave-wide (the old 1 Hz
   width moved broadband level by 0.0 dB), with a hardware-style
   graphic-EQ panel in Settings (vertical drag sliders, smooth curve,

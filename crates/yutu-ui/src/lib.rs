@@ -1542,6 +1542,17 @@ impl AudioOut {
         fallback
     }
 
+    /// True when the backend holds no file (mpv idle after EOF/stop).
+    /// Rodio has no idle signal (wall-clock only), so it never reports
+    /// idle and keeps the clock-only EOF behavior exactly as before.
+    fn is_idle(&self) -> bool {
+        match self {
+            Self::Rodio(_) => false,
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a.is_idle(),
+        }
+    }
+
     /// Draggable seek: real on mpv, unsupported on rodio.
     fn seek_secs(&self, secs: f64) -> Result<(), String> {
         match self {
@@ -5524,16 +5535,19 @@ impl AppState {
 
     /// EOF safety net predicate (pure, Tick-tested): true when the raw
     /// backend clock reads idle (0/0) after audible playback of a live
-    /// load. Paused, already-advanced, loading, never-heard, and empty
-    /// states never qualify, so gaps, failures, and Stop stay put.
+    /// load, or when the backend itself reports holding no file (mpv
+    /// idle: the duration property can outlive the file, so 0/0 alone
+    /// can miss the end). Paused, already-advanced, loading,
+    /// never-heard, and empty states never qualify, so gaps, failures,
+    /// and Stop stay put.
     fn eof_idle(&self, raw_pos: f64, raw_dur: f64) -> bool {
         !self.paused
             && !self.end_advanced
             && self.loading_track.is_none()
             && self.heard_audio
             && self.queue.current().is_some()
-            && raw_pos <= 0.0
-            && raw_dur <= 1.0
+            && ((raw_pos <= 0.0 && raw_dur <= 1.0)
+                || self.audio.as_ref().is_some_and(|a| a.is_idle()))
     }
 
     /// Id of the likely next track (repeat-all wraps), for prefetching.
@@ -11192,6 +11206,7 @@ impl AppState {
                     && self.position_secs >= duration - 1.0
                     && self.advance_queue()
                 {
+                    yutu_core::app_log::info("yutu-play", "track reached its end: advancing");
                     self.end_advanced = true;
                     self.publish_mpris();
                     tasks.push(self.play_current_task());
@@ -12862,19 +12877,51 @@ impl AppState {
         }
     }
 
-    /// Hero song subtitle ("Song · artist · album"): empty parts drop
-    /// out, so album-less hits never dangle a trailing separator.
-    fn hero_song_subtitle(artist: &str, album: Option<&str>) -> String {
-        ["Song", artist.trim()]
+    /// Hero track subtitle ("Song · artist · album · plays" or
+    /// "Video · artist · plays"): empty parts drop out, so album-less
+    /// hits never dangle a trailing separator. Videos carry no album;
+    /// the view/play count survives here because the hero is the top
+    /// result (rows show it on the right instead).
+    fn hero_song_subtitle(
+        is_video: bool,
+        artist: &str,
+        album: Option<&str>,
+        plays: Option<&str>,
+    ) -> String {
+        let kind = if is_video { "Video" } else { "Song" };
+        [kind, artist.trim()]
             .into_iter()
             .chain(album.map(str::trim))
+            .chain(plays.map(str::trim))
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(" · ")
     }
 
+    /// "Song" vs "Video" label for unified search rows.
+    fn track_kind_label(t: &Track) -> &'static str {
+        if t.is_video {
+            "Video"
+        } else {
+            "Song"
+        }
+    }
+
+    /// Card view/play count for a hero track id (the card is the only
+    /// source when the recording has no shelf row): `Some` only when
+    /// the card id matches, so unrelated heroes never borrow it.
+    fn top_hit_plays(&self, id: &str) -> Option<&str> {
+        self.all_results
+            .top
+            .as_ref()
+            .and_then(|top| (top.id == id).then_some(top.plays.as_deref()).flatten())
+    }
+
     /// Track hero: the previous top-result card, now with the result
-    /// type in the subtitle (the mixed list has no sections).
+    /// type in the subtitle (the mixed list has no sections). The
+    /// view/play count joins the subtitle here (the card is the only
+    /// source when the recording has no shelf row); rows show it on
+    /// the right instead.
     fn search_track_hero(&self, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
@@ -12890,9 +12937,14 @@ impl AppState {
                     column![
                         text("Top result").size(12).color(MUTED),
                         text(t.title.clone()).size(20),
-                        text(Self::hero_song_subtitle(&t.artist, t.album.as_deref()))
-                            .size(13)
-                            .color(MUTED),
+                        text(Self::hero_song_subtitle(
+                            t.is_video,
+                            &t.artist,
+                            t.album.as_deref(),
+                            t.plays.as_deref().or_else(|| self.top_hit_plays(&t.id))
+                        ))
+                        .size(13)
+                        .color(MUTED),
                         row![
                             button(
                                 row![
@@ -13061,12 +13113,13 @@ impl AppState {
         }
     }
 
-    /// Song row for the unified search list: art with a hover play
+    /// Track row for the unified search list: art with a hover play
     /// overlay (dim backdrop + white icon on top, whole art plays),
-    /// type-led subtitle, and actions (like, more) that only appear on
-    /// hover. Hidden actions keep same-size spacers so rows never jump.
-    /// The liked heart stays visible: it is state, not just an action.
-    /// Raw All results carry no durations, so a zero one renders blank.
+    /// type-led subtitle ("Song" or "Video" plus artist), and actions
+    /// (like, more) that only appear on hover. Hidden actions keep
+    /// same-size spacers so rows never jump. The liked heart stays
+    /// visible: it is state, not just an action. Raw All results carry
+    /// no durations, so a zero one renders blank.
     fn search_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row};
         use iced::Fill;
@@ -13079,7 +13132,7 @@ impl AppState {
                     self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
                     Self::track_text_single(
                         &t.title,
-                        &format!("Song · {}", t.artist),
+                        &format!("{} · {}", Self::track_kind_label(t), t.artist),
                         14,
                         iced::Color::WHITE
                     ),
@@ -16868,6 +16921,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         }
     }
 
@@ -17087,6 +17141,7 @@ mod tests {
                 title: "Chop Suey!".into(),
                 artist: "System Of A Down".into(),
                 thumbnail_url: None,
+                plays: None,
             }),
             tracks: vec![
                 mk_track("cover", "Chop Suey", "Mister Chicken"),
@@ -17120,6 +17175,7 @@ mod tests {
                 title: "Chop Suey".into(),
                 artist: "Mister Chicken".into(),
                 thumbnail_url: None,
+                plays: None,
             }),
             ..all.clone()
         };
@@ -17131,6 +17187,7 @@ mod tests {
                 title: "Unknown".into(),
                 artist: "Nobody".into(),
                 thumbnail_url: None,
+                plays: None,
             }),
             ..all.clone()
         };
@@ -17308,6 +17365,7 @@ mod tests {
                 title: "Hey Jude".into(),
                 artist: "The Beatles".into(),
                 thumbnail_url: None,
+                plays: None,
             }),
             tracks: vec![mk_track("v9", "Hey Jude", "The Beatles")],
             artists: vec![],
@@ -18768,14 +18826,77 @@ mod tests {
     #[test]
     fn hero_song_subtitle_skips_empty_parts() {
         assert_eq!(
-            AppState::hero_song_subtitle("Queen", Some("A Night at the Opera")),
+            AppState::hero_song_subtitle(false, "Queen", Some("A Night at the Opera"), None),
             "Song · Queen · A Night at the Opera"
         );
-        assert_eq!(AppState::hero_song_subtitle("Queen", None), "Song · Queen");
         assert_eq!(
-            AppState::hero_song_subtitle("Queen", Some("  ")),
+            AppState::hero_song_subtitle(false, "Queen", None, None),
             "Song · Queen"
         );
+        assert_eq!(
+            AppState::hero_song_subtitle(false, "Queen", Some("  "), None),
+            "Song · Queen"
+        );
+        assert_eq!(
+            AppState::hero_song_subtitle(true, "System Of A Down", None, Some("1.6B views")),
+            "Video · System Of A Down · 1.6B views"
+        );
+        assert_eq!(
+            AppState::hero_song_subtitle(
+                false,
+                "System Of A Down",
+                Some("Toxicity"),
+                Some("2.1B plays")
+            ),
+            "Song · System Of A Down · Toxicity · 2.1B plays"
+        );
+    }
+
+    #[test]
+    fn search_rows_differentiate_songs_and_videos() {
+        use yutu_core::{SearchAll, TopHit, TopKind};
+        let mut song = mk_track("s1", "Chop Suey!", "System Of A Down");
+        song.plays = Some("2.1B plays".into());
+        assert_eq!(AppState::track_kind_label(&song), "Song");
+        let mut video = mk_track("v1", "Chop Suey!", "System Of A Down");
+        video.is_video = true;
+        video.plays = Some("1.6B views".into());
+        assert_eq!(AppState::track_kind_label(&video), "Video");
+        // Rows and heroes build for both kinds (no panic); the hero
+        // subtitle carries the kind plus the view/play count.
+        let s = test_state();
+        let _ = s.search_song_row(&song);
+        let _ = s.search_song_row(&video);
+        let _ = s.search_track_hero(&song);
+        let _ = s.search_track_hero(&video);
+        assert_eq!(
+            AppState::hero_song_subtitle(
+                video.is_video,
+                &video.artist,
+                video.album.as_deref(),
+                video.plays.as_deref()
+            ),
+            "Video · System Of A Down · 1.6B views"
+        );
+        // Card-only top hits lend their count when the shelf row has
+        // none (the recording exists only as the card).
+        let mut s = test_state();
+        s.all_results = SearchAll {
+            top: Some(TopHit {
+                kind: TopKind::Video,
+                id: "v1".into(),
+                title: "Chop Suey!".into(),
+                artist: "System Of A Down".into(),
+                thumbnail_url: None,
+                plays: Some("1.6B views".into()),
+            }),
+            ..SearchAll::default()
+        };
+        let mut bare = mk_track("v1", "Chop Suey!", "System Of A Down");
+        bare.is_video = true;
+        assert_eq!(s.top_hit_plays("v1"), Some("1.6B views"));
+        assert_eq!(s.top_hit_plays("other"), None);
+        let _ = s.search_track_hero(&bare);
     }
 
     #[test]
@@ -19646,6 +19767,7 @@ mod tests {
                 thumbnail_url: Some("https://example.invalid/cover".into()),
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         let _ = s2.update(Message::CreatePlaylist("Gym".into()));
@@ -19659,6 +19781,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         });
         let _ = s2.update(Message::PlayPlaylist(pid));
         assert_eq!(
@@ -19717,6 +19840,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
             plays: None,
+            is_video: false,
         };
         s.catalog.insert(liked.id.clone(), liked.clone());
         let _ = s.update(Message::AddToPlaylist {
@@ -19764,6 +19888,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         s.liked_order.push("artless".into());
@@ -19781,6 +19906,7 @@ mod tests {
                 thumbnail_url: Some("https://example.invalid/s".into()),
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         s.liked_order.push("artful".into());
@@ -19802,6 +19928,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         let _ = s.update(Message::TracksHydrated {
             requested: vec!["hydra".into()],
@@ -19891,6 +20018,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             })
             .collect();
         s.user_playlists.push(Playlist {
@@ -19950,6 +20078,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/ms=w60-h60-l90-rj".into()),
             thumbnail_large_url: Some("https://example.invalid/ml=w120-h120-l90-rj".into()),
             plays: None,
+            is_video: false,
         };
         let hero = yutu_core::hires_thumb_url(t.thumbnail_large_url.as_deref().unwrap(), 544);
         s.catalog.insert(t.id.clone(), t);
@@ -19976,6 +20105,7 @@ mod tests {
             thumbnail_url: Some(url.clone()),
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.catalog.insert(t.id.clone(), t.clone());
         let hero = yutu_core::hires_thumb_url(&url, 544);
@@ -20001,6 +20131,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/s=w60-h60-l90-rj".into()),
             thumbnail_large_url: Some("https://example.invalid/l=w120-h120-l90-rj".into()),
             plays: None,
+            is_video: false,
         };
         let hero = yutu_core::hires_thumb_url(t.thumbnail_large_url.as_deref().unwrap(), 544);
         s.catalog.insert(t.id.clone(), t);
@@ -20029,6 +20160,7 @@ mod tests {
             thumbnail_url: Some(url.clone()),
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.catalog.insert(t.id.clone(), t);
         s.history.push("dead-art".into());
@@ -20067,6 +20199,7 @@ mod tests {
                     thumbnail_url: Some(format!("https://example.invalid/c{i}.jpg")),
                     thumbnail_large_url: None,
                     plays: None,
+                    is_video: false,
                 },
             );
             s.history.push(id);
@@ -20122,6 +20255,7 @@ mod tests {
             thumbnail_url: Some(format!("https://example.invalid/{id}.jpg=w60-h60-l90-rj")),
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         }
     }
 
@@ -20740,6 +20874,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         let _ = s.update(Message::EnqueueTrack(video.clone()));
@@ -20782,6 +20917,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         // Audio leg of the bundle task (lyrics/art are best-effort
         // sidecars over the same fetch helpers, covered offline above).
@@ -22291,6 +22427,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             });
         }
         let _ = s.update(Message::ShufflePlaylist(pid.clone()));
@@ -22327,6 +22464,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         s.catalog.insert(
@@ -22340,6 +22478,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         assert_eq!(s.resolve_album_title("ax-Test Album XYZ"), "Test Album XYZ");
@@ -22360,6 +22499,7 @@ mod tests {
                 thumbnail_url: Some("https://example.invalid/s".into()),
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             },
         );
         let stale = Track {
@@ -22371,6 +22511,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         assert!(s.hero_art_for(&stale).is_some());
     }
@@ -22625,6 +22766,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.catalog.insert("m1".into(), t.clone());
         let small = s.art_url_for(&t, 40.0).expect("small");
@@ -22657,6 +22799,7 @@ mod tests {
                 "https://yt3.googleusercontent.com/x=w120-h120-l90-rj".into(),
             ),
             plays: None,
+            is_video: false,
         };
         let url = AppState::hero_art_url(&t).expect("hero");
         assert!(url.contains("=w544-h544"), "{url}");
@@ -23310,8 +23453,10 @@ mod tests {
     fn eof_idle_advances_a_silenced_track() {
         use std::time::Instant;
         // Predicate shape: silent backend + heard playback qualifies;
-        // every other state stays put.
+        // every other state stays put. Pinned to no audio device so the
+        // clock-only shape is deterministic with or without libmpv.
         let mut s = test_state();
+        s.audio = None;
         s.queue.push(mk_track("m1", "One", "A"));
         assert!(!s.eof_idle(0.0, 0.0), "load gap never qualifies");
         s.heard_audio = true;
@@ -23352,6 +23497,45 @@ mod tests {
         assert!(!s.heard_audio);
         let _ = s.update(Message::Tick(Instant::now()));
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    }
+
+    #[test]
+    #[cfg(feature = "mpv")]
+    fn eof_idle_advances_on_idle_backend_with_stale_duration() {
+        // The duration property can outlive the file on some builds, so
+        // 0/0 alone can miss the end: an idle backend (no file) is the
+        // second witness. Needs real libmpv; skipped without it.
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        assert!(backend.is_idle(), "fresh backend holds no file");
+        let mut s = test_state();
+        s.audio = Some(AudioOut::Mpv(backend));
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        assert!(!s.eof_idle(0.0, 200.0), "unheard load never qualifies");
+        s.heard_audio = true;
+        assert!(
+            s.eof_idle(0.0, 200.0),
+            "idle backend advances despite stale duration"
+        );
+        s.paused = true;
+        assert!(!s.eof_idle(0.0, 200.0), "paused holds");
+        s.paused = false;
+        s.loading_track = Some("m1".into());
+        assert!(!s.eof_idle(0.0, 200.0), "loading holds");
+        s.loading_track = None;
+        s.end_advanced = true;
+        assert!(!s.eof_idle(0.0, 200.0), "already advanced holds");
+        s.end_advanced = false;
+        // Full tick advances exactly once on the idle witness.
+        use std::time::Instant;
+        let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
     }
 
     #[test]

@@ -304,7 +304,8 @@ fn synthesize_top_hit(out: &mut SearchAll, top_art: Option<(Option<String>, Opti
                     duration_secs: 0,
                     thumbnail_url: small,
                     thumbnail_large_url: large,
-                    plays: None,
+                    plays: top.plays.clone(),
+                    is_video: top.kind == TopKind::Video,
                 },
             );
         }
@@ -673,6 +674,7 @@ fn push_item(out: &mut SearchAll, rows: &mut Vec<TrackRow>, item: &Value, force:
             thumbnail_url: art.0,
             thumbnail_large_url: art.1,
             plays: third_col_plays(item),
+            is_video: false,
         }
     } else {
         Track {
@@ -684,6 +686,7 @@ fn push_item(out: &mut SearchAll, rows: &mut Vec<TrackRow>, item: &Value, force:
             thumbnail_url: art.0,
             thumbnail_large_url: art.1,
             plays: b.get(1).cloned().filter(|v| !v.is_empty()),
+            is_video: true,
         }
     };
     rows.push(TrackRow {
@@ -730,7 +733,9 @@ fn browse_id(item: &Value) -> Option<String> {
 }
 
 /// Top card: display metadata plus the tap-target id (watch video or
-/// browse id), so the hero plays without shelf matching.
+/// browse id), so the hero plays without shelf matching. The card
+/// subtitle also carries the view/play count (e.g. `"1.6B views"`),
+/// the hero's only source when the recording has no shelf row.
 fn parse_top_card(card: &Value) -> Option<TopHit> {
     let title = card
         .get("title")
@@ -764,12 +769,21 @@ fn parse_top_card(card: &Value) -> Option<TopHit> {
         })
         .unwrap_or_default();
     let (small, _) = thumbs(card);
+    let plays = runs
+        .iter()
+        .find(|r| {
+            let lower = r.to_lowercase();
+            (lower.contains("play") || lower.contains("view") || lower.contains("reprodu"))
+                && r.bytes().any(|b| b.is_ascii_digit())
+        })
+        .cloned();
     Some(TopHit {
         kind,
         id,
         title,
         artist: runs.get(2).cloned().unwrap_or_default(),
         thumbnail_url: small,
+        plays,
     })
 }
 
@@ -934,6 +948,7 @@ mod tests {
         assert_eq!(top.kind, TopKind::Video);
         assert_eq!(top.id, "CSvFpBOe8eY");
         assert_eq!(top.artist, "System Of A Down");
+        assert_eq!(top.plays.as_deref(), Some("1.6B views"));
         assert_eq!(
             top.thumbnail_url.as_deref(),
             Some("https://example.invalid/s")
@@ -945,7 +960,10 @@ mod tests {
         assert_eq!(out.tracks[0].id, "CSvFpBOe8eY");
         assert_eq!(out.tracks[0].title, "Chop Suey!");
         assert_eq!(out.tracks[0].artist, "System Of A Down");
+        assert!(out.tracks[0].is_video);
+        assert_eq!(out.tracks[0].plays.as_deref(), Some("1.6B views"));
         assert_eq!(out.tracks[1].id, "-cid1qHuy_U");
+        assert!(!out.tracks[1].is_video);
         assert_eq!(out.tracks[1].plays.as_deref(), Some("2.1B plays"));
         assert_eq!(out.artists.len(), 1);
         assert_eq!(out.artists[0].id, "UC123");
