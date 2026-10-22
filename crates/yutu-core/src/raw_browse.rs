@@ -166,6 +166,7 @@ fn parse_shelf_row(row: &Value) -> Option<Track> {
         thumbnail_url: thumb,
         thumbnail_large_url: large,
         plays: plays.map(str::to_string),
+        is_video: false,
     })
 }
 

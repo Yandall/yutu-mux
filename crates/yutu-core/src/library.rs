@@ -121,6 +121,7 @@ impl LibraryStore {
                      duration_secs INTEGER NOT NULL,
                      thumbnail_url TEXT,
                      thumbnail_large_url TEXT,
+                     is_video INTEGER NOT NULL DEFAULT 0,
                      updated_at INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS playlist_tracks(
                      playlist_id TEXT NOT NULL,
@@ -132,6 +133,7 @@ impl LibraryStore {
                      duration_secs INTEGER NOT NULL,
                      thumbnail_url TEXT,
                      thumbnail_large_url TEXT,
+                     is_video INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY (playlist_id, position));
                  CREATE INDEX IF NOT EXISTS idx_ptracks_pid ON playlist_tracks(playlist_id);",
             )
@@ -165,6 +167,29 @@ impl LibraryStore {
                 self.conn
                     .execute_batch(&format!(
                         "ALTER TABLE playlist_tracks ADD COLUMN {col} TEXT"
+                    ))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        // Song/video flag migration: old rows default to songs.
+        for table in ["tracks", "playlist_tracks"] {
+            let mut has = false;
+            let mut pragma = self
+                .conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .map_err(|e| e.to_string())?;
+            let names = pragma
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            for name in names.flatten() {
+                if name == "is_video" {
+                    has = true;
+                }
+            }
+            if !has {
+                self.conn
+                    .execute_batch(&format!(
+                        "ALTER TABLE {table} ADD COLUMN is_video INTEGER NOT NULL DEFAULT 0"
                     ))
                     .map_err(|e| e.to_string())?;
             }
@@ -788,8 +813,8 @@ impl LibraryStore {
                 self.conn
                     .execute(
                         "INSERT OR IGNORE INTO playlist_tracks
-                         (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                         (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             id,
                             i as i64,
@@ -799,7 +824,8 @@ impl LibraryStore {
                             t.album,
                             t.duration_secs as i64,
                             t.thumbnail_url,
-                            t.thumbnail_large_url
+                            t.thumbnail_large_url,
+                            i64::from(t.is_video)
                         ],
                     )
                     .map_err(|e| e.to_string())?;
@@ -950,7 +976,7 @@ impl LibraryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url
+                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video
                  FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position",
             )
             .map_err(|e| e.to_string())?;
@@ -966,6 +992,7 @@ impl LibraryStore {
                     thumbnail_large_url: r.get(6).unwrap_or(None),
                     // Play counts are search-only metadata, never persisted.
                     plays: None,
+                    is_video: r.get::<_, i64>(7).unwrap_or(0) != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -997,8 +1024,8 @@ impl LibraryStore {
             self.conn
                 .execute(
                     "INSERT OR IGNORE INTO playlist_tracks
-                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         playlist_id,
                         pos,
@@ -1008,7 +1035,8 @@ impl LibraryStore {
                         track.album,
                         track.duration_secs as i64,
                         track.thumbnail_url,
-                        track.thumbnail_large_url
+                        track.thumbnail_large_url,
+                        i64::from(track.is_video)
                     ],
                 )
                 .map(|_| ())
@@ -1058,7 +1086,9 @@ impl LibraryStore {
 
     /// Batch version of [`Self::upsert_track`]: merges each incoming row
     /// with its cached row (incoming wins, but `None` art never clobbers
-    /// cached art, and empty titles never clobber cached titles).
+    /// cached art, and empty titles never clobber cached titles; the
+    /// video flag is sticky once true, so a default-false source never
+    /// clears a known video).
     pub fn upsert_tracks(&self, tracks: &[Track]) -> Result<(), String> {
         self.with_tx(|| {
             let now = std::time::SystemTime::now()
@@ -1067,7 +1097,7 @@ impl LibraryStore {
                 .unwrap_or(0);
             for t in tracks {
             let cached = self.cached_track(&t.id).unwrap_or(None);
-            let (title, artist, album, duration_secs, thumb, large) = match cached {
+            let (title, artist, album, duration_secs, thumb, large, is_video) = match cached {
                 Some(c) => {
                     let title = if t.title.is_empty() {
                         c.title
@@ -1087,7 +1117,8 @@ impl LibraryStore {
                     };
                     let thumb = t.thumbnail_url.clone().or(c.thumbnail_url);
                     let large = t.thumbnail_large_url.clone().or(c.thumbnail_large_url);
-                    (title, artist, album, duration_secs, thumb, large)
+                    let is_video = t.is_video || c.is_video;
+                    (title, artist, album, duration_secs, thumb, large, is_video)
                 }
                 None => (
                     t.title.clone(),
@@ -1096,6 +1127,7 @@ impl LibraryStore {
                     t.duration_secs,
                     t.thumbnail_url.clone(),
                     t.thumbnail_large_url.clone(),
+                    t.is_video,
                 ),
             };
             // Skip bare-id rows with no usable metadata: they would poison
@@ -1106,8 +1138,8 @@ impl LibraryStore {
             self.conn
                 .execute(
                     "INSERT INTO tracks
-                     (track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     (track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                      ON CONFLICT(track_id) DO UPDATE SET
                        title = excluded.title,
                        artist = excluded.artist,
@@ -1115,6 +1147,7 @@ impl LibraryStore {
                        duration_secs = excluded.duration_secs,
                        thumbnail_url = excluded.thumbnail_url,
                        thumbnail_large_url = excluded.thumbnail_large_url,
+                       is_video = excluded.is_video,
                        updated_at = excluded.updated_at",
                     params![
                         t.id,
@@ -1124,6 +1157,7 @@ impl LibraryStore {
                         duration_secs as i64,
                         thumb,
                         large,
+                        i64::from(is_video),
                         now
                     ],
                 )
@@ -1149,7 +1183,7 @@ impl LibraryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url
+                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video
                  FROM tracks WHERE track_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -1165,6 +1199,7 @@ impl LibraryStore {
                     thumbnail_large_url: r.get(6).unwrap_or(None),
                     // Play counts are search-only metadata, never persisted.
                     plays: None,
+                    is_video: r.get::<_, i64>(7).unwrap_or(0) != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1190,7 +1225,7 @@ impl LibraryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url
+                "SELECT track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video
                  FROM tracks",
             )
             .map_err(|e| e.to_string())?;
@@ -1206,6 +1241,7 @@ impl LibraryStore {
                     thumbnail_large_url: r.get(6).unwrap_or(None),
                     // Play counts are search-only metadata, never persisted.
                     plays: None,
+                    is_video: r.get::<_, i64>(7).unwrap_or(0) != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1530,6 +1566,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.add_to_playlist("u1", &t).unwrap();
         s.add_to_playlist("u1", &t).unwrap(); // deduped
@@ -1556,6 +1593,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.sync_server_playlist("PL1", "Road Trip", &[mk("a"), mk("b")])
             .unwrap();
@@ -1582,6 +1620,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.create_playlist("u1", "Gym").unwrap();
         for id in ["a", "b", "c", "d"] {
@@ -1627,6 +1666,7 @@ mod tests {
                 thumbnail_url: None,
                 thumbnail_large_url: None,
                 plays: None,
+                is_video: false,
             })
             .collect();
         s.sync_server_playlist("PLbig", "Big", &tracks).unwrap();
@@ -1652,6 +1692,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
             plays: None,
+            is_video: false,
         };
         s.add_to_playlist("u1", &t).unwrap();
         let lists = s.user_playlists().unwrap();
@@ -1713,6 +1754,7 @@ mod tests {
             thumbnail_url: Some("https://example.invalid/s".into()),
             thumbnail_large_url: Some("https://example.invalid/l".into()),
             plays: None,
+            is_video: false,
         }
     }
 
@@ -1764,6 +1806,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.upsert_track(&bare).unwrap();
         assert!(s.cached_track("ghost").unwrap().is_none());
@@ -1795,6 +1838,7 @@ mod tests {
             thumbnail_url: None,
             thumbnail_large_url: None,
             plays: None,
+            is_video: false,
         };
         s.add_to_playlist("u1", &bare).unwrap();
         assert!(s.user_playlists().unwrap()[0].tracks[0]
