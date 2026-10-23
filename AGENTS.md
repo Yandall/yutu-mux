@@ -74,6 +74,10 @@
 - **Seek anti-flicker**: 1.2s manual position clock after a seek
   (`seek_hold_until`); a seek that lands **while paused** freezes the
   manual clock until resume (`paused_seek` flag). New loads clear both.
+- **Prev restarts past 3s**: past `PREV_RESTART_SECS` the back button
+  seeks to 00:00 (no reload); inside it the previous song plays. At
+  the head with no previous song, restart in place instead of
+  reloading. Bar, `p` key, and widget share `prev_task`.
 - **Seek drag**: the bar previews while held (display only, Pointer
   cursor); backend seek + both advance paths wait for release. First
   preview pauses, release resumes only then. New loads, Stop, and a
