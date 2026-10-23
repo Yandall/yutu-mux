@@ -10,9 +10,9 @@ use row_button::row_button;
 
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
-    forgotten_favorites, history_date, history_hhmm, history_section, history_section_label,
-    should_scrobble, weekly_mix, Album, Artist, HistoryEntry, HistorySection, LibraryStore,
-    LyricsResult, Playlist, PlaylistHit, QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
+    forgotten_favorites, history_section, history_section_label, should_scrobble, weekly_mix,
+    Album, Artist, HistoryEntry, HistorySection, LibraryStore, LyricsResult, Playlist, PlaylistHit,
+    QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -1131,6 +1131,9 @@ pub enum Message {
     RemoveAutoplay(usize),
     /// Queue-page hover tracking (reveals the row remove).
     QueueHover(Option<usize>),
+    /// History-page hover tracking (per-row index: repeat plays share
+    /// a track id, so id-keyed hover would light them all up at once).
+    HistoryHover(Option<usize>),
     /// Id-keyed row hover (full-row highlight on non-index lists).
     TrackHover(Option<String>),
     /// Sidebar playlist hover (reveals the row play button).
@@ -2230,6 +2233,9 @@ pub struct AppState {
     autoplay: Vec<Track>,
     /// Queue-page row under the cursor (hover reveals its remove).
     hovered_queue: Option<usize>,
+    /// History-page row under the cursor (per-row index, like the
+    /// queue: repeat plays share a track id).
+    hovered_history: Option<usize>,
     /// Cursor over a row remove button (presses there must never arm a
     /// drag: slipping off delete must not become a reorder).
     hover_remove: Option<usize>,
@@ -4502,6 +4508,7 @@ impl AppState {
             autoplay_for: None,
             autoplay: Vec::new(),
             hovered_queue: None,
+            hovered_history: None,
             hover_remove: None,
             hovered_track: None,
             hovered_album: None,
@@ -10019,6 +10026,22 @@ impl AppState {
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
             }
+            Message::HistoryHover(h) => {
+                // Modal open: rows behind scrims never highlight.
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
+                    self.hovered_history = None;
+                } else {
+                    self.hovered_history = h;
+                }
+                self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
+            }
             Message::TrackHover(h) => {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
@@ -10032,6 +10055,7 @@ impl AppState {
                 // Entering a non-queue row drops stale queue hovers so a
                 // press there never arms a drag off old state.
                 self.hovered_queue = None;
+                self.hovered_history = None;
                 self.hovered_auto = None;
                 self.hovered_album = None;
                 self.hovered_artist = None;
@@ -10074,6 +10098,7 @@ impl AppState {
                 self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
                 self.hovered_queue = None;
+                self.hovered_history = None;
                 self.hovered_auto = None;
                 self.hover_remove = None;
             }
@@ -10974,6 +10999,8 @@ impl AppState {
             }
             Message::HistoryFilterChanged(f) => {
                 self.history_filter = f;
+                // Row indices invalidate on every keystroke.
+                self.hovered_history = None;
             }
             Message::CookiePathChanged(p) => {
                 self.cookie_path = p;
@@ -13806,21 +13833,16 @@ impl AppState {
         out
     }
 
-    /// Grouped history for the page: (section header, rows) with the
-    /// played-at label per row (`HH:MM` for fresh plays, a date for
-    /// older ones). The log stays newest-first, so equal sections run
+    /// Grouped history for the page: (section header, rows), newest
+    /// first. The log stays newest-first, so equal sections run
     /// together; empty groups never materialize.
-    fn history_groups(&self, now: i64) -> Vec<(String, Vec<(Track, String)>)> {
-        let mut groups: Vec<(HistorySection, Vec<(Track, String)>)> = Vec::new();
+    fn history_groups(&self, now: i64) -> Vec<(String, Vec<Track>)> {
+        let mut groups: Vec<(HistorySection, Vec<Track>)> = Vec::new();
         for (t, played) in self.history_rows() {
             let section = history_section(played, now);
-            let label = match section {
-                HistorySection::Today | HistorySection::Yesterday => history_hhmm(played),
-                _ => history_date(played),
-            };
             match groups.last_mut() {
-                Some((s, rows)) if *s == section => rows.push((t, label)),
-                _ => groups.push((section, vec![(t, label)])),
+                Some((s, rows)) if *s == section => rows.push(t),
+                _ => groups.push((section, vec![t])),
             }
         }
         groups
@@ -13861,24 +13883,30 @@ impl AppState {
             };
             body = body.push(text(empty).size(12).color(MUTED));
         }
+        // Flat row index across sections (hover is per-row, like the
+        // queue: repeat plays share a track id).
+        let mut next_row = 0usize;
         for (header, rows) in groups {
-            let items: Vec<iced::Element<'_, Message>> = rows
-                .into_iter()
-                .map(|(t, played)| self.history_row(&t, played))
-                .collect();
+            let mut items: Vec<iced::Element<'_, Message>> = Vec::new();
+            for t in rows {
+                let row = self.history_row(&t, next_row);
+                next_row += 1;
+                items.push(row);
+            }
             body = body.push(column![text(header).size(19), column(items).spacing(2),].spacing(6));
         }
         body.into()
     }
 
-    /// History row: same click-to-play row as Recent, with the played-at
-    /// time in the duration slot instead of the track length.
-    fn history_row(&self, t: &Track, played: String) -> iced::Element<'_, Message> {
+    /// History row: same click-to-play row as Recent, with the track
+    /// length in the duration slot. Hover is per-row index (like the
+    /// queue): repeat plays share a track id, so id-keyed hover would
+    /// light them all up at once.
+    fn history_row(&self, t: &Track, index: usize) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let hovered = self.hovered_history == Some(index);
         let menu_id = t.id.clone();
-        let hover_id = t.id.clone();
         mouse_area(
             container(
                 row![
@@ -13893,7 +13921,7 @@ impl AppState {
                     .on_press(Message::PlayNow(t.id.clone()))
                     .padding(3)
                     .width(Fill),
-                    text(played).size(11).color(MUTED),
+                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
                 ]
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center)
@@ -13906,8 +13934,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(menu_id))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::HistoryHover(Some(index)))
+        .on_exit(Message::HistoryHover(None))
         .into()
     }
 
@@ -19867,11 +19895,36 @@ mod tests {
         );
         let counts: Vec<usize> = groups.iter().map(|(_, rows)| rows.len()).collect();
         assert_eq!(counts, vec![2, 1, 2, 1, 1]);
-        // Fresh plays show time-of-day, older ones the date.
-        assert_eq!(groups[0].1[0].1, "12:00");
-        assert_eq!(groups[0].1[1].1, "11:00");
-        assert_eq!(groups[1].1[0].1, "12:00");
-        assert_eq!(groups[4].1[0].1, "2026-09-13");
+        // Rows keep their track identity in newest-first order.
+        let ids: Vec<&str> = groups
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|t| t.id.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["h1", "h2", "h3", "h4", "h5", "h6", "h7"]);
+    }
+
+    #[test]
+    fn history_hover_is_per_row_not_per_track() {
+        // Repeat plays share a track id: hovering one row must not
+        // highlight its twin (id-keyed hover lit them both up).
+        let mut s = test_state();
+        let mut t = mk_track("h1", "Today One", "A");
+        t.duration_secs = 200;
+        s.catalog.insert("h1".into(), t);
+        let day = 86_400;
+        s.history_full = vec![hist_entry("h1", HIST_NOW), hist_entry("h1", HIST_NOW - day)];
+        let _ = s.update(Message::HistoryHover(Some(1)));
+        assert_eq!(s.hovered_history, Some(1));
+        assert_ne!(s.hovered_history, Some(0));
+        // Exit clears, and a filter change drops a stale index.
+        let _ = s.update(Message::HistoryHover(None));
+        assert_eq!(s.hovered_history, None);
+        let _ = s.update(Message::HistoryHover(Some(0)));
+        let _ = s.update(Message::HistoryFilterChanged("one".into()));
+        assert_eq!(s.hovered_history, None);
+        // The rows render with the per-row hover wired.
+        s.history_filter = String::new();
+        let _ = s.view();
     }
 
     #[test]
@@ -19892,7 +19945,7 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, "This week");
         assert_eq!(groups[0].1.len(), 1);
-        assert_eq!(groups[0].1[0].0.id, "h2");
+        assert_eq!(groups[0].1[0].id, "h2");
         // Clearing the filter restores every section.
         let _ = s.update(Message::HistoryFilterChanged(String::new()));
         assert_eq!(s.history_groups(HIST_NOW).len(), 2);

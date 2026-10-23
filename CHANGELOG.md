@@ -19,7 +19,8 @@
   still render. A new History section in the sidebar lists every
   play playlist-style, grouped into Today / Yesterday / This week /
   This month / older months with a played-at stamp per row and its
-  own search
+  own search. History rows highlight per row (repeat plays no longer
+  light up together) and show the track length
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
