@@ -4,6 +4,7 @@ pub mod app_log;
 pub mod auth;
 pub mod backend;
 pub mod discovery;
+pub mod history;
 #[cfg(feature = "innertube")]
 pub mod innertube;
 pub mod library;
@@ -32,6 +33,10 @@ pub use auth::{begin_google_login, poll_google_login, GoogleLogin, OAuthPersist}
 pub use auth::{AuthState, CookieAuth};
 pub use backend::{MockBackend, MusicBackend};
 pub use discovery::{forgotten_favorites, weekly_mix};
+pub use history::{
+    history_date, history_day, history_hhmm, history_section, history_section_label, history_week,
+    history_ymd, month_name, HistorySection,
+};
 #[cfg(feature = "innertube")]
 pub use innertube::split_library_status;
 #[cfg(feature = "innertube")]

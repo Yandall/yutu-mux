@@ -16,7 +16,10 @@
   and bulk plays all log the new current track with cached
   metadata at load start (not just click-to-play), and restores
   pull the full in-memory history depth so plays from days ago
-  still render
+  still render. A new History section in the sidebar lists every
+  play playlist-style, grouped into Today / Yesterday / This week /
+  This month / older months with a played-at stamp per row and its
+  own search
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
