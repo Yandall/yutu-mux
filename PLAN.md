@@ -222,5 +222,6 @@ Done: user can plausibly replace Spotify for daily listening.
 83. Round 72: playlist flyout opens on toggle hover and Tick-grace closes once toggle and panel are cold; top edge aligns with the Playlists row via shared fixed MENU_ROW_H (replaces drifted 37.0 magic)
 84. Round 73: pointing-hand cursors on everything clickable (RowButton points when pressable, new PointingSlider wrapper maps stock Grab/Grabbing, EQ graph points; I-beam/disabled/scrims unchanged)
 85. Round 74: early-seek queue + autoload (mpv seeks never hard-fail: queued as pending_seek and Tick-retried until the stream demuxes, advances pinned while queued; first play restores the seek target immediately instead of flashing 00:00 with explicit pre-play seeks honored under 5s; restored track buffers paused on launch via autoload_current_task with paused landings, explicit transport takes over)
+86. Round 75: search submit drops the now-playing drawer (explicit submits via Enter on a highlighted suggestion or a suggestion click land on Search through go, matching SearchStay; per-keystroke typing leaves the drawer alone)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

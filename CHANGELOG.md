@@ -8,7 +8,10 @@
   tripping the end-of-track advance. Pressing play no longer
   flashes 00:00 first: the seek target is restored immediately and
   the backend catches up behind it. The restored song also starts
-  buffering paused on launch, so the first play/seek is instant
+  buffering paused on launch, so the first play/seek is instant.
+  Submitting a search (Enter on a highlighted suggestion or a
+  suggestion click) lands on the Search page, dropping the
+  now-playing drawer so results take focus
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
