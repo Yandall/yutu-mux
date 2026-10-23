@@ -45,6 +45,9 @@
   push silently to mpv on launch (garbage falls back to Flat)
 - Seek-bar drags preview while held (pointer cursor, audio pauses) and
   commit on release; advances never fire mid-drag, shuffle starts off
+- Back button restarts past 3s (instant seek to 00:00, no reload)
+  and steps to the previous song inside them; at the head it restarts
+  instead of reloading (bar, keyboard, and widget share the path)
 - Gapless-feeling track ends: a backend gone silent after audible
   playback advances like the threshold path (frozen tails and short
   reads no longer wedge the queue on silence); the mpv idle signal is

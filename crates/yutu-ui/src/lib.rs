@@ -1770,6 +1770,10 @@ const RESOLVE_TIMEOUT_SECS: u64 = 15;
 /// Same backstop for full-download resolves (slow networks download
 /// for minutes legitimately, so this only catches true stalls).
 const RESOLVE_BYTES_TIMEOUT_SECS: u64 = 300;
+/// Back-button threshold in seconds: past this the button restarts
+/// the song from 00:00 (instant seek, no reload); inside it the
+/// previous song plays instead.
+const PREV_RESTART_SECS: f64 = 3.0;
 /// Divider pitch between uniform rows (1px hairline + 2px breathing
 /// room each side, never trailing): row height + 5.
 const DIVIDER_PX: f32 = 5.0;
@@ -5661,6 +5665,32 @@ impl AppState {
         self.advance_inner(true)
     }
 
+    /// Back button (bar, key, widget): past the first seconds the song
+    /// restarts from 00:00 (instant seek, no reload); inside them the
+    /// previous song plays. At the head with no previous song, restart
+    /// in place instead of reloading (same sound, no network round
+    /// trip). The clock read is the displayed position, matching what
+    /// the progress bar shows.
+    fn prev_task(&mut self) -> iced::Task<Message> {
+        if self.position_secs > PREV_RESTART_SECS {
+            self.seek_to_secs(0.0);
+            self.publish_mpris();
+            return iced::Task::none();
+        }
+        let before = self.queue.position();
+        if self.queue.prev_track().is_some() {
+            if self.queue.position() == before {
+                self.seek_to_secs(0.0);
+                self.publish_mpris();
+                return iced::Task::none();
+            }
+            self.apply_volume();
+            self.publish_mpris();
+            return self.play_current_task();
+        }
+        iced::Task::none()
+    }
+
     fn advance_inner(&mut self, manual: bool) -> bool {
         // Shuffle is a physical order (see set_shuffle), so the walk is
         // always linear: no repeats, a real end, then autoplay.
@@ -7555,10 +7585,7 @@ impl AppState {
                 }
             }
             C::Previous => {
-                if self.queue.prev_track().is_some() {
-                    self.apply_volume();
-                    return self.play_current_task();
-                }
+                return self.prev_task();
             }
             C::Seek(offset) => {
                 self.seek_or_preview(self.position_secs + offset);
@@ -8830,11 +8857,7 @@ impl AppState {
                 }
             }
             Message::Prev => {
-                if self.queue.prev_track().is_some() {
-                    self.apply_volume();
-                    self.publish_mpris();
-                    return self.play_current_task();
-                }
+                return self.prev_task();
             }
             Message::Like(id) => {
                 // Local state applies first; the server push (if signed
@@ -23678,6 +23701,36 @@ mod tests {
         let _ = s.update(Message::SeekPreview(199.0));
         assert_eq!(s.position_secs, 199.0);
         let _ = s.update(Message::Tick(Instant::now()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert!(s.loading_track.is_none());
+    }
+
+    #[test]
+    fn prev_restarts_past_threshold_otherwise_steps_back() {
+        // Past 3s: restart in place, no new load starts.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        assert!(s.queue.jump_to(1));
+        s.position_secs = 5.0;
+        let _ = s.update(Message::Prev);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+        assert!(s.loading_track.is_none());
+        // Boundary is exclusive: exactly 3.0 steps back instead.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        assert!(s.queue.jump_to(1));
+        s.position_secs = 3.0;
+        let _ = s.update(Message::Prev);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        // Head with no previous song restarts instead of reloading.
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.position_secs = 1.0;
+        let _ = s.update(Message::Prev);
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
         assert!(s.loading_track.is_none());
     }
