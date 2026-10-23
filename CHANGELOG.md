@@ -2,6 +2,14 @@
 
 ## 0.2.0 (unreleased)
 
+- Seeks never fail on a fresh stream: scrubbing before the song is
+  ready remembers the position and retries until mpv accepts it
+  (no more mpv seek raw -12 error), holding the bar without
+  tripping the end-of-track advance. Pressing play no longer
+  flashes 00:00 first: the seek target is restored immediately and
+  the backend catches up behind it. The restored song also starts
+  buffering paused on launch, so the first play/seek is instant
+
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
   in-memory art capped at 128 handles with oldest-half eviction,
