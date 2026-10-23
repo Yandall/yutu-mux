@@ -10,6 +10,8 @@ yutu-core = { path = "../yutu-core" }
 yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
 iced = { version = "0.14", features = ["tokio", "image", "svg", "advanced", "canvas"] }
+# Trait bounds for the pointing-slider wrapper (mirrors iced's Slider).
+num-traits = "0.2"
 # System font enumeration for the Settings family picker (same
 # database iced resolves names through, so every row renders).
 fontdb = "0.23"
