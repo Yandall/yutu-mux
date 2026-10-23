@@ -12514,6 +12514,12 @@ impl AppState {
         self.search_gen = self.search_gen.wrapping_add(1);
         self.suggest_gen = self.suggest_gen.wrapping_add(1);
         self.suggest_idx = None;
+        if !popup_open {
+            // Explicit submit (Enter on a highlighted suggestion or a
+            // suggestion click): land on the Search page like SearchStay,
+            // which drops the now-playing drawer so results take focus.
+            self.go(Route::Search);
+        }
         if trimmed.is_empty() {
             self.results = SearchResults::default();
             self.all_results = SearchAll::default();
@@ -21956,6 +21962,38 @@ mod tests {
         let _ = s.update(Message::CloseSuggest);
         assert!(!s.show_suggest);
         assert!(s.suggest_idx.is_none());
+    }
+
+    #[test]
+    fn search_submit_closes_the_now_playing_drawer() {
+        let mut s = test_state();
+        // Now playing open over the Search page: typing, highlighting
+        // a text suggestion, Enter must drop the drawer so results
+        // take focus (same landing as SearchStay).
+        s.route = Route::Search;
+        s.drawer_open = true;
+        let _ = s.update(Message::HomeSearchChanged("bon".into()));
+        let gen = s.suggest_gen;
+        let _ = s.update(Message::SuggestCompleted {
+            gen,
+            result: Ok(vec!["bonobo".into()]),
+        });
+        assert!(s.suggest_open());
+        let _ = s.update(Message::SuggestMoveDown);
+        assert_eq!(s.suggest_idx, Some(0));
+        let _ = s.update(Message::SuggestPick);
+        assert_eq!(s.search_query, "bonobo");
+        assert_eq!(s.route, Route::Search);
+        assert!(!s.drawer_open);
+        // Clicking a suggestion submits the same way.
+        s.drawer_open = true;
+        let _ = s.update(Message::PickSuggestion("bon iver".into()));
+        assert_eq!(s.route, Route::Search);
+        assert!(!s.drawer_open);
+        // Per-keystroke typing is not a submit: the drawer stays put.
+        s.drawer_open = true;
+        let _ = s.update(Message::HomeSearchChanged("bonobo".into()));
+        assert!(s.drawer_open);
     }
 
     #[cfg(feature = "innertube")]
