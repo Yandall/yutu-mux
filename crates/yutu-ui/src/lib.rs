@@ -1738,14 +1738,14 @@ const MIXED_SEARCH_CAP: usize = 30;
 /// scrollbar sits on the strip's bottom edge, clear of the cards above
 /// and the next section below.
 const HOME_STRIP_GAP: f32 = 14.0;
-const TRACK_ROW_H: f32 = 52.0;
+const TRACK_ROW_H: f32 = 56.0;
 /// Context menu item height (icon 14 + 14px text at 1.3 line height +
 /// 8px padding each side, rounded up): fixed so the playlist flyout
 /// anchor math can never drift from the laid-out rows.
 const MENU_ROW_H: f32 = 36.0;
 const SUGGEST_ROW_H: f32 = 44.0;
-const QUEUE_ROW_H: f32 = 58.0;
-const AUTO_ROW_H: f32 = 44.0;
+const QUEUE_ROW_H: f32 = 60.0;
+const AUTO_ROW_H: f32 = 48.0;
 /// Lazy art sweep: viewport overscan each side (absorbs header-height
 /// estimates and fast scrolls), scroll buckets plus minimum gap (scroll
 /// storms collapse), fetch cap per sweep.
@@ -6155,7 +6155,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -8488,7 +8488,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13081,7 +13081,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13150,7 +13150,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13575,7 +13575,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13632,7 +13632,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13684,7 +13684,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13794,7 +13794,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13925,7 +13925,7 @@ impl AppState {
                 ]
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(2),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -14037,7 +14037,7 @@ impl AppState {
                     )
                     .style(hover_row)
                     .on_press(Message::OpenPlaylist(pl.id.clone()))
-                    .padding(4)
+                    .padding(8)
                     .width(Fill),
                 )
                 .on_right_press(Message::OpenPlaylistMenu(pl_id))
@@ -14155,7 +14155,7 @@ impl AppState {
                     ]
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center)
-                    .padding(2),
+                    .padding(8),
                 )
                 .style(card_bg)
                 .padding(0)
@@ -14375,7 +14375,7 @@ impl AppState {
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center)
-                        .padding(2),
+                        .padding(8),
                     )
                     .style(row_bg(self.hovered_auto == Some(i)))
                     .width(Fill)
@@ -14472,7 +14472,7 @@ impl AppState {
                                         ]
                                         .spacing(6)
                                         .align_y(iced::alignment::Vertical::Center)
-                                        .padding(2),
+                                        .padding(8),
                                     )
                                     .style(row_bg(hovered))
                                     .width(Fill)
@@ -15742,7 +15742,7 @@ impl AppState {
                                 ]
                                 .spacing(4)
                                 .align_y(iced::alignment::Vertical::Center)
-                                .padding(2),
+                                .padding(8),
                             )
                             .style(row_bg(self.hovered_queue == Some(i)))
                             .width(Fill)
@@ -15785,7 +15785,7 @@ impl AppState {
                                 ]
                                 .spacing(4)
                                 .align_y(iced::alignment::Vertical::Center)
-                                .padding(2),
+                                .padding(8),
                             )
                             .style(row_bg(self.hovered_auto == Some(i)))
                             .width(Fill)
@@ -21179,7 +21179,7 @@ mod tests {
         s.search_filter = SearchFilter::Songs;
         s.results.tracks = vec![art_track("a"), art_track("b"), art_track("c")];
         let slots = s.art_slots("body");
-        // Chips + spacing head, then exact 54px pitch per row: one
+        // Chips + spacing head, then exact 58px pitch per row: one
         // thumb slot per row (heroes warm on demand, never per row).
         let ya: Vec<f32> = slots
             .iter()
@@ -21193,7 +21193,7 @@ mod tests {
             .collect();
         assert_eq!(ya, vec![64.0]);
         assert_eq!(yb.len(), 1);
-        assert!((yb[0] - ya[0] - 54.0).abs() < 0.01);
+        assert!((yb[0] - ya[0] - 58.0).abs() < 0.01);
     }
 
     #[test]
@@ -21217,9 +21217,9 @@ mod tests {
             .map(|(_, y)| *y)
             .collect();
         assert_eq!(y0, vec![0.0]);
-        // 58px rows + 5px hairlines between (never leading).
+        // 60px rows + 5px hairlines between (never leading).
         assert_eq!(y1.len(), 1);
-        assert!(y1.iter().all(|y| (y - 63.0).abs() < 0.01));
+        assert!(y1.iter().all(|y| (y - 65.0).abs() < 0.01));
     }
 
     #[test]

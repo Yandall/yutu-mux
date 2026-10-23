@@ -19,7 +19,9 @@
   still render. A new History section in the sidebar lists every
   play playlist-style, grouped into Today / Yesterday / This week /
   This month / older months with a played-at stamp per row and its
-  own search. History rows highlight per row (repeat plays no longer
+  own search. Rows breathe more: 8px padding inside every
+  highlighted track row (heights grew to fit: 56px track rows,
+  60px queue rows, 48px autoplay rows). History rows highlight per row (repeat plays no longer
   light up together) and show the track length
 
 - Memory diet: lists warm one art raster per track (not two),
