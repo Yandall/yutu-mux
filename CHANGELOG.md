@@ -11,7 +11,12 @@
   buffering paused on launch, so the first play/seek is instant.
   Submitting a search (Enter on a highlighted suggestion or a
   suggestion click) lands on the Search page, dropping the
-  now-playing drawer so results take focus
+  now-playing drawer so results take focus. Every play lands in
+  Recent: Next, Prev, queue jumps, auto-advances, repeats, skips
+  and bulk plays all log the new current track with cached
+  metadata at load start (not just click-to-play), and restores
+  pull the full in-memory history depth so plays from days ago
+  still render
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),

@@ -4253,7 +4253,7 @@ fn load_persisted(
     let disliked_order: Vec<String> = store.disliked_ids().unwrap_or_default();
     let disliked: HashSet<String> = disliked_order.iter().cloned().collect();
     let history = store
-        .history(50)
+        .history(HISTORY_CAP)
         .unwrap_or_default()
         .into_iter()
         .map(|e| e.track_id)
@@ -5110,14 +5110,26 @@ impl AppState {
         }
     }
 
+    /// Record a track whose load just started: in-memory history
+    /// (Recent tab, Home picks), a durable play row, and a metadata
+    /// upsert so the row still renders days later after restarts.
+    /// Every audible play funnels through `play_current_task` /
+    /// `fetch_current_task`, so logging here captures Next, Prev,
+    /// jumps, auto-advances, repeats, skips and bulk plays too, not
+    /// just click-to-play. Autoload buffers without playing and stays
+    /// out (its track is already the history tail).
+    fn log_play(&mut self, t: &Track) {
+        self.push_history(t.id.clone());
+        self.persist_play(&t.id);
+        self.cache_tracks(std::slice::from_ref(t));
+    }
+
     /// Click-to-play: queue the track, jump to it, and fetch real audio.
     /// The fetch task completes in `StreamResolved`; the tone is gone.
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
         let track = self.resolve_for_play(&track);
         self.absorb_autoplay(&track.id);
         self.playing_from = "Single".into();
-        self.push_history(track.id.clone());
-        self.persist_play(&track.id);
         self.queue.push(track);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
         self.apply_volume();
@@ -5183,6 +5195,10 @@ impl AppState {
         let Some(t) = self.queue.current().cloned() else {
             return iced::Task::none();
         };
+        // Every audible play funnels through here: log it now so
+        // Next, Prev, jumps, auto-advances, repeats, skips and bulk
+        // plays all land in Recent, not just click-to-play.
+        self.log_play(&t);
         // Immediate feedback: silence the old song the instant a new load
         // starts (resolving takes ~1s; the old track must not play over it).
         if let Some(audio) = &self.audio {
@@ -5253,8 +5269,10 @@ impl AppState {
     /// Startup autoload: buffer the restored track paused at the saved
     /// position so the first play/seek is instant (resolving takes ~1s).
     /// Unlike [`Self::play_current_task`] the display position is
-    /// preserved (never flashes 00:00) and the landing pauses instead
-    /// of playing (see `autoload`: explicit transport clears it).
+    /// preserved (never flashes 00:00), the landing pauses instead
+    /// of playing (see `autoload`: explicit transport clears it), and
+    /// nothing is logged (buffering is not a play; the track is
+    /// already the history tail from last session).
     fn autoload_current_task(&mut self) -> iced::Task<Message> {
         let Some(t) = self.queue.current().cloned() else {
             return iced::Task::none();
@@ -5745,6 +5763,9 @@ impl AppState {
         match self.queue.current().cloned() {
             None => iced::Task::none(),
             Some(t) => {
+                // Same logging contract as `play_current_task`: every
+                // audible play lands in Recent with durable metadata.
+                self.log_play(&t);
                 // Same cut-the-old-song feedback as the streaming path.
                 if let Some(audio) = &self.audio {
                     audio.stop();
@@ -5842,8 +5863,6 @@ impl AppState {
             return false;
         }
         let t = self.autoplay.remove(0);
-        self.push_history(t.id.clone());
-        self.persist_play(&t.id);
         self.queue.push(t);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
         true
@@ -9828,8 +9847,6 @@ impl AppState {
                         self.playing_from = "Single + autoplay".into();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
-                        self.push_history(id.clone());
-                        self.persist_play(&id);
                         self.apply_volume();
                         self.publish_mpris();
                         let play = self.play_current_task();
@@ -19569,6 +19586,55 @@ mod tests {
     }
 
     #[test]
+    fn every_playback_path_logs_the_new_current_track() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.queue.push(mk_track("m3", "Three", "A"));
+        assert!(s.queue.jump_to(0));
+        // Next, QueueJump and Prev all start a load for the new
+        // current track, so all of them land in history (no landing
+        // or audio device needed: logging happens at load start).
+        let _ = s.update(Message::Next);
+        assert_eq!(s.history.last(), Some(&"m2".to_string()));
+        let _ = s.update(Message::QueueJump(2));
+        assert_eq!(s.history.last(), Some(&"m3".to_string()));
+        let _ = s.update(Message::Prev);
+        assert_eq!(s.history.last(), Some(&"m2".to_string()));
+    }
+
+    #[test]
+    fn played_tracks_persist_metadata_for_later_sessions() {
+        // A logged play must survive a restart with its metadata, so
+        // Recent renders days later with no search in between.
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir()
+            .join(format!("yutu-recent-{}-{}.db", std::process::id(), n))
+            .to_string_lossy()
+            .into_owned();
+        let (mut s, _) = AppState::with_library_path(path.clone());
+        s.queue.push(mk_track("v1", "Song", "A"));
+        s.queue.push(mk_track("v2", "Two", "B"));
+        assert!(s.queue.jump_to(0));
+        let _ = s.update(Message::Next);
+        assert!(s.history.contains(&"v2".to_string()));
+        let store = LibraryStore::open(&path).unwrap();
+        let plays = store.history(10).unwrap();
+        assert!(plays.iter().any(|e| e.track_id == "v2"));
+        let cached = store.all_cached_tracks().unwrap();
+        assert!(cached.iter().any(|t| t.id == "v2" && t.title == "Two"));
+        drop(s);
+        // Reopen with an empty in-memory catalog: the played track
+        // still resolves from the cache.
+        let (s2, _) = AppState::with_library_path(path);
+        assert!(s2.history.contains(&"v2".to_string()));
+        assert_eq!(
+            s2.find_track("v2").map(|t| t.title),
+            Some("Two".to_string())
+        );
+    }
+
+    #[test]
     fn queue_session_persists_and_restores_across_restart() {
         let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir()
@@ -19746,6 +19812,9 @@ mod tests {
         assert!(s.autoload);
         assert_eq!(s.pending_resume, Some(42.0));
         assert!(!s.restored_pending);
+        // Buffering is not a play: nothing is logged (the track is
+        // already the history tail from last session).
+        assert!(s.history.is_empty());
     }
 
     #[test]
