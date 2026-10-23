@@ -1202,6 +1202,12 @@ pub enum Message {
     },
     /// Toggle the playlist flyout for a track (menu stays open).
     TogglePlaylistSubmenu(String),
+    /// Hover on the Playlists toggle row: enter opens the flyout (no
+    /// click needed), exit only clears the hot flag (the Tick grace
+    /// closes it once the panel is cold too).
+    SubmenuTriggerHot(Option<String>),
+    /// Hover on the flyout panel itself: feeds the same dismiss grace.
+    SubmenuFlyHot(bool),
     CursorMoved(iced::Point),
     WindowResized(iced::Size),
     /// Context menu: jump to this track's album/artist detail.
@@ -1725,6 +1731,10 @@ const MIXED_SEARCH_CAP: usize = 30;
 /// and the next section below.
 const HOME_STRIP_GAP: f32 = 14.0;
 const TRACK_ROW_H: f32 = 52.0;
+/// Context menu item height (icon 14 + 14px text at 1.3 line height +
+/// 8px padding each side, rounded up): fixed so the playlist flyout
+/// anchor math can never drift from the laid-out rows.
+const MENU_ROW_H: f32 = 36.0;
 const SUGGEST_ROW_H: f32 = 44.0;
 const QUEUE_ROW_H: f32 = 58.0;
 const AUTO_ROW_H: f32 = 44.0;
@@ -1774,6 +1784,10 @@ const RESOLVE_BYTES_TIMEOUT_SECS: u64 = 300;
 /// the song from 00:00 (instant seek, no reload); inside it the
 /// previous song plays instead.
 const PREV_RESTART_SECS: f64 = 3.0;
+/// Playlist flyout hover grace: crossing the gap between the toggle
+/// row and the panel exits one layer before entering the other, so
+/// the Tick only closes past this delay instead of flickering.
+const SUBMENU_HOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 /// Divider pitch between uniform rows (1px hairline + 2px breathing
 /// room each side, never trailing): row height + 5.
 const DIVIDER_PX: f32 = 5.0;
@@ -2086,6 +2100,15 @@ pub struct AppState {
     coll_menu: Option<CollectionMenu>,
     /// Playlist flyout open for this track id (side panel, menu stays).
     submenu_playlists_for: Option<String>,
+    /// Cursor on the Playlists toggle row (hover-opens the flyout).
+    submenu_trigger_hot: bool,
+    /// Cursor on the flyout panel itself (hover keeps it open).
+    submenu_fly_hot: bool,
+    /// Last instant the cursor was seen on the toggle or the panel:
+    /// crossing the gap between the two disjoint layers exits one
+    /// before entering the other, so the Tick only closes past this
+    /// grace instead of flickering mid-transit.
+    submenu_hot_at: Option<std::time::Instant>,
     /// Cursor position frozen when the menu opened (the menu must not
     /// chase the mouse while the user aims at it).
     menu_at: Option<iced::Point>,
@@ -4402,6 +4425,9 @@ impl AppState {
             restored_pending: false,
             context_menu: None,
             submenu_playlists_for: None,
+            submenu_trigger_hot: false,
+            submenu_fly_hot: false,
+            submenu_hot_at: None,
             pl_menu: None,
             coll_menu: None,
             menu_at: None,
@@ -7144,7 +7170,7 @@ impl AppState {
     fn open_menu(&mut self, id: String) {
         self.menu_at = self.cursor;
         self.context_menu = Some(id);
-        self.submenu_playlists_for = None;
+        self.close_playlist_submenu();
         self.pl_menu = None;
         self.coll_menu = None;
     }
@@ -7254,9 +7280,18 @@ impl AppState {
     fn close_menu(&mut self) {
         self.context_menu = None;
         self.menu_at = None;
-        self.submenu_playlists_for = None;
+        self.close_playlist_submenu();
         self.pl_menu = None;
         self.coll_menu = None;
+    }
+
+    /// Close the playlist flyout and drop its hover state (one place,
+    /// so a stale hot flag can never pin a dead panel open).
+    fn close_playlist_submenu(&mut self) {
+        self.submenu_playlists_for = None;
+        self.submenu_trigger_hot = false;
+        self.submenu_fly_hot = false;
+        self.submenu_hot_at = None;
     }
 
     /// Open the playlist menu, freezing the cursor like the track menu.
@@ -7264,7 +7299,7 @@ impl AppState {
         self.menu_at = self.cursor;
         self.pl_menu = Some(id);
         self.context_menu = None;
-        self.submenu_playlists_for = None;
+        self.close_playlist_submenu();
         self.coll_menu = None;
         self.show_suggest = false;
     }
@@ -7275,7 +7310,7 @@ impl AppState {
         self.menu_at = self.cursor;
         self.coll_menu = Some(menu);
         self.context_menu = None;
-        self.submenu_playlists_for = None;
+        self.close_playlist_submenu();
         self.pl_menu = None;
         self.show_suggest = false;
     }
@@ -10031,21 +10066,54 @@ impl AppState {
                 }
             }
             Message::TogglePlaylistSubmenu(id) => {
-                // Click-toggle: hover-open fights the frozen menu anchor.
-                // Only the open menu's own track can own the flyout.
+                // Click-toggle kept as a dismiss path (hover opens, so a
+                // click on the open trigger closes). Only the open
+                // menu's own track can own the flyout.
                 if self.context_menu.as_deref() != Some(id.as_str()) {
                     return iced::Task::none();
                 }
                 if self.submenu_playlists_for.as_deref() == Some(id.as_str()) {
-                    self.submenu_playlists_for = None;
+                    self.close_playlist_submenu();
                 } else {
                     self.submenu_playlists_for = Some(id);
+                    self.submenu_trigger_hot = true;
+                    self.submenu_hot_at = Some(std::time::Instant::now());
                     // Flyout covers are always on screen when open.
                     let covers = self.sidebar_cover_tracks();
                     let tasks = self.artwork_tasks(&covers);
                     if !tasks.is_empty() {
                         return iced::Task::batch(tasks);
                     }
+                }
+            }
+            Message::SubmenuTriggerHot(hover) => {
+                match hover {
+                    Some(id) => {
+                        // Hover opens (no click needed); a foreign id
+                        // can never steal the open menu's flyout.
+                        if self.context_menu.as_deref() == Some(id.as_str()) {
+                            let fresh = self.submenu_playlists_for.as_deref() != Some(id.as_str());
+                            self.submenu_playlists_for = Some(id);
+                            self.submenu_trigger_hot = true;
+                            self.submenu_hot_at = Some(std::time::Instant::now());
+                            if fresh {
+                                let covers = self.sidebar_cover_tracks();
+                                let tasks = self.artwork_tasks(&covers);
+                                if !tasks.is_empty() {
+                                    return iced::Task::batch(tasks);
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        self.submenu_trigger_hot = false;
+                    }
+                }
+            }
+            Message::SubmenuFlyHot(hot) => {
+                self.submenu_fly_hot = hot;
+                if hot {
+                    self.submenu_hot_at = Some(std::time::Instant::now());
                 }
             }
             Message::OpenPlaylistMenu(id) => {
@@ -11149,6 +11217,20 @@ impl AppState {
                     *n != self.eq_preset || *g != self.eq_gains || *e != self.eq_enabled
                 }) {
                     self.persist_eq();
+                }
+                // Playlist flyout hover grace: open on trigger hover,
+                // close once the cursor has left both the trigger and
+                // the panel past the grace (crossing the gap exits one
+                // before entering the other, so an immediate close
+                // would flicker mid-transit).
+                if self.submenu_playlists_for.is_some()
+                    && !self.submenu_trigger_hot
+                    && !self.submenu_fly_hot
+                    && self
+                        .submenu_hot_at
+                        .is_some_and(|at| now.duration_since(at) > SUBMENU_HOVER_GRACE)
+                {
+                    self.close_playlist_submenu();
                 }
                 if self.seek_drag.is_some() {
                     // Drag preview holds the display: no backend reads
@@ -16174,6 +16256,7 @@ impl AppState {
                     .on_press(Message::PlayNow(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16188,6 +16271,7 @@ impl AppState {
                     .on_press(Message::PlayNext(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16202,6 +16286,7 @@ impl AppState {
                     .on_press(Message::QueueTrack(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16216,6 +16301,7 @@ impl AppState {
                     .on_press(Message::StartRadio(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16230,6 +16316,7 @@ impl AppState {
                     .on_press(Message::OpenLyrics(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16243,6 +16330,7 @@ impl AppState {
                     .on_press(Message::Like(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     {
                         let disliked = self.disliked.contains(&t.id);
@@ -16263,6 +16351,7 @@ impl AppState {
                         .on_press(Message::Dislike(t.id.clone()))
                         .padding(8)
                         .width(Fill)
+                        .height(iced::Length::Fixed(MENU_ROW_H))
                         .into()
                     },
                     row_button(
@@ -16278,6 +16367,7 @@ impl AppState {
                     .on_press(dl_msg)
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16292,6 +16382,7 @@ impl AppState {
                     .on_press(Message::OpenTrackAlbum(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                     row_button(
                         row![
@@ -16306,6 +16397,7 @@ impl AppState {
                     .on_press(Message::OpenTrackArtist(t.id.clone()))
                     .padding(8)
                     .width(Fill)
+                    .height(iced::Length::Fixed(MENU_ROW_H))
                     .into(),
                 ];
                 if self.queue.items().iter().any(|q| q.id == t.id) {
@@ -16323,6 +16415,7 @@ impl AppState {
                         .on_press(Message::RemoveFromQueue(t.id.clone()))
                         .padding(8)
                         .width(Fill)
+                        .height(iced::Length::Fixed(MENU_ROW_H))
                         .into(),
                     );
                 }
@@ -16341,6 +16434,7 @@ impl AppState {
                         .on_press(Message::RemoveAutoplay(ai))
                         .padding(8)
                         .width(Fill)
+                        .height(iced::Length::Fixed(MENU_ROW_H))
                         .into(),
                     );
                 }
@@ -16357,25 +16451,34 @@ impl AppState {
                     .collect();
                 // Flyout toggle: the playlist list opens to the side so
                 // transport rows stay put and multi-add never closes.
-                // Its index below anchors the flyout height.
+                // Hover opens it (no click needed); the Tick grace
+                // closes it once both the toggle and the panel are
+                // cold. Its index below anchors the flyout height.
                 let sub_id = t.id.clone();
                 let sub_open = self.submenu_playlists_for.as_deref() == Some(t.id.as_str());
                 let toggle_idx = items.len();
+                let sub_id_enter = sub_id.clone();
                 items.push(
-                    row_button(
-                        row![
-                            btn_icon("queue", 14.0, iced::Color::WHITE),
-                            btn_text(format!("Playlists ({})", membership.len()), 14).width(Fill),
-                            btn_icon("chevron-right", 14.0, MUTED),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                    mouse_area(
+                        row_button(
+                            row![
+                                btn_icon("queue", 14.0, iced::Color::WHITE),
+                                btn_text(format!("Playlists ({})", membership.len()), 14)
+                                    .width(Fill),
+                                btn_icon("chevron-right", 14.0, MUTED),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(if sub_open { selected_row } else { hover_row })
+                        .on_press(Message::TogglePlaylistSubmenu(sub_id))
+                        .padding(8)
+                        .width(Fill)
+                        .height(iced::Length::Fixed(MENU_ROW_H)),
                     )
-                    .style(if sub_open { selected_row } else { hover_row })
-                    .on_press(Message::TogglePlaylistSubmenu(sub_id))
-                    .padding(8)
-                    .width(Fill)
+                    .on_enter(Message::SubmenuTriggerHot(Some(sub_id_enter)))
+                    .on_exit(Message::SubmenuTriggerHot(None))
                     .into(),
                 );
                 // Playlist adds leave the menu open (multi-add); everything else
@@ -16425,7 +16528,8 @@ impl AppState {
                 layers.push(scrim);
                 layers.push(placed);
                 // Playlist flyout: second panel to the right of the menu.
-                // Click-toggled (hover-open fights the frozen anchor); the
+                // Hover opens it (toggle hover, no click needed); the
+                // Tick grace closes it once both sides are cold. The
                 // menu stays open so multi-add keeps working.
                 if self.submenu_playlists_for.as_deref() == Some(t.id.as_str()) {
                     let mut fly_rows: Vec<iced::Element<'_, Message>> = Vec::new();
@@ -16489,19 +16593,25 @@ impl AppState {
                         );
                     }
                     let fly_h = ((fly_rows.len() as f32) * 44.0).min(340.0);
-                    let flyout: iced::Element<'_, Message> = container(
-                        iced::widget::scrollable(column(fly_rows).spacing(2).width(Fill))
-                            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                            .style(move |t, s| {
-                                slim_scroll_alpha(t, s, self.scroll_opacity("flyout"))
-                            })
-                            .on_scroll(|v| Message::Scrolled("flyout", v.absolute_offset().y))
-                            .height(iced::Length::Fixed(fly_h))
-                            .width(Fill),
+                    let flyout: iced::Element<'_, Message> = mouse_area(
+                        container(
+                            iced::widget::scrollable(column(fly_rows).spacing(2).width(Fill))
+                                .direction(
+                                    iced::widget::scrollable::Direction::Vertical(slim_bar()),
+                                )
+                                .style(move |t, s| {
+                                    slim_scroll_alpha(t, s, self.scroll_opacity("flyout"))
+                                })
+                                .on_scroll(|v| Message::Scrolled("flyout", v.absolute_offset().y))
+                                .height(iced::Length::Fixed(fly_h))
+                                .width(Fill),
+                        )
+                        .style(card_bg)
+                        .padding(10)
+                        .width(iced::Length::Fixed(280.0)),
                     )
-                    .style(card_bg)
-                    .padding(10)
-                    .width(iced::Length::Fixed(280.0))
+                    .on_enter(Message::SubmenuFlyHot(true))
+                    .on_exit(Message::SubmenuFlyHot(false))
                     .into();
                     let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
                     let wh = self.window.map(|s| s.height).unwrap_or(800.0);
@@ -16512,12 +16622,13 @@ impl AppState {
                     } else {
                         (mx - 280.0 - 8.0).max(0.0)
                     };
-                    // Aligned with the Playlists toggle row: menu header
-                    // plus the rows above its recorded index. Bumped
-                    // automatically since the index is measured, not magic.
+                    // Top-aligned with the Playlists toggle row: menu top
+                    // padding (14) + header thumb (56) + column gap (8)
+                    // plus the rows above its recorded index. The index
+                    // is measured and every row is MENU_ROW_H by
+                    // construction, so the anchor cannot drift.
                     let header_h = 78.0;
-                    let row_h = 37.0;
-                    let my2 = (my + header_h + toggle_idx as f32 * row_h)
+                    let my2 = (my + header_h + toggle_idx as f32 * MENU_ROW_H)
                         .min((wh - fly_h - 16.0).max(0.0))
                         .max(0.0);
                     let placed_fly: iced::Element<'_, Message> = container(column![
@@ -17907,6 +18018,40 @@ mod tests {
         let _ = s.update(Message::TogglePlaylistSubmenu("m1".into()));
         let _ = s.update(Message::CloseContext);
         assert!(s.context_menu.is_none());
+        assert!(s.submenu_playlists_for.is_none());
+        // Closing the menu also drops hover state, so a stale hot
+        // flag can never pin the next menu's panel open.
+        assert!(!s.submenu_trigger_hot && !s.submenu_fly_hot);
+        assert!(s.submenu_hot_at.is_none());
+    }
+
+    #[test]
+    fn playlist_submenu_hover_opens_and_grace_closes() {
+        use std::time::{Duration, Instant};
+        let mut s = test_state();
+        let _ = s.update(Message::OpenContext("m1".into()));
+        // Hover opens with no click.
+        let _ = s.update(Message::SubmenuTriggerHot(Some("m1".into())));
+        assert_eq!(s.submenu_playlists_for.as_deref(), Some("m1"));
+        assert!(s.submenu_trigger_hot);
+        // Leaving the toggle keeps it open inside the grace (the gap
+        // transit exits one layer before entering the other).
+        let _ = s.update(Message::SubmenuTriggerHot(None));
+        let t0 = Instant::now();
+        let _ = s.update(Message::Tick(t0 + Duration::from_millis(100)));
+        assert_eq!(s.submenu_playlists_for.as_deref(), Some("m1"));
+        // Reaching the panel re-arms the grace.
+        let _ = s.update(Message::SubmenuFlyHot(true));
+        let _ = s.update(Message::SubmenuFlyHot(false));
+        let _ = s.update(Message::Tick(t0 + Duration::from_millis(200)));
+        assert_eq!(s.submenu_playlists_for.as_deref(), Some("m1"));
+        // Cold past the grace on both sides closes.
+        let _ = s.update(Message::Tick(
+            t0 + SUBMENU_HOVER_GRACE + Duration::from_millis(600),
+        ));
+        assert!(s.submenu_playlists_for.is_none());
+        // A foreign id can never steal the open menu's flyout.
+        let _ = s.update(Message::SubmenuTriggerHot(Some("m2".into())));
         assert!(s.submenu_playlists_for.is_none());
     }
 

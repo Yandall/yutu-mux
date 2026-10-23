@@ -48,6 +48,9 @@
 - Back button restarts past 3s (instant seek to 00:00, no reload)
   and steps to the previous song inside them; at the head it restarts
   instead of reloading (bar, keyboard, and widget share the path)
+- Playlist flyout opens on toggle hover (no click) and closes 300ms
+  after the cursor leaves both toggle and panel; top edge aligns with
+  the Playlists row (fixed menu row heights anchor it exactly)
 - Gapless-feeling track ends: a backend gone silent after audible
   playback advances like the threshold path (frozen tails and short
   reads no longer wedge the queue on silence); the mpv idle signal is
