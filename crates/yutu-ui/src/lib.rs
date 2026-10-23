@@ -14210,7 +14210,7 @@ impl AppState {
         ]
         .spacing(6)
         .align_y(iced::alignment::Vertical::Center)
-        .padding(2);
+        .padding(8);
         // Fixed height: the title may wrap to two lines, anything more
         // clips instead of stretching the row.
         let lifted: iced::Element<'_, Message> = container(row_content)
