@@ -252,17 +252,15 @@ impl Program<Message> for EqGraph {
         }
     }
 
+    /// Always the pointing hand: the whole plot is a slider bank
+    /// (dragging a band never shows the grab hand).
     fn mouse_interaction(
         &self,
-        state: &Self::State,
+        _state: &Self::State,
         _bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> iced::mouse::Interaction {
-        if state.is_some() {
-            iced::mouse::Interaction::Grabbing
-        } else {
-            iced::mouse::Interaction::default()
-        }
+        iced::mouse::Interaction::Pointer
     }
 
     fn draw(

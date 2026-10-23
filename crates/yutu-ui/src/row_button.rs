@@ -1,13 +1,8 @@
 //! Row-sized click target: a real `iced` button (same press/release,
-//! keyboard, and style semantics) that reports the arrow cursor instead
-//! of the pointing hand.
-//!
-//! `iced` buttons always report `Pointer` on hover, which is right for
-//! small controls (hearts, pills, nav icons) but wrong for full-width
-//! content surfaces (track rows, cards, menus), where every pixel
-//! would show a hand. Use [`row_button`] there and plain `button` for
-//! controls. Only the cursor differs: events, styles, and messages are
-//! the wrapped button's, so conversions are behavior-preserving.
+//! keyboard, and style semantics) that reports the pointing hand on
+//! hover when it actually clicks something (unhovered it votes nothing,
+//! like the default, so it can never shadow another widget's cursor;
+//! press-less rows keep the arrow, like static content).
 
 use iced::advanced::layout::{self, Layout, Node};
 use iced::advanced::mouse;
@@ -18,10 +13,13 @@ use iced::advanced::{Clipboard, Shell};
 use iced::widget::Button;
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// A button that shows the arrow cursor on hover. Build it exactly
-/// like [`Button`] (`row_button(content).style(...).on_press(...)`).
+/// A button that shows the pointing hand on hover when pressable.
+/// Build it exactly like [`Button`] (`row_button(content).style(...)...`);
+/// every clickable row, card, and menu item goes through here so the
+/// cursor contract holds in one place.
 pub struct RowButton<'a, Message> {
     inner: Button<'a, Message>,
+    press: bool,
 }
 
 /// Row click target from content (mirrors [`Button::new`]).
@@ -31,6 +29,18 @@ where
 {
     RowButton {
         inner: Button::new(content),
+        press: false,
+    }
+}
+
+/// Cursor for a hovered row: the pointing hand when the row clicks,
+/// the arrow otherwise (mirrors [`Button`], which only points when
+/// `on_press` is set).
+fn hover_interaction(press: bool) -> mouse::Interaction {
+    if press {
+        mouse::Interaction::Pointer
+    } else {
+        mouse::Interaction::Idle
     }
 }
 
@@ -53,6 +63,7 @@ where
     #[must_use]
     pub fn on_press(mut self, message: Message) -> Self {
         self.inner = self.inner.on_press(message);
+        self.press = true;
         self
     }
 
@@ -60,6 +71,7 @@ where
     /// `None` renders the button disabled, same as [`Button`]).
     #[must_use]
     pub fn on_press_maybe(mut self, message: Option<Message>) -> Self {
+        self.press = message.is_some();
         self.inner = self.inner.on_press_maybe(message);
         self
     }
@@ -166,9 +178,9 @@ where
         );
     }
 
-    /// The one difference from [`Button`]: arrow on hover, never the
-    /// hand. Unhovered it votes nothing (like the default), so it can
-    /// never shadow another widget's cursor.
+    /// The one difference from [`Button`]: pointing hand on hover when
+    /// pressable, arrow otherwise. Unhovered it votes nothing (like the
+    /// default), so it can never shadow another widget's cursor.
     fn mouse_interaction(
         &self,
         _tree: &Tree,
@@ -178,7 +190,7 @@ where
         _renderer: &iced::Renderer,
     ) -> mouse::Interaction {
         if cursor.is_over(layout.bounds()) {
-            mouse::Interaction::Idle
+            hover_interaction(self.press)
         } else {
             mouse::Interaction::None
         }
@@ -203,5 +215,28 @@ where
 {
     fn from(button: RowButton<'a, Message>) -> Self {
         Element::new(button)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hover_points_when_pressable_and_arrows_otherwise() {
+        assert_eq!(hover_interaction(true), mouse::Interaction::Pointer);
+        assert_eq!(hover_interaction(false), mouse::Interaction::Idle);
+    }
+
+    #[test]
+    fn press_tracking_follows_on_press() {
+        let plain: RowButton<()> = row_button("x");
+        assert!(!plain.press);
+        let clicked: RowButton<()> = row_button("x").on_press(());
+        assert!(clicked.press);
+        let maybe: RowButton<()> = row_button("x").on_press_maybe(Some(()));
+        assert!(maybe.press);
+        let disabled: RowButton<()> = row_button("x").on_press_maybe(None);
+        assert!(!disabled.press);
     }
 }
