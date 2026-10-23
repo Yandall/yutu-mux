@@ -220,5 +220,6 @@ Done: user can plausibly replace Spotify for daily listening.
 81. Round 70: next-song advance hardened (mpv `idle-active` is a second EOF witness besides the 0/0 clock, so a stale duration property cannot wedge the queue; threshold advances now log like the idle net; diagnosed from logs showing only idle-seek errors with successes silent)
 82. Round 71: back button restarts past 3s (instant seek to 00:00, no reload) and steps to the previous song inside them; head-of-queue restarts instead of reloading; bar/key/widget share `prev_task`
 83. Round 72: playlist flyout opens on toggle hover and Tick-grace closes once toggle and panel are cold; top edge aligns with the Playlists row via shared fixed MENU_ROW_H (replaces drifted 37.0 magic)
+84. Round 73: pointing-hand cursors on everything clickable (RowButton points when pressable, new PointingSlider wrapper maps stock Grab/Grabbing, EQ graph points; I-beam/disabled/scrims unchanged)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

@@ -121,6 +121,14 @@
   keep steps small or motion feels clunky.
 - Sliders: custom `themed_slider` style (red rail, white round handle).
   Apply `.style(themed_slider)` explicitly at every slider site.
+  Stock sliders hardcode Grab/Grabbing cursors (no style knob), so all
+  slider sites use `pointing_slider` (maps grab votes to Pointer).
+- Cursor: every clickable component shows the pointing hand
+  (`RowButton` votes Pointer when pressable, plain buttons/toggles/
+  checkboxes/pick lists already do, `PointingSlider` maps the stock
+  grab votes, seek bar and EQ graph vote Pointer). Text fields keep
+  the I-beam, disabled rows keep the arrow, invisible dismiss scrims
+  keep the arrow.
 - `text_input` padding: use the widget's own `.padding(10)` **at the end
   of the chain**. Never insert `.padding` mid-chain inside `row!`/`column!`
   macros: it breaks macro parsing ("no rules expected `.`"). Never let

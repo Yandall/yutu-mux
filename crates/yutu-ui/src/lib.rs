@@ -1,9 +1,11 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
 mod eq_graph;
+mod pointing_slider;
 mod row_button;
 mod seek_bar;
 
+use pointing_slider::pointing_slider;
 use row_button::row_button;
 
 use std::collections::{HashMap, HashSet};
@@ -14108,7 +14110,7 @@ impl AppState {
     }
 
     fn player_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, mouse_area, row, slider, text, tooltip};
+        use iced::widget::{button, column, container, mouse_area, row, text, tooltip};
         use iced::Fill;
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let mode = player_layout_mode(ww);
@@ -14290,7 +14292,7 @@ impl AppState {
                     .align_y(iced::alignment::Vertical::Center),
                     row![
                         self.mute_button(),
-                        slider(0.0..=1.0, self.volume, Message::SetVolume)
+                        pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
                             .step(0.01_f32)
                             .style(themed_slider)
                             .width(Fill),
@@ -14386,7 +14388,7 @@ impl AppState {
                         iced::widget::Space::new().width(Fill),
                         self.mute_button(),
                         tooltip(
-                            slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(volume_w),
@@ -14916,8 +14918,8 @@ impl AppState {
     fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{
-            button, checkbox, column, container, mouse_area, pick_list, row, scrollable, slider,
-            text, text_input, toggler,
+            button, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
+            text_input, toggler,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -15589,7 +15591,7 @@ impl AppState {
                         })
                         .size(13),
                         row![
-                            slider(0.0..=1.0, self.volume, Message::SetVolume)
+                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(Fill),
@@ -15616,7 +15618,7 @@ impl AppState {
                     stale_font_note,
                     column![
                         text(format!("Interface scale: {:.0}%", self.ui_scale * 100.0)).size(13),
-                        slider(
+                        pointing_slider(
                             UI_SCALE_MIN..=UI_SCALE_MAX,
                             self.ui_scale,
                             Message::UiScaleChanged
@@ -15635,7 +15637,7 @@ impl AppState {
                         .on_toggle(Message::AnimationsToggled),
                     column![
                         text(format!("Animation duration: {} ms", self.anim_ms)).size(13),
-                        slider(
+                        pointing_slider(
                             ANIM_MIN_MS as f32..=ANIM_MAX_MS as f32,
                             self.anim_ms as f32,
                             Message::AnimMsChanged

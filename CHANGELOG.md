@@ -51,6 +51,10 @@
 - Playlist flyout opens on toggle hover (no click) and closes 300ms
   after the cursor leaves both toggle and panel; top edge aligns with
   the Playlists row (fixed menu row heights anchor it exactly)
+- Pointing-hand cursors everywhere clickable: rows/cards/menus point
+  via RowButton (reversing the old arrow rule), all five sliders point
+  via a PointingSlider wrapper (stock Grab/Grabbing mapped away), EQ
+  graph points too; text fields keep the I-beam
 - Gapless-feeling track ends: a backend gone silent after audible
   playback advances like the threshold path (frozen tails and short
   reads no longer wedge the queue on silence); the mpv idle signal is
