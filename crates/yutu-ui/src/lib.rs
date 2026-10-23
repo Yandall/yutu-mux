@@ -2091,6 +2091,15 @@ pub struct AppState {
     /// Saved position to seek after a restored queue starts playing
     /// (dropped on any other load or failure).
     pending_resume: Option<f64>,
+    /// User seek requested while the track was still resolving
+    /// (mpv has no file yet, so an immediate seek fails). Remembered
+    /// and applied once the load lands, instead of erroring.
+    pending_seek: Option<f64>,
+    /// Startup autoload in flight: the restored track buffers paused
+    /// at the saved position, so the first play/seek is instant.
+    /// Successful landings pause the backend instead of playing;
+    /// any explicit user transport clears it (the user took over).
+    autoload: bool,
     /// A session restore is waiting for its first play (the play button
     /// loads the saved track instead of resuming an empty backend).
     restored_pending: bool,
@@ -4424,6 +4433,8 @@ impl AppState {
             queue_saved: None,
             queue_saved_at: None,
             pending_resume: None,
+            pending_seek: None,
+            autoload: false,
             restored_pending: false,
             context_menu: None,
             submenu_playlists_for: None,
@@ -4661,7 +4672,15 @@ impl AppState {
         // Session restore last: the catalog is warm, so saved ids
         // resolve to full rows with art.
         state.restore_queue();
-        (state, system_font_task())
+        // Buffer the restored track paused so the first play/seek is
+        // instant (resolving takes ~1s) and the bar never flashes
+        // 00:00. Stays silent until the user presses play; skipped
+        // with no audio backend (first play loads as before).
+        let mut init = vec![system_font_task()];
+        if state.audio.is_some() && state.queue.current().is_some() {
+            init.push(state.autoload_current_task());
+        }
+        (state, iced::Task::batch(init))
     }
 
     /// Browser-style navigation: records back history, clears forward.
@@ -5183,7 +5202,11 @@ impl AppState {
         self.position_secs = 0.0;
         // A new load cancels any pending resume seek (it belongs to a
         // previous track); the resume flow re-arms it afterwards.
+        // A queued seek from the old track dies here too; seeks made
+        // during this load re-arm it.
         self.pending_resume = None;
+        self.pending_seek = None;
+        self.autoload = false;
         self.restored_pending = false;
         // A new load also cancels any held seek drag (the preview
         // belongs to the old track); release afterwards is a no-op.
@@ -5227,6 +5250,51 @@ impl AppState {
         iced::Task::batch(follow_tasks)
     }
 
+    /// Startup autoload: buffer the restored track paused at the saved
+    /// position so the first play/seek is instant (resolving takes ~1s).
+    /// Unlike [`Self::play_current_task`] the display position is
+    /// preserved (never flashes 00:00) and the landing pauses instead
+    /// of playing (see `autoload`: explicit transport clears it).
+    fn autoload_current_task(&mut self) -> iced::Task<Message> {
+        let Some(t) = self.queue.current().cloned() else {
+            return iced::Task::none();
+        };
+        if let Some(audio) = &self.audio {
+            audio.stop();
+        }
+        self.prefetch_attempted = None;
+        self.resolve_attempts = 0;
+        self.heard_audio = false;
+        self.loading_track = Some(t.id.clone());
+        self.end_advanced = false;
+        self.paused = true;
+        self.paused_seek = false;
+        self.seek_hold_until = None;
+        // Display stays at the saved position through the load (Tick
+        // preserves it while loading); the backend seeks there on
+        // landing via `pending_resume`.
+        self.pending_resume = (self.position_secs > 5.0).then_some(self.position_secs);
+        self.pending_seek = None;
+        self.restored_pending = false;
+        self.autoload = true;
+        self.seek_drag = None;
+        self.seek_drag_at = None;
+        self.seek_paused = false;
+        let mut follow_tasks = self.track_start_tasks(&t);
+        // Downloaded bytes play with no network (either backend):
+        // offline songs buffer instantly, online or off.
+        if self.downloaded.contains(&t.id) && self.try_play_offline(&t) {
+            return iced::Task::batch(follow_tasks);
+        }
+        self.status = format!("Loading {} · {}…", t.title, t.artist);
+        let audio_task = match &self.audio {
+            Some(a) if a.wants_stream() => Self::resolve_url_task(t.id),
+            _ => Self::resolve_task(t.id),
+        };
+        follow_tasks.push(audio_task);
+        iced::Task::batch(follow_tasks)
+    }
+
     /// Resolve failure for the loading track: retry the same load up
     /// to [`MAX_RESOLVE_ATTEMPTS`] (transient yt-dlp/network flakes),
     /// then skip forward when a next song exists, else report honestly
@@ -5235,6 +5303,9 @@ impl AppState {
     fn retry_or_skip_failed(&mut self, failed_id: String, err: String) -> iced::Task<Message> {
         self.loading_track = None;
         self.pending_resume = None;
+        // A queued seek survives retries of the same track (it is still
+        // the user's target); skips clear it via `play_current_task`,
+        // and the end-of-queue give-up below clears it outright.
         self.resolve_attempts += 1;
         if self.resolve_attempts < MAX_RESOLVE_ATTEMPTS {
             self.loading_track = Some(failed_id.clone());
@@ -5267,13 +5338,21 @@ impl AppState {
         if self.advance_queue() && !self.queue.current().is_some_and(|t| t.id == failed_id) {
             self.status = format!("Skipped {title}: stream failed {MAX_RESOLVE_ATTEMPTS} times.");
             self.publish_mpris();
-            return self.play_current_task();
+            // A startup autoload that skips stays paused (the user never
+            // pressed play); play_current_task clears the flag, so carry
+            // it over the track change.
+            let autoload = self.autoload;
+            let task = self.play_current_task();
+            self.autoload = autoload;
+            return task;
         }
         // Same song (repeat loop) or end of line: stop loudly instead
         // of cycling, and pin the end flag so Tick never retriggers.
         // (The give-up error above is the log entry for this stop too:
         // one entry per dead track, never per retry.)
         self.end_advanced = true;
+        self.pending_seek = None;
+        self.autoload = false;
         self.status = format!("Playback failed for {title}: {err} (end of queue).");
         self.publish_mpris();
         iced::Task::none()
@@ -5289,13 +5368,24 @@ impl AppState {
                     self.loading_track = None;
                     self.status = format!("Playing: {} · {}.", t.title, t.artist);
                     let held = self.seek_drag.is_some();
-                    self.consume_resume();
+                    self.consume_deferred_seeks();
                     // A resolve landing mid-drag stays silent until
                     // release (the bar is held, not the backend).
                     if held {
                         if let Some(audio) = &self.audio {
                             audio.pause();
                         }
+                    }
+                    // A startup autoload buffers paused: silence the
+                    // backend right after the load (the user never
+                    // pressed play).
+                    if self.autoload {
+                        self.autoload = false;
+                        if let Some(audio) = &self.audio {
+                            audio.pause();
+                        }
+                        self.paused = true;
+                        self.status = format!("Paused: {} · {}.", t.title, t.artist);
                     }
                     true
                 }
@@ -5307,6 +5397,7 @@ impl AppState {
             },
             None => {
                 self.pending_resume = None;
+                self.pending_seek = None;
                 self.status = "Stream ready, but no audio device.".into();
                 false
             }
@@ -5324,7 +5415,7 @@ impl AppState {
                     self.end_advanced = false;
                     self.position_secs = 0.0;
                     self.status = format!("Playing (offline): {} · {}.", t.title, t.artist);
-                    self.consume_resume();
+                    self.consume_deferred_seeks();
                     // Landed mid-drag: hold silent until release (a
                     // pre-paused load stays paused either way).
                     if held {
@@ -5334,6 +5425,15 @@ impl AppState {
                         self.paused = true;
                     } else {
                         self.paused = false;
+                    }
+                    // A startup autoload buffers paused (see above).
+                    if self.autoload {
+                        self.autoload = false;
+                        if let Some(audio) = &self.audio {
+                            audio.pause();
+                        }
+                        self.paused = true;
+                        self.status = format!("Paused: {} · {}.", t.title, t.artist);
                     }
                     true
                 }
@@ -5659,7 +5759,10 @@ impl AppState {
                 self.seek_hold_until = None;
                 self.position_secs = 0.0;
                 // New load cancels any pending resume seek (see above).
+                // A queued seek from the old track dies here too.
                 self.pending_resume = None;
+                self.pending_seek = None;
+                self.autoload = false;
                 self.restored_pending = false;
                 // ...and any held seek drag (preview belongs to the old
                 // track); release afterwards is a no-op.
@@ -7464,9 +7567,25 @@ impl AppState {
     fn take_restored_play(&mut self) -> Option<iced::Task<Message>> {
         if self.restored_pending && self.queue.current().is_some() {
             self.restored_pending = false;
-            let resume = (self.position_secs > 5.0).then_some(self.position_secs);
+            // An explicit seek made before this first play (queued while
+            // there was no file) wins over the saved position and is
+            // honored even under 5s; otherwise the saved position seeks
+            // when past 5s, else the track starts from the top.
+            let explicit = self.pending_seek.take();
+            let resume = explicit.or((self.position_secs > 5.0).then_some(self.position_secs));
             let task = self.play_current_task();
-            self.pending_resume = resume;
+            // play_current_task resets the display to 00:00; put the
+            // seek target back immediately so the bar never flashes it
+            // mid-load (Tick preserves it while loading, the landing
+            // seeks the backend there).
+            if let Some(target) = resume {
+                self.position_secs = target;
+                if explicit.is_some() {
+                    self.pending_seek = Some(target);
+                } else {
+                    self.pending_resume = Some(target);
+                }
+            }
             Some(task)
         } else {
             self.restored_pending = false;
@@ -7475,15 +7594,32 @@ impl AppState {
     }
 
     /// Seek to an absolute position: backend first, manual clock +
-    /// anti-flicker hold on success, logged honest error otherwise.
+    /// anti-flicker hold on success. On mpv the seek is never a hard
+    /// error: when the backend has no file yet (resolving) or the
+    /// stream has not demuxed enough to accept the seek (mpv raw -12),
+    /// the position is remembered and retried until it lands instead
+    /// of erroring. Rodio has no seek at all, so it still fails
+    /// honestly below.
     fn seek_to_secs(&mut self, pos: f64) {
         let pos = pos.max(0.0);
+        // Deferred seek: the resolver has not handed mpv a file yet, so
+        // the seek command would fail. Queue it and show it; the Tick
+        // freezes the manual position while loading, and the load paths
+        // apply it via `consume_deferred_seeks`. Rodio has no seek at
+        // all, so it still fails honestly below.
+        if self.loading_track.is_some() && self.audio.as_ref().is_some_and(|a| a.wants_stream()) {
+            self.pending_seek = Some(pos);
+            self.position_secs = pos;
+            self.lyrics_follow = true;
+            return;
+        }
         match &self.audio {
             None => {
                 self.status = "No audio device.".into();
             }
             Some(audio) => match audio.seek_secs(pos) {
                 Ok(()) => {
+                    self.pending_seek = None;
                     self.position_secs = pos;
                     // A landed seek re-engages lyrics follow (slider,
                     // verse tap, widget, media keys): the glide lands
@@ -7498,11 +7634,79 @@ impl AppState {
                     self.paused_seek = self.paused;
                 }
                 Err(e) => {
+                    // mpv reports MPV_ERROR_COMMAND (raw -12) when there
+                    // is no file yet or the network stream has not
+                    // demuxed enough to seek: queue and retry instead of
+                    // erroring, so scrubbing a fresh song just works.
+                    if self.audio.as_ref().is_some_and(|a| a.wants_stream()) {
+                        self.pending_seek = Some(pos);
+                        self.position_secs = pos;
+                        self.lyrics_follow = true;
+                        return;
+                    }
                     let msg = format!("Seek failed ({e}).");
                     self.log_error(msg.clone());
                     self.status = msg;
                 }
             },
+        }
+    }
+
+    /// Apply deferred seeks once audio has started: an explicit queued
+    /// seek wins over a restored-queue resume (the resume is dropped
+    /// without an extra backend seek).
+    fn consume_deferred_seeks(&mut self) {
+        if self.pending_seek.is_some() {
+            self.pending_resume = None;
+            if let Some(pos) = self.pending_seek.take() {
+                self.seek_to_secs(pos);
+            }
+        } else {
+            self.consume_resume();
+        }
+    }
+
+    /// Retry a queued mpv seek once the backend can accept it. Called
+    /// from Tick (loading is None and no drag is held there): on
+    /// success the queue clears with the usual hold; while the backend
+    /// is still not ready (idle, no duration yet) the queue is kept
+    /// silently; only a failure against a ready backend surfaces as
+    /// an honest error.
+    fn flush_pending_seek(&mut self) {
+        let Some(pos) = self.pending_seek else {
+            return;
+        };
+        let Some(audio) = self.audio.as_ref() else {
+            self.pending_seek = None;
+            return;
+        };
+        if !audio.wants_stream() {
+            self.pending_seek = None;
+            return;
+        }
+        match audio.seek_secs(pos) {
+            Ok(()) => {
+                self.pending_seek = None;
+                self.position_secs = pos;
+                self.lyrics_follow = true;
+                self.seek_hold_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(1200));
+                self.paused_seek = self.paused;
+            }
+            Err(e) => {
+                // Not ready yet (no file, idle, no duration): keep the
+                // queued target and the manual display, retry next Tick.
+                let ready = !audio.is_idle() && audio.duration_secs(0.0) > 1.0;
+                if ready {
+                    self.pending_seek = None;
+                    let msg = format!("Seek failed ({e}).");
+                    self.log_error(msg.clone());
+                    self.status = msg;
+                } else {
+                    self.position_secs = pos;
+                    self.lyrics_follow = true;
+                }
+            }
         }
     }
 
@@ -7562,6 +7766,8 @@ impl AppState {
         use yutu_desktop::PlayerCommand as C;
         match cmd {
             C::Play => {
+                // Explicit transport takes over any startup autoload.
+                self.autoload = false;
                 if let Some(task) = self.take_restored_play() {
                     return task;
                 }
@@ -7587,6 +7793,8 @@ impl AppState {
                 self.status = "Paused (desktop).".into();
             }
             C::PlayPause => {
+                // Explicit transport takes over any startup autoload.
+                self.autoload = false;
                 if let Some(task) = self.take_restored_play() {
                     return task;
                 }
@@ -7612,6 +7820,7 @@ impl AppState {
                 // Stopped is not finished (same disarm as the UI Stop:
                 // a later resume on the empty backend must not skip).
                 self.heard_audio = false;
+                self.autoload = false;
                 self.paused = true;
                 self.status = "Stopped (desktop).".into();
             }
@@ -8853,6 +9062,9 @@ impl AppState {
                 }
             }
             Message::TogglePause => {
+                // Explicit transport takes over any startup autoload
+                // (its landing must play, not buffer paused).
+                self.autoload = false;
                 if let Some(task) = self.take_restored_play() {
                     return task;
                 }
@@ -8880,6 +9092,8 @@ impl AppState {
                 self.seek_drag = None;
                 self.seek_drag_at = None;
                 self.seek_paused = false;
+                self.pending_seek = None;
+                self.autoload = false;
                 if let Some(a) = &self.audio {
                     a.stop();
                     self.paused = false;
@@ -11255,6 +11469,17 @@ impl AppState {
                             }
                         }
                     }
+                } else if self.loading_track.is_some() {
+                    // A new load stopped the backend (0.0) while the
+                    // URL/bytes resolve: keep the manual position (0.0
+                    // or a queued seek) instead of syncing the stopped
+                    // clock, or the bar snaps back until audio lands.
+                } else if self.pending_seek.is_some() {
+                    // A seek the backend could not take yet (fresh
+                    // stream still demuxing): retry until it lands and
+                    // keep showing the target meanwhile, or the bar
+                    // snaps back to the stale clock.
+                    self.flush_pending_seek();
                 } else if self.seek_hold_until.is_some_and(|until| now < until) {
                     if !self.paused {
                         self.position_secs = (self.position_secs + dt).max(0.0);
@@ -11305,10 +11530,13 @@ impl AppState {
                 // before the reported duration: mpv's time-pos can hold just
                 // short of it, and the rodio wall-clock can overshoot, so
                 // both cross (duration - 1) exactly once per song. Held
-                // drags never advance (the preview is not a position).
+                // drags never advance (the preview is not a position);
+                // neither does an unapplied queued seek (aspirational,
+                // not real: applying it near the end must not skip).
                 if !self.paused
                     && !self.end_advanced
                     && self.seek_drag.is_none()
+                    && self.pending_seek.is_none()
                     && duration > 2.0
                     && self.position_secs >= duration - 1.0
                     && self.advance_queue()
@@ -11326,8 +11554,10 @@ impl AppState {
                 // audible playback is a finished track: advance the
                 // same way (a mid-play stream death skips rather than
                 // wedging the queue; the give-up path still logs). Held
-                // drags pin it too (release re-arms from the new spot).
+                // drags pin it too (release re-arms from the new spot),
+                // as does an unapplied queued seek.
                 if self.seek_drag.is_none()
+                    && self.pending_seek.is_none()
                     && self.eof_idle(raw_pos, raw_dur)
                     && self.advance_queue()
                 {
@@ -11449,6 +11679,7 @@ impl AppState {
                         match &self.audio {
                             None => {
                                 self.pending_resume = None;
+                                self.pending_seek = None;
                                 self.status =
                                     format!("Stream {video_id} fetched, but no audio device.");
                             }
@@ -11461,7 +11692,19 @@ impl AppState {
                                         self.status =
                                             format!("Playing: {} · {}.", t.title, t.artist);
                                     }
-                                    self.consume_resume();
+                                    self.consume_deferred_seeks();
+                                    // A startup autoload buffers paused.
+                                    if self.autoload {
+                                        self.autoload = false;
+                                        if let Some(audio) = &self.audio {
+                                            audio.pause();
+                                        }
+                                        self.paused = true;
+                                        if let Some(t) = self.queue.current() {
+                                            self.status =
+                                                format!("Paused: {} · {}.", t.title, t.artist);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     // Fresh bytes that will not play: treat
@@ -19340,7 +19583,9 @@ mod tests {
         s.persist_queue();
         drop(s);
         // Reopen: queue, index, position and modes come back paused,
-        // but shuffle always starts off (order kept as saved).
+        // but shuffle always starts off (order kept as saved). With an
+        // audio backend the restored track starts buffering paused
+        // (autoload); without one it waits for the first play.
         let (s2, _) = AppState::with_library_path(path);
         assert_eq!(s2.queue.len(), 5);
         assert_eq!(s2.queue.position(), Some(2));
@@ -19350,8 +19595,16 @@ mod tests {
         assert_eq!(s2.queue.repeat, yutu_player::RepeatMode::All);
         assert!((s2.volume - 0.5).abs() < f32::EPSILON);
         assert!(s2.paused);
-        assert!(s2.restored_pending);
-        assert!(s2.status.contains("Restored queue"));
+        if s2.audio.is_some() {
+            assert!(!s2.restored_pending);
+            assert!(s2.autoload);
+            assert_eq!(s2.loading_track.as_deref(), Some("m3"));
+            assert_eq!(s2.pending_resume, Some(42.0));
+            assert!(s2.status.contains("Loading"));
+        } else {
+            assert!(s2.restored_pending);
+            assert!(s2.status.contains("Restored queue"));
+        }
     }
 
     #[test]
@@ -19439,12 +19692,54 @@ mod tests {
         assert_eq!(s.loading_track.as_deref(), Some("v1"));
         assert_eq!(s.pending_resume, Some(42.0));
         assert!(!s.restored_pending);
+        // The display stays on the seek target through the load (it must
+        // never flash 00:00 between the press and the landing).
+        assert!((s.position_secs - 42.0).abs() < f64::EPSILON);
         // Failure drops the pending seek instead of firing it later.
         let _ = s.update(Message::StreamResolved {
             video_id: "v1".into(),
             result: Err("offline".into()),
         });
         assert_eq!(s.pending_resume, None);
+    }
+
+    #[test]
+    fn seek_before_first_play_survives_the_load_without_flashing_zero() {
+        let mut s = test_state();
+        s.queue.push(mk_track("v1", "Song", "A"));
+        s.position_secs = 10.0;
+        s.restored_pending = true;
+        s.paused = true;
+        // A seek made before the first play (queued: no file yet) is an
+        // explicit target, honored even under the 5s resume threshold.
+        s.pending_seek = Some(43.0);
+        s.position_secs = 43.0;
+        let _ = s.update(Message::TogglePause);
+        assert_eq!(s.loading_track.as_deref(), Some("v1"));
+        assert!(!s.restored_pending);
+        assert!((s.position_secs - 43.0).abs() < f64::EPSILON);
+        assert_eq!(s.pending_seek, Some(43.0));
+        assert_eq!(s.pending_resume, None);
+    }
+
+    #[test]
+    fn autoload_buffers_the_restored_track_paused() {
+        let mut s = test_state();
+        if s.audio.is_none() {
+            eprintln!("SKIP: no audio backend in this environment");
+            return;
+        }
+        s.queue.push(mk_track("v1", "Song", "A"));
+        s.position_secs = 42.0;
+        s.paused = true;
+        let _ = s.autoload_current_task();
+        // Buffering, display untouched, landing armed paused.
+        assert_eq!(s.loading_track.as_deref(), Some("v1"));
+        assert!((s.position_secs - 42.0).abs() < f64::EPSILON);
+        assert!(s.paused);
+        assert!(s.autoload);
+        assert_eq!(s.pending_resume, Some(42.0));
+        assert!(!s.restored_pending);
     }
 
     #[test]
