@@ -252,15 +252,22 @@ impl Program<Message> for EqGraph {
         }
     }
 
-    /// Always the pointing hand: the whole plot is a slider bank
-    /// (dragging a band never shows the grab hand).
+    /// Pointing hand while hovering or dragging (never the grab
+    /// hand). Gated like the seek bar: the canvas widget forwards our
+    /// vote without checking bounds, so an unconditional Pointer would
+    /// win everywhere on the page; abstaining off-bounds lets ancestor
+    /// votes win instead.
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
-        _bounds: Rectangle,
-        _cursor: iced::mouse::Cursor,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: iced::mouse::Cursor,
     ) -> iced::mouse::Interaction {
-        iced::mouse::Interaction::Pointer
+        if state.is_some() || cursor.is_over(bounds) {
+            iced::mouse::Interaction::Pointer
+        } else {
+            iced::mouse::Interaction::None
+        }
     }
 
     fn draw(
@@ -509,6 +516,49 @@ mod tests {
             width: 400.0,
             height: GRAPH_HEIGHT,
         }
+    }
+
+    #[test]
+    fn cursor_points_only_over_the_graph() {
+        // Regression: the canvas widget forwards our vote without
+        // checking bounds, so an unconditional Pointer won the
+        // ancestor max-merge everywhere on the settings page.
+        let g = EqGraph {
+            gains: [0.0; BAND_COUNT],
+        };
+        let none: Option<usize> = None;
+        assert_eq!(
+            Program::mouse_interaction(
+                &g,
+                &none,
+                bounds(),
+                Cursor::Available(Point::new(200.0, 100.0))
+            ),
+            mouse::Interaction::Pointer
+        );
+        assert_eq!(
+            Program::mouse_interaction(
+                &g,
+                &none,
+                bounds(),
+                Cursor::Available(Point::new(200.0, 900.0))
+            ),
+            mouse::Interaction::None
+        );
+        assert_eq!(
+            Program::mouse_interaction(&g, &none, bounds(), Cursor::Unavailable),
+            mouse::Interaction::None
+        );
+        // Dragging keeps the hand even off-bounds.
+        assert_eq!(
+            Program::mouse_interaction(
+                &g,
+                &Some(3),
+                bounds(),
+                Cursor::Available(Point::new(200.0, 900.0))
+            ),
+            mouse::Interaction::Pointer
+        );
     }
 
     #[test]
