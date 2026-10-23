@@ -110,6 +110,10 @@
   moves the menu in one step (scrim sets no right-press handler).
 - Context menu placement: cursor-anchored, clamped on screen, frozen on
   open.
+- Playlist flyout: toggle hover opens it (no click), Tick grace closes
+  it once both toggle and panel are cold (gap transit exits one layer
+  first); top-aligned with the toggle row by shared `MENU_ROW_H`
+  (every menu row is that fixed height, so the anchor cannot drift).
 - Drag-drop queue: grip press + hover target + release-anywhere; ghost row
   + live preview.
 - Animations: `ease_toward` converging on a 33ms `Animate` subscription
