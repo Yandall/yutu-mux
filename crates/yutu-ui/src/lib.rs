@@ -883,6 +883,17 @@ pub enum RightTab {
     Recent,
 }
 
+/// One recommended-album shelf group: catalog tracks sharing an
+/// (album, artist) name, scored by summed plays. Art comes from the
+/// first track; playback queues every track in id order.
+#[derive(Debug, Clone, Default)]
+struct AlbumGroup {
+    title: String,
+    artist: String,
+    plays: usize,
+    tracks: Vec<Track>,
+}
+
 /// Click behavior for a numbered song row: plain `PlayNow`, or play
 /// from here (clicked song plus the suffix behind it, like
 /// playlists) anchored at a list position. The route id re-resolves
@@ -1068,6 +1079,13 @@ pub enum Message {
     },
     PlayWeeklyMix,
     PlayForgotten,
+    /// Quick picks shelf: queue the heavy-rotation head.
+    PlayQuickPicks,
+    /// Recommended-album card: queue that album's tracks in order.
+    PlayHomeAlbum {
+        album: String,
+        artist: String,
+    },
     SearchCompleted {
         query: String,
         result: Result<Box<SearchBundle>, String>,
@@ -2841,9 +2859,33 @@ impl AppState {
         // Home-pick cards render heroes but live in the horizontal strip
         // (no sweep slots of their own): warm them here on the Home
         // route, deduped by the usual memory/in-flight/disk gates.
+        // Same for the new shelf strips (library + albums cards).
         if matches!(self.route, Route::Home) {
             for t in self.home_pick_tracks() {
                 if let Some(task) = self.large_art_task(&t) {
+                    tasks.push(task);
+                }
+            }
+            let mut strip_art: Vec<Track> = self
+                .user_playlists
+                .iter()
+                .filter(|p| !p.tracks.is_empty())
+                .filter_map(|p| {
+                    p.tracks
+                        .first()
+                        .and_then(|t| self.find_track(&t.id))
+                        .or_else(|| p.tracks.first().cloned())
+                })
+                .take(12)
+                .collect();
+            strip_art.extend(
+                self.recommended_albums(10)
+                    .into_iter()
+                    .filter_map(|g| g.tracks.into_iter().next())
+                    .take(12),
+            );
+            for t in &strip_art {
+                if let Some(task) = self.large_art_task(t) {
                     tasks.push(task);
                 }
             }
@@ -6595,6 +6637,135 @@ impl AppState {
         recent
     }
 
+    /// Play counts per track id from the timestamped log (newest
+    /// first). Drives the Home shelves; History stays in charge of
+    /// the raw log itself.
+    fn play_counts(&self) -> std::collections::HashMap<&str, usize> {
+        let mut counts = std::collections::HashMap::new();
+        for e in &self.history_full {
+            *counts.entry(e.track_id.as_str()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// Quick picks: the heavy-rotation head (most plays first,
+    /// ties broken by recency), skipping disliked tracks. Falls back
+    /// to the Jump-back-in order when nothing has played yet.
+    fn quick_pick_tracks(&self, n: usize) -> Vec<Track> {
+        let counts = self.play_counts();
+        if counts.is_empty() {
+            return self.home_pick_tracks().into_iter().take(n).collect();
+        }
+        let mut ranked: Vec<(&str, usize, usize)> = Vec::new();
+        let mut first_seen: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        // Newest occurrence wins ties (history_full is newest-first,
+        // so the first insert per id is its most recent play).
+        for (i, e) in self.history_full.iter().enumerate() {
+            first_seen.entry(e.track_id.as_str()).or_insert(i);
+        }
+        for (id, c) in &counts {
+            if self.disliked.contains(*id) {
+                continue;
+            }
+            let recency = first_seen.get(id).copied().unwrap_or(usize::MAX);
+            ranked.push((*id, *c, recency));
+        }
+        // Most plays first; a muted track never outranks a heard one,
+        // and newer first-plays win ties (deterministic).
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+        ranked
+            .into_iter()
+            .filter_map(|(id, _, _)| self.find_track(id))
+            .take(n)
+            .collect()
+    }
+
+    /// Most-played artist name, if anything has played (drives the
+    /// "More from" shelf; ties break toward the most recent play).
+    fn top_artist(&self) -> Option<String> {
+        // (plays, most-recent log index): newest-first log, so the
+        // smallest index is the most recent play.
+        let mut by_artist: std::collections::HashMap<String, (usize, usize)> =
+            std::collections::HashMap::new();
+        for (i, e) in self.history_full.iter().enumerate() {
+            if let Some(t) = self.find_track(&e.track_id) {
+                let slot = by_artist.entry(t.artist.clone()).or_insert((0, usize::MAX));
+                slot.0 += 1;
+                slot.1 = slot.1.min(i);
+            }
+        }
+        by_artist
+            .into_iter()
+            .max_by(|a, b| {
+                let (ap, ar) = a.1;
+                let (bp, br) = b.1;
+                ap.cmp(&bp).then_with(|| br.cmp(&ar))
+            })
+            .map(|(a, _)| a)
+    }
+
+    /// Catalog tracks by one artist, most-played first (ties keep
+    /// catalog order, so the shelf is deterministic).
+    fn more_from_artist(&self, artist: &str, n: usize) -> Vec<Track> {
+        let counts = self.play_counts();
+        let catalog = self.catalog_tracks();
+        let mut tracks: Vec<(&Track, usize)> = catalog
+            .iter()
+            .filter(|t| t.artist == artist)
+            .map(|t| (t, counts.get(t.id.as_str()).copied().unwrap_or(0)))
+            .collect();
+        tracks.sort_by_key(|a| std::cmp::Reverse(a.1));
+        tracks.into_iter().map(|(t, _)| t.clone()).take(n).collect()
+    }
+
+    /// Recommended albums: catalog tracks grouped by (album, artist),
+    /// scored by summed plays, most-played group first. Only groups
+    /// with artwork render as cards (the art is the draw).
+    fn recommended_albums(&self, n: usize) -> Vec<AlbumGroup> {
+        let counts = self.play_counts();
+        let catalog = self.catalog_tracks();
+        let mut groups: std::collections::HashMap<(String, String), Vec<Track>> =
+            std::collections::HashMap::new();
+        for t in catalog {
+            if t.album.is_none() {
+                continue;
+            }
+            if t.thumbnail_url.is_none() && t.thumbnail_large_url.is_none() {
+                continue;
+            }
+            groups
+                .entry((t.album.clone().unwrap_or_default(), t.artist.clone()))
+                .or_default()
+                .push(t);
+        }
+        let mut scored: Vec<AlbumGroup> = groups
+            .into_iter()
+            .map(|((album, artist), mut tracks)| {
+                let plays: usize = tracks
+                    .iter()
+                    .map(|t| counts.get(t.id.as_str()).copied().unwrap_or(0))
+                    .sum();
+                tracks.sort_by(|a, b| a.id.cmp(&b.id));
+                AlbumGroup {
+                    title: album,
+                    artist,
+                    plays,
+                    tracks,
+                }
+            })
+            .collect();
+        // Most-played group first; bigger groups then titles break
+        // ties so the shelf order never shuffles between frames.
+        scored.sort_by(|a, b| {
+            b.plays
+                .cmp(&a.plays)
+                .then_with(|| b.tracks.len().cmp(&a.tracks.len()))
+                .then_with(|| a.title.cmp(&b.title))
+        });
+        scored.into_iter().take(n).collect()
+    }
+
     /// Uniform rows of tracks as art slots (`pitch` includes spacing
     /// and dividers): one entry per track (the row raster rows render;
     /// heroes warm on demand via [`large_art_task`]).
@@ -6668,6 +6839,37 @@ impl AppState {
                 }
                 // Picks grid (same order as the view): the cards render
                 // the hero key (`thumb_hero`), so only it is warmed.
+                // New shelves above: quick-pick + more-from rows use
+                // exact pitches; both card strips warm on nav (same
+                // 544px key), so the y-flow just steps past them.
+                let quick = self.quick_pick_tracks(8);
+                if !quick.is_empty() {
+                    y += Self::text_h(19.0) + 10.0;
+                    for (k, pair) in quick.chunks(2).enumerate() {
+                        for t in pair {
+                            if let Some(url) = t.thumbnail_url.as_deref().map(Self::row_art_url) {
+                                slots.push((url, y + k as f32 * ROW_PITCH));
+                            }
+                        }
+                    }
+                    y += quick.len().div_ceil(2) as f32 * ROW_PITCH + 12.0;
+                }
+                let lib_shown = self.user_playlists.iter().any(|p| !p.tracks.is_empty());
+                if lib_shown {
+                    y += Self::text_h(19.0) + 10.0 + HOME_CARD_H + HOME_STRIP_GAP + 12.0;
+                }
+                let albums = self.recommended_albums(10);
+                if !albums.is_empty() {
+                    y += Self::text_h(19.0) + 10.0 + HOME_CARD_H + HOME_STRIP_GAP + 12.0;
+                }
+                if let Some(artist) = self.top_artist() {
+                    let more = self.more_from_artist(&artist, 8);
+                    if !more.is_empty() {
+                        y += Self::text_h(19.0) + 10.0;
+                        slots.extend(Self::track_row_slots(&more, y, ROW_PITCH));
+                        y += more.len() as f32 * ROW_PITCH + 12.0;
+                    }
+                }
                 y += Self::text_h(19.0) + 12.0;
                 let picks = self.home_pick_tracks();
                 let cols = self.grid_cols();
@@ -9860,6 +10062,31 @@ impl AppState {
                     self.status = "Forgotten Favorites: nothing to queue.".into();
                 } else {
                     let task = self.queue_many(tracks, "Forgotten Favorites");
+                    self.publish_mpris();
+                    return task;
+                }
+            }
+            Message::PlayQuickPicks => {
+                let tracks = self.quick_pick_tracks(8);
+                if tracks.is_empty() {
+                    self.status = "Quick picks: nothing to queue yet.".into();
+                } else {
+                    let task = self.queue_many(tracks, "Quick picks");
+                    self.publish_mpris();
+                    return task;
+                }
+            }
+            Message::PlayHomeAlbum { album, artist } => {
+                let tracks: Vec<Track> = self
+                    .recommended_albums(usize::MAX)
+                    .into_iter()
+                    .find(|g| g.title == album && g.artist == artist)
+                    .map(|g| g.tracks)
+                    .unwrap_or_default();
+                if tracks.is_empty() {
+                    self.status = format!("Album {album} is not cached anymore.");
+                } else {
+                    let task = self.queue_many(tracks, &format!("Album {album}"));
                     self.publish_mpris();
                     return task;
                 }
@@ -15385,6 +15612,52 @@ impl AppState {
             .into()
     }
 
+    /// Home shelf card: big square cover with single-line title and
+    /// subtitle below (same fixed size as the Jump-back-in picks).
+    /// Click behavior comes from the caller (open a playlist, play an
+    /// album); no right-click menu (the id would be a guess, and menus
+    /// live on the rows and detail pages instead).
+    fn home_card(
+        &self,
+        art: &Track,
+        title: String,
+        sub: String,
+        msg: Message,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
+        use iced::widget::{column, mouse_area};
+        use iced::Fill;
+        mouse_area(
+            row_button(
+                column![
+                    self.thumb_hero(art, HOME_PICK_ART),
+                    column![
+                        btn_text(truncate_title(&title, 20), 13)
+                            .width(Fill)
+                            .wrapping(Wrapping::None),
+                        btn_text(truncate_title(&sub, 22), 11)
+                            .color(MUTED)
+                            .width(Fill)
+                            .wrapping(Wrapping::None),
+                    ]
+                    .spacing(2)
+                    .width(Fill)
+                    .clip(true),
+                ]
+                .spacing(8)
+                .padding(8)
+                .width(Fill),
+            )
+            .style(card_button)
+            .on_press(msg)
+            .padding(0)
+            .width(iced::Length::Fixed(HOME_CARD_W))
+            .height(iced::Length::Fixed(HOME_CARD_H))
+            .clip(true),
+        )
+        .into()
+    }
+
     fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{
@@ -15490,9 +15763,135 @@ impl AppState {
                 let home_search_results: iced::Element<'_, Message> = home_hits;
                 let weekly_n = self.weekly_mix_tracks().len();
                 let forgotten_n = self.forgotten_tracks().len();
+                // YouTube-style shelves, all local: heavy rotation, the
+                // user's own playlists, catalog albums by plays, and the
+                // top artist's other songs. Empty shelves hide (a fresh
+                // install shows the hint plus Made-for-you instead).
+                let quick: Vec<Track> = self.quick_pick_tracks(8);
+                let quick_section: iced::Element<'_, Message> = if quick.is_empty() {
+                    text("").size(1).into()
+                } else {
+                    let left: Vec<iced::Element<'_, Message>> =
+                        quick.iter().step_by(2).map(|t| self.track_row(t)).collect();
+                    let right: Vec<iced::Element<'_, Message>> = quick
+                        .iter()
+                        .skip(1)
+                        .step_by(2)
+                        .map(|t| self.track_row(t))
+                        .collect();
+                    column![
+                        row![
+                            text("Quick picks").size(19).width(Fill),
+                            button(
+                                row![
+                                    btn_icon("play", 13.0, iced::Color::WHITE),
+                                    btn_text("Play all", 13)
+                                ]
+                                .spacing(6)
+                            )
+                            .style(green_play)
+                            .on_press(Message::PlayQuickPicks)
+                            .padding(7),
+                        ]
+                        .align_y(iced::alignment::Vertical::Center),
+                        row![
+                            column(left).spacing(2).width(Fill),
+                            column(right).spacing(2).width(Fill),
+                        ]
+                        .spacing(8),
+                    ]
+                    .spacing(10)
+                    .into()
+                };
+                let lib_cards: Vec<iced::Element<'_, Message>> = self
+                    .user_playlists
+                    .iter()
+                    .filter(|p| !p.tracks.is_empty())
+                    .map(|p| {
+                        let art = p
+                            .tracks
+                            .first()
+                            .and_then(|t| self.find_track(&t.id))
+                            .unwrap_or_else(|| p.tracks[0].clone());
+                        let sub = format!("Playlist · {} songs", p.tracks.len());
+                        self.home_card(
+                            &art,
+                            p.title.clone(),
+                            sub,
+                            Message::OpenPlaylist(p.id.clone()),
+                        )
+                    })
+                    .collect();
+                let library_section: iced::Element<'_, Message> = if lib_cards.is_empty() {
+                    text("").size(1).into()
+                } else {
+                    column![
+                        text("From your library").size(19),
+                        scrollable(row(lib_cards).spacing(10))
+                            .direction(scrollable::Direction::Horizontal(slim_bar()))
+                            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("home")))
+                            .on_scroll(|v| Message::Scrolled("home", v.absolute_offset().y))
+                            .width(Fill)
+                            .height(iced::Length::Fixed(HOME_CARD_H + HOME_STRIP_GAP)),
+                    ]
+                    .spacing(10)
+                    .into()
+                };
+                let album_groups = self.recommended_albums(10);
+                let album_cards: Vec<iced::Element<'_, Message>> = album_groups
+                    .iter()
+                    .map(|g| {
+                        self.home_card(
+                            &g.tracks[0],
+                            g.title.clone(),
+                            g.artist.clone(),
+                            Message::PlayHomeAlbum {
+                                album: g.title.clone(),
+                                artist: g.artist.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                let albums_section: iced::Element<'_, Message> = if album_cards.is_empty() {
+                    text("").size(1).into()
+                } else {
+                    column![
+                        text("Recommended albums").size(19),
+                        scrollable(row(album_cards).spacing(10))
+                            .direction(scrollable::Direction::Horizontal(slim_bar()))
+                            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("home")))
+                            .on_scroll(|v| Message::Scrolled("home", v.absolute_offset().y))
+                            .width(Fill)
+                            .height(iced::Length::Fixed(HOME_CARD_H + HOME_STRIP_GAP)),
+                    ]
+                    .spacing(10)
+                    .into()
+                };
+                let more_section: iced::Element<'_, Message> = match self.top_artist() {
+                    Some(artist) => {
+                        let tracks = self.more_from_artist(&artist, 8);
+                        if tracks.is_empty() {
+                            text("").size(1).into()
+                        } else {
+                            let rows: Vec<iced::Element<'_, Message>> =
+                                tracks.iter().map(|t| self.track_row(t)).collect();
+                            column![
+                                text(format!("More from {artist}")).size(19),
+                                column(rows).spacing(2),
+                            ]
+                            .spacing(10)
+                            .into()
+                        }
+                    }
+                    None => text("").size(1).into(),
+                };
                 column![
                     text("Good evening").size(24),
                     home_search_results,
+                    quick_section,
+                    library_section,
+                    albums_section,
+                    more_section,
                     text("Jump back in").size(19),
                     grid,
                     row![
@@ -19963,6 +20362,167 @@ mod tests {
         s.history_full = vec![hist_entry("h1", HIST_NOW)];
         let _ = s.view();
         s.history_filter = "zzz-no-match".into();
+        let _ = s.view();
+    }
+
+    /// Shelf track with album + art (recommended-album groups need
+    /// both; unresolvable rows are skipped by the shelves).
+    fn shelf_track(id: &str, title: &str, artist: &str, album: Option<&str>) -> Track {
+        Track {
+            id: id.into(),
+            title: title.into(),
+            artist: artist.into(),
+            album: album.map(str::to_string),
+            duration_secs: 200,
+            thumbnail_url: Some(format!("https://example.invalid/{id}.jpg")),
+            thumbnail_large_url: None,
+            plays: None,
+            is_video: false,
+        }
+    }
+
+    #[test]
+    fn quick_picks_rank_repeats_then_recency() {
+        let mut s = test_state();
+        for (id, title) in [("q1", "One"), ("q2", "Two"), ("q3", "Three")] {
+            s.catalog.insert(id.into(), mk_track(id, title, "A"));
+        }
+        // q1 x2, q2 x1 (newer), q3 x1 (older): repeats first, then
+        // the most recent single play wins the tie.
+        s.history_full = vec![
+            hist_entry("q2", HIST_NOW),
+            hist_entry("q1", HIST_NOW - 1),
+            hist_entry("q1", HIST_NOW - 2),
+            hist_entry("q3", HIST_NOW - 3),
+        ];
+        let ids: Vec<String> = s
+            .quick_pick_tracks(8)
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["q1", "q2", "q3"]);
+        // Disliked tracks never headline, even on repeats.
+        s.disliked.insert("q1".into());
+        let ids: Vec<String> = s
+            .quick_pick_tracks(8)
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["q2", "q3"]);
+    }
+
+    #[test]
+    fn top_artist_and_more_from_track_plays() {
+        let mut s = test_state();
+        for (id, title, artist) in [
+            ("x1", "X One", "X"),
+            ("x2", "X Two", "X"),
+            ("y1", "Y One", "Y"),
+        ] {
+            s.catalog.insert(id.into(), mk_track(id, title, artist));
+        }
+        s.history_full = vec![
+            hist_entry("x1", HIST_NOW),
+            hist_entry("y1", HIST_NOW - 1),
+            hist_entry("x2", HIST_NOW - 2),
+            hist_entry("x1", HIST_NOW - 3),
+        ];
+        assert_eq!(s.top_artist().as_deref(), Some("X"));
+        // Most-played first; catalog order breaks the rest.
+        let ids: Vec<String> = s
+            .more_from_artist("X", 8)
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["x1", "x2"]);
+        assert!(s.more_from_artist("Nobody", 8).is_empty());
+    }
+
+    #[test]
+    fn recommended_albums_group_and_score_by_plays() {
+        let mut s = test_state();
+        for (id, title, artist, album) in [
+            ("a1", "A One", "X", Some("Alpha")),
+            ("a2", "A Two", "X", Some("Alpha")),
+            ("b1", "B One", "Y", Some("Beta")),
+            ("c1", "C One", "Z", None),
+        ] {
+            let mut t = shelf_track(id, title, artist, album);
+            // One artless row: groups need artwork to render.
+            if id == "b1" {
+                t.thumbnail_url = None;
+            }
+            s.catalog.insert(id.into(), t);
+        }
+        s.history_full = vec![
+            hist_entry("a1", HIST_NOW),
+            hist_entry("a1", HIST_NOW - 1),
+            hist_entry("b1", HIST_NOW - 2),
+        ];
+        let groups = s.recommended_albums(10);
+        // Alpha (2 plays) first; the artless Beta and the album-less
+        // row never make a card shelf.
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "Alpha");
+        assert_eq!(groups[0].artist, "X");
+        assert_eq!(groups[0].plays, 2);
+        let ids: Vec<&str> = groups[0].tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["a1", "a2"]);
+    }
+
+    #[test]
+    fn home_shelf_actions_queue_and_log() {
+        let mut s = test_state();
+        for (id, title, artist, album) in [
+            ("q1", "One", "A", Some("Alpha")),
+            ("q2", "Two", "A", Some("Alpha")),
+            ("q3", "Three", "B", None),
+        ] {
+            s.catalog
+                .insert(id.into(), shelf_track(id, title, artist, album));
+        }
+        s.history_full = vec![
+            hist_entry("q1", HIST_NOW),
+            hist_entry("q1", HIST_NOW - 1),
+            hist_entry("q2", HIST_NOW - 2),
+            hist_entry("q3", HIST_NOW - 3),
+        ];
+        // Quick picks play the head in rank order and log it.
+        let _ = s.update(Message::PlayQuickPicks);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("q1"));
+        assert!(s.history.contains(&"q1".to_string()));
+        // Album cards queue that album's tracks in id order.
+        let _ = s.update(Message::PlayHomeAlbum {
+            album: "Alpha".into(),
+            artist: "A".into(),
+        });
+        assert_eq!(s.queue.len(), 3 + 2);
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("q1"));
+        // Unknown albums report honestly instead of queueing air.
+        let _ = s.update(Message::PlayHomeAlbum {
+            album: "Ghost".into(),
+            artist: "Nobody".into(),
+        });
+        assert!(s.status.contains("not cached"));
+    }
+
+    #[test]
+    fn home_shelves_render_with_data() {
+        let mut s = test_state();
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "u1".into(),
+            title: "Gym".into(),
+            tracks: vec![mk_track("q1", "One", "A")],
+        });
+        for (id, title, artist, album) in [
+            ("q1", "One", "A", Some("Alpha")),
+            ("q2", "Two", "A", Some("Alpha")),
+        ] {
+            s.catalog
+                .insert(id.into(), shelf_track(id, title, artist, album));
+        }
+        s.history_full = vec![hist_entry("q1", HIST_NOW), hist_entry("q2", HIST_NOW - 1)];
+        s.route = Route::Home;
         let _ = s.view();
     }
 
