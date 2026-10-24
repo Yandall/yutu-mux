@@ -1098,6 +1098,9 @@ pub enum Message {
     ToggleShuffle,
     CycleRepeat,
     Tick(std::time::Instant),
+    /// Frame redraw tick (drives the debug FPS meter only; the
+    /// subscription exists solely in debug builds / `debug-panel`).
+    Frame(std::time::Instant),
     SeekTo(f32),
     /// Exact-ms seek (lyric verse clicks; no f32 truncation).
     SeekToMs(u64),
@@ -1297,6 +1300,8 @@ pub enum Message {
     ArtistTopExpand,
     SidebarFilterChanged(String),
     HistoryFilterChanged(String),
+    /// History page: render the next window of older plays.
+    HistoryMore,
     CookiePathChanged(String),
     CookieImport,
     /// First import stage done (songs + liked + playlist headers).
@@ -1785,6 +1790,11 @@ const HISTORY_CAP: usize = 500;
 /// in-memory list while the database keeps every play ever.
 /// Sized for years of listening; the page renders it grouped.
 const HISTORY_FULL_CAP: usize = 5000;
+/// History page render window (newest first; "Show more" pages in the
+/// rest). Full rows cost ~7 widgets each on every view build, so an
+/// uncapped multi-thousand log stalls frames (measured ~65ms/build
+/// at 5000 rows against a 16ms frame budget).
+const HISTORY_PAGE_SIZE: usize = 100;
 /// Lyrics cache cap (entries are KBs of text; a dropped half refetches
 /// on demand, never in a loop: plays fetch once per need).
 const LYRICS_CACHE_CAP: usize = 100;
@@ -2017,6 +2027,10 @@ pub struct AppState {
     pub history_full: Vec<HistoryEntry>,
     /// History page search text (in-memory only, never persisted).
     pub history_filter: String,
+    /// History page render window (newest first; "Show more" pages in
+    /// older plays). Full rows are built on every view, so an uncapped
+    /// multi-thousand log stalls frames.
+    pub history_limit: usize,
     pub volume: f32,
     /// Muted: the backend plays silence while `volume` (slider, session)
     /// stays untouched, so unmuting restores the exact level.
@@ -2285,6 +2299,10 @@ pub struct AppState {
     paused_seek: bool,
     /// Last Tick instant (drives the manual clock during a seek hold).
     last_tick: Option<std::time::Instant>,
+    /// Smoothed frames-per-second for the debug readout (0 = unmeasured).
+    fps: f32,
+    /// Last frame instant the meter saw (EMA needs the interval).
+    last_frame: Option<std::time::Instant>,
     /// Cookie-file path for import (Settings).
     cookie_path: String,
     /// Where the queue is playing from (playlist/artist/radio label).
@@ -4455,6 +4473,7 @@ impl AppState {
                 .collect(),
             history_full,
             history_filter: String::new(),
+            history_limit: HISTORY_PAGE_SIZE,
             volume: 0.8,
             muted: false,
             status: "Ready: search for music.".into(),
@@ -4566,6 +4585,8 @@ impl AppState {
             seek_hold_until: None,
             paused_seek: false,
             last_tick: None,
+            fps: 0.0,
+            last_frame: None,
             cookie_path: String::new(),
             playing_from: String::new(),
             artwork: HashMap::new(),
@@ -4826,6 +4847,12 @@ impl AppState {
             iced::Subscription::none()
         };
         let tick = iced::time::every(std::time::Duration::from_millis(500)).map(Message::Tick);
+        // Frame meter for the debug FPS readout: only while the debug
+        // UI can show it, so release builds never wake up just to count.
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        let frames = iced::window::frames().map(|_| Message::Frame(std::time::Instant::now()));
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        let frames = iced::Subscription::none();
         let anim = if self.animating() {
             iced::time::every(std::time::Duration::from_millis(ANIM_TICK_MS))
                 .map(|_| Message::Animate)
@@ -4859,7 +4886,7 @@ impl AppState {
             }
             _ => None,
         });
-        iced::Subscription::batch([keys, suggest_keys, tick, events, anim])
+        iced::Subscription::batch([keys, suggest_keys, tick, events, anim, frames])
     }
 
     /// Repeat mode as stored in the queue snapshot.
@@ -8146,6 +8173,45 @@ impl AppState {
         iced::Task::batch(tasks)
     }
 
+    /// EMA update for the FPS meter: the instant rate blended in 20% per
+    /// frame, so the readout glides instead of flickering. Non-positive
+    /// or non-finite intervals keep the previous value (out-of-order
+    /// frames must never spike or NaN the meter).
+    fn fps_ema(prev: f32, dt_secs: f32) -> f32 {
+        if !dt_secs.is_finite() || dt_secs <= 0.0 {
+            return prev;
+        }
+        // Sub-millisecond intervals are timer noise, not 100000 fps:
+        // floor the interval so the meter tops out at a sane 1000.
+        let inst = 1.0 / dt_secs.max(1.0 / 1000.0);
+        if prev <= 0.0 || !prev.is_finite() {
+            inst
+        } else {
+            prev + (inst - prev) * 0.2
+        }
+    }
+
+    /// Live FPS meter (debug builds / `debug-panel` feature only):
+    /// smoothed frame rate next to the status line. Release builds
+    /// without the flag render (and subscribe to) nothing.
+    fn fps_text(&self) -> iced::Element<'_, Message> {
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        {
+            return iced::widget::text("").size(1).into();
+        }
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        {
+            use iced::widget::text;
+            if self.fps <= 0.0 {
+                return text("").size(1).into();
+            }
+            text(format!("{:.0} fps", self.fps))
+                .size(11)
+                .color(MUTED)
+                .into()
+        }
+    }
+
     /// Player-bar status text: the full last-action log in debug builds
     /// (or with the `debug-panel` feature); release builds only surface
     /// failures (no action chatter).
@@ -11226,8 +11292,13 @@ impl AppState {
             }
             Message::HistoryFilterChanged(f) => {
                 self.history_filter = f;
-                // Row indices invalidate on every keystroke.
+                // A new query restarts the render window (and any stale
+                // row hover dies with the old indices).
+                self.history_limit = HISTORY_PAGE_SIZE;
                 self.hovered_history = None;
+            }
+            Message::HistoryMore => {
+                self.history_limit = self.history_limit.saturating_add(HISTORY_PAGE_SIZE);
             }
             Message::CookiePathChanged(p) => {
                 self.cookie_path = p;
@@ -11696,6 +11767,17 @@ impl AppState {
                 } else {
                     "Auto-sync off.".into()
                 };
+            }
+            Message::Frame(at) => {
+                // Debug FPS meter: fold the frame interval into the EMA.
+                // The subscription only exists where the readout does
+                // (debug builds / `debug-panel`), so release builds
+                // never wake up just to count.
+                if let Some(last) = self.last_frame {
+                    let dt = at.saturating_duration_since(last).as_secs_f32();
+                    self.fps = Self::fps_ema(self.fps, dt);
+                }
+                self.last_frame = Some(at);
             }
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
@@ -14038,15 +14120,19 @@ impl AppState {
     /// YTM-style sidebar: Home + Search nav, playlist search, inline
     /// new-playlist creation, and an expand/collapse rail.
     /// Queue/Recent live in the right panel; Settings lives in the header.
-    /// History rows for the page: resolved tracks with their played-at
-    /// timestamps, newest first, filtered by the page search. Entries
-    /// whose metadata never cached are skipped (they hydrate on view,
-    /// like every other lazy list).
-    fn history_rows(&self) -> Vec<(Track, i64)> {
+    /// Grouped history for the page: (section header, rows) plus the
+    /// total match count, newest first. Only the `limit` newest
+    /// matches resolve (clone) tracks; counting the rest is
+    /// borrow-only, so scanning a multi-thousand log stays cheap.
+    /// The log stays newest-first, so equal sections run together;
+    /// empty groups never materialize.
+    fn history_groups(&self, now: i64, limit: usize) -> (Vec<(String, Vec<Track>)>, usize) {
         let q = self.history_filter.to_lowercase();
-        let mut out = Vec::new();
+        let mut groups: Vec<(HistorySection, Vec<Track>)> = Vec::new();
+        let mut shown = 0usize;
+        let mut total = 0usize;
         for e in &self.history_full {
-            let Some(t) = self.find_track(&e.track_id) else {
+            let Some(t) = self.catalog.get(&e.track_id) else {
                 continue;
             };
             if !q.is_empty()
@@ -14055,35 +14141,32 @@ impl AppState {
             {
                 continue;
             }
-            out.push((t, e.played_at_unix));
-        }
-        out
-    }
-
-    /// Grouped history for the page: (section header, rows), newest
-    /// first. The log stays newest-first, so equal sections run
-    /// together; empty groups never materialize.
-    fn history_groups(&self, now: i64) -> Vec<(String, Vec<Track>)> {
-        let mut groups: Vec<(HistorySection, Vec<Track>)> = Vec::new();
-        for (t, played) in self.history_rows() {
-            let section = history_section(played, now);
+            total += 1;
+            if shown >= limit {
+                continue;
+            }
+            shown += 1;
+            let section = history_section(e.played_at_unix, now);
             match groups.last_mut() {
-                Some((s, rows)) if *s == section => rows.push(t),
-                _ => groups.push((section, vec![t])),
+                Some((s, rows)) if *s == section => rows.push(t.clone()),
+                _ => groups.push((section, vec![t.clone()])),
             }
         }
-        groups
+        let groups = groups
             .into_iter()
             .map(|(s, rows)| (history_section_label(&s), rows))
-            .collect()
+            .collect();
+        (groups, total)
     }
 
     /// Full listening history, grouped by recency with its own search.
+    /// Rows render newest-first inside a render window ("Show more"
+    /// pages in older plays); the header counts every match.
     fn history_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{column, text, text_input};
+        use iced::widget::{button, column, text, text_input};
         use iced::Fill;
-        let groups = self.history_groups(now_unix());
-        let total: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+        let (groups, total) = self.history_groups(now_unix(), self.history_limit);
+        let shown: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
         let head: iced::Element<'_, Message> = if self.history_filter.trim().is_empty() {
             text(format!("{total} plays")).size(12).color(MUTED).into()
         } else {
@@ -14121,6 +14204,14 @@ impl AppState {
                 items.push(row);
             }
             body = body.push(column![text(header).size(19), column(items).spacing(2),].spacing(6));
+        }
+        if total > shown {
+            body = body.push(
+                button(btn_text(format!("Show more ({} older)", total - shown), 12))
+                    .style(hover_row)
+                    .on_press(Message::HistoryMore)
+                    .padding(8),
+            );
         }
         body.into()
     }
@@ -14977,7 +15068,11 @@ impl AppState {
                 .into();
             return container(
                 column![
-                    text(self.status_text()).size(12).color(MUTED),
+                    row![
+                        text(self.status_text()).size(12).color(MUTED),
+                        self.fps_text(),
+                    ]
+                    .spacing(6),
                     info,
                     transport_centered,
                     row![
@@ -15005,7 +15100,11 @@ impl AppState {
         }
         container(
             column![
-                text(self.status_text()).size(12).color(MUTED),
+                row![
+                    text(self.status_text()).size(12).color(MUTED),
+                    self.fps_text(),
+                ]
+                .spacing(6),
                 row![
                     {
                         let art: iced::Element<'_, Message> = match &current {
@@ -20280,7 +20379,8 @@ mod tests {
             hist_entry("h6", HIST_NOW - 7 * day),
             hist_entry("h7", HIST_NOW - 40 * day),
         ];
-        let groups = s.history_groups(HIST_NOW);
+        let (groups, total) = s.history_groups(HIST_NOW, usize::MAX);
+        assert_eq!(total, 7);
         let headers: Vec<&str> = groups.iter().map(|(h, _)| h.as_str()).collect();
         assert_eq!(
             headers,
@@ -20340,14 +20440,15 @@ mod tests {
             hist_entry("h2", HIST_NOW - 2 * day),
         ];
         let _ = s.update(Message::HistoryFilterChanged("two".into()));
-        let groups = s.history_groups(HIST_NOW);
+        let (groups, total) = s.history_groups(HIST_NOW, usize::MAX);
+        assert_eq!(total, 1);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, "This week");
         assert_eq!(groups[0].1.len(), 1);
         assert_eq!(groups[0].1[0].id, "h2");
         // Clearing the filter restores every section.
         let _ = s.update(Message::HistoryFilterChanged(String::new()));
-        assert_eq!(s.history_groups(HIST_NOW).len(), 2);
+        assert_eq!(s.history_groups(HIST_NOW, usize::MAX).0.len(), 2);
     }
 
     #[test]
@@ -20363,6 +20464,58 @@ mod tests {
         let _ = s.view();
         s.history_filter = "zzz-no-match".into();
         let _ = s.view();
+    }
+
+    #[test]
+    fn history_page_caps_rendered_rows_with_show_more() {
+        let mut s = test_state();
+        for i in 0..500 {
+            let id = format!("h{i}");
+            s.catalog.insert(id.clone(), mk_track(&id, "Title", "A"));
+            s.history_full.push(hist_entry(&id, HIST_NOW - i as i64));
+        }
+        // Counting scans everything borrow-only; only the window
+        // resolves (clones) tracks.
+        let (groups, total) = s.history_groups(HIST_NOW, s.history_limit);
+        assert_eq!(total, 500);
+        let shown: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+        assert_eq!(shown, HISTORY_PAGE_SIZE);
+        // "Show more" pages the window forward; the filter resets it.
+        let _ = s.update(Message::HistoryMore);
+        assert_eq!(s.history_limit, 2 * HISTORY_PAGE_SIZE);
+        let (groups, _) = s.history_groups(HIST_NOW, s.history_limit);
+        let shown: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+        assert_eq!(shown, 2 * HISTORY_PAGE_SIZE);
+        let _ = s.update(Message::HistoryFilterChanged("title".into()));
+        assert_eq!(s.history_limit, HISTORY_PAGE_SIZE);
+    }
+
+    #[test]
+    fn fps_ema_glides_without_spikes() {
+        // First sample lands on the instant rate.
+        assert!((AppState::fps_ema(0.0, 1.0 / 60.0) - 60.0).abs() < 0.01);
+        // Later samples blend 20% toward the instant rate.
+        assert!((AppState::fps_ema(60.0, 1.0 / 30.0) - 54.0).abs() < 0.01);
+        // Bad intervals keep the previous value (never NaN, never 0).
+        assert_eq!(AppState::fps_ema(60.0, 0.0), 60.0);
+        assert_eq!(AppState::fps_ema(60.0, -1.0), 60.0);
+        assert_eq!(AppState::fps_ema(60.0, f32::NAN), 60.0);
+        assert!(AppState::fps_ema(60.0, f32::INFINITY) > 0.0);
+        // Timer noise floors at ~1000 fps instead of exploding.
+        assert!((AppState::fps_ema(0.0, 0.000_001) - 1000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn frame_messages_feed_the_meter() {
+        use std::time::{Duration, Instant};
+        let mut s = test_state();
+        assert_eq!(s.fps, 0.0);
+        let t0 = Instant::now();
+        let _ = s.update(Message::Frame(t0));
+        assert_eq!(s.fps, 0.0);
+        assert_eq!(s.last_frame, Some(t0));
+        let _ = s.update(Message::Frame(t0 + Duration::from_millis(16)));
+        assert!((s.fps - 62.5).abs() < 1.0, "got {}", s.fps);
     }
 
     /// Shelf track with album + art (recommended-album groups need

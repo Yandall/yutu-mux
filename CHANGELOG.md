@@ -29,7 +29,10 @@
   picks (heavy rotation, two-column with play-all), From your
   library (your playlists), Recommended albums (catalog albums
   ranked by plays), More from your top artist, plus the existing
-  Jump-back-in and Made-for-you rows
+  Jump-back-in and Made-for-you rows. The History page renders the
+  newest 100 with a Show more pager (uncapped multi-thousand logs
+  stalled frames: 65ms to 2ms per view build), and the player bar
+  shows a live FPS meter (debug builds / --features debug-panel)
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
