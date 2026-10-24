@@ -34,7 +34,9 @@
   stalled frames: 65ms to 2ms per view build), and the player bar
   shows a live FPS meter (debug builds / --features debug-panel).
   Home shelves are memoized (ranking runs on navigation/Tick, never
-  per frame: 12ms to 4ms per Home view build in debug)
+  per frame: 12ms to 4ms per Home view build in debug). The meter
+  also shows last view-build cost, and the library strip caps at
+  12 hero cards like the sidebar cap
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),

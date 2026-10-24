@@ -2321,6 +2321,8 @@ pub struct AppState {
     fps: f32,
     /// Last frame instant the meter saw (EMA needs the interval).
     last_frame: Option<std::time::Instant>,
+    /// Last view() build cost in milliseconds (debug FPS readout only).
+    view_build_ms: std::cell::Cell<f32>,
     /// Cookie-file path for import (Settings).
     cookie_path: String,
     /// Where the queue is playing from (playlist/artist/radio label).
@@ -2909,9 +2911,8 @@ impl AppState {
                 }
             }
             let mut strip_art: Vec<Track> = self
-                .user_playlists
-                .iter()
-                .filter(|p| !p.tracks.is_empty())
+                .home_strip_playlists()
+                .into_iter()
                 .filter_map(|p| {
                     p.tracks
                         .first()
@@ -4613,6 +4614,7 @@ impl AppState {
             last_tick: None,
             fps: 0.0,
             last_frame: None,
+            view_build_ms: std::cell::Cell::new(0.0),
             cookie_path: String::new(),
             playing_from: String::new(),
             artwork: HashMap::new(),
@@ -6840,6 +6842,18 @@ impl AppState {
         };
     }
 
+    /// User playlists for the Home library strip, in creation order,
+    /// capped: every card renders a 544px hero, so an unbounded strip
+    /// would pin one big texture per playlist.
+    fn home_strip_playlists(&self) -> Vec<&Playlist> {
+        const STRIP_CAP: usize = 12;
+        self.user_playlists
+            .iter()
+            .filter(|p| !p.tracks.is_empty())
+            .take(STRIP_CAP)
+            .collect()
+    }
+
     /// Uniform rows of tracks as art slots (`pitch` includes spacing
     /// and dividers): one entry per track (the row raster rows render;
     /// heroes warm on demand via [`large_art_task`]).
@@ -8238,8 +8252,9 @@ impl AppState {
     }
 
     /// Live FPS meter (debug builds / `debug-panel` feature only):
-    /// smoothed frame rate next to the status line. Release builds
-    /// without the flag render (and subscribe to) nothing.
+    /// smoothed frame rate plus last view-build cost, next to the
+    /// status line. Release builds without the flag render (and
+    /// subscribe to) nothing.
     fn fps_text(&self) -> iced::Element<'_, Message> {
         #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
         {
@@ -8251,10 +8266,14 @@ impl AppState {
             if self.fps <= 0.0 {
                 return text("").size(1).into();
             }
-            text(format!("{:.0} fps", self.fps))
-                .size(11)
-                .color(MUTED)
-                .into()
+            text(format!(
+                "{:.0} fps · {:.1}ms build",
+                self.fps,
+                self.view_build_ms.get()
+            ))
+            .size(11)
+            .color(MUTED)
+            .into()
         }
     }
 
@@ -15958,9 +15977,8 @@ impl AppState {
                     .into()
                 };
                 let lib_cards: Vec<iced::Element<'_, Message>> = self
-                    .user_playlists
-                    .iter()
-                    .filter(|p| !p.tracks.is_empty())
+                    .home_strip_playlists()
+                    .into_iter()
                     .map(|p| {
                         let art = p
                             .tracks
@@ -17152,6 +17170,15 @@ impl AppState {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        let t0 = std::time::Instant::now();
+        let el = self.view_inner();
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        self.view_build_ms.set(t0.elapsed().as_secs_f32() * 1000.0);
+        el
+    }
+
+    fn view_inner(&self) -> iced::Element<'_, Message> {
         use iced::widget::{column, container, mouse_area, row, text, Row, Stack};
         use iced::Fill;
         // The drawer covers the center body only: header (search) stays
@@ -20535,6 +20562,26 @@ mod tests {
         assert_eq!(s.home_shelves.quick[0].id, "q2");
         s.route = Route::Home;
         let _ = s.view();
+    }
+
+    #[test]
+    fn home_library_strip_caps_at_twelve_cards() {
+        let mut s = test_state();
+        for i in 0..30 {
+            s.user_playlists.push(yutu_core::Playlist {
+                id: format!("u{i}"),
+                title: format!("List {i}"),
+                tracks: vec![mk_track(&format!("t{i}"), "Title", "A")],
+            });
+        }
+        // Empty playlists never make cards, and the strip stops at the
+        // cap no matter how large the library grows.
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "empty".into(),
+            title: "Empty".into(),
+            tracks: Vec::new(),
+        });
+        assert_eq!(s.home_strip_playlists().len(), 12);
     }
     #[test]
     fn history_page_renders_with_entries_and_filter() {
