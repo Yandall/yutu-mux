@@ -10,8 +10,9 @@ use row_button::row_button;
 
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
-    forgotten_favorites, should_scrobble, weekly_mix, Album, Artist, HistoryEntry, LibraryStore,
-    LyricsResult, Playlist, PlaylistHit, QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
+    forgotten_favorites, history_section, history_section_label, should_scrobble, weekly_mix,
+    Album, Artist, HistoryEntry, HistorySection, LibraryStore, LyricsResult, Playlist, PlaylistHit,
+    QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -825,6 +826,7 @@ pub enum Route {
     Search,
     Queue,
     Library,
+    History,
     Discovery,
     Settings,
     Artist(String),
@@ -1129,6 +1131,9 @@ pub enum Message {
     RemoveAutoplay(usize),
     /// Queue-page hover tracking (reveals the row remove).
     QueueHover(Option<usize>),
+    /// History-page hover tracking (per-row index: repeat plays share
+    /// a track id, so id-keyed hover would light them all up at once).
+    HistoryHover(Option<usize>),
     /// Id-keyed row hover (full-row highlight on non-index lists).
     TrackHover(Option<String>),
     /// Sidebar playlist hover (reveals the row play button).
@@ -1273,6 +1278,7 @@ pub enum Message {
     /// list (one-way; navigating away and back collapses).
     ArtistTopExpand,
     SidebarFilterChanged(String),
+    HistoryFilterChanged(String),
     CookiePathChanged(String),
     CookieImport,
     /// First import stage done (songs + liked + playlist headers).
@@ -1732,14 +1738,14 @@ const MIXED_SEARCH_CAP: usize = 30;
 /// scrollbar sits on the strip's bottom edge, clear of the cards above
 /// and the next section below.
 const HOME_STRIP_GAP: f32 = 14.0;
-const TRACK_ROW_H: f32 = 52.0;
+const TRACK_ROW_H: f32 = 56.0;
 /// Context menu item height (icon 14 + 14px text at 1.3 line height +
 /// 8px padding each side, rounded up): fixed so the playlist flyout
 /// anchor math can never drift from the laid-out rows.
 const MENU_ROW_H: f32 = 36.0;
 const SUGGEST_ROW_H: f32 = 44.0;
-const QUEUE_ROW_H: f32 = 58.0;
-const AUTO_ROW_H: f32 = 44.0;
+const QUEUE_ROW_H: f32 = 60.0;
+const AUTO_ROW_H: f32 = 48.0;
 /// Lazy art sweep: viewport overscan each side (absorbs header-height
 /// estimates and fast scrolls), scroll buckets plus minimum gap (scroll
 /// storms collapse), fetch cap per sweep.
@@ -1757,6 +1763,10 @@ const ART_MEM_CAP: usize = 128;
 /// Playback history cap (drives Home picks, which read the last 8):
 /// very long sessions must not grow it without bound.
 const HISTORY_CAP: usize = 500;
+/// Full timestamped history cap (drives the History page): bounds the
+/// in-memory list while the database keeps every play ever.
+/// Sized for years of listening; the page renders it grouped.
+const HISTORY_FULL_CAP: usize = 5000;
 /// Lyrics cache cap (entries are KBs of text; a dropped half refetches
 /// on demand, never in a loop: plays fetch once per need).
 const LYRICS_CACHE_CAP: usize = 100;
@@ -1984,6 +1994,11 @@ pub struct AppState {
     /// Downloaded ids in add order (membership stays in `downloaded`).
     pub downloaded_order: Vec<String>,
     pub history: Vec<String>,
+    /// Timestamped play log, newest first (drives the History page).
+    /// Capped in memory; the database keeps every play ever.
+    pub history_full: Vec<HistoryEntry>,
+    /// History page search text (in-memory only, never persisted).
+    pub history_filter: String,
     pub volume: f32,
     /// Muted: the backend plays silence while `volume` (slider, session)
     /// stays untouched, so unmuting restores the exact level.
@@ -2218,6 +2233,9 @@ pub struct AppState {
     autoplay: Vec<Track>,
     /// Queue-page row under the cursor (hover reveals its remove).
     hovered_queue: Option<usize>,
+    /// History-page row under the cursor (per-row index, like the
+    /// queue: repeat plays share a track id).
+    hovered_history: Option<usize>,
     /// Cursor over a row remove button (presses there must never arm a
     /// drag: slipping off delete must not become a reorder).
     hover_remove: Option<usize>,
@@ -2654,6 +2672,12 @@ impl AppState {
                 ids
             }
             Route::Library => self.liked_order.iter().take(CAP).cloned().collect(),
+            Route::History => self
+                .history_full
+                .iter()
+                .take(CAP)
+                .map(|e| e.track_id.clone())
+                .collect(),
             Route::PlaylistDetail(id) => self
                 .find_playlist(id)
                 .map(|p| p.tracks.iter().take(15).map(|t| t.id.clone()).collect())
@@ -4223,7 +4247,7 @@ fn load_persisted(
     Vec<String>,
     HashSet<String>,
     Vec<String>,
-    Vec<String>,
+    Vec<HistoryEntry>,
     Vec<Playlist>,
     u64,
     Vec<Track>,
@@ -4252,12 +4276,7 @@ fn load_persisted(
     // Dislikes ("don't recommend"): same contract as likes.
     let disliked_order: Vec<String> = store.disliked_ids().unwrap_or_default();
     let disliked: HashSet<String> = disliked_order.iter().cloned().collect();
-    let history = store
-        .history(50)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|e| e.track_id)
-        .collect();
+    let history_full: Vec<HistoryEntry> = store.history(HISTORY_FULL_CAP).unwrap_or_default();
     // One-time migration: older imports stored browse (`VL...`) ids while
     // creates store edit (`PL...`) ids. Canonicalise to edit form so the
     // same list never appears twice and writes always send the edit form
@@ -4332,7 +4351,7 @@ fn load_persisted(
         order,
         disliked,
         disliked_order,
-        history,
+        history_full,
         user_playlists,
         seq,
         cached,
@@ -4368,7 +4387,7 @@ impl AppState {
             liked_order,
             disliked,
             disliked_order,
-            history,
+            history_full,
             user_playlists,
             playlist_seq,
             cached,
@@ -4387,7 +4406,13 @@ impl AppState {
             disliked_order,
             downloaded,
             downloaded_order,
-            history,
+            history: history_full
+                .iter()
+                .take(HISTORY_CAP)
+                .map(|e| e.track_id.clone())
+                .collect(),
+            history_full,
+            history_filter: String::new(),
             volume: 0.8,
             muted: false,
             status: "Ready: search for music.".into(),
@@ -4483,6 +4508,7 @@ impl AppState {
             autoplay_for: None,
             autoplay: Vec::new(),
             hovered_queue: None,
+            hovered_history: None,
             hover_remove: None,
             hovered_track: None,
             hovered_album: None,
@@ -5110,14 +5136,37 @@ impl AppState {
         }
     }
 
+    /// Record a track whose load just started: in-memory history
+    /// (Recent tab, Home picks), a durable play row, and a metadata
+    /// upsert so the row still renders days later after restarts.
+    /// Every audible play funnels through `play_current_task` /
+    /// `fetch_current_task`, so logging here captures Next, Prev,
+    /// jumps, auto-advances, repeats, skips and bulk plays too, not
+    /// just click-to-play. Autoload buffers without playing and stays
+    /// out (its track is already the history tail).
+    fn log_play(&mut self, t: &Track) {
+        self.push_history(t.id.clone());
+        self.persist_play(&t.id);
+        self.cache_tracks(std::slice::from_ref(t));
+        let played_at_unix = now_unix();
+        self.history_full.insert(
+            0,
+            HistoryEntry {
+                track_id: t.id.clone(),
+                played_at_unix,
+            },
+        );
+        if self.history_full.len() > HISTORY_FULL_CAP {
+            self.history_full.truncate(HISTORY_FULL_CAP);
+        }
+    }
+
     /// Click-to-play: queue the track, jump to it, and fetch real audio.
     /// The fetch task completes in `StreamResolved`; the tone is gone.
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
         let track = self.resolve_for_play(&track);
         self.absorb_autoplay(&track.id);
         self.playing_from = "Single".into();
-        self.push_history(track.id.clone());
-        self.persist_play(&track.id);
         self.queue.push(track);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
         self.apply_volume();
@@ -5183,6 +5232,10 @@ impl AppState {
         let Some(t) = self.queue.current().cloned() else {
             return iced::Task::none();
         };
+        // Every audible play funnels through here: log it now so
+        // Next, Prev, jumps, auto-advances, repeats, skips and bulk
+        // plays all land in Recent, not just click-to-play.
+        self.log_play(&t);
         // Immediate feedback: silence the old song the instant a new load
         // starts (resolving takes ~1s; the old track must not play over it).
         if let Some(audio) = &self.audio {
@@ -5253,8 +5306,10 @@ impl AppState {
     /// Startup autoload: buffer the restored track paused at the saved
     /// position so the first play/seek is instant (resolving takes ~1s).
     /// Unlike [`Self::play_current_task`] the display position is
-    /// preserved (never flashes 00:00) and the landing pauses instead
-    /// of playing (see `autoload`: explicit transport clears it).
+    /// preserved (never flashes 00:00), the landing pauses instead
+    /// of playing (see `autoload`: explicit transport clears it), and
+    /// nothing is logged (buffering is not a play; the track is
+    /// already the history tail from last session).
     fn autoload_current_task(&mut self) -> iced::Task<Message> {
         let Some(t) = self.queue.current().cloned() else {
             return iced::Task::none();
@@ -5745,6 +5800,9 @@ impl AppState {
         match self.queue.current().cloned() {
             None => iced::Task::none(),
             Some(t) => {
+                // Same logging contract as `play_current_task`: every
+                // audible play lands in Recent with durable metadata.
+                self.log_play(&t);
                 // Same cut-the-old-song feedback as the streaming path.
                 if let Some(audio) = &self.audio {
                     audio.stop();
@@ -5842,8 +5900,6 @@ impl AppState {
             return false;
         }
         let t = self.autoplay.remove(0);
-        self.push_history(t.id.clone());
-        self.persist_play(&t.id);
         self.queue.push(t);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
         true
@@ -6099,7 +6155,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -6962,7 +7018,7 @@ impl AppState {
                 button(btn_text("Sign out", 12))
                     .style(hover_row)
                     .on_press(Message::CookieLogout)
-                    .padding(7),
+                    .padding(8),
             ]
             .spacing(4)
             .into();
@@ -7006,7 +7062,7 @@ impl AppState {
                 button(self.busy_content("Sync now", 12.0))
                     .style(green_play)
                     .on_press(Message::SyncNow)
-                    .padding(7),
+                    .padding(8),
                 checkbox(self.auto_sync)
                     .label("Auto-sync every 15 min")
                     .on_toggle(Message::AutoSyncToggled),
@@ -8432,7 +8488,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -9828,8 +9884,6 @@ impl AppState {
                         self.playing_from = "Single + autoplay".into();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
-                        self.push_history(id.clone());
-                        self.persist_play(&id);
                         self.apply_volume();
                         self.publish_mpris();
                         let play = self.play_current_task();
@@ -9972,6 +10026,22 @@ impl AppState {
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
             }
+            Message::HistoryHover(h) => {
+                // Modal open: rows behind scrims never highlight.
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
+                    self.hovered_history = None;
+                } else {
+                    self.hovered_history = h;
+                }
+                self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
+            }
             Message::TrackHover(h) => {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
@@ -9985,6 +10055,7 @@ impl AppState {
                 // Entering a non-queue row drops stale queue hovers so a
                 // press there never arms a drag off old state.
                 self.hovered_queue = None;
+                self.hovered_history = None;
                 self.hovered_auto = None;
                 self.hovered_album = None;
                 self.hovered_artist = None;
@@ -10027,6 +10098,7 @@ impl AppState {
                 self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
                 self.hovered_queue = None;
+                self.hovered_history = None;
                 self.hovered_auto = None;
                 self.hover_remove = None;
             }
@@ -10924,6 +10996,11 @@ impl AppState {
             }
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
+            }
+            Message::HistoryFilterChanged(f) => {
+                self.history_filter = f;
+                // Row indices invalidate on every keystroke.
+                self.hovered_history = None;
             }
             Message::CookiePathChanged(p) => {
                 self.cookie_path = p;
@@ -13004,7 +13081,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13073,7 +13150,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13498,7 +13575,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13555,7 +13632,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13607,7 +13684,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13717,7 +13794,7 @@ impl AppState {
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
-                .padding(4),
+                .padding(8),
             )
             .style(row_bg(hovered))
             .width(Fill)
@@ -13734,6 +13811,134 @@ impl AppState {
     /// YTM-style sidebar: Home + Search nav, playlist search, inline
     /// new-playlist creation, and an expand/collapse rail.
     /// Queue/Recent live in the right panel; Settings lives in the header.
+    /// History rows for the page: resolved tracks with their played-at
+    /// timestamps, newest first, filtered by the page search. Entries
+    /// whose metadata never cached are skipped (they hydrate on view,
+    /// like every other lazy list).
+    fn history_rows(&self) -> Vec<(Track, i64)> {
+        let q = self.history_filter.to_lowercase();
+        let mut out = Vec::new();
+        for e in &self.history_full {
+            let Some(t) = self.find_track(&e.track_id) else {
+                continue;
+            };
+            if !q.is_empty()
+                && !t.title.to_lowercase().contains(&q)
+                && !t.artist.to_lowercase().contains(&q)
+            {
+                continue;
+            }
+            out.push((t, e.played_at_unix));
+        }
+        out
+    }
+
+    /// Grouped history for the page: (section header, rows), newest
+    /// first. The log stays newest-first, so equal sections run
+    /// together; empty groups never materialize.
+    fn history_groups(&self, now: i64) -> Vec<(String, Vec<Track>)> {
+        let mut groups: Vec<(HistorySection, Vec<Track>)> = Vec::new();
+        for (t, played) in self.history_rows() {
+            let section = history_section(played, now);
+            match groups.last_mut() {
+                Some((s, rows)) if *s == section => rows.push(t),
+                _ => groups.push((section, vec![t])),
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(s, rows)| (history_section_label(&s), rows))
+            .collect()
+    }
+
+    /// Full listening history, grouped by recency with its own search.
+    fn history_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{column, text, text_input};
+        use iced::Fill;
+        let groups = self.history_groups(now_unix());
+        let total: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+        let head: iced::Element<'_, Message> = if self.history_filter.trim().is_empty() {
+            text(format!("{total} plays")).size(12).color(MUTED).into()
+        } else {
+            text(format!("{total} matches"))
+                .size(12)
+                .color(MUTED)
+                .into()
+        };
+        let mut body = column![
+            text("History").size(22),
+            head,
+            text_input("Search history…", &self.history_filter)
+                .style(rounded_input)
+                .on_input(Message::HistoryFilterChanged)
+                .width(Fill)
+                .padding(10),
+        ]
+        .spacing(10);
+        if groups.is_empty() {
+            let empty = if self.history_filter.trim().is_empty() {
+                "No plays yet. Press play and they will show up here."
+            } else {
+                "No matches. Try a different spelling."
+            };
+            body = body.push(text(empty).size(12).color(MUTED));
+        }
+        // Flat row index across sections (hover is per-row, like the
+        // queue: repeat plays share a track id).
+        let mut next_row = 0usize;
+        for (header, rows) in groups {
+            let mut items: Vec<iced::Element<'_, Message>> = Vec::new();
+            for t in rows {
+                let row = self.history_row(&t, next_row);
+                next_row += 1;
+                items.push(row);
+            }
+            body = body.push(column![text(header).size(19), column(items).spacing(2),].spacing(6));
+        }
+        body.into()
+    }
+
+    /// History row: same click-to-play row as Recent, with the track
+    /// length in the duration slot. Hover is per-row index (like the
+    /// queue): repeat plays share a track id, so id-keyed hover would
+    /// light them all up at once.
+    fn history_row(&self, t: &Track, index: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area, row, text};
+        use iced::Fill;
+        let hovered = self.hovered_history == Some(index);
+        let menu_id = t.id.clone();
+        mouse_area(
+            container(
+                row![
+                    self.thumb(t),
+                    row_button(Self::btn_track_text_single(
+                        &t.title,
+                        &t.artist,
+                        12,
+                        iced::Color::WHITE
+                    ))
+                    .style(row_click)
+                    .on_press(Message::PlayNow(t.id.clone()))
+                    .padding(3)
+                    .width(Fill),
+                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(8),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_right_press(Message::OpenContext(menu_id))
+        .on_enter(Message::HistoryHover(Some(index)))
+        .on_exit(Message::HistoryHover(None))
+        .into()
+    }
+
     fn sidebar_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, text, text_input};
         use iced::Fill;
@@ -13760,6 +13965,10 @@ impl AppState {
                     button(btn_icon("search", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Search)))
                         .on_press(Message::Navigate(Route::Search))
+                        .padding(10),
+                    button(btn_icon("list-music", 18.0, iced::Color::WHITE))
+                        .style(nav_style(self.is_nav(&Route::History)))
+                        .on_press(Message::Navigate(Route::History))
                         .padding(10),
                 ]
                 .spacing(2),
@@ -13828,7 +14037,7 @@ impl AppState {
                     )
                     .style(hover_row)
                     .on_press(Message::OpenPlaylist(pl.id.clone()))
-                    .padding(4)
+                    .padding(8)
                     .width(Fill),
                 )
                 .on_right_press(Message::OpenPlaylistMenu(pl_id))
@@ -13885,6 +14094,18 @@ impl AppState {
                     .on_press(Message::Navigate(Route::Search))
                     .padding(8)
                     .width(Fill),
+                    button(
+                        row![
+                            btn_icon("list-music", 14.0, iced::Color::WHITE),
+                            btn_text("History", 14),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .style(nav_style(self.is_nav(&Route::History)))
+                    .on_press(Message::Navigate(Route::History))
+                    .padding(8)
+                    .width(Fill),
                 ]
                 .spacing(2),
                 text_input("Filter playlists…", &self.sidebar_filter)
@@ -13934,7 +14155,7 @@ impl AppState {
                     ]
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center)
-                    .padding(2),
+                    .padding(8),
                 )
                 .style(card_bg)
                 .padding(0)
@@ -13989,7 +14210,7 @@ impl AppState {
         ]
         .spacing(6)
         .align_y(iced::alignment::Vertical::Center)
-        .padding(2);
+        .padding(8);
         // Fixed height: the title may wrap to two lines, anything more
         // clips instead of stretching the row.
         let lifted: iced::Element<'_, Message> = container(row_content)
@@ -14105,11 +14326,11 @@ impl AppState {
         let tab_queue = button(btn_text("Queue", 12))
             .style(nav_style(self.right_tab == RightTab::Queue))
             .on_press(Message::SetRightTab(RightTab::Queue))
-            .padding(6);
+            .padding(8);
         let tab_recent = button(btn_text("Recent", 12))
             .style(nav_style(self.right_tab == RightTab::Recent))
             .on_press(Message::SetRightTab(RightTab::Recent))
-            .padding(6);
+            .padding(8);
         let from_line: iced::Element<'_, Message> = if self.playing_from.is_empty() {
             text("").size(1).into()
         } else {
@@ -14154,7 +14375,7 @@ impl AppState {
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center)
-                        .padding(2),
+                        .padding(8),
                     )
                     .style(row_bg(self.hovered_auto == Some(i)))
                     .width(Fill)
@@ -14251,7 +14472,7 @@ impl AppState {
                                         ]
                                         .spacing(6)
                                         .align_y(iced::alignment::Vertical::Center)
-                                        .padding(2),
+                                        .padding(8),
                                     )
                                     .style(row_bg(hovered))
                                     .width(Fill)
@@ -15261,7 +15482,7 @@ impl AppState {
                             button(btn_text("See all results →", 12))
                                 .style(hover_row)
                                 .on_press(Message::Navigate(Route::Search))
-                                .padding(4),
+                                .padding(8),
                         ]
                         .spacing(4)
                         .into()
@@ -15279,7 +15500,7 @@ impl AppState {
                         button(btn_text("Discovery →", 12))
                             .style(hover_row)
                             .on_press(Message::Navigate(Route::Discovery))
-                            .padding(4),
+                            .padding(8),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row![
@@ -15521,7 +15742,7 @@ impl AppState {
                                 ]
                                 .spacing(4)
                                 .align_y(iced::alignment::Vertical::Center)
-                                .padding(2),
+                                .padding(8),
                             )
                             .style(row_bg(self.hovered_queue == Some(i)))
                             .width(Fill)
@@ -15564,7 +15785,7 @@ impl AppState {
                                 ]
                                 .spacing(4)
                                 .align_y(iced::alignment::Vertical::Center)
-                                .padding(2),
+                                .padding(8),
                             )
                             .style(row_bg(self.hovered_auto == Some(i)))
                             .width(Fill)
@@ -15618,7 +15839,7 @@ impl AppState {
                         button(btn_text("Clear", 12))
                             .style(hover_row)
                             .on_press(Message::QueueClear)
-                            .padding(6),
+                            .padding(8),
                     ]
                     .spacing(4)
                     .align_y(iced::alignment::Vertical::Center),
@@ -15664,7 +15885,7 @@ impl AppState {
                             button(btn_text("Open", 12))
                                 .style(hover_row)
                                 .on_press(Message::OpenPlaylist(p.id.clone()))
-                                .padding(6),
+                                .padding(8),
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
@@ -15696,6 +15917,7 @@ impl AppState {
                 .spacing(10)
                 .into()
             }
+            Route::History => self.history_view(),
             Route::Discovery => {
                 let weekly: Vec<iced::Element<'_, Message>> = self
                     .weekly_mix_tracks()
@@ -15824,7 +16046,7 @@ impl AppState {
                         button(btn_text("Relaunch now to apply", 12))
                             .style(hover_row)
                             .on_press(Message::RelaunchNow)
-                            .padding(5)
+                            .padding(8)
                             .into()
                     } else {
                         text("").size(1).into()
@@ -15984,14 +16206,14 @@ impl AppState {
                         button(btn_text("Show more", 12))
                             .style(hover_row)
                             .on_press(Message::ArtistTopExpand)
-                            .padding(4)
+                            .padding(8)
                             .into()
                     } else if fetching_full {
                         row![
                             button(btn_text("Show more", 12))
                                 .style(hover_row)
                                 .on_press(Message::ArtistTopExpand)
-                                .padding(4),
+                                .padding(8),
                             Self::spinner_frame(self.spin_frame, 12.0, MUTED),
                         ]
                         .spacing(6)
@@ -16228,7 +16450,7 @@ impl AppState {
                         button(btn_text("Radio", 13))
                             .style(hover_row)
                             .on_press(Message::StartRadio(id.clone()))
-                            .padding(7),
+                            .padding(8),
                     ]
                     .spacing(8),
                     content,
@@ -19569,6 +19791,182 @@ mod tests {
     }
 
     #[test]
+    fn every_playback_path_logs_the_new_current_track() {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        s.queue.push(mk_track("m3", "Three", "A"));
+        assert!(s.queue.jump_to(0));
+        // Next, QueueJump and Prev all start a load for the new
+        // current track, so all of them land in history (no landing
+        // or audio device needed: logging happens at load start).
+        let _ = s.update(Message::Next);
+        assert_eq!(s.history.last(), Some(&"m2".to_string()));
+        let _ = s.update(Message::QueueJump(2));
+        assert_eq!(s.history.last(), Some(&"m3".to_string()));
+        let _ = s.update(Message::Prev);
+        assert_eq!(s.history.last(), Some(&"m2".to_string()));
+    }
+
+    #[test]
+    fn played_tracks_persist_metadata_for_later_sessions() {
+        // A logged play must survive a restart with its metadata, so
+        // Recent renders days later with no search in between.
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir()
+            .join(format!("yutu-recent-{}-{}.db", std::process::id(), n))
+            .to_string_lossy()
+            .into_owned();
+        let (mut s, _) = AppState::with_library_path(path.clone());
+        s.queue.push(mk_track("v1", "Song", "A"));
+        s.queue.push(mk_track("v2", "Two", "B"));
+        assert!(s.queue.jump_to(0));
+        let _ = s.update(Message::Next);
+        assert!(s.history.contains(&"v2".to_string()));
+        let store = LibraryStore::open(&path).unwrap();
+        let plays = store.history(10).unwrap();
+        assert!(plays.iter().any(|e| e.track_id == "v2"));
+        let cached = store.all_cached_tracks().unwrap();
+        assert!(cached.iter().any(|t| t.id == "v2" && t.title == "Two"));
+        drop(s);
+        // Reopen with an empty in-memory catalog: the played track
+        // still resolves from the cache.
+        let (s2, _) = AppState::with_library_path(path);
+        assert!(s2.history.contains(&"v2".to_string()));
+        assert_eq!(
+            s2.find_track("v2").map(|t| t.title),
+            Some("Two".to_string())
+        );
+        // The timestamped log restores newest-first too.
+        assert_eq!(
+            s2.history_full.first().map(|e| e.track_id.as_str()),
+            Some("v2")
+        );
+    }
+
+    /// Fixed Friday noon (2026-10-23 12:00 UTC) for deterministic
+    /// section tests (mirrors the core bucketing tests).
+    const HIST_NOW: i64 = 1_792_756_800;
+
+    fn hist_entry(id: &str, played_at_unix: i64) -> HistoryEntry {
+        HistoryEntry {
+            track_id: id.into(),
+            played_at_unix,
+        }
+    }
+
+    #[test]
+    fn history_page_groups_by_recency() {
+        let mut s = test_state();
+        for (id, title) in [
+            ("h1", "Today One"),
+            ("h2", "Today Two"),
+            ("h3", "Yesterday Hit"),
+            ("h4", "Week Song"),
+            ("h5", "Week Opener"),
+            ("h6", "Month Tune"),
+            ("h7", "Oldie"),
+        ] {
+            let mut t = mk_track(id, title, "A");
+            t.duration_secs = 200;
+            s.catalog.insert(id.into(), t);
+        }
+        let day = 86_400;
+        s.history_full = vec![
+            hist_entry("h1", HIST_NOW),
+            hist_entry("h2", HIST_NOW - 3_600),
+            hist_entry("h3", HIST_NOW - day),
+            hist_entry("h4", HIST_NOW - 2 * day),
+            hist_entry("h5", HIST_NOW - 4 * day),
+            hist_entry("h6", HIST_NOW - 7 * day),
+            hist_entry("h7", HIST_NOW - 40 * day),
+        ];
+        let groups = s.history_groups(HIST_NOW);
+        let headers: Vec<&str> = groups.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(
+            headers,
+            vec![
+                "Today",
+                "Yesterday",
+                "This week",
+                "This month",
+                "September 2026"
+            ]
+        );
+        let counts: Vec<usize> = groups.iter().map(|(_, rows)| rows.len()).collect();
+        assert_eq!(counts, vec![2, 1, 2, 1, 1]);
+        // Rows keep their track identity in newest-first order.
+        let ids: Vec<&str> = groups
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|t| t.id.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["h1", "h2", "h3", "h4", "h5", "h6", "h7"]);
+    }
+
+    #[test]
+    fn history_hover_is_per_row_not_per_track() {
+        // Repeat plays share a track id: hovering one row must not
+        // highlight its twin (id-keyed hover lit them both up).
+        let mut s = test_state();
+        let mut t = mk_track("h1", "Today One", "A");
+        t.duration_secs = 200;
+        s.catalog.insert("h1".into(), t);
+        let day = 86_400;
+        s.history_full = vec![hist_entry("h1", HIST_NOW), hist_entry("h1", HIST_NOW - day)];
+        let _ = s.update(Message::HistoryHover(Some(1)));
+        assert_eq!(s.hovered_history, Some(1));
+        assert_ne!(s.hovered_history, Some(0));
+        // Exit clears, and a filter change drops a stale index.
+        let _ = s.update(Message::HistoryHover(None));
+        assert_eq!(s.hovered_history, None);
+        let _ = s.update(Message::HistoryHover(Some(0)));
+        let _ = s.update(Message::HistoryFilterChanged("one".into()));
+        assert_eq!(s.hovered_history, None);
+        // The rows render with the per-row hover wired.
+        s.history_filter = String::new();
+        let _ = s.view();
+    }
+
+    #[test]
+    fn history_search_narrows_to_matching_rows() {
+        let mut s = test_state();
+        for (id, title) in [("h1", "Today One"), ("h2", "Week Two")] {
+            let mut t = mk_track(id, title, "A");
+            t.duration_secs = 200;
+            s.catalog.insert(id.into(), t);
+        }
+        let day = 86_400;
+        s.history_full = vec![
+            hist_entry("h1", HIST_NOW),
+            hist_entry("h2", HIST_NOW - 2 * day),
+        ];
+        let _ = s.update(Message::HistoryFilterChanged("two".into()));
+        let groups = s.history_groups(HIST_NOW);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "This week");
+        assert_eq!(groups[0].1.len(), 1);
+        assert_eq!(groups[0].1[0].id, "h2");
+        // Clearing the filter restores every section.
+        let _ = s.update(Message::HistoryFilterChanged(String::new()));
+        assert_eq!(s.history_groups(HIST_NOW).len(), 2);
+    }
+
+    #[test]
+    fn history_page_renders_with_entries_and_filter() {
+        let mut s = test_state();
+        s.route = Route::History;
+        // Empty state renders without panicking.
+        let _ = s.view();
+        let mut t = mk_track("h1", "Today One", "A");
+        t.duration_secs = 200;
+        s.catalog.insert("h1".into(), t);
+        s.history_full = vec![hist_entry("h1", HIST_NOW)];
+        let _ = s.view();
+        s.history_filter = "zzz-no-match".into();
+        let _ = s.view();
+    }
+
+    #[test]
     fn queue_session_persists_and_restores_across_restart() {
         let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir()
@@ -19746,6 +20144,9 @@ mod tests {
         assert!(s.autoload);
         assert_eq!(s.pending_resume, Some(42.0));
         assert!(!s.restored_pending);
+        // Buffering is not a play: nothing is logged (the track is
+        // already the history tail from last session).
+        assert!(s.history.is_empty());
     }
 
     #[test]
@@ -20778,7 +21179,7 @@ mod tests {
         s.search_filter = SearchFilter::Songs;
         s.results.tracks = vec![art_track("a"), art_track("b"), art_track("c")];
         let slots = s.art_slots("body");
-        // Chips + spacing head, then exact 54px pitch per row: one
+        // Chips + spacing head, then exact 58px pitch per row: one
         // thumb slot per row (heroes warm on demand, never per row).
         let ya: Vec<f32> = slots
             .iter()
@@ -20792,7 +21193,7 @@ mod tests {
             .collect();
         assert_eq!(ya, vec![64.0]);
         assert_eq!(yb.len(), 1);
-        assert!((yb[0] - ya[0] - 54.0).abs() < 0.01);
+        assert!((yb[0] - ya[0] - 58.0).abs() < 0.01);
     }
 
     #[test]
@@ -20816,9 +21217,9 @@ mod tests {
             .map(|(_, y)| *y)
             .collect();
         assert_eq!(y0, vec![0.0]);
-        // 58px rows + 5px hairlines between (never leading).
+        // 60px rows + 5px hairlines between (never leading).
         assert_eq!(y1.len(), 1);
-        assert!(y1.iter().all(|y| (y - 63.0).abs() < 0.01));
+        assert!(y1.iter().all(|y| (y - 65.0).abs() < 0.01));
     }
 
     #[test]
