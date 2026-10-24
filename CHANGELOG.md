@@ -32,7 +32,9 @@
   Jump-back-in and Made-for-you rows. The History page renders the
   newest 100 with a Show more pager (uncapped multi-thousand logs
   stalled frames: 65ms to 2ms per view build), and the player bar
-  shows a live FPS meter (debug builds / --features debug-panel)
+  shows a live FPS meter (debug builds / --features debug-panel).
+  Home shelves are memoized (ranking runs on navigation/Tick, never
+  per frame: 12ms to 4ms per Home view build in debug)
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),

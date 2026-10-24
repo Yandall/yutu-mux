@@ -883,6 +883,19 @@ pub enum RightTab {
     Recent,
 }
 
+/// Home shelf contents, recomputed on navigation and on Tick while
+/// the shelves are visible (never per frame: the ranking scans the
+/// whole catalog plus a history query, ~ms in debug builds).
+#[derive(Debug, Clone, Default)]
+struct HomeShelves {
+    quick: Vec<Track>,
+    albums: Vec<AlbumGroup>,
+    more_artist: Option<String>,
+    more: Vec<Track>,
+    weekly: Vec<Track>,
+    forgotten: Vec<Track>,
+}
+
 /// One recommended-album shelf group: catalog tracks sharing an
 /// (album, artist) name, scored by summed plays. Art comes from the
 /// first track; playback queues every track in id order.
@@ -2114,6 +2127,11 @@ pub struct AppState {
     nav_forward: Vec<Route>,
     /// Right-panel tab (view-only state).
     right_tab: RightTab,
+    /// Memoized Home/Discovery shelves (quick picks, albums, more-from,
+    /// weekly mix, forgotten): ranking scans the whole catalog plus a
+    /// history query, so views read this instead of recomputing per
+    /// frame. Refreshed on navigation and on Tick while visible.
+    home_shelves: HomeShelves,
     /// Queue id order before shuffle was turned on. Toggling off restores
     /// it (ids added while shuffled append at the end); the playing song
     /// never skips: [`Queue::reorder`] retargets its index by identity.
@@ -2843,6 +2861,12 @@ impl AppState {
     /// rest without ever sweeping the library.
     fn ensure_visible_tasks(&mut self) -> iced::Task<Message> {
         const META_CAP: usize = 8;
+        // Shelf rankings are memoized (views read the cache, never
+        // recompute): refresh on navigation while the shelves are
+        // visible so the first paint is already correct.
+        if matches!(self.route, Route::Home | Route::Discovery) {
+            self.refresh_home_shelves();
+        }
         let mut need_meta: Vec<String> = Vec::new();
         for id in self.visible_ids() {
             if need_meta.len() >= META_CAP {
@@ -2897,9 +2921,10 @@ impl AppState {
                 .take(12)
                 .collect();
             strip_art.extend(
-                self.recommended_albums(10)
-                    .into_iter()
-                    .filter_map(|g| g.tracks.into_iter().next())
+                self.home_shelves
+                    .albums
+                    .iter()
+                    .filter_map(|g| g.tracks.first().cloned())
                     .take(12),
             );
             for t in &strip_art {
@@ -4510,6 +4535,7 @@ impl AppState {
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             right_tab: RightTab::Queue,
+            home_shelves: HomeShelves::default(),
             pre_shuffle: None,
             pre_shuffle_cur: None,
             suggest: Vec::new(),
@@ -6793,6 +6819,27 @@ impl AppState {
         scored.into_iter().take(n).collect()
     }
 
+    /// Recompute the memoized Home/Discovery shelves (quick picks,
+    /// albums, more-from, weekly mix, forgotten). Ranking scans the
+    /// whole catalog plus a history query, so views read the cache
+    /// instead of paying that on every frame. Called on navigation
+    /// and on Tick while the shelves are visible.
+    fn refresh_home_shelves(&mut self) {
+        let more_artist = self.top_artist();
+        let more = more_artist
+            .as_deref()
+            .map(|a| self.more_from_artist(a, 8))
+            .unwrap_or_default();
+        self.home_shelves = HomeShelves {
+            quick: self.quick_pick_tracks(8),
+            albums: self.recommended_albums(10),
+            more_artist,
+            more,
+            weekly: self.weekly_mix_tracks(),
+            forgotten: self.forgotten_tracks(),
+        };
+    }
+
     /// Uniform rows of tracks as art slots (`pitch` includes spacing
     /// and dividers): one entry per track (the row raster rows render;
     /// heroes warm on demand via [`large_art_task`]).
@@ -6869,7 +6916,7 @@ impl AppState {
                 // New shelves above: quick-pick + more-from rows use
                 // exact pitches; both card strips warm on nav (same
                 // 544px key), so the y-flow just steps past them.
-                let quick = self.quick_pick_tracks(8);
+                let quick = &self.home_shelves.quick;
                 if !quick.is_empty() {
                     y += Self::text_h(19.0) + 10.0;
                     for (k, pair) in quick.chunks(2).enumerate() {
@@ -6885,18 +6932,17 @@ impl AppState {
                 if lib_shown {
                     y += Self::text_h(19.0) + 10.0 + HOME_CARD_H + HOME_STRIP_GAP + 12.0;
                 }
-                let albums = self.recommended_albums(10);
+                let albums = &self.home_shelves.albums;
                 if !albums.is_empty() {
                     y += Self::text_h(19.0) + 10.0 + HOME_CARD_H + HOME_STRIP_GAP + 12.0;
                 }
-                if let Some(artist) = self.top_artist() {
-                    let more = self.more_from_artist(&artist, 8);
-                    if !more.is_empty() {
-                        y += Self::text_h(19.0) + 10.0;
-                        slots.extend(Self::track_row_slots(&more, y, ROW_PITCH));
-                        y += more.len() as f32 * ROW_PITCH + 12.0;
-                    }
+                let more = &self.home_shelves.more;
+                if !more.is_empty() {
+                    y += Self::text_h(19.0) + 10.0;
+                    slots.extend(Self::track_row_slots(more, y, ROW_PITCH));
+                    y += more.len() as f32 * ROW_PITCH + 12.0;
                 }
+                y += Self::text_h(19.0) + 12.0;
                 y += Self::text_h(19.0) + 12.0;
                 let picks = self.home_pick_tracks();
                 let cols = self.grid_cols();
@@ -7083,10 +7129,10 @@ impl AppState {
                 Self::track_row_slots(self.queue.items(), y0, DIV_PITCH)
             }
             Route::Discovery => {
-                let weekly = self.weekly_mix_tracks();
-                let forgotten = self.forgotten_tracks();
+                let weekly = &self.home_shelves.weekly;
+                let forgotten = &self.home_shelves.forgotten;
                 let mut slots = Self::track_row_slots(
-                    &weekly,
+                    weekly,
                     BODY_PAD + Self::text_h(22.0) + 10.0 + 32.0 + 10.0,
                     ROW_PITCH,
                 );
@@ -7099,7 +7145,7 @@ impl AppState {
                     + 10.0
                     + 32.0
                     + 10.0;
-                slots.extend(Self::track_row_slots(&forgotten, fy0, ROW_PITCH));
+                slots.extend(Self::track_row_slots(forgotten, fy0, ROW_PITCH));
                 slots
             }
             Route::Radio(_) => Self::track_row_slots(
@@ -11778,6 +11824,7 @@ impl AppState {
                     self.fps = Self::fps_ema(self.fps, dt);
                 }
                 self.last_frame = Some(at);
+                return iced::Task::none();
             }
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
@@ -11788,6 +11835,12 @@ impl AppState {
                 if !self.lazy_init_done {
                     self.lazy_init_done = true;
                     tasks.push(self.ensure_visible_tasks());
+                }
+                // Home/Discovery shelves rank the whole catalog on every
+                // view build otherwise; refresh the memo at tick cadence
+                // instead so frames stay cheap while data stays fresh.
+                if matches!(self.route, Route::Home | Route::Discovery) {
+                    self.refresh_home_shelves();
                 }
                 // Position clock: manual advance while a user seek settles
                 // (the backend reports the stale pre-seek position for a
@@ -15860,13 +15913,15 @@ impl AppState {
                         .into()
                     };
                 let home_search_results: iced::Element<'_, Message> = home_hits;
-                let weekly_n = self.weekly_mix_tracks().len();
-                let forgotten_n = self.forgotten_tracks().len();
+                let weekly_n = self.home_shelves.weekly.len();
+                let forgotten_n = self.home_shelves.forgotten.len();
                 // YouTube-style shelves, all local: heavy rotation, the
                 // user's own playlists, catalog albums by plays, and the
                 // top artist's other songs. Empty shelves hide (a fresh
                 // install shows the hint plus Made-for-you instead).
-                let quick: Vec<Track> = self.quick_pick_tracks(8);
+                // Shelves read the Tick/nav-refreshed memo (ranking scans
+                // the whole catalog, so views must not recompute it).
+                let quick = &self.home_shelves.quick;
                 let quick_section: iced::Element<'_, Message> = if quick.is_empty() {
                     text("").size(1).into()
                 } else {
@@ -15966,24 +16021,25 @@ impl AppState {
                     .spacing(10)
                     .into()
                 };
-                let more_section: iced::Element<'_, Message> = match self.top_artist() {
-                    Some(artist) => {
-                        let tracks = self.more_from_artist(&artist, 8);
-                        if tracks.is_empty() {
-                            text("").size(1).into()
-                        } else {
-                            let rows: Vec<iced::Element<'_, Message>> =
-                                tracks.iter().map(|t| self.track_row(t)).collect();
-                            column![
-                                text(format!("More from {artist}")).size(19),
-                                column(rows).spacing(2),
-                            ]
-                            .spacing(10)
-                            .into()
+                let more_section: iced::Element<'_, Message> =
+                    match self.home_shelves.more_artist.clone() {
+                        Some(artist) => {
+                            let tracks = &self.home_shelves.more;
+                            if tracks.is_empty() {
+                                text("").size(1).into()
+                            } else {
+                                let rows: Vec<iced::Element<'_, Message>> =
+                                    tracks.iter().map(|t| self.track_row(t)).collect();
+                                column![
+                                    text(format!("More from {artist}")).size(19),
+                                    column(rows).spacing(2),
+                                ]
+                                .spacing(10)
+                                .into()
+                            }
                         }
-                    }
-                    None => text("").size(1).into(),
-                };
+                        None => text("").size(1).into(),
+                    };
                 column![
                     text("Good evening").size(24),
                     home_search_results,
@@ -16418,12 +16474,14 @@ impl AppState {
             Route::History => self.history_view(),
             Route::Discovery => {
                 let weekly: Vec<iced::Element<'_, Message>> = self
-                    .weekly_mix_tracks()
+                    .home_shelves
+                    .weekly
                     .iter()
                     .map(|t| self.track_row(t))
                     .collect();
                 let forgotten: Vec<iced::Element<'_, Message>> = self
-                    .forgotten_tracks()
+                    .home_shelves
+                    .forgotten
                     .iter()
                     .map(|t| self.track_row(t))
                     .collect();
@@ -20451,6 +20509,33 @@ mod tests {
         assert_eq!(s.history_groups(HIST_NOW, usize::MAX).0.len(), 2);
     }
 
+    #[test]
+    fn home_shelves_come_from_the_memo_not_live_scans() {
+        let mut s = test_state();
+        for (id, title, artist) in [("q1", "One", "A"), ("q2", "Two", "A")] {
+            let mut t = mk_track(id, title, artist);
+            t.thumbnail_url = Some("http://art".into());
+            t.album = Some("Alpha".into());
+            s.catalog.insert(id.into(), t);
+            s.history_full.push(hist_entry(id, HIST_NOW));
+        }
+        // Stale until refreshed: views never scan the catalog.
+        let (groups, _) = s.history_groups(HIST_NOW, usize::MAX);
+        assert!(!groups.is_empty());
+        assert!(s.home_shelves.quick.is_empty());
+        s.refresh_home_shelves();
+        assert_eq!(s.home_shelves.quick.len(), 2);
+        assert_eq!(s.home_shelves.albums.len(), 1);
+        assert_eq!(s.home_shelves.more_artist.as_deref(), Some("A"));
+        assert_eq!(s.home_shelves.more.len(), 2);
+        // Fresh plays invalidate through the next refresh, not the view.
+        s.history_full.insert(0, hist_entry("q2", HIST_NOW + 10));
+        assert_eq!(s.home_shelves.quick[0].id, "q1");
+        s.refresh_home_shelves();
+        assert_eq!(s.home_shelves.quick[0].id, "q2");
+        s.route = Route::Home;
+        let _ = s.view();
+    }
     #[test]
     fn history_page_renders_with_entries_and_filter() {
         let mut s = test_state();
