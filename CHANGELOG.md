@@ -11,7 +11,20 @@
   buffering paused on launch, so the first play/seek is instant.
   Submitting a search (Enter on a highlighted suggestion or a
   suggestion click) lands on the Search page, dropping the
-  now-playing drawer so results take focus
+  now-playing drawer so results take focus. Every play lands in
+  Recent: Next, Prev, queue jumps, auto-advances, repeats, skips
+  and bulk plays all log the new current track with cached
+  metadata at load start (not just click-to-play), and restores
+  pull the full in-memory history depth so plays from days ago
+  still render. A new History section in the sidebar lists every
+  play playlist-style, grouped into Today / Yesterday / This week /
+  This month / older months with a played-at stamp per row and its
+  own search. Rows breathe more: 8px padding inside every
+  highlighted track row (heights grew to fit: 56px track rows,
+  60px queue rows, 48px autoplay rows). Text-only buttons pad 8px
+  too (Discovery, Show more, Radio, Clear, Open, Sign out,
+  relaunch, Queue/Recent tabs, Sync now). History rows highlight per row (repeat plays no longer
+  light up together) and show the track length
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
