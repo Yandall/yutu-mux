@@ -7018,7 +7018,7 @@ impl AppState {
                 button(btn_text("Sign out", 12))
                     .style(hover_row)
                     .on_press(Message::CookieLogout)
-                    .padding(7),
+                    .padding(8),
             ]
             .spacing(4)
             .into();
@@ -7062,7 +7062,7 @@ impl AppState {
                 button(self.busy_content("Sync now", 12.0))
                     .style(green_play)
                     .on_press(Message::SyncNow)
-                    .padding(7),
+                    .padding(8),
                 checkbox(self.auto_sync)
                     .label("Auto-sync every 15 min")
                     .on_toggle(Message::AutoSyncToggled),
@@ -14326,11 +14326,11 @@ impl AppState {
         let tab_queue = button(btn_text("Queue", 12))
             .style(nav_style(self.right_tab == RightTab::Queue))
             .on_press(Message::SetRightTab(RightTab::Queue))
-            .padding(6);
+            .padding(8);
         let tab_recent = button(btn_text("Recent", 12))
             .style(nav_style(self.right_tab == RightTab::Recent))
             .on_press(Message::SetRightTab(RightTab::Recent))
-            .padding(6);
+            .padding(8);
         let from_line: iced::Element<'_, Message> = if self.playing_from.is_empty() {
             text("").size(1).into()
         } else {
@@ -15482,7 +15482,7 @@ impl AppState {
                             button(btn_text("See all results →", 12))
                                 .style(hover_row)
                                 .on_press(Message::Navigate(Route::Search))
-                                .padding(4),
+                                .padding(8),
                         ]
                         .spacing(4)
                         .into()
@@ -15500,7 +15500,7 @@ impl AppState {
                         button(btn_text("Discovery →", 12))
                             .style(hover_row)
                             .on_press(Message::Navigate(Route::Discovery))
-                            .padding(4),
+                            .padding(8),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row![
@@ -15839,7 +15839,7 @@ impl AppState {
                         button(btn_text("Clear", 12))
                             .style(hover_row)
                             .on_press(Message::QueueClear)
-                            .padding(6),
+                            .padding(8),
                     ]
                     .spacing(4)
                     .align_y(iced::alignment::Vertical::Center),
@@ -15885,7 +15885,7 @@ impl AppState {
                             button(btn_text("Open", 12))
                                 .style(hover_row)
                                 .on_press(Message::OpenPlaylist(p.id.clone()))
-                                .padding(6),
+                                .padding(8),
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
@@ -16046,7 +16046,7 @@ impl AppState {
                         button(btn_text("Relaunch now to apply", 12))
                             .style(hover_row)
                             .on_press(Message::RelaunchNow)
-                            .padding(5)
+                            .padding(8)
                             .into()
                     } else {
                         text("").size(1).into()
@@ -16206,14 +16206,14 @@ impl AppState {
                         button(btn_text("Show more", 12))
                             .style(hover_row)
                             .on_press(Message::ArtistTopExpand)
-                            .padding(4)
+                            .padding(8)
                             .into()
                     } else if fetching_full {
                         row![
                             button(btn_text("Show more", 12))
                                 .style(hover_row)
                                 .on_press(Message::ArtistTopExpand)
-                                .padding(4),
+                                .padding(8),
                             Self::spinner_frame(self.spin_frame, 12.0, MUTED),
                         ]
                         .spacing(6)
@@ -16450,7 +16450,7 @@ impl AppState {
                         button(btn_text("Radio", 13))
                             .style(hover_row)
                             .on_press(Message::StartRadio(id.clone()))
-                            .padding(7),
+                            .padding(8),
                     ]
                     .spacing(8),
                     content,

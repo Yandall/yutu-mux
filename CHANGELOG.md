@@ -21,7 +21,9 @@
   This month / older months with a played-at stamp per row and its
   own search. Rows breathe more: 8px padding inside every
   highlighted track row (heights grew to fit: 56px track rows,
-  60px queue rows, 48px autoplay rows). History rows highlight per row (repeat plays no longer
+  60px queue rows, 48px autoplay rows). Text-only buttons pad 8px
+  too (Discovery, Show more, Radio, Clear, Open, Sign out,
+  relaunch, Queue/Recent tabs, Sync now). History rows highlight per row (repeat plays no longer
   light up together) and show the track length
 
 - Memory diet: lists warm one art raster per track (not two),
