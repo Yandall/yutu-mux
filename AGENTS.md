@@ -42,6 +42,12 @@
   Icon rule: hollow outline for **inactive** states, **filled** version
   for **active** states (e.g. heart vs heart-filled for liked); with no
   active/inactive distinction, prefer the filled version.
+- Row click rule (app-wide UI pattern, no exceptions for new lists):
+  song rows play on **art click** (hover play overlay via
+  `art_play_button`) **and title click** (`row_button` with
+  `Message::PlayNow`), with **no separate play button** and no inline
+  action buttons; extra actions live in the right-click context menu
+  only. Cards behave the same (the whole card is the press target).
 - Never write em dashes (neither in the UI nor in code comments/docs):
   use a hyphen, comma, colon, or the `·` separator instead.
 - Search-only UX: no video-ID paste field.

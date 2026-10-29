@@ -229,5 +229,6 @@ Done: user can plausibly replace Spotify for daily listening.
 90. Round 79: YouTube-style Home shelves from local data (no home feed in ytmapi-rs, no new network on open): Quick picks heavy-rotation rows with play-all, From-your-library playlist cards, Recommended albums by summed plays, More-from-top-artist rows; server community playlists need the missing home endpoint
 91. Round 80: lag fix + FPS meter (History renders newest 100 with Show more instead of all 5000: 65ms to 2ms view builds; per-frame meter in the player bar on debug builds / debug-panel, zero cost in release; memoized shelves refreshed on nav/Tick instead of per-view catalog scans + DB hits, Frame skips the MPRIS publish)
 92. Round 81: Home 120fps follow-up (debug readout gains view-build ms to split build vs layout/raster cost; library strip capped at 12 hero cards like the sidebar cap)
+93. Round 82: row click rule (app-wide UI pattern in AGENTS.md: song rows play on art click with hover overlay plus title click, no separate play button, extras in right-click menu only; Home quick picks and more-from rows switch from track_row to the new home_song_row)
 
 Each commit: `cargo fmt && cargo clippy && cargo test` before push. Push to `main` until contributors arrive, then PRs.

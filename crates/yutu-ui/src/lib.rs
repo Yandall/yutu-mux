@@ -15829,6 +15829,49 @@ impl AppState {
         .into()
     }
 
+    /// Home song row: the art (hover play overlay) and the
+    /// title/artist both play the song, with no separate play button.
+    /// This is the app-wide row pattern: rows play on art/title
+    /// click, extra actions live in the right-click menu. Id-keyed
+    /// hover (quick picks and more-from never repeat a track).
+    fn home_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area, row, text};
+        use iced::Fill;
+        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let menu_id = t.id.clone();
+        let hover_id = t.id.clone();
+        mouse_area(
+            container(
+                row![
+                    self.art_play_button(t, hovered, Message::PlayNow(t.id.clone())),
+                    row_button(Self::btn_track_text_single(
+                        &t.title,
+                        &t.artist,
+                        14,
+                        iced::Color::WHITE
+                    ))
+                    .style(row_click)
+                    .on_press(Message::PlayNow(t.id.clone()))
+                    .padding(3)
+                    .width(Fill),
+                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(8),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_right_press(Message::OpenContext(menu_id))
+        .on_enter(Message::TrackHover(Some(hover_id)))
+        .on_exit(Message::TrackHover(None))
+        .into()
+    }
+
     fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{
@@ -15944,13 +15987,16 @@ impl AppState {
                 let quick_section: iced::Element<'_, Message> = if quick.is_empty() {
                     text("").size(1).into()
                 } else {
-                    let left: Vec<iced::Element<'_, Message>> =
-                        quick.iter().step_by(2).map(|t| self.track_row(t)).collect();
+                    let left: Vec<iced::Element<'_, Message>> = quick
+                        .iter()
+                        .step_by(2)
+                        .map(|t| self.home_song_row(t))
+                        .collect();
                     let right: Vec<iced::Element<'_, Message>> = quick
                         .iter()
                         .skip(1)
                         .step_by(2)
-                        .map(|t| self.track_row(t))
+                        .map(|t| self.home_song_row(t))
                         .collect();
                     column![
                         row![
@@ -16047,7 +16093,7 @@ impl AppState {
                                 text("").size(1).into()
                             } else {
                                 let rows: Vec<iced::Element<'_, Message>> =
-                                    tracks.iter().map(|t| self.track_row(t)).collect();
+                                    tracks.iter().map(|t| self.home_song_row(t)).collect();
                                 column![
                                     text(format!("More from {artist}")).size(19),
                                     column(rows).spacing(2),
@@ -20509,6 +20555,26 @@ mod tests {
         // The rows render with the per-row hover wired.
         s.history_filter = String::new();
         let _ = s.view();
+    }
+
+    #[test]
+    fn home_song_rows_hover_by_track_and_render() {
+        // Home rows follow the app-wide row pattern: art and title
+        // both play (no separate play button), hovered via TrackHover.
+        let mut s = test_state();
+        for (id, title) in [("q1", "One"), ("q2", "Two")] {
+            let mut t = mk_track(id, title, "A");
+            t.thumbnail_url = Some("http://art".into());
+            s.catalog.insert(id.into(), t);
+        }
+        s.history_full = vec![hist_entry("q1", HIST_NOW), hist_entry("q2", HIST_NOW - 1)];
+        s.refresh_home_shelves();
+        s.route = Route::Home;
+        let _ = s.view();
+        let _ = s.update(Message::TrackHover(Some("q1".into())));
+        assert_eq!(s.hovered_track.as_deref(), Some("q1"));
+        let _ = s.update(Message::TrackHover(None));
+        assert_eq!(s.hovered_track, None);
     }
 
     #[test]
