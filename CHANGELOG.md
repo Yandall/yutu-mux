@@ -23,8 +23,23 @@
   highlighted track row (heights grew to fit: 56px track rows,
   60px queue rows, 48px autoplay rows). Text-only buttons pad 8px
   too (Discovery, Show more, Radio, Clear, Open, Sign out,
-  relaunch, Queue/Recent tabs, Sync now). History rows highlight per row (repeat plays no longer
-  light up together) and show the track length
+  relaunch, Queue/Recent tabs, Sync now). History rows highlight
+  per row (repeat plays no longer light up together) and show the
+  track length. Home goes YouTube-style with local shelves: Quick
+  picks (heavy rotation, two-column with play-all), From your
+  library (your playlists), Recommended albums (catalog albums
+  ranked by plays), More from your top artist, plus the existing
+  Jump-back-in and Made-for-you rows. The History page renders the
+  newest 100 with a Show more pager (uncapped multi-thousand logs
+  stalled frames: 65ms to 2ms per view build), and the player bar
+  shows a live FPS meter (debug builds / --features debug-panel).
+  Home shelves are memoized (ranking runs on navigation/Tick, never
+  per frame: 12ms to 4ms per Home view build in debug). The meter
+  also shows last view-build cost, and the library strip caps at
+  12 hero cards like the sidebar cap. Song rows follow one pattern
+  app-wide now: art and title click to play (no separate play
+  button), extras live in the right-click menu; Home shelves use
+  the new row builder
 
 - Memory diet: lists warm one art raster per track (not two),
   rows fetch a small 120px raster (not full-size thumbs),
