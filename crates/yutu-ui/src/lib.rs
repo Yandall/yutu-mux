@@ -14545,7 +14545,7 @@ impl AppState {
                     ]
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center)
-                    .padding(8),
+                    .padding(6),
                 )
                 .style(card_bg)
                 .padding(0)
@@ -14593,16 +14593,18 @@ impl AppState {
                     iced::Color::WHITE
                 },
             ))
-            .padding(3)
+            .padding(1)
             .width(Fill),
             container(text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED)).padding(3),
             remove_btn,
         ]
         .spacing(6)
         .align_y(iced::alignment::Vertical::Center)
-        .padding(8);
+        .padding(6);
         // Fixed height: the title may wrap to two lines, anything more
-        // clips instead of stretching the row.
+        // clips instead of stretching the row. Padding budget matters:
+        // a 2-line title + artist is 45.75px, so the row (6) + text
+        // cell (1) padding must leave 48px inside the 60px row.
         let lifted: iced::Element<'_, Message> = container(row_content)
             .style(row_bg(hovered))
             .width(Fill)
