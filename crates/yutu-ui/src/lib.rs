@@ -8089,6 +8089,31 @@ impl AppState {
         }
     }
 
+    /// Status + FPS row for the player bar, or `None` when both are
+    /// empty so the bar reclaims the line instead of holding a gap
+    /// (release builds hide chatter and the meter, leaving nothing).
+    fn status_row(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{row, text};
+        let status = self.status_text();
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        {
+            if status.is_empty() && self.fps <= 0.0 {
+                return None;
+            }
+        }
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        {
+            if status.is_empty() {
+                return None;
+            }
+        }
+        Some(
+            row![text(status).size(12).color(MUTED), self.fps_text(),]
+                .spacing(6)
+                .into(),
+        )
+    }
+
     /// Publish current track/status/volume to the MPRIS handle (if any) so
     /// desktop clients observe live state on property read. No-op headless.
     /// Poison-tolerant: a poisoned mutex still publishes via the inner guard.
@@ -14767,45 +14792,45 @@ impl AppState {
                 .width(Fill)
                 .align_x(iced::alignment::Horizontal::Center)
                 .into();
+            let mut bar_col = iced::widget::Column::new().spacing(6);
+            if let Some(status) = self.status_row() {
+                bar_col = bar_col.push(status);
+            }
             return container(
-                column![
-                    row![
-                        text(self.status_text()).size(12).color(MUTED),
-                        self.fps_text(),
-                    ]
-                    .spacing(6),
-                    info,
-                    transport_centered,
-                    row![
-                        text(fmt_time(shown_pos)).size(11).color(MUTED),
-                        seek_bar::seek_bar(shown_pos as f32, slider_max as f32),
-                        text(fmt_time(duration)).size(11).color(MUTED),
-                    ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center),
-                    row![
-                        self.mute_button(),
-                        pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                            .step(0.01_f32)
-                            .style(themed_slider)
-                            .width(Fill),
-                    ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center),
-                ]
-                .spacing(6),
+                bar_col
+                    .push(info)
+                    .push(transport_centered)
+                    .push(
+                        row![
+                            text(fmt_time(shown_pos)).size(11).color(MUTED),
+                            seek_bar::seek_bar(shown_pos as f32, slider_max as f32),
+                            text(fmt_time(duration)).size(11).color(MUTED),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                    .push(
+                        row![
+                            self.mute_button(),
+                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                .step(0.01_f32)
+                                .style(themed_slider)
+                                .width(Fill),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center),
+                    ),
             )
             .style(player_bg)
             .padding(10)
             .into();
         }
+        let mut bar_col = iced::widget::Column::new().spacing(4);
+        if let Some(status) = self.status_row() {
+            bar_col = bar_col.push(status);
+        }
         container(
-            column![
-                row![
-                    text(self.status_text()).size(12).color(MUTED),
-                    self.fps_text(),
-                ]
-                .spacing(6),
+            bar_col.push(
                 row![
                     {
                         let art: iced::Element<'_, Message> = match &current {
@@ -14917,8 +14942,7 @@ impl AppState {
                 ]
                 .spacing(main_gap)
                 .align_y(iced::alignment::Vertical::Center),
-            ]
-            .spacing(4),
+            ),
         )
         .style(player_bg)
         .padding(10)
@@ -24161,6 +24185,15 @@ mod tests {
         let mut s = test_state();
         s.status = "Loading x".into();
         assert_eq!(s.status_text(), "Loading x");
+    }
+
+    #[test]
+    fn status_row_collapses_when_empty() {
+        let mut s = test_state();
+        s.status.clear();
+        assert!(s.status_row().is_none());
+        s.status = "Loading x".into();
+        assert!(s.status_row().is_some());
     }
 
     #[test]
