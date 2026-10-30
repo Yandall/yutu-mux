@@ -74,12 +74,13 @@ pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamErro
     Err(classify_ytdlp_error(&stderr, video_id))
 }
 
-/// Download `video_id` audio straight to memory via the sidecar itself
+/// Fetch `video_id` audio straight to memory via the sidecar itself
 /// (`yt-dlp -o -`): the sidecar's own HTTP stack sends the headers,
 /// retries, and throttling handling that a bare `GET` of a `--get-url`
 /// URL lacks, so this is the fallback when fetching a resolved URL
 /// 403s (transient edge rejection) or when re-resolving also fails.
-/// Same format preference as [`resolve_audio_url`]. Capped at 200 MiB.
+/// Memory-only for playback; never written to disk. Same format
+/// preference as [`resolve_audio_url`]. Capped at 200 MiB.
 pub fn download_audio_bytes(bin: &str, video_id: &str) -> Result<Vec<u8>, StreamError> {
     const MAX_BYTES: u64 = 200 * 1024 * 1024;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
@@ -107,7 +108,7 @@ pub fn download_audio_bytes(bin: &str, video_id: &str) -> Result<Vec<u8>, Stream
     }
     if output.stdout.len() as u64 > MAX_BYTES {
         return Err(StreamError::Network(format!(
-            "yt-dlp direct download of {video_id}: over size cap"
+            "yt-dlp direct fetch of {video_id}: over size cap"
         )));
     }
     Ok(output.stdout)

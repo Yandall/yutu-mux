@@ -1,0 +1,40 @@
+# cargo-deny configuration (licenses only for now).
+# Note: cargo-deny cannot see the system libmpv shared library linked
+# through the libmpv2 shim (mpv feature, default-on). That link is
+# documented in README.md and NOTICE.md, not modeled here.
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "ISC",
+  "OFL-1.1",
+  "MPL-2.0",
+  "Unlicense",
+  "CC0-1.0",
+  "Zlib",
+]
+deny = [
+  "GPL-2.0",
+  "GPL-3.0",
+  "AGPL-1.0",
+  "AGPL-3.0",
+  "LGPL-2.0",
+  "LGPL-2.1",
+  "LGPL-3.0",
+]
+# libmpv2 itself is LGPL-2.1 and allowed only as a shim over the
+# system libmpv (GPL-2.0-or-later, default build only).
+exceptions = [
+  { name = "libmpv2", allow = ["LGPL-2.1"] },
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

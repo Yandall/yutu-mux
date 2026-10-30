@@ -1,47 +1,84 @@
 # yutu-mux
 
-Native Rust YouTube Music desktop app. Iced UI. Linux + macOS. See `PLAN.md`.
+Native Rust YouTube Music desktop app. Iced UI (no webview). Linux + macOS.
 
-## Status
+## Features
 
-Working native app on real YouTube Music data (no mock fixtures in the UI):
-Home/Search/Queue/Library/Settings + Artist/Album/Playlist/Lyrics/Radio
-views, Up Next editor with click-to-jump + shuffle/repeat, user playlists
-(persisted), real search + streaming playback (yt-dlp + Innertube, on by
-default), EQ presets, disk-backed offline cache, local scan, scrobble
-submission (Last.fm + ListenBrainz), live MPRIS. OAuth device-flow login,
-library fetch, and LRCLIB lyrics live in `yutu-core` (UI wiring in progress).
+- Real search, artist/album/playlist pages, queue + autoplay tail,
+  shuffle/repeat, lyrics (LRCLIB), user playlists, likes/history
+- Streaming playback: mpv default (progressive URL streaming, seek,
+  EQ), rodio fallback (memory-only fetch)
+- 10-band graphic EQ (mpv-only, honest fallback message on rodio)
+- Local file scan, scrobble (Last.fm + ListenBrainz), live MPRIS
+- Cookie import sign-in with two-way library sync
 
-## Run
+Honest limits: free-tier bitrate ceiling (128-256kbps AAC/Opus is
+YouTube's, not ours), no offline keep (streaming only), PO-token 403s
+surface as errors, macOS packaging untested.
+
+## Install
+
+Rust 1.99+ via `mise use -g rust@stable`. System deps:
+
+```sh
+# Arch
+sudo pacman -S mpv alsa-lib sqlite openssl yt-dlp
+# Debian/Ubuntu
+sudo apt install libasound2-dev pkg-config libx11-dev libwayland-dev \
+  libxkbcommon-dev libsqlite3-dev libssl-dev libmpv-dev yt-dlp
+# macOS
+brew install mpv yt-dlp
+```
+
+Then:
 
 ```sh
 cargo run            # native Iced GUI (needs display + audio)
+cargo run --features debug-panel   # with the debug UI (bug reports)
 cargo test           # headless-safe (audio/D-Bus/network tests skip)
-cargo check -p yutu-core --features innertube  # live Innertube API
-cargo run --features submit  # scrobble submission (same as default)
-cargo check -p yutu-player --features mpv  # gapless/EQ backend (needs libmpv)
-cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Run
+`cargo run --no-default-features` builds the rodio-only check (no
+Innertube, no mpv, no lyrics). See `docs/PACKAGING.md` for Flatpak and
+the portable tarball, `docs/TROUBLESHOOTING.md` for common failures.
 
-```sh
-cargo run            # native Iced GUI (needs display + audio)
-cargo test           # headless-safe (audio tests skip without device)
-cargo clippy --workspace --all-targets -- -D warnings
-```
+## Sign in
 
-Toolchain: `mise use -g rust@stable` (rust 1.99+). System deps: ALSA,
-X11/Wayland, SQLite, OpenSSL (present on most Linux desktops), plus
-`libmpv` for the default playback backend (`sudo pacman -S mpv` /
-`sudo apt install libmpv-dev` / `brew install mpv`).
-`cargo run --no-default-features` builds the rodio-only offline check.
+Settings imports a Netscape `cookies.txt` (private window, export via a
+"Get cookies.txt" extension). The file picker reads it, the app never
+shows its contents, the session is stored at 0600. Never paste cookie
+contents anywhere. Details and ToS notes in `docs/AUTH.md`.
 
-Library (likes/history) persists to `$XDG_DATA_HOME/yutu-mux/library.db`.
+## Disclaimer
+
+Unofficial, not affiliated with YouTube or Google. For personal and
+educational use. YouTube Music has no official API; this client uses
+reverse-engineered Innertube calls plus a `yt-dlp` sidecar for stream
+resolution, which may violate YouTube's Terms of Service and risks
+account action. Streaming only: the app keeps no offline copies.
 
 ## Layout
 
-- `crates/yutu-core` — models, backend trait, fixtures
-- `crates/yutu-player` — queue + audio backend trait
-- `crates/yutu-ui` — Iced shell (views in Phase 3)
-- `src/main.rs` — binary wiring
+- `crates/yutu-core`: models, backend trait, Innertube client, SQLite
+  cache/history/likes/playlists, yt-dlp resolver, lyrics, scrobble
+- `crates/yutu-player`: queue state machine, audio backend trait
+  (rodio + mpv), controller
+- `crates/yutu-ui`: Iced app shell (thin views only)
+- `crates/yutu-desktop`: MPRIS2 D-Bus service, tray model
+- `src/main.rs`: binary wiring
+
+## Contributing
+
+See `CONTRIBUTING.md`. Branch per feature (`feat/<name>`), PR to
+`main`. Run `cargo fmt`, 3-config clippy, and `cargo test --workspace`
+before pushing.
+
+## License
+
+MIT, see `LICENSE`. Third-party notices in `NOTICE.md` (Inter OFL-1.1,
+Lucide ISC, symphonia MPL-2.0, and others).
+
+Note: the default build links the system `libmpv`
+(GPL-2.0-or-later) at runtime, so distributed default binaries are
+GPL-affected combined works. The `--no-default-features` build is
+GPL-free.

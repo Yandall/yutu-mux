@@ -13,10 +13,9 @@ sudo apt-get install -y libasound2-dev pkg-config libx11-dev \
   libwayland-dev libxkbcommon-dev libmpv-dev
 ```
 
-Same set as `.github/workflows/ci.yml`, plus `libmpv-dev`: the `mpv`
-cargo feature does not exist yet (`MpvBackend` is a Phase-5 follow-up),
-but the system library is installed now so the future backend links
-without workflow changes. Rust via `mise use -g rust@stable` (rust 1.99+).
+Same set as `.github/workflows/ci.yml`, plus `libmpv-dev`: the default
+`mpv` cargo feature links the system library at runtime (see `NOTICE.md`
+for the GPL note). Rust via `mise use -g rust@stable` (rust 1.99+).
 
 ### Flatpak tooling (Linux only)
 

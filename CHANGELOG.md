@@ -226,16 +226,14 @@
   export shape): rows convert to a header before login, missing SAPISID
   fails fast; previously every Netscape file failed as bad/expired
 - Real audio resolution: yt-dlp sidecar first (AAC preferred), 1 MiB
-  range-chunked downloads, permanent ignored e2e test
-  (`resolve -> fetch -> decode` green in ~7s)
+  range-chunked fetches (memory-only, never stored), permanent ignored
+  e2e test (`resolve -> fetch -> decode` green in ~7s)
 - Scrobble submission: Last.fm + ListenBrainz live POSTs (`submit`
   feature, default-on), Settings credential fields, status reporting
 - MPRIS live: UI publishes track/status/volume to the shared handle on
   every state change (`playerctl` shows the real track now)
 - `MpvBackend` (`mpv` feature, libmpv2): gapless flag, seek, volume,
   10-band EQ via `af` chain; rodio stays default
-- Offline cache is disk-backed: store/read/evict-to-disk, LRU file
-  deletion, self-heal on missing files
 - Real Innertube search: `search_tracks/albums/artists` on
   `InnertubeBackend` (anonymous works) + redacted live fixture
 - Release pipeline: fixed Flatpak manifest, `release.yml` tarball flow,
@@ -248,9 +246,10 @@
   UI removed; test tone retired
 - Player bar: elapsed/total times, draggable progress, auto-advance at
   track end, artwork placeholder + like, live MPRIS position
-- Instant playback: mpv streams URLs progressively (no full download),
-  expire-aware URL cache (back/replay instant), next-song prefetch at 75%,
-  1s-early auto-advance; rodio keeps the download path
+- Instant playback: mpv streams URLs progressively (memory-only, no
+  stored files), expire-aware URL cache (back/replay instant),
+  next-song prefetch at 75%, 1s-early auto-advance; rodio fetches
+  fully to memory
 - Synced lyrics view: LRCLIB fetch on open, current-line highlight
   following playback, plain/instrumental fallbacks
 - Thumbnails in search rows, queue, right panel and player bar
@@ -268,9 +267,8 @@
 - Click-to-play replaces the queue + same-artist autoplay tail; play-next
   insert; suggestion popup under the bar (Enter = full Search page)
 - Context menu (… button, right-click N/A in Iced): play/next/queue/mix/
-  lyrics/like/don't-recommend/download/album/artist + add-to-playlist;
-  offline download to disk cache; NowPlaying drawer via ▲; YTM-style
-  slim sidebar
+  lyrics/like/don't-recommend/album/artist + add-to-playlist;
+  NowPlaying drawer via ▲; YTM-style slim sidebar
   (Home/Search/Library + filter + inline create + collapse rail)
 - Write ops audited end to end: like (`like/like`), don't-recommend
   (`like/dislike`), clear (`like/removelike`), playlist create
@@ -379,11 +377,9 @@
 - Lazy artwork both-keys + chaining: the visible warmer now fetches raw and 544px hero keys (Home cards read hero, rows read raw) so covers load without playing first; each arrival chains the capped remainder; 120s cooldowns for failed art/empty probes stop retry loops; metadata probes run concurrently per id
 - Lazy visible fetching: startup does zero network and zero SQLite writes (memory-only seed, instant window with cached titles plus disk covers); first Tick and every navigation fetch only the visible screenful (metadata capped at 8 with in-flight dedup, artwork disk-first small-thumb warm plus sidebar covers); hydrate probes keep exact-id matches only so small batches never explode into 100+ rows
 - Library track cache + hydration: every seen Track is cached in SQLite so Favorites/history/covers render on launch with no search; bare liked/history ids from older installs hydrate in the background (watch playlist probes, capped) plus on-demand fetch whenever an unknown id is opened/played/queued; pre-art playlist rows heal their covers; unknown actions now say Fetching info instead of Track not found
-- Downloaded default playlist: built-in list alongside Favorites for offline songs; completed downloads join in add order and persist across restarts (SQLite `downloads` plus track cache), startup prunes files that are gone, removing deletes the cached audio, adding starts a download, play/queue/shuffle work from the detail page
-- Download 403 resilience: chunked fetches now send browser-like headers, a 403 re-resolves once for a fresh URL, then falls back to a direct sidecar download (`yt-dlp -o -`) before the raw probes
-- Offline playback of downloads: play paths try the on-disk bytes first (either backend, no network), and downloads now store the full bundle (audio + lyrics + artwork on disk with metadata in SQLite); covers/lyrics render from disk, online plays heal missing sidecars for downloaded songs
+- Stream 403 resilience: chunked fetches send browser-like headers, a 403 re-resolves once for a fresh URL, then falls back to a memory-only sidecar fetch (`yt-dlp -o -`, never stored) before the raw probes
 - Offline artwork fix: saved covers now carry a sniffed image extension (the decoder keys off it, so extensionless files never rendered); early `.bin` files migrate on first lookup
-- Download removal: the context menu toggles Download/Remove download per song, and removal deletes the whole bundle (audio + lyrics + covers) instead of just the audio file
+- Removed before release: offline download keeping (Downloaded list, on-disk audio bundles) was cut for YouTube ToS safety; playback is streaming-only and keeps nothing
 - Search focus: view root is always a Stack, so popup layers appearing
   no longer rebuild widget state; typing keeps focus and cursor until
   the user clicks elsewhere (plus a stable search input id)
@@ -447,29 +443,18 @@
 
 First working native app (mock library + live Innertube core):
 
-- Iced views: Home/Search/Queue/Library/Discovery/Settings +
-  Artist/Album/Playlist/Lyrics/Radio; Up Next editor; shortcuts
-- Persistent likes/history/user playlists (SQLite)
-- Audible rodio pipeline; EQ presets, offline-cache tracker, local scan
-- Scrobble rules + ListenBrainz payloads (submit stubbed); Weekly Mix /
-  Forgotten Favorites
-- MPRIS2 advertisement from the binary (track propagation follow-up)
-- `innertube` feature: anonymous + cookie connect, suggestions, stream
-  fallback, PO-token policy, breakage reports (live-verified)
-
-Known gaps: real stream URLs in the player, EQ audible effect (needs mpv
-backend), scrobble submission, Flatpak/dmg artifacts.
-
 - Native Iced shell: Home/Search/Queue/Library/Settings + Artist/Album/
   Playlist/Lyrics/Radio/Discovery views, Up Next editor, keyboard shortcuts
 - MockBackend library; persistent likes/history/user playlists (SQLite)
-- Audible rodio pipeline (test tone; real streams need Innertube wiring)
-- EQ presets, offline-cache tracker, local scan, Player controller
+- Audible rodio pipeline; EQ presets, local scan, Player controller
 - Scrobble rules + ListenBrainz payloads (submit stubbed), Weekly Mix /
   Forgotten Favorites from local history
 - MPRIS2 D-Bus service + tray model (Linux); macOS notes
 - Live Innertube behind `innertube` feature (anonymous + cookie,
   suggestions, stream fallback, PO-token aware, breakage reports)
+
+Known gaps: real stream URLs in the player, EQ audible effect (needs mpv
+backend), scrobble submission, Flatpak/dmg artifacts.
 
 ## 0.1.0 goals (remaining)
 

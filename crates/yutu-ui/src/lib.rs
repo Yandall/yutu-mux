@@ -215,7 +215,6 @@ fn icon_bytes(name: &str) -> &'static [u8] {
         "chevron-right" => include_bytes!("../assets/icons/chevron-right.svg"),
         "arrow-up" => include_bytes!("../assets/icons/arrow-up.svg"),
         "arrow-down" => include_bytes!("../assets/icons/arrow-down.svg"),
-        "download" => include_bytes!("../assets/icons/download.svg"),
         "trash" => include_bytes!("../assets/icons/trash-2.svg"),
         "ellipsis" => include_bytes!("../assets/icons/ellipsis.svg"),
         "grip" => include_bytes!("../assets/icons/grip-vertical.svg"),
@@ -1254,12 +1253,6 @@ pub enum Message {
     /// Context menu: jump to this track's album/artist detail.
     OpenTrackAlbum(String),
     OpenTrackArtist(String),
-    /// Cache the resolved audio bytes for offline listening.
-    DownloadTrack(String),
-    Downloaded {
-        track_id: String,
-        result: Result<(), String>,
-    },
     ToggleSidebarPin,
     ToggleRightPin,
     /// Animation master toggle (Settings).
@@ -1490,7 +1483,7 @@ impl AudioOut {
     }
 
     /// True when this backend plays a URL progressively (mpv). Rodio needs
-    /// full bytes, so the UI downloads first on that path.
+    /// full bytes, so the UI fetches first on that path.
     fn wants_stream(&self) -> bool {
         match self {
             Self::Rodio(_) => false,
@@ -1499,7 +1492,7 @@ impl AudioOut {
         }
     }
 
-    /// Hand mpv a stream URL (no download). Rodio cannot do this.
+    /// Hand mpv a stream URL (no fetch). Rodio cannot do this.
     fn play_stream_url(&self, url: &str) -> Result<(), String> {
         let _ = url;
         match self {
@@ -1520,7 +1513,7 @@ impl AudioOut {
         }
     }
 
-    /// Play fully-downloaded bytes (resolve + fetch run in Iced tasks).
+    /// Play fetched bytes (resolve + fetch run in Iced tasks).
     fn play_track_bytes(&self, bytes: Vec<u8>) -> Result<(), String> {
         match self {
             Self::Rodio(a) => a.play_bytes(bytes).map_err(|e| e.to_string()),
@@ -1830,7 +1823,7 @@ const MAX_RESOLVE_ATTEMPTS: u8 = 3;
 /// error flows through the normal retry path instead of wedging the
 /// loader on a hung yt-dlp. Generous: healthy resolves take seconds.
 const RESOLVE_TIMEOUT_SECS: u64 = 15;
-/// Same backstop for full-download resolves (slow networks download
+/// Same backstop for full-fetch resolves (slow networks fetch
 /// for minutes legitimately, so this only catches true stalls).
 const RESOLVE_BYTES_TIMEOUT_SECS: u64 = 300;
 /// Back-button threshold in seconds: past this the button restarts
@@ -2030,10 +2023,6 @@ pub struct AppState {
     pub disliked: HashSet<String>,
     /// Disliked ids in add order (membership stays in `disliked`).
     pub disliked_order: Vec<String>,
-    /// Downloaded ids (offline audio on disk) in add order.
-    pub downloaded: HashSet<String>,
-    /// Downloaded ids in add order (membership stays in `downloaded`).
-    pub downloaded_order: Vec<String>,
     pub history: Vec<String>,
     /// Timestamped play log, newest first (drives the History page).
     /// Capped in memory; the database keeps every play ever.
@@ -2499,9 +2488,6 @@ impl AppState {
     fn playlist_has(&self, playlist_id: &str, track_id: &str) -> bool {
         if playlist_id == Self::FAVORITES_ID {
             return self.liked.contains(track_id);
-        }
-        if playlist_id == Self::DOWNLOADED_ID {
-            return self.downloaded.contains(track_id);
         }
         self.user_playlists
             .iter()
@@ -2996,9 +2982,6 @@ impl AppState {
         for id in &self.liked_order {
             consider(id, &mut seen, &mut out);
         }
-        for id in &self.downloaded_order {
-            consider(id, &mut seen, &mut out);
-        }
         for id in &self.history {
             consider(id, &mut seen, &mut out);
         }
@@ -3135,12 +3118,12 @@ impl AppState {
 
     /// True for playlists that live on YouTube Music (real server ids from
     /// an import or a synced create). Local `u{seq}` shells, the virtual
-    /// Favorites/Downloaded lists, and the `LM` liked-music pseudo-list
+    /// Favorites list, and the `LM` liked-music pseudo-list
     /// (likes/dislikes sync via `rate_song`, never playlist edits) never
     /// sync as playlists.
     #[cfg_attr(not(feature = "innertube"), allow(dead_code))]
     fn is_server_playlist(id: &str) -> bool {
-        if id == Self::FAVORITES_ID || id == Self::DOWNLOADED_ID || id == "LM" {
+        if id == Self::FAVORITES_ID || id == "LM" {
             return false;
         }
         if id.len() < 6 {
@@ -3723,7 +3706,7 @@ async fn resolve_via_raw(video_id: &str) -> Result<Vec<u8>, String> {
     ))
 }
 
-/// yt-dlp `--get-url` only (no download): the fast path behind instant
+/// yt-dlp `--get-url` only (no fetch): the fast path behind instant
 /// playback. Failures name the track; the caller decides bytes-vs-stream.
 async fn resolve_stream_url(video_id: &str) -> Result<String, String> {
     let bin = yutu_core::find_yt_dlp()
@@ -3897,7 +3880,7 @@ async fn hydrate_one(_id: String) -> Vec<Track> {
 /// feature gate, license-clean); then the raw WEB_REMIX probes with sidecar
 /// mint + retry on PO-gating. A bare-URL 403 retries once with a freshly
 /// resolved URL (Google edges transiently reject single URL instances),
-/// then falls back to a direct sidecar download (`-o -`, whose own HTTP
+/// then falls back to a direct sidecar fetch (memory-only) (`-o -`, whose own HTTP
 /// stack handles the headers/retries a bare GET lacks).
 async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
     if let Some(bin) = yutu_core::find_yt_dlp() {
@@ -3918,14 +3901,14 @@ async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
                         }
                         yutu_core::app_log::warn(
                             "yutu-stream",
-                            "fresh URL also failed; yt-dlp direct download",
+                            "fresh URL also failed; yt-dlp direct fetch (memory-only)",
                         );
                         match yutu_core::download_audio_bytes(&bin, video_id) {
                             Ok(bytes) => return Ok(bytes),
                             Err(e) => {
                                 yutu_core::app_log::warn(
                                     "yutu-stream",
-                                    format_args!("yt-dlp download failed ({e}); trying raw probes"),
+                                    format_args!("yt-dlp fetch failed ({e}); trying raw probes"),
                                 );
                             }
                         }
@@ -4006,12 +3989,7 @@ pub fn default_library_path() -> String {
     format!("{}/library.db", data_dir())
 }
 
-/// Disk cache dir for offline audio bytes (`*.m4a` per track).
-pub fn offline_cache_dir() -> String {
-    format!("{}/offline_cache", data_dir())
-}
-
-/// Disk dir for downloaded lyrics (`{sanitized-id}.json` per track).
+/// Disk dir for cached lyrics (`{sanitized-id}.json` per track).
 pub fn lyrics_dir() -> String {
     format!("{}/lyrics", data_dir())
 }
@@ -4030,7 +4008,7 @@ pub fn artwork_dir() -> String {
 }
 
 /// Filename-safe stem: ASCII alphanumerics kept, all else `_`.
-/// Same rule as the audio cache so ids map 1:1 with their `.m4a`.
+/// Same rule as the lyrics files so ids map 1:1 with their `.json`.
 fn sanitize_filename(s: &str) -> String {
     if s.is_empty() {
         return "unknown".to_string();
@@ -4105,7 +4083,7 @@ const ARTWORK_EXTS: [&str; 4] = ["jpg", "png", "webp", "gif"];
 
 /// Saved artwork path for `url`, if any: tries the sniffed-extension
 /// names, then migrates a legacy extensionless `.bin` file (sniff +
-/// rename, best-effort) so early downloads regain their covers.
+/// rename, best-effort) so early saves regain their covers.
 /// Covers older than the TTL read as missing (never deleted here:
 /// an offline viewer keeps its files until a successful fetch lets
 /// the prune sweep them). One metadata call per candidate, so rows
@@ -4140,7 +4118,7 @@ fn artwork_path_in(dir: &str, url: &str) -> Option<String> {
     None
 }
 
-/// Persisted artwork path for `url`, if downloaded.
+/// Persisted artwork path for `url`, if cached.
 pub fn artwork_path_for(url: &str) -> Option<String> {
     artwork_path_in(&artwork_dir(), url)
 }
@@ -4150,23 +4128,7 @@ fn artwork_file_exists(url: &str) -> bool {
     artwork_path_for(url).is_some()
 }
 
-/// Best-effort persist of fetched lyrics (missing dir is created;
-/// failures are ignored: the song stays playable without them).
-fn save_lyrics(track_id: &str, lyrics: &yutu_core::LyricsResult) {
-    save_lyrics_in(&lyrics_dir(), track_id, lyrics);
-}
-
-/// [`save_lyrics`] into an explicit dir (tests pass a temp dir).
-fn save_lyrics_in(dir: &str, track_id: &str, lyrics: &yutu_core::LyricsResult) {
-    if std::fs::create_dir_all(dir).is_err() {
-        return;
-    }
-    if let Ok(json) = serde_json::to_string(lyrics) {
-        let _ = std::fs::write(lyrics_file_in(dir, track_id), json);
-    }
-}
-
-/// Lyrics previously saved by [`save_lyrics`] (or by a download bundle).
+/// Lyrics previously cached on disk.
 /// `None` when never fetched: the caller fires the network task.
 #[cfg(feature = "lyrics")]
 fn load_lyrics(track_id: &str) -> Option<yutu_core::LyricsResult> {
@@ -4268,17 +4230,6 @@ fn save_artwork_in(dir: &str, url: &str, bytes: &[u8]) {
     let _ = std::fs::write(format!("{stem}.{ext}"), bytes);
 }
 
-/// Audio bytes previously downloaded for `track_id` inside `dir`.
-/// `None` when the track was never downloaded (or the file is gone).
-/// Reads the file directly (no tracker state): the in-memory tracker is
-/// always fresh after a restart, but the files persist.
-fn offline_bytes_in(dir: &str, track_id: &str) -> Option<Vec<u8>> {
-    let mut cache = yutu_player::OfflineCache::new(500 * 1024 * 1024);
-    cache.set_dir(dir.to_string());
-    let path = cache.file_path_for(track_id)?;
-    std::fs::read(path).ok()
-}
-
 /// Saved Google OAuth token bundle (0600, written by the login flow).
 #[cfg(feature = "innertube")]
 pub fn oauth_path() -> String {
@@ -4337,8 +4288,6 @@ fn load_persisted(
     Vec<Playlist>,
     u64,
     Vec<Track>,
-    HashSet<String>,
-    Vec<String>,
 ) {
     let empty = (
         HashSet::new(),
@@ -4348,8 +4297,6 @@ fn load_persisted(
         Vec::new(),
         Vec::new(),
         0,
-        Vec::new(),
-        HashSet::new(),
         Vec::new(),
     );
     let store = match LibraryStore::open(path) {
@@ -4411,27 +4358,9 @@ fn load_persisted(
     // launch with no search (offline-friendly). Missing rows simply
     // mean an older install: the caller hydrates them from the network.
     let cached = store.all_cached_tracks().unwrap_or_default();
-    // Downloaded ids in add order; prune entries whose audio file is
-    // gone (manual delete, eviction, or a previous crash) so the
-    // Downloaded list stays honest about what is really offline.
-    let downloaded_order: Vec<String> = {
-        let ids = store.downloaded_ids().unwrap_or_default();
-        let mut cache = yutu_player::OfflineCache::new(500 * 1024 * 1024);
-        cache.set_dir(offline_cache_dir());
-        let mut kept = Vec::with_capacity(ids.len());
-        for id in ids {
-            let present = cache
-                .file_path_for(&id)
-                .is_some_and(|p| std::path::Path::new(&p).exists());
-            if present {
-                kept.push(id);
-            } else {
-                let _ = store.unmark_downloaded(&id);
-            }
-        }
-        kept
-    };
-    let downloaded: HashSet<String> = downloaded_order.iter().cloned().collect();
+    // Legacy cleanup: pre-release installs may hold an offline audio
+    // cache dir plus a `downloads` table; both are unused now.
+    let _ = std::fs::remove_dir_all(format!("{}/offline_cache", data_dir()));
     (
         liked,
         order,
@@ -4441,8 +4370,6 @@ fn load_persisted(
         user_playlists,
         seq,
         cached,
-        downloaded,
-        downloaded_order,
     )
 }
 
@@ -4477,8 +4404,6 @@ impl AppState {
             user_playlists,
             playlist_seq,
             cached,
-            downloaded,
-            downloaded_order,
         ) = load_persisted(&library_path);
         let mut state = Self {
             route: Route::Home,
@@ -4490,8 +4415,6 @@ impl AppState {
             liked_order,
             disliked,
             disliked_order,
-            downloaded,
-            downloaded_order,
             history: history_full
                 .iter()
                 .take(HISTORY_CAP)
@@ -5099,59 +5022,6 @@ impl AppState {
         }
     }
 
-    fn persist_downloaded(&self, id: &str, downloaded: bool) {
-        let Ok(store) = LibraryStore::open(&self.library_path) else {
-            return;
-        };
-        if downloaded {
-            // Cache the full row when we know it: Downloaded then
-            // survives restarts with title/art, not just a bare id.
-            if let Some(t) = self.catalog.get(id) {
-                let _ = store.mark_downloaded_track(t);
-            } else {
-                let _ = store.mark_downloaded(id);
-            }
-        } else {
-            let _ = store.unmark_downloaded(id);
-        }
-    }
-
-    /// Download with an explicit track (callers that already hold the
-    /// full row): guarantees the metadata cache is warmed even if the
-    /// catalog has not registered it yet.
-    fn persist_downloaded_track(&self, track: &Track, downloaded: bool) {
-        let Ok(store) = LibraryStore::open(&self.library_path) else {
-            return;
-        };
-        let _ = if downloaded {
-            store.mark_downloaded_track(track)
-        } else {
-            store.unmark_downloaded(&track.id)
-        };
-    }
-
-    /// Best-effort delete of the offline bundle for `track_id`: audio
-    /// bytes plus the lyrics sidecar (missing files are fine: the DB
-    /// row is already gone). Art stays: the disk dir is a shared LRU
-    /// cache now (pruned by size), not a per-download bundle, so
-    /// deleting here would evict covers still referenced elsewhere.
-    fn remove_download_bundle(track_id: &str) {
-        Self::remove_download_bundle_in(&offline_cache_dir(), &lyrics_dir(), track_id);
-    }
-
-    /// [`remove_download_bundle`] against explicit dirs (tests pass temps).
-    fn remove_download_bundle_in(cache_dir: &str, lyrics_dir: &str, track_id: &str) {
-        // Delete the audio file directly by path: the in-memory tracker
-        // is always fresh here (restarts, background tasks), so a
-        // tracker-based removal would no-op on its empty entry set.
-        let mut probe = yutu_player::OfflineCache::new(500 * 1024 * 1024);
-        probe.set_dir(cache_dir.to_string());
-        if let Some(path) = probe.file_path_for(track_id) {
-            let _ = std::fs::remove_file(path);
-        }
-        let _ = std::fs::remove_file(lyrics_file_in(lyrics_dir, track_id));
-    }
-
     fn persist_play(&self, id: &str) {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
             return;
@@ -5323,8 +5193,8 @@ impl AppState {
 
     /// Play whatever is current (no-op on an empty queue). Fast paths first:
     /// a prefetched URL or a fresh cached URL plays instantly with no
-    /// download; otherwise a resolve task runs (mpv streams the URL, rodio
-    /// downloads the bytes). Sets `loading_track` so stale arrivals drop.
+    /// fetch; otherwise a resolve task runs (mpv streams the URL, rodio
+    /// fetches the bytes). Sets `loading_track` so stale arrivals drop.
     fn play_current_task(&mut self) -> iced::Task<Message> {
         let Some(t) = self.queue.current().cloned() else {
             return iced::Task::none();
@@ -5385,12 +5255,6 @@ impl AppState {
                 return iced::Task::batch(follow_tasks);
             }
         }
-        // Downloaded bytes on disk play with no network (either
-        // backend): offline songs start instantly, online or off. A
-        // stale row (file evicted since) falls through to resolve.
-        if self.downloaded.contains(&t.id) && self.try_play_offline(&t) {
-            return iced::Task::batch(follow_tasks);
-        }
         self.status = format!("Loading {} · {}…", t.title, t.artist);
         let audio_task = match &self.audio {
             Some(a) if a.wants_stream() => Self::resolve_url_task(t.id),
@@ -5433,11 +5297,6 @@ impl AppState {
         self.seek_drag_at = None;
         self.seek_paused = false;
         let mut follow_tasks = self.track_start_tasks(&t);
-        // Downloaded bytes play with no network (either backend):
-        // offline songs buffer instantly, online or off.
-        if self.downloaded.contains(&t.id) && self.try_play_offline(&t) {
-            return iced::Task::batch(follow_tasks);
-        }
         self.status = format!("Loading {} · {}…", t.title, t.artist);
         let audio_task = match &self.audio {
             Some(a) if a.wants_stream() => Self::resolve_url_task(t.id),
@@ -5553,65 +5412,6 @@ impl AppState {
                 self.status = "Stream ready, but no audio device.".into();
                 false
             }
-        }
-    }
-
-    /// Play already-downloaded bytes on either backend (mpv loads bytes
-    /// just like rodio here: no stream URL needed). True on success.
-    fn play_offline_bytes(&mut self, t: &Track, bytes: Vec<u8>) -> bool {
-        match &self.audio {
-            Some(audio) => match audio.play_track_bytes(bytes) {
-                Ok(()) => {
-                    let held = self.seek_drag.is_some();
-                    self.loading_track = None;
-                    self.end_advanced = false;
-                    self.position_secs = 0.0;
-                    self.status = format!("Playing (offline): {} · {}.", t.title, t.artist);
-                    self.consume_deferred_seeks();
-                    // Landed mid-drag: hold silent until release (a
-                    // pre-paused load stays paused either way).
-                    if held {
-                        if let Some(audio) = &self.audio {
-                            audio.pause();
-                        }
-                        self.paused = true;
-                    } else {
-                        self.paused = false;
-                    }
-                    // A startup autoload buffers paused (see above).
-                    if self.autoload {
-                        self.autoload = false;
-                        if let Some(audio) = &self.audio {
-                            audio.pause();
-                        }
-                        self.paused = true;
-                        self.status = format!("Paused: {} · {}.", t.title, t.artist);
-                    }
-                    true
-                }
-                Err(e) => {
-                    let msg = format!("Playback failed for {}: {e}", t.id);
-                    self.log_error(msg.clone());
-                    self.status = msg;
-                    false
-                }
-            },
-            None => false,
-        }
-    }
-
-    /// Play the on-disk download for `t` when present. False when the
-    /// bytes are missing (caller falls through to the network) or when
-    /// playback itself fails (status already reports it).
-    fn try_play_offline(&mut self, t: &Track) -> bool {
-        self.try_play_offline_in(&offline_cache_dir(), t)
-    }
-
-    /// [`try_play_offline`] against an explicit dir (tests pass a temp dir).
-    fn try_play_offline_in(&mut self, dir: &str, t: &Track) -> bool {
-        match offline_bytes_in(dir, &t.id) {
-            Some(bytes) => self.play_offline_bytes(t, bytes),
-            None => false,
         }
     }
 
@@ -5881,7 +5681,7 @@ impl AppState {
             if !self.lyrics_cache.contains_key(&t.id)
                 && self.lyrics_loading.as_deref() != Some(t.id.as_str())
             {
-                // Downloaded lyrics render with no network.
+                // Cached lyrics render with no network.
                 if let Some(cached) = load_lyrics(&t.id) {
                     self.cache_lyrics(t.id.clone(), cached);
                 } else {
@@ -5925,12 +5725,6 @@ impl AppState {
                 self.seek_drag_at = None;
                 self.seek_paused = false;
                 let mut tasks = self.track_start_tasks(&t);
-                // Downloaded bytes play with no network (bulk queue paths
-                // like playlist Play-all funnel here, not through
-                // play_current_task).
-                if self.downloaded.contains(&t.id) && self.try_play_offline(&t) {
-                    return iced::Task::batch(tasks);
-                }
                 tasks.push(Self::resolve_task(t.id));
                 iced::Task::batch(tasks)
             }
@@ -8514,22 +8308,13 @@ impl AppState {
 
     /// Virtual Favorites id (never persisted, never a `uN` user id).
     const FAVORITES_ID: &'static str = "__favorites";
-    /// Virtual Downloaded id (ids persisted in SQLite, never a `uN` id).
-    const DOWNLOADED_ID: &'static str = "__downloaded";
 
     fn all_playlists(&self) -> Vec<Playlist> {
-        let mut out = vec![
-            Playlist {
-                id: Self::FAVORITES_ID.into(),
-                title: "Favorites".into(),
-                tracks: self.favorite_tracks(),
-            },
-            Playlist {
-                id: Self::DOWNLOADED_ID.into(),
-                title: "Downloaded".into(),
-                tracks: self.downloaded_tracks(),
-            },
-        ];
+        let mut out = vec![Playlist {
+            id: Self::FAVORITES_ID.into(),
+            title: "Favorites".into(),
+            tracks: self.favorite_tracks(),
+        }];
         out.extend(self.user_playlists.clone());
         out
     }
@@ -8537,14 +8322,6 @@ impl AppState {
     /// Liked tracks in add order via catalog (unresolved skipped).
     fn favorite_tracks(&self) -> Vec<Track> {
         self.liked_order
-            .iter()
-            .filter_map(|id| self.find_track(id))
-            .collect()
-    }
-
-    /// Downloaded tracks in add order via catalog (unresolved skipped).
-    fn downloaded_tracks(&self) -> Vec<Track> {
-        self.downloaded_order
             .iter()
             .filter_map(|id| self.find_track(id))
             .collect()
@@ -8576,19 +8353,6 @@ impl AppState {
         self.disliked_order.retain(|x| x != id);
     }
 
-    /// Download helper: membership plus add-order append.
-    fn mark_downloaded_id(&mut self, id: &str) {
-        if self.downloaded.insert(id.to_string()) {
-            self.downloaded_order.push(id.to_string());
-        }
-    }
-
-    /// Undownload helper: membership plus order removal.
-    fn unmark_downloaded_id(&mut self, id: &str) {
-        self.downloaded.remove(id);
-        self.downloaded_order.retain(|x| x != id);
-    }
-
     fn find_playlist(&self, id: &str) -> Option<Playlist> {
         // Favorites skips the clone plus sort of the whole library.
         if id == Self::FAVORITES_ID {
@@ -8596,13 +8360,6 @@ impl AppState {
                 id: Self::FAVORITES_ID.into(),
                 title: "Favorites".into(),
                 tracks: self.favorite_tracks(),
-            });
-        }
-        if id == Self::DOWNLOADED_ID {
-            return Some(Playlist {
-                id: Self::DOWNLOADED_ID.into(),
-                title: "Downloaded".into(),
-                tracks: self.downloaded_tracks(),
             });
         }
         self.all_playlists().into_iter().find(|p| p.id == id)
@@ -9627,7 +9384,7 @@ impl AppState {
                     let needs = !self.lyrics_cache.contains_key(&id)
                         && self.lyrics_loading.as_deref() != Some(id.as_str());
                     if needs {
-                        // Downloaded lyrics open with no network.
+                        // Cached lyrics open with no network.
                         if let Some(cached) = load_lyrics(&id) {
                             self.cache_lyrics(id, cached);
                         } else {
@@ -9654,13 +9411,6 @@ impl AppState {
                 }
                 match result {
                     Ok(lyrics) => {
-                        // Heal the download bundle when online: sidecars on
-                        // disk exist only for downloaded tracks (keeps unit
-                        // tests hermetic: no test marks fixtures downloaded
-                        // before a LyricsReady).
-                        if self.downloaded.contains(&track_id) {
-                            save_lyrics(&track_id, &lyrics);
-                        }
                         self.cache_lyrics(track_id, lyrics);
                     }
                     Err(e) => {
@@ -10009,19 +9759,6 @@ impl AppState {
                         self.publish_mpris();
                         return Self::like_sync_task(track.id.clone(), true);
                     }
-                    // Virtual Downloaded maps to an offline download: the
-                    // file must exist, so kick off the download flow.
-                    if playlist_id == Self::DOWNLOADED_ID {
-                        if self.downloaded.contains(&track.id) {
-                            self.status = format!("Already in Downloaded: {}.", track.title);
-                            self.publish_mpris();
-                            return iced::Task::none();
-                        }
-                        self.close_menu();
-                        self.status = format!("Downloading {} · {}…", track.title, track.artist);
-                        self.publish_mpris();
-                        return Self::download_task(track);
-                    }
                     match self.user_playlists.iter().position(|p| p.id == playlist_id) {
                         None => {
                             self.status = format!(
@@ -10080,19 +9817,6 @@ impl AppState {
                     self.publish_mpris();
                     return Self::like_sync_task(track_id, false);
                 }
-                // Virtual Downloaded maps to deleting the offline bundle.
-                if playlist_id == Self::DOWNLOADED_ID {
-                    if self.downloaded.contains(&track_id) {
-                        self.unmark_downloaded_id(&track_id);
-                        self.persist_downloaded(&track_id, false);
-                        Self::remove_download_bundle(&track_id);
-                        self.status = format!("Removed {track_id} from Downloaded.");
-                    } else {
-                        self.status = format!("{track_id} is not in Downloaded.");
-                    }
-                    self.publish_mpris();
-                    return iced::Task::none();
-                }
                 match self.user_playlists.iter().position(|p| p.id == playlist_id) {
                     None => {
                         self.status =
@@ -10125,11 +9849,6 @@ impl AppState {
                 let id = yutu_core::canonical_playlist_id(&id);
                 if id == Self::FAVORITES_ID {
                     self.status = "Favorites is built-in and can't be deleted.".into();
-                    self.publish_mpris();
-                    return iced::Task::none();
-                }
-                if id == Self::DOWNLOADED_ID {
-                    self.status = "Downloaded is built-in and can't be deleted.".into();
                     self.publish_mpris();
                     return iced::Task::none();
                 }
@@ -10979,45 +10698,6 @@ impl AppState {
                     }
                 }
             }
-            Message::DownloadTrack(id) => {
-                self.close_menu();
-                match self.find_track(&id) {
-                    None => {
-                        return self.unknown_track_task(&id);
-                    }
-                    Some(t) => {
-                        self.status = format!("Downloading {} · {}…", t.title, t.artist);
-                        self.publish_mpris();
-                        return Self::download_task(t);
-                    }
-                }
-            }
-            Message::Downloaded { track_id, result } => match result {
-                Ok(()) => {
-                    // The bytes are on disk: join the Downloaded list and
-                    // keep the metadata cache warm so it renders after a
-                    // restart with no search.
-                    if let Some(t) = self.find_track(&track_id) {
-                        let t = t.clone();
-                        self.mark_downloaded_id(&t.id);
-                        self.persist_downloaded_track(&t, true);
-                        self.status = format!(
-                            "Downloaded {} · {} for offline listening.",
-                            t.title, t.artist
-                        );
-                    } else {
-                        self.mark_downloaded_id(&track_id);
-                        self.persist_downloaded(&track_id, true);
-                        self.status = format!("Downloaded {track_id} for offline listening.");
-                    }
-                    self.publish_mpris();
-                }
-                Err(e) => {
-                    let msg = format!("Download failed for {track_id}: {e}");
-                    self.log_error(msg.clone());
-                    self.status = msg;
-                }
-            },
             Message::ToggleSidebarPin => {
                 self.sidebar_pinned = !self.sidebar_pinned;
                 // Recompute the latch from the current cursor so unpinning
@@ -12221,7 +11901,7 @@ impl AppState {
         iced::Task::none()
     }
 
-    /// Resolve + download task for a video ID. Runs on iced's tokio executor.
+    /// Resolve + fetch (memory-only) task for a video ID. Runs on iced's tokio executor.
     fn resolve_task(video_id: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
@@ -12233,7 +11913,7 @@ impl AppState {
                 {
                     Ok(r) => r,
                     Err(_) => Err(format!(
-                        "download timed out after {RESOLVE_BYTES_TIMEOUT_SECS}s"
+                        "fetch timed out after {RESOLVE_BYTES_TIMEOUT_SECS}s"
                     )),
                 };
                 (video_id, result)
@@ -13119,57 +12799,6 @@ impl AppState {
                 (seed, result)
             },
             |(seed, result)| Message::AutoplayReady { seed, result },
-        )
-    }
-
-    /// Offline download bundle: audio bytes plus the sidecar files that
-    /// make the song whole with no connection (lyrics + artwork). Audio
-    /// failing fails the download; sidecar misses only skip that file
-    /// (online playback re-heals them through the usual tasks).
-    fn download_task(track: Track) -> iced::Task<Message> {
-        iced::Task::perform(
-            async move {
-                let result: Result<(), String> = async {
-                    let bytes = resolve_and_fetch(&track.id).await?;
-                    let mut cache = yutu_player::OfflineCache::new(500 * 1024 * 1024);
-                    cache.set_dir(offline_cache_dir());
-                    cache
-                        .store_bytes(&track.id, &bytes)
-                        .map_err(|e| e.to_string())?;
-                    #[cfg(feature = "lyrics")]
-                    {
-                        if let Ok(lyrics) = yutu_core::fetch_lrclib(
-                            &track.artist,
-                            &track.title,
-                            track.album.as_deref(),
-                            track.duration_secs,
-                        )
-                        .await
-                        {
-                            save_lyrics(&track.id, &lyrics);
-                        }
-                    }
-                    let mut urls: Vec<String> = track.thumbnail_url.iter().cloned().collect();
-                    urls.extend(
-                        track
-                            .thumbnail_large_url
-                            .clone()
-                            .map(|u| yutu_core::hires_thumb_url(&u, 544)),
-                    );
-                    for url in urls {
-                        if let Ok(bytes) = yutu_player::fetch_bytes(&url).await {
-                            if bytes.len() > 512 {
-                                save_artwork(&url, &bytes);
-                            }
-                        }
-                    }
-                    Ok(())
-                }
-                .await;
-                let track_id = track.id.clone();
-                (track_id, result)
-            },
-            |(track_id, result)| Message::Downloaded { track_id, result },
         )
     }
 
@@ -17328,22 +16957,6 @@ impl AppState {
                 } else {
                     (MUTED, "Add to favorites")
                 };
-                let (dl_icon, dl_label, dl_msg) = if self.downloaded.contains(&t.id) {
-                    (
-                        "trash",
-                        "Remove download",
-                        Message::RemoveFromPlaylist {
-                            playlist_id: Self::DOWNLOADED_ID.into(),
-                            track_id: t.id.clone(),
-                        },
-                    )
-                } else {
-                    (
-                        "download",
-                        "Download for offline",
-                        Message::DownloadTrack(t.id.clone()),
-                    )
-                };
                 let mut items: Vec<iced::Element<'_, Message>> = vec![
                     row_button(
                         row![
@@ -17456,21 +17069,6 @@ impl AppState {
                         .height(iced::Length::Fixed(MENU_ROW_H))
                         .into()
                     },
-                    row_button(
-                        row![
-                            btn_icon(dl_icon, 14.0, iced::Color::WHITE),
-                            btn_text(dl_label, 14)
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
-                    )
-                    .style(hover_row)
-                    .on_press(dl_msg)
-                    .padding(8)
-                    .width(Fill)
-                    .height(iced::Length::Fixed(MENU_ROW_H))
-                    .into(),
                     row_button(
                         row![
                             btn_icon("disc", 14.0, iced::Color::WHITE),
@@ -17799,7 +17397,7 @@ impl AppState {
                     .into(),
                 ];
                 let mut pl_items = items;
-                if pid3 != Self::FAVORITES_ID && pid3 != Self::DOWNLOADED_ID {
+                if pid3 != Self::FAVORITES_ID {
                     let pid4 = pid3.clone();
                     pl_items.push(
                         row_button(
@@ -19181,151 +18779,6 @@ mod tests {
     }
 
     #[test]
-    fn downloaded_is_a_default_playlist() {
-        let mut s = test_state();
-        // Both built-ins lead the sidebar/library lists.
-        let all = s.all_playlists();
-        assert_eq!(all[0].id, "__favorites");
-        assert_eq!(all[1].id, "__downloaded");
-        assert_eq!(all[1].title, "Downloaded");
-        assert!(all[1].tracks.is_empty());
-        assert!(s.find_playlist("__downloaded").is_some());
-        assert!(!s.playlist_has("__downloaded", "m1"));
-        // A completed download joins the list in add order.
-        let _ = s.update(Message::Downloaded {
-            track_id: "m1".into(),
-            result: Ok(()),
-        });
-        assert!(s.downloaded.contains("m1"));
-        assert_eq!(s.downloaded_order, vec!["m1".to_string()]);
-        assert!(s.playlist_has("__downloaded", "m1"));
-        let _ = s.update(Message::Downloaded {
-            track_id: "m2".into(),
-            result: Ok(()),
-        });
-        assert_eq!(s.find_playlist("__downloaded").unwrap().tracks.len(), 2);
-        // Removing deletes the membership (file removal is best-effort).
-        let _ = s.update(Message::RemoveFromPlaylist {
-            playlist_id: "__downloaded".into(),
-            track_id: "m1".into(),
-        });
-        assert!(!s.downloaded.contains("m1"));
-        assert!(!s.playlist_has("__downloaded", "m1"));
-        assert!(s.status.contains("Downloaded"));
-        // Built-in cannot be deleted.
-        let _ = s.update(Message::DeletePlaylist("__downloaded".into()));
-        assert!(s.find_playlist("__downloaded").is_some());
-        assert!(s.status.contains("can't be deleted"));
-    }
-
-    #[test]
-    fn add_to_downloaded_starts_a_download() {
-        let mut s = test_state();
-        // Already-downloaded is a no-op with a message.
-        let _ = s.update(Message::Downloaded {
-            track_id: "m1".into(),
-            result: Ok(()),
-        });
-        let _ = s.update(Message::AddToPlaylist {
-            playlist_id: "__downloaded".into(),
-            track_id: "m1".into(),
-        });
-        assert!(s.status.contains("Already in Downloaded"));
-        // Unknown track still goes through the fetch path.
-        let _ = s.update(Message::AddToPlaylist {
-            playlist_id: "__downloaded".into(),
-            track_id: "ghost".into(),
-        });
-        assert!(s.status.contains("Fetching info"));
-    }
-
-    /// Unique temp dir per test for the offline bundle files.
-    fn bundle_dir(name: &str) -> String {
-        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "yutu-test-bundle-{}-{}-{}",
-            std::process::id(),
-            name,
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.to_string_lossy().into_owned()
-    }
-
-    /// Minimal 0.1s mono 16-bit 44.1kHz WAV (decodable without network).
-    fn wav_bytes() -> Vec<u8> {
-        let rate: u32 = 44_100;
-        let n: usize = (rate as usize) / 10;
-        let mut data = Vec::with_capacity(44 + n * 2);
-        data.extend_from_slice(b"RIFF");
-        data.extend_from_slice(&((36 + n * 2) as u32).to_le_bytes());
-        data.extend_from_slice(b"WAVEfmt ");
-        data.extend_from_slice(&16u32.to_le_bytes());
-        data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&rate.to_le_bytes());
-        data.extend_from_slice(&(rate * 2).to_le_bytes());
-        data.extend_from_slice(&2u16.to_le_bytes());
-        data.extend_from_slice(&16u16.to_le_bytes());
-        data.extend_from_slice(b"data");
-        data.extend_from_slice(&((n * 2) as u32).to_le_bytes());
-        for i in 0..n {
-            let s = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
-            data.extend_from_slice(&((s * 0.2 * i16::MAX as f32) as i16).to_le_bytes());
-        }
-        data
-    }
-
-    #[test]
-    fn offline_bundle_files_round_trip() {
-        let dir = bundle_dir("roundtrip");
-        // Audio bytes through the same tracker the app uses.
-        let mut cache = yutu_player::OfflineCache::new(10 * 1024 * 1024);
-        cache.set_dir(dir.clone());
-        cache.store_bytes("m1", &wav_bytes()).unwrap();
-        assert_eq!(offline_bytes_in(&dir, "m1").unwrap(), wav_bytes());
-        assert!(offline_bytes_in(&dir, "ghost").is_none());
-        // Lyrics JSON round-trips (serde derives on the core type).
-        let lyrics = yutu_core::LyricsResult {
-            plain: "hello".into(),
-            synced: vec![yutu_core::LyricLine {
-                start_ms: 100,
-                text: "hello".into(),
-            }],
-            instrumental: false,
-        };
-        save_lyrics_in(&dir, "m1", &lyrics);
-        #[cfg(feature = "lyrics")]
-        {
-            assert!(std::path::Path::new(&lyrics_file_in(&dir, "m1")).exists());
-            assert!(load_lyrics_in(&dir, "m1").is_some());
-            assert!(load_lyrics_in(&dir, "ghost").is_none());
-        }
-        // Artwork keyed by URL hash with a sniffed image extension
-        // (the decoder keys off the extension, so `.bin` never renders).
-        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        save_artwork_in(&dir, "https://example.invalid/a", &jpeg);
-        save_artwork_in(&dir, "https://example.invalid/b", &[0x89, b'P', b'N', b'G']);
-        let pa = artwork_path_in(&dir, "https://example.invalid/a").unwrap();
-        let pb = artwork_path_in(&dir, "https://example.invalid/b").unwrap();
-        assert!(pa.ends_with(".jpg"), "unexpected: {pa}");
-        assert!(pb.ends_with(".png"), "unexpected: {pb}");
-        assert_ne!(pa, pb);
-        assert_eq!(
-            artwork_path_in(&dir, "https://example.invalid/a").unwrap(),
-            pa
-        );
-        assert!(artwork_path_in(&dir, "https://example.invalid/ghost").is_none());
-        // Legacy extensionless files migrate on first lookup.
-        let legacy_stem = artwork_stem_in(&dir, "https://example.invalid/old");
-        std::fs::write(format!("{legacy_stem}.bin"), jpeg).unwrap();
-        let migrated = artwork_path_in(&dir, "https://example.invalid/old").unwrap();
-        assert!(migrated.ends_with(".jpg"), "unexpected: {migrated}");
-        assert!(!std::path::Path::new(&format!("{legacy_stem}.bin")).exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn artwork_ext_sniffs_magic_bytes() {
         assert_eq!(artwork_ext(&[0xFF, 0xD8, 0xFF, 0x00]), "jpg");
         assert_eq!(artwork_ext(&[0x89, b'P', b'N', b'G', 0x0D]), "png");
@@ -19339,105 +18792,11 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_filename_maps_like_the_audio_cache() {
+    fn sanitize_filename_maps_like_the_lyrics_files() {
         assert_eq!(sanitize_filename("abcXYZ012"), "abcXYZ012");
         assert_eq!(sanitize_filename("a/b-c_d e"), "a_b_c_d_e");
         assert_eq!(sanitize_filename(""), "unknown");
         assert_eq!(lyrics_file_in("/tmp/x", "a/b"), "/tmp/x/a_b.json");
-    }
-
-    #[test]
-    fn offline_playback_uses_disk_bytes_without_network() {
-        let mut s = test_state();
-        let dir = bundle_dir("play");
-        let t = mk_track("m1", "Come Together", "The Beatles");
-        s.catalog.insert(t.id.clone(), t.clone());
-        // Nothing on disk: honest miss, no status change, no network.
-        assert!(!s.try_play_offline_in(&dir, &t));
-        // Store decodable bytes: a live backend plays with no resolve
-        // task involved; headless (or a broken backend) reports an
-        // honest failure instead of hanging.
-        let mut cache = yutu_player::OfflineCache::new(10 * 1024 * 1024);
-        cache.set_dir(dir.clone());
-        cache.store_bytes("m1", &wav_bytes()).unwrap();
-        let played = s.try_play_offline_in(&dir, &t);
-        if played {
-            assert!(s.status.contains("(offline)"));
-            assert!(s.loading_track.is_none());
-        } else {
-            assert!(s.audio.is_none() || s.status.contains("Playback failed"));
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn downloaded_tracks_prefer_offline_in_play_current() {
-        let mut s = test_state();
-        // Mark downloaded but store no bytes: the disk read misses, so
-        // playback falls through to the network resolve instead of
-        // claiming offline playback.
-        let _ = s.update(Message::Downloaded {
-            track_id: "m1".into(),
-            result: Ok(()),
-        });
-        assert!(s.downloaded.contains("m1"));
-        let missing_dir = bundle_dir("missing");
-        assert!(!s.try_play_offline_in(&missing_dir, &mk_track("m1", "T", "A")));
-    }
-
-    #[test]
-    fn remove_download_deletes_the_whole_bundle() {
-        let base = bundle_dir("unbundle");
-        let cache_dir = format!("{base}/audio");
-        let lyrics_dir = format!("{base}/lyrics");
-        let art_dir = format!("{base}/art");
-        // Fake a complete bundle on disk.
-        let mut cache = yutu_player::OfflineCache::new(10 * 1024 * 1024);
-        cache.set_dir(cache_dir.clone());
-        cache.store_bytes("m1", b"audio").unwrap();
-        save_lyrics_in(
-            &lyrics_dir,
-            "m1",
-            &yutu_core::LyricsResult {
-                plain: "hello".into(),
-                synced: Vec::new(),
-                instrumental: false,
-            },
-        );
-        save_artwork_in(&art_dir, "https://example.invalid/s", &[0xFF, 0xD8, 0xFF]);
-        assert!(offline_bytes_in(&cache_dir, "m1").is_some());
-        assert!(artwork_path_in(&art_dir, "https://example.invalid/s").is_some());
-        // Removal drops audio + lyrics but keeps cached art, and is
-        // idempotent.
-        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, "m1");
-        assert!(offline_bytes_in(&cache_dir, "m1").is_none());
-        assert!(!std::path::Path::new(&lyrics_file_in(&lyrics_dir, "m1")).exists());
-        assert!(artwork_path_in(&art_dir, "https://example.invalid/s").is_some());
-        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, "m1");
-        // Unknown tracks still clear audio + lyrics.
-        AppState::remove_download_bundle_in(&cache_dir, &lyrics_dir, "ghost");
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn remove_from_downloaded_unmarks_and_reports() {
-        let mut s = test_state();
-        let _ = s.update(Message::RemoveFromPlaylist {
-            playlist_id: "__downloaded".into(),
-            track_id: "m1".into(),
-        });
-        assert!(s.status.contains("not in Downloaded"));
-        let _ = s.update(Message::Downloaded {
-            track_id: "m1".into(),
-            result: Ok(()),
-        });
-        assert!(s.downloaded.contains("m1"));
-        let _ = s.update(Message::RemoveFromPlaylist {
-            playlist_id: "__downloaded".into(),
-            track_id: "m1".into(),
-        });
-        assert!(!s.downloaded.contains("m1"));
-        assert!(s.status.contains("Removed"));
     }
 
     #[test]
@@ -22176,7 +21535,7 @@ mod tests {
         assert!(s.artwork.contains_key(&url));
         assert!(
             artwork_path_in(&dir, &url).is_some(),
-            "fetched covers persist even when not downloaded"
+            "fetched covers persist to disk"
         );
     }
 
@@ -22680,58 +22039,6 @@ mod tests {
         assert!(s.audio_duration() > 0.0);
     }
 
-    /// Full offline-bundle path: download stores audio bytes on disk, the
-    /// Downloaded mark persists, and the bytes play back with no resolve
-    /// task (the offline-first branch of the play path).
-    #[tokio::test]
-    #[ignore = "live: needs yt-dlp + network (writes the real offline cache)"]
-    async fn live_download_bundle_then_offline_play() {
-        let Some(_) = yutu_core::find_yt_dlp() else {
-            eprintln!("SKIP: yt-dlp not installed (or set YUTU_YTDLP_BIN)");
-            return;
-        };
-        let video = std::env::var("YUTU_TEST_VIDEO_ID").unwrap_or_else(|_| "JWW8KK8kd1I".into());
-        let track = Track {
-            id: video.clone(),
-            title: "live-bundle-proof".into(),
-            artist: "yutu".into(),
-            album: None,
-            duration_secs: 200,
-            thumbnail_url: None,
-            thumbnail_large_url: None,
-            plays: None,
-            is_video: false,
-        };
-        // Audio leg of the bundle task (lyrics/art are best-effort
-        // sidecars over the same fetch helpers, covered offline above).
-        let bytes = super::resolve_and_fetch(&video)
-            .await
-            .expect("yt-dlp resolve + fetch");
-        assert!(bytes.len() > 100_000, "suspiciously small stream");
-        let mut cache = yutu_player::OfflineCache::new(500 * 1024 * 1024);
-        cache.set_dir(super::offline_cache_dir());
-        cache.store_bytes(&video, &bytes).unwrap();
-        // Bytes are readable straight from disk (no tracker state: the
-        // in-memory tracker is always fresh after a restart).
-        let back = super::offline_bytes_in(&super::offline_cache_dir(), &video)
-            .expect("downloaded bytes must read back");
-        assert_eq!(back.len(), bytes.len());
-        // Marking joins Downloaded; the offline branch then plays them.
-        let mut s = test_state();
-        s.catalog.insert(video.clone(), track.clone());
-        let _ = s.update(Message::Downloaded {
-            track_id: video.clone(),
-            result: Ok(()),
-        });
-        assert!(s.downloaded.contains(&video));
-        let played = s.try_play_offline(&track);
-        if played {
-            assert!(s.status.contains("(offline)"));
-        } else {
-            assert!(s.audio.is_none() || s.status.contains("Playback failed"));
-        }
-    }
-
     #[test]
     fn lyrics_ready_caches_and_open_lyrics_fetches_once() {
         use yutu_core::{LyricLine, LyricsResult};
@@ -23169,21 +22476,6 @@ mod tests {
         // Unknown track: fetch kicked off.
         let _ = s.update(Message::OpenTrackAlbum("ghost".into()));
         assert!(s.status.contains("Fetching info"));
-        // Download validates the id before touching the network.
-        let _ = s.update(Message::DownloadTrack("ghost".into()));
-        assert!(s.status.contains("Fetching info"));
-        let _ = s.update(Message::Downloaded {
-            track_id: "m1".into(),
-            result: Ok(()),
-        });
-        assert!(s.status.contains("Downloaded"));
-        assert!(s.downloaded.contains("m1"));
-        assert!(s.playlist_has("__downloaded", "m1"));
-        let _ = s.update(Message::Downloaded {
-            track_id: "m1".into(),
-            result: Err("403".into()),
-        });
-        assert!(s.status.contains("failed"));
     }
 
     #[test]
@@ -23753,7 +23045,6 @@ mod tests {
         assert!(!AppState::is_server_playlist("LM"));
         assert!(!AppState::is_server_playlist("u"));
         assert!(!AppState::is_server_playlist(AppState::FAVORITES_ID));
-        assert!(!AppState::is_server_playlist(AppState::DOWNLOADED_ID));
         // Tracks register into the catalog + SQLite track cache.
         assert!(s.find_track("p1").is_some());
         assert!(s.status.contains("1 playlists"));
