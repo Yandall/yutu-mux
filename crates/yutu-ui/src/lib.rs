@@ -7290,6 +7290,30 @@ impl AppState {
             .into()
     }
 
+    /// Hover-reveal remove slot with a width-stable box: the idle
+    /// branch renders the same × button assembly (transparent glyph,
+    /// no press handler) instead of a 20px spacer, so the text column
+    /// keeps the exact same width hovered or not and boundary titles
+    /// never flip word wrap on hover. `None` arms nothing (idle).
+    fn hover_remove_slot(armed: Option<Message>) -> iced::Element<'static, Message> {
+        use iced::widget::button;
+        let mut btn = button(btn_icon(
+            "x",
+            11.0,
+            if armed.is_some() {
+                MUTED
+            } else {
+                iced::Color::TRANSPARENT
+            },
+        ))
+        .style(hover_row)
+        .padding(3);
+        if let Some(msg) = armed {
+            btn = btn.on_press(msg);
+        }
+        btn.into()
+    }
+
     /// Cookie import panel: normal browser login, no OAuth client needed.
     /// A saved session stays signed in across restarts (re-import refreshes
     /// without another export); likes, dislikes, and playlist edits mirror
@@ -14530,7 +14554,7 @@ impl AppState {
     /// Collapsed origin: zero height while dragging, so siblings close
     /// ranks and no hole remains where the song was picked up.
     fn queue_row(&self, i: usize) -> iced::Element<'_, Message> {
-        use iced::widget::{button, container, mouse_area, row, text};
+        use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
         if self.drag.is_some_and(|d| d.from == i) {
             // Origin keeps a full-size held chip (same art + title as the
@@ -14566,20 +14590,20 @@ impl AppState {
         let menu_id = t.id.clone();
         let remove_id = t.id.clone();
         let hovered = self.hovered_queue == Some(i);
-        let remove_btn: iced::Element<'_, Message> = if hovered {
-            mouse_area(
-                button(btn_icon("x", 11.0, MUTED))
-                    .style(hover_row)
-                    .on_press(Message::RemoveFromQueue(remove_id))
-                    .padding(3),
-            )
-            .on_enter(Message::RemoveHover(Some(i)))
-            .on_exit(Message::RemoveHover(None))
-            .into()
-        } else {
-            iced::widget::Space::new()
-                .width(iced::Length::Fixed(20.0))
-                .into()
+        // Width-stable hover reveal (see `hover_remove_slot`): the
+        // idle slot is the same × box, transparent and inert, so the
+        // press dynamics are unchanged (mouse_area only exists armed).
+        let remove_btn: iced::Element<'_, Message> = {
+            let slot =
+                Self::hover_remove_slot(hovered.then_some(Message::RemoveFromQueue(remove_id)));
+            if hovered {
+                mouse_area(slot)
+                    .on_enter(Message::RemoveHover(Some(i)))
+                    .on_exit(Message::RemoveHover(None))
+                    .into()
+            } else {
+                slot
+            }
         };
         let row_content = row![
             container(self.thumb(t)).padding(2),
@@ -14735,17 +14759,10 @@ impl AppState {
             .enumerate()
             .map(|(i, t)| {
                 let menu_id = t.id.clone();
-                let remove_btn: iced::Element<'_, Message> = if self.hovered_auto == Some(i) {
-                    button(btn_icon("x", 11.0, MUTED))
-                        .style(hover_row)
-                        .on_press(Message::RemoveAutoplay(i))
-                        .padding(3)
-                        .into()
-                } else {
-                    iced::widget::Space::new()
-                        .width(iced::Length::Fixed(20.0))
-                        .into()
-                };
+                let hovered = self.hovered_auto == Some(i);
+                // Width-stable hover reveal (see `hover_remove_slot`).
+                let remove_btn: iced::Element<'_, Message> =
+                    Self::hover_remove_slot(hovered.then_some(Message::RemoveAutoplay(i)));
                 mouse_area(
                     container(
                         row![
@@ -14767,7 +14784,7 @@ impl AppState {
                         .align_y(iced::alignment::Vertical::Center)
                         .padding(8),
                     )
-                    .style(row_bg(self.hovered_auto == Some(i)))
+                    .style(row_bg(hovered))
                     .width(Fill)
                     .height(iced::Length::Fixed(TRACK_ROW_H))
                     .clip(true)
