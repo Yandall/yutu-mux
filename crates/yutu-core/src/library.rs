@@ -112,7 +112,6 @@ impl LibraryStore {
                      created_at INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS history(track_id TEXT NOT NULL, played_at_unix INTEGER NOT NULL);
                  CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY, title TEXT NOT NULL);
-                 CREATE TABLE IF NOT EXISTS downloads(track_id TEXT PRIMARY KEY, downloaded_at INTEGER);
                  CREATE TABLE IF NOT EXISTS tracks(
                      track_id TEXT PRIMARY KEY,
                      title TEXT NOT NULL,
@@ -138,6 +137,9 @@ impl LibraryStore {
                  CREATE INDEX IF NOT EXISTS idx_ptracks_pid ON playlist_tracks(playlist_id);",
             )
             .map_err(|e| e.to_string())?;
+        // One-time cleanup: pre-release installs may hold a `downloads`
+        // table from the removed offline-download surface.
+        let _ = self.conn.execute_batch("DROP TABLE IF EXISTS downloads");
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS queue_items(
@@ -689,63 +691,6 @@ impl LibraryStore {
             .execute("DELETE FROM playlists WHERE id = ?1", params![id])
             .map(|_| ())
             .map_err(|e| e.to_string())
-    }
-
-    pub fn mark_downloaded(&self, track_id: &str) -> Result<(), String> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        self.conn
-            .execute(
-                "INSERT OR IGNORE INTO downloads(track_id, downloaded_at) VALUES (?1, ?2)",
-                params![track_id, now],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    pub fn unmark_downloaded(&self, track_id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "DELETE FROM downloads WHERE track_id = ?1",
-                params![track_id],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    pub fn is_downloaded(&self, track_id: &str) -> Result<bool, String> {
-        let n: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM downloads WHERE track_id = ?1",
-                params![track_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(n > 0)
-    }
-
-    /// Every downloaded track id in add order (no catalog probe needed).
-    pub fn downloaded_ids(&self) -> Result<Vec<String>, String> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT track_id FROM downloads ORDER BY downloaded_at, rowid")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
-    }
-
-    /// Download plus metadata cache in one call: the downloaded row stays
-    /// an id, but the track cache keeps the title/art so Downloaded
-    /// survives a restart even before any search runs.
-    pub fn mark_downloaded_track(&self, track: &Track) -> Result<(), String> {
-        self.upsert_track(track)?;
-        self.mark_downloaded(&track.id)
     }
 
     pub fn record_play(&self, track_id: &str, played_at_unix: i64) -> Result<(), String> {
@@ -1441,32 +1386,6 @@ mod tests {
     }
 
     #[test]
-    fn downloaded_round_trip() {
-        let s = LibraryStore::in_memory().unwrap();
-        assert!(!s.is_downloaded("m1").unwrap());
-        assert!(s.downloaded_ids().unwrap().is_empty());
-        s.mark_downloaded("m1").unwrap();
-        assert!(s.is_downloaded("m1").unwrap());
-        s.mark_downloaded("m1").unwrap();
-        assert_eq!(s.downloaded_ids().unwrap(), vec!["m1"]);
-        s.unmark_downloaded("m1").unwrap();
-        assert!(!s.is_downloaded("m1").unwrap());
-        assert!(s.downloaded_ids().unwrap().is_empty());
-    }
-
-    #[test]
-    fn downloaded_ids_preserves_insertion_order() {
-        let s = LibraryStore::in_memory().unwrap();
-        s.mark_downloaded("vid-b").unwrap();
-        s.mark_downloaded("vid-a").unwrap();
-        s.mark_downloaded("vid-a").unwrap();
-        assert_eq!(s.downloaded_ids().unwrap(), vec!["vid-b", "vid-a"]);
-        s.unmark_downloaded("vid-a").unwrap();
-        s.mark_downloaded("vid-a").unwrap();
-        assert_eq!(s.downloaded_ids().unwrap(), vec!["vid-b", "vid-a"]);
-    }
-
-    #[test]
     fn queue_snapshot_round_trips() {
         let s = LibraryStore::in_memory().unwrap();
         assert!(s.load_queue().unwrap().is_none());
@@ -1527,19 +1446,6 @@ mod tests {
         assert!((snap.volume - 1.0).abs() < 1e-6);
         // Index clamping is the caller's job (kept verbatim here).
         assert_eq!(snap.index, Some(99));
-    }
-
-    #[test]
-    fn mark_downloaded_track_caches_metadata_for_restart() {
-        let s = LibraryStore::in_memory().unwrap();
-        let t = cached_fixture("m1");
-        s.mark_downloaded_track(&t).unwrap();
-        assert_eq!(s.downloaded_ids().unwrap(), vec!["m1"]);
-        let cached = s.cached_track("m1").unwrap().unwrap();
-        assert_eq!(cached.title, "title-m1");
-        s.unmark_downloaded("m1").unwrap();
-        assert!(s.downloaded_ids().unwrap().is_empty());
-        assert!(s.cached_track("m1").unwrap().is_some());
     }
 
     #[test]

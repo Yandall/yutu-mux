@@ -1,5 +1,18 @@
 /target/
-Cargo.lock
 *.orig
 reports/
 .cache/
+# Secrets and local credentials (never commit these).
+.env
+*.env
+cookies.txt
+*cookies*.txt
+*oauth*.json
+*credentials*.json
+*.pem
+*.key
+# Local app logs and Flatpak vendor outputs (generated, never committed).
+logs/
+flatpak/vendor/
+flatpak/vendor-config.toml
+flatpak/cargo-sources.json

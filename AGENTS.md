@@ -28,7 +28,7 @@
 - UI is **Iced**, pure Rust. Rejected: Tauri/webview, Electron wrappers
   (e.g. pear-desktop), fastframe (egui-only, Iced-incompatible).
 - Playback: **mpv default** (progressive URL streaming, real seek/position,
-  EQ via `af` chain), **rodio fallback** (full download path).
+  EQ via `af` chain), **rodio fallback** (full fetch path, memory-only).
   `AudioOut` shields the UI from backend choice. EQ is honestly mpv-only;
   rodio must say so in the UI, never fake it. EQ bands are 1-octave-wide
   (`t=o:w=1`): Hertz widths are inaudible 1 Hz slivers on music.
