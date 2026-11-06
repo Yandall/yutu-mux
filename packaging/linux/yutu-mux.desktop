@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=YutuMux
+Comment=Native YouTube Music desktop client
+Exec=yutu-mux
+Icon=yutu-mux
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=YouTube;Music;Player;Streaming;
+StartupNotify=true
