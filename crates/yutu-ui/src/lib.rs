@@ -241,6 +241,14 @@ fn icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'static, Mes
         .into()
 }
 
+/// Blank 24x24 frame (no paths) backing the idle remove slot: paints
+/// zero pixels in any renderer while holding the exact armed box, so
+/// rows never shift on hover. A transparent-tinted x is NOT a blank:
+/// iced's svg tint keeps the source alpha and replaces RGB, so
+/// TRANSPARENT (rgb 0,0,0) paints a solid black x on both the wgpu and
+/// tiny-skia backends.
+const EMPTY_SLOT_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\"></svg>";
+
 /// Button-weight stroke (2 to 2.5) applied to verbatim Lucide bytes.
 /// Pure helper so tests pin the surgery (see `button_helpers_build`).
 fn thicken_svg(bytes: &[u8]) -> Vec<u8> {
@@ -1780,7 +1788,11 @@ const TRACK_ROW_H: f32 = 56.0;
 /// anchor math can never drift from the laid-out rows.
 const MENU_ROW_H: f32 = 36.0;
 const SUGGEST_ROW_H: f32 = 44.0;
-const QUEUE_ROW_H: f32 = 60.0;
+/// Queue row height: fits a wrapped 2-line title plus the artist line
+/// with room to spare (2 x 12px x 1.25 + 2px gap + 11px x 1.25 +
+/// 16px row padding = 61.75px, rounded up). Anything shorter clips
+/// the artist on long titles (the row clips instead of growing).
+const QUEUE_ROW_H: f32 = 64.0;
 const AUTO_ROW_H: f32 = 48.0;
 /// Lazy art sweep: viewport overscan each side (absorbs header-height
 /// estimates and fast scrolls), scroll buckets plus minimum gap (scroll
@@ -7290,24 +7302,34 @@ impl AppState {
             .into()
     }
 
+    /// Idle remove-slot glyph: the blank frame at button-icon size.
+    /// Parsed once (same precedent as the heart fill-flip); no tint
+    /// needed since there is nothing to paint.
+    fn empty_slot_icon(size: f32) -> iced::Element<'static, Message> {
+        use iced::widget::svg;
+        static EMPTY_HANDLE: std::sync::LazyLock<svg::Handle> =
+            std::sync::LazyLock::new(|| svg::Handle::from_memory(EMPTY_SLOT_SVG.as_bytes()));
+        svg(EMPTY_HANDLE.clone())
+            .width(size)
+            .height(size)
+            .style(|_: &iced::Theme, _| svg::Style { color: None })
+            .into()
+    }
+
     /// Hover-reveal remove slot with a width-stable box: the idle
-    /// branch renders the same × button assembly (transparent glyph,
-    /// no press handler) instead of a 20px spacer, so the text column
+    /// branch renders the same button assembly with a blank glyph
+    /// (no press handler) instead of a spacer, so the text column
     /// keeps the exact same width hovered or not and boundary titles
-    /// never flip word wrap on hover. `None` arms nothing (idle).
+    /// never flip word wrap on hover. The x stays invisible until the
+    /// row hovers, then appears white. `None` arms nothing (idle).
     fn hover_remove_slot(armed: Option<Message>) -> iced::Element<'static, Message> {
         use iced::widget::button;
-        let mut btn = button(btn_icon(
-            "x",
-            11.0,
-            if armed.is_some() {
-                MUTED
-            } else {
-                iced::Color::TRANSPARENT
-            },
-        ))
-        .style(hover_row)
-        .padding(3);
+        let glyph = if armed.is_some() {
+            btn_icon("x", 11.0, iced::Color::WHITE)
+        } else {
+            Self::empty_slot_icon(11.0)
+        };
+        let mut btn = button(glyph).style(hover_row).padding(3);
         if let Some(msg) = armed {
             btn = btn.on_press(msg);
         }
@@ -16324,7 +16346,7 @@ impl AppState {
                         // the layout so rows never jump).
                         let remove_btn: iced::Element<'_, Message> =
                             if self.hovered_queue == Some(i) {
-                                button(btn_icon("x", 12.0, MUTED))
+                                button(btn_icon("x", 12.0, iced::Color::WHITE))
                                     .style(hover_row)
                                     .on_press(Message::RemoveFromQueue(remove_id))
                                     .padding(5)
@@ -16413,7 +16435,7 @@ impl AppState {
                                     .padding(4)
                                     .width(Fill),
                                     text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                                    button(btn_icon("x", 12.0, MUTED))
+                                    button(btn_icon("x", 12.0, iced::Color::WHITE))
                                         .style(hover_row)
                                         .on_press(Message::RemoveAutoplay(i))
                                         .padding(5),
@@ -18326,6 +18348,19 @@ mod tests {
         s.history.push("m1".into());
         s.history.push("m2".into());
         let _ = s.view();
+    }
+
+    #[test]
+    fn queue_row_fits_wrapped_title_and_artist() {
+        // `track_text` allows a 2-line title plus one artist line at a
+        // 1.25 line height with a 2px gap, inside 8px top/bottom row
+        // padding. The fixed row height must cover that worst case or
+        // long titles clip the artist (the container clips, never grows).
+        let title = 2.0 * 12.0 * 1.25 + 2.0 + 11.0 * 1.25 + 16.0;
+        assert!(
+            QUEUE_ROW_H >= title,
+            "queue row {QUEUE_ROW_H}px < {title}px for 2-line title + artist"
+        );
     }
 
     #[test]
@@ -22145,9 +22180,10 @@ mod tests {
             .map(|(_, y)| *y)
             .collect();
         assert_eq!(y0, vec![0.0]);
-        // 60px rows + 5px hairlines between (never leading).
+        // One row pitch + hairline between (never leading).
         assert_eq!(y1.len(), 1);
-        assert!(y1.iter().all(|y| (y - 65.0).abs() < 0.01));
+        let pitch = QUEUE_ROW_H + DIVIDER_PX;
+        assert!(y1.iter().all(|y| (y - pitch).abs() < 0.01));
     }
 
     #[test]
@@ -23656,6 +23692,13 @@ mod tests {
     fn button_helpers_build() {
         // Labels and icons share one construction path for every
         // button; smoke-build both states (int and float sizes).
+        // The idle remove slot paints zero pixels (a blank frame, not a
+        // transparent-tinted x: iced's svg tint keeps source alpha and
+        // replaces RGB, so TRANSPARENT would paint solid black).
+        assert!(!EMPTY_SLOT_SVG.contains("<path"));
+        assert!(!EMPTY_SLOT_SVG.contains("currentColor"));
+        let _ = AppState::empty_slot_icon(11.0);
+        let _ = AppState::hover_remove_slot(None);
         let _ = btn_text("Sync now", 12);
         let _ = btn_text(format!("Clear queue ({})", 3), 12.0);
         let _ = btn_icon("play", 14.0, iced::Color::WHITE);
