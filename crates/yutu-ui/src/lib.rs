@@ -248,6 +248,21 @@ fn icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'static, Mes
 /// tiny-skia backends.
 const EMPTY_SLOT_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\"></svg>";
 
+/// App logo mark (rings + M, own colors): shown beside the sidebar
+/// wordmark. Unlike `icon`/`btn_icon`, no tint is applied: the style
+/// color would repaint the red rings and white M.
+fn logo_mark(size: f32) -> iced::Element<'static, Message> {
+    use iced::widget::svg;
+    static LOGO_HANDLE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+        svg::Handle::from_memory(include_bytes!("../assets/logo.svg").as_slice())
+    });
+    svg(LOGO_HANDLE.clone())
+        .width(size)
+        .height(size)
+        .style(|_: &iced::Theme, _| svg::Style { color: None })
+        .into()
+}
+
 /// Button-weight stroke (2 to 2.5) applied to verbatim Lucide bytes.
 /// Pure helper so tests pin the surgery (see `button_helpers_build`).
 fn thicken_svg(bytes: &[u8]) -> Vec<u8> {
@@ -14151,6 +14166,7 @@ impl AppState {
         container(
             column![
                 row![
+                    logo_mark(26.0),
                     text("yutu-mux")
                         .size(22)
                         .color(iced::Color::WHITE)
@@ -14158,6 +14174,7 @@ impl AppState {
                     self.sync_spinner(),
                     pin_btn,
                 ]
+                .spacing(8)
                 .align_y(iced::alignment::Vertical::Center),
                 column![
                     button(
@@ -23017,6 +23034,8 @@ mod tests {
         assert!(!EMPTY_SLOT_SVG.contains("currentColor"));
         let _ = AppState::empty_slot_icon(11.0);
         let _ = AppState::hover_remove_slot(None);
+        // The app logo renders its own colors (no tint surgery).
+        let _ = logo_mark(26.0);
         let _ = btn_text("Sync now", 12);
         let _ = btn_text(format!("Clear queue ({})", 3), 12.0);
         let _ = btn_icon("play", 14.0, iced::Color::WHITE);

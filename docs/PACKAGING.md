@@ -104,10 +104,9 @@ Desktop file: `flatpak/org.yutu_mux.YutuMux.desktop`
 (`Exec=yutu-mux`, `Icon=org.yutu_mux.YutuMux`) is installed by the
 manifest to `/app/share/applications/`. Icon expectation: scalable SVG at
 `flatpak/org.yutu_mux.YutuMux.svg`, installed to
-`/app/share/icons/hicolor/scalable/apps/` — real artwork has NOT landed
-yet, so the manifest installs it conditionally (`if test -f ...`) and the
-app currently ships without an icon. Supplying the SVG needs no manifest
-change. Follow-up before Flathub submission: AppStream metainfo
+`/app/share/icons/hicolor/scalable/apps/` (the rings + M mark, now in
+the repo, so the conditional install in the manifest fires).
+Follow-up before Flathub submission: AppStream metainfo
 (`org.yutu_mux.YutuMux.metainfo.xml`).
 
 ## 4. Portable tarball
@@ -121,6 +120,8 @@ GitHub Release via `softprops/action-gh-release@v2` (MIT-licensed action).
 Tarball `yutu-mux-x86_64-unknown-linux-gnu.tar.gz` contents:
 
 - `yutu-mux` (release binary, x86_64 Linux)
+- `icons/` (hicolor PNGs plus the scalable SVG, same layout the
+  installer copies below `~/.local/share/icons`)
 - `README.md`
 - `LICENSE` (if present in the repo)
 - `flatpak/org.yutu_mux.YutuMux.yaml` + `flatpak/org.yutu_mux.YutuMux.desktop`

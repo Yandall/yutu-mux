@@ -73,12 +73,15 @@ Installed files:
 ```text
 ~/.local/bin/yutu-mux
 ~/.local/share/applications/yutu-mux.desktop
+~/.local/share/icons/hicolor/*/apps/yutu-mux.png   (16-256px)
+~/.local/share/icons/hicolor/scalable/apps/yutu-mux.svg
 ```
 
 The desktop entry launches `yutu-mux` by name, so `~/.local/bin` must be on
 PATH. Many desktop distributions configure this automatically after the
-next login. There is currently no application icon asset, so the launcher
-uses the desktop environment's generic icon.
+next login. The launcher uses the installed rings + M icon set
+(`~/.local/share/icons/hicolor`), refreshed with `gtk-update-icon-cache`
+when available.
 
 ## macOS
 

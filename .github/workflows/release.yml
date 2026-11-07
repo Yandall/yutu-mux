@@ -34,6 +34,7 @@ jobs:
           cp README.md "$STAGE/"
           if test -f LICENSE; then cp LICENSE "$STAGE/"; fi
           cp flatpak/org.yutu_mux.YutuMux.yaml flatpak/org.yutu_mux.YutuMux.desktop "$STAGE/"
+          cp -R packaging/linux/icons "$STAGE/icons"
           tar -czf yutu-mux-x86_64-unknown-linux-gnu.tar.gz -C stage yutu-mux-x86_64-unknown-linux-gnu
           sha256sum yutu-mux-x86_64-unknown-linux-gnu.tar.gz > yutu-mux-x86_64-unknown-linux-gnu.tar.gz.sha256
       - name: Upload to GitHub Release

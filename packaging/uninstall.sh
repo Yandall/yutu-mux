@@ -58,5 +58,12 @@ remove_file() {
 
 remove_file "$PREFIX/bin/yutu-mux"
 remove_file "$PREFIX/share/applications/yutu-mux.desktop"
+# Icon theme entries installed alongside the Linux launcher. A dangling
+# glob matches nothing and remove_file skips missing paths.
+# shellcheck disable=SC2086
+for icon in "$PREFIX"/share/icons/hicolor/*/apps/yutu-mux.png \
+    "$PREFIX/share/icons/hicolor/scalable/apps/yutu-mux.svg"; do
+    remove_file "$icon"
+done
 remove_file "$PREFIX/Applications/YutuMux.app"
 printf 'User library, cache, and login data were not removed.\n'
