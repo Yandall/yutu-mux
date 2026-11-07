@@ -1,9 +1,22 @@
 # Per-user installer (Linux + macOS)
 
-`packaging/install.sh` turns a repository checkout into a per-user
-installation. It installs system dependencies, installs Rust through
-rustup only when Cargo is missing, builds the release, and installs the
-application below `~/.local` by default.
+No checkout needed on Linux x86_64: the installer downloads the prebuilt
+release, so Rust is never installed. One command (pass `--yes` because a
+pipe has no terminal for confirmation prompts):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh | sh -s -- --yes
+```
+
+Prefer to inspect first? Download the script, read it, then run it:
+
+```sh
+curl -fsSL -o install.sh https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh
+sh install.sh --help
+sh install.sh --yes
+```
+
+From a checkout, the same script lives at `packaging/install.sh`:
 
 ```sh
 git clone https://github.com/Yandall/yutu-mux.git
@@ -13,8 +26,26 @@ cd yutu-mux
 
 The script prompts before using the system package manager and before
 replacing existing application files. Use `--yes` for unattended installs.
-No `curl | sh` application installer is offered: running from a checkout
-keeps the source and build visible.
+
+## Prebuilt release vs source build
+
+On Linux x86_64 the default is `--from-release`: download the
+`yutu-mux-x86_64-unknown-linux-gnu.tar.gz` asset from the latest GitHub
+release and install it. Only runtime libraries are installed (ALSA,
+X11/Wayland, SQLite, OpenSSL, libmpv, yt-dlp); no compiler and no Rust.
+
+```sh
+# Pin a release, or point at a fork:
+sh install.sh --yes --version v0.2.0
+sh install.sh --yes --repo OWNER/REPO
+# Compile locally instead (needs Rust plus a checkout):
+sh install.sh --build-from-source
+```
+
+Anything without a prebuilt asset (macOS, other architectures) always
+builds from source: a checkout is required, or cloned automatically when
+git is available, and Rust is installed through rustup only when Cargo is
+missing.
 
 ## Linux
 
@@ -69,6 +100,7 @@ because the maintainer has no Mac.
 ./packaging/install.sh --no-deps       # skip system package installation
 ./packaging/install.sh --deps-only     # install dependencies only
 ./packaging/install.sh --prefix /absolute/path --yes
+./packaging/install.sh --from-release --version v0.2.0
 ./packaging/uninstall.sh               # remove app files, keep user data
 ```
 
