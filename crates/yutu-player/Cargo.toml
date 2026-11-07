@@ -19,3 +19,4 @@ libmpv2 = { version = "6", optional = true, default-features = false }
 mpv = ["dep:libmpv2"]
 
 [dev-dependencies]
+yutu-core = { path = "../yutu-core", features = ["test-fixtures"] }

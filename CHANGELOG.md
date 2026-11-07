@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.1.0 - 2026-11-07
 
 - Collapsed queue rail fills the window: the 6-thumb cap is gone, capacity
   follows window height, the live song carries a red border, and the window
@@ -460,25 +460,3 @@
   of a "Loading all songs…" text row under the list (the Animate
   ticker now runs while the full-shelf fetch is in flight, so the
   icon actually turns)
-
-## 0.1.0
-
-First working native app (mock library + live Innertube core):
-
-- Native Iced shell: Home/Search/Queue/Library/Settings + Artist/Album/
-  Playlist/Lyrics/Radio/Discovery views, Up Next editor, keyboard shortcuts
-- MockBackend library; persistent likes/history/user playlists (SQLite)
-- Audible rodio pipeline; EQ presets, local scan, Player controller
-- Scrobble rules + ListenBrainz payloads (submit stubbed), Weekly Mix /
-  Forgotten Favorites from local history
-- MPRIS2 D-Bus service + tray model (Linux); macOS notes
-- Live Innertube behind `innertube` feature (anonymous + cookie,
-  suggestions, stream fallback, PO-token aware, breakage reports)
-
-Known gaps: real stream URLs in the player, EQ audible effect (needs mpv
-backend), scrobble submission, Flatpak/dmg artifacts.
-
-## 0.1.0 goals (remaining)
-
-- Binary wiring for `innertube` feature + MPRIS live updates from UI
-- Flatpak + macOS dmg artifacts, `cargo dist`, release tag

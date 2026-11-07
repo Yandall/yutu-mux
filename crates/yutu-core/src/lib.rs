@@ -1,4 +1,4 @@
-//! yutu-core: models, backend trait, mock fixtures, auth + library store.
+//! yutu-core: models, backend trait, auth + library store.
 
 pub mod app_log;
 pub mod auth;
@@ -31,7 +31,9 @@ pub(crate) fn shared_client() -> &'static reqwest::Client {
 #[cfg(feature = "innertube")]
 pub use auth::{begin_google_login, poll_google_login, GoogleLogin, OAuthPersist};
 pub use auth::{AuthState, CookieAuth};
-pub use backend::{MockBackend, MusicBackend};
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use backend::MockBackend;
+pub use backend::MusicBackend;
 pub use discovery::{forgotten_favorites, weekly_mix};
 pub use history::{
     history_date, history_day, history_hhmm, history_section, history_section_label, history_week,
