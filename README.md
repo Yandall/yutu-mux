@@ -1,4 +1,4 @@
-# yutu-mux
+# Yutu Mux
 
 > This project was 100% vibecoded. I made it because I wanted to have a
 > better YouTube Music client that I could use in Linux and also macOS. I
