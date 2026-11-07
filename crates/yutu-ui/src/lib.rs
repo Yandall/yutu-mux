@@ -14167,7 +14167,7 @@ impl AppState {
             column![
                 row![
                     logo_mark(34.0),
-                    text("yutu-mux")
+                    text("Yutu Mux")
                         .size(22)
                         .color(iced::Color::WHITE)
                         .width(Fill),
