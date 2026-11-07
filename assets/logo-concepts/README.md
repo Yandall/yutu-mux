@@ -26,7 +26,8 @@ app's dark surface (`#181818`) with the brand red (`#FF0033`).
 - `13-rings-m.svg`: white M broadcasting red signal rings, all centered
   on the canvas.
 - `33-rings-bold.svg`: heavier rings and a bolder M.
-- `34-rings-dashed.svg`: dotted signal rings.
+- `34-rings-dashed.svg`: dotted signal rings, dash periods tiled to
+  divide each circumference exactly (12/16/20 dashes) with a slimmer M.
 - `35-rings-inverse.svg`: red M inside white rings.
 - `36-ring-solo.svg`: single thick ring, minimal.
 - `37-rings-play.svg`: play triangle at the broadcast center.
