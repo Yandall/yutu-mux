@@ -136,6 +136,17 @@ if [ "$ZIP" -eq 1 ]; then
     ZIPFILE="$OUT/YutuMux-macos-$ARCH.zip"
     ditto -c -k --sequesterRsrc "$APP" "$ZIPFILE"
     echo "==> zipped: $ZIPFILE"
+    # Checksum next to the zip (same `<hash>  <file>` line format as the
+    # Linux tarball, verifiable with `shasum -a 256 -c` / `sha256sum -c`
+    # from the download dir). shasum is macOS stock, sha256sum the fallback.
+    if command -v shasum >/dev/null 2>&1; then
+        (cd "$OUT" && shasum -a 256 "$(basename "$ZIPFILE")") > "$ZIPFILE.sha256"
+    elif command -v sha256sum >/dev/null 2>&1; then
+        (cd "$OUT" && sha256sum "$(basename "$ZIPFILE")") > "$ZIPFILE.sha256"
+    else
+        echo "warning: neither shasum nor sha256sum found; skipping checksum" >&2
+    fi
+    [ -f "$ZIPFILE.sha256" ] && echo "==> checksum: $ZIPFILE.sha256"
 fi
 
 echo "done: $APP"
