@@ -437,14 +437,33 @@ install_new_file() {
 if [ "$OS" = Linux ]; then
     BIN_DIR="$PREFIX/bin"
     APPS_DIR="$PREFIX/share/applications"
+    ICONS_DIR="$PREFIX/share/icons"
     make_dir "$BIN_DIR"
     make_dir "$APPS_DIR"
+    make_dir "$ICONS_DIR"
     STAGED_DESKTOP="$TMP_ROOT/yutu-mux.desktop"
     if [ "$DRY_RUN" -eq 0 ]; then
         write_desktop_file "$STAGED_DESKTOP"
     fi
     install_new_file 755 "$BIN_DIR/yutu-mux" "$BIN_SRC"
     install_new_file 644 "$APPS_DIR/yutu-mux.desktop" "$STAGED_DESKTOP"
+    if [ -n "$ROOT" ] && [ -d "$ROOT/packaging/linux/icons/hicolor" ]; then
+        ICON_SRC="$ROOT/packaging/linux/icons/hicolor"
+    else
+        ICON_SRC=$(find "$TMP_ROOT" -type d -name hicolor | head -n 1)
+    fi
+    if [ -n "${ICON_SRC:-}" ] && [ -d "$ICON_SRC" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "would install icon theme entries from $ICON_SRC to $ICONS_DIR"
+        else
+            copy_file "$ICON_SRC" "$ICONS_DIR/"
+            if have gtk-update-icon-cache; then
+                run gtk-update-icon-cache -f -t "$ICONS_DIR/hicolor" || true
+            fi
+        fi
+    else
+        say "No icon set found; skipping icon installation."
+    fi
     say "Installed yutu-mux to $BIN_DIR/yutu-mux"
     say "Desktop launcher: $APPS_DIR/yutu-mux.desktop"
 else

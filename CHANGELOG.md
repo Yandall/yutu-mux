@@ -8,11 +8,16 @@
   Linux x86_64 downloads the prebuilt release by default, so no
   compiler or Rust is needed; run it without a checkout via a curl
   one-liner. Every release publishes a `.sha256` file and the installer
-  refuses to install on a missing or mismatched checksum. Linux gets a desktop launcher; macOS gets the existing
+  refuses to install on a missing or mismatched checksum. Linux gets a
+  desktop launcher plus hicolor icons; macOS gets the existing
   signed app bundle. Includes dry-run/dependency-only modes, version
   pinning, safe replacement prompts, uninstall support, and
   `docs/INSTALL.md`. The Linux path was built and verified;
   macOS remains untested on real hardware. Windows packaging is deferred.
+- App logo: the rings + M mark (`assets/logo/yutu-mux.svg`, transparent)
+  ships as Linux hicolor PNGs (16-256px) plus scalable SVG, installs
+  with the Flatpak and the per-user installer, and sits beside the
+  sidebar wordmark in the app.
 
 - Seeks never fail on a fresh stream: scrubbing before the song is
   ready remembers the position and retries until mpv accepts it

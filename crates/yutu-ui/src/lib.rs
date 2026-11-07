@@ -248,6 +248,21 @@ fn icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'static, Mes
 /// tiny-skia backends.
 const EMPTY_SLOT_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\"></svg>";
 
+/// App logo mark (rings + M, own colors): shown beside the sidebar
+/// wordmark. Unlike `icon`/`btn_icon`, no tint is applied: the style
+/// color would repaint the red rings and white M.
+fn logo_mark(size: f32) -> iced::Element<'static, Message> {
+    use iced::widget::svg;
+    static LOGO_HANDLE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+        svg::Handle::from_memory(include_bytes!("../assets/logo.svg").as_slice())
+    });
+    svg(LOGO_HANDLE.clone())
+        .width(size)
+        .height(size)
+        .style(|_: &iced::Theme, _| svg::Style { color: None })
+        .into()
+}
+
 /// Button-weight stroke (2 to 2.5) applied to verbatim Lucide bytes.
 /// Pure helper so tests pin the surgery (see `button_helpers_build`).
 fn thicken_svg(bytes: &[u8]) -> Vec<u8> {
@@ -14151,13 +14166,15 @@ impl AppState {
         container(
             column![
                 row![
-                    text("yutu-mux")
+                    logo_mark(34.0),
+                    text("Yutu Mux")
                         .size(22)
                         .color(iced::Color::WHITE)
                         .width(Fill),
                     self.sync_spinner(),
                     pin_btn,
                 ]
+                .spacing(8)
                 .align_y(iced::alignment::Vertical::Center),
                 column![
                     button(
@@ -17769,6 +17786,28 @@ impl AppState {
     }
 }
 
+/// Window identity for taskbar/dock matching: the application id must
+/// equal the .desktop basename (`yutu-mux`) so the running window picks
+/// up the installed icon on X11 (WM_CLASS) and Wayland (app_id). Iced
+/// leaves it empty by default, which strands Wayland windows with a
+/// generic icon. Other platforms keep the default settings.
+fn window_settings() -> iced::window::Settings {
+    #[cfg(target_os = "linux")]
+    {
+        iced::window::Settings {
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "yutu-mux".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        iced::window::Settings::default()
+    }
+}
+
 pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
     // Display startup: the bundled Inter faces always register (the
     // System pick just leaves them unused) and the stored family
@@ -17791,6 +17830,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         AppState::view,
     )
     .title(|state: &AppState| state.window_title())
+    .window(window_settings())
     .font(include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice())
     .font(include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice())
     .font(include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice())
@@ -23017,6 +23057,8 @@ mod tests {
         assert!(!EMPTY_SLOT_SVG.contains("currentColor"));
         let _ = AppState::empty_slot_icon(11.0);
         let _ = AppState::hover_remove_slot(None);
+        // The app logo renders its own colors (no tint surgery).
+        let _ = logo_mark(26.0);
         let _ = btn_text("Sync now", 12);
         let _ = btn_text(format!("Clear queue ({})", 3), 12.0);
         let _ = btn_icon("play", 14.0, iced::Color::WHITE);
