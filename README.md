@@ -19,7 +19,7 @@ Native Rust YouTube Music desktop app. Iced UI (no webview). Linux + macOS.
 
 Honest limits: free-tier bitrate ceiling (128-256kbps AAC/Opus is
 YouTube's, not ours), no offline keep (streaming only), PO-token 403s
-surface as errors, macOS packaging untested.
+surface as errors.
 
 ## Install
 
