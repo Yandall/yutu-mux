@@ -1,5 +1,10 @@
 # yutu-mux
 
+> This project was 100% vibecoded. I made it because I wanted to have a
+> better YouTube Music client that I could use in Linux and also macOS. I
+> cannot guarantee the quality of the code but I'll try to fix any issue
+> during my spare time, contributions are welcomed.
+
 Native Rust YouTube Music desktop app. Iced UI (no webview). Linux + macOS.
 
 ## Features
@@ -26,6 +31,13 @@ so Rust is never installed:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh | sh -s -- --yes
 ```
+
+The prebuilt download needs a published GitHub release. Until the first
+one is tagged, Linux installs should pass `--build-from-source` (needs
+Rust and a checkout, same as macOS below).
+
+Every release publishes a `.sha256` file next to the tarball, and the
+installer refuses to install when the checksum is missing or mismatched.
 
 From a checkout, the same script lives at `packaging/install.sh`:
 
@@ -56,8 +68,9 @@ Updating is the same command again (Linux x86_64 re-downloads the latest
 release; source builds recompile from an updated checkout). Remove it
 later with
 `packaging/uninstall.sh` (user library, cache, and login data are kept).
-See `docs/INSTALL.md` for supported package managers and install locations.
-Windows packaging is planned but not supported yet.
+See `docs/INSTALL.md` for supported package managers, install locations,
+and checksum verification. Windows packaging is planned but not supported
+yet.
 
 ### Manual development build
 
@@ -92,13 +105,21 @@ Settings imports a Netscape `cookies.txt` (private window, export via a
 shows its contents, the session is stored at 0600. Never paste cookie
 contents anywhere. Details and ToS notes in `docs/AUTH.md`.
 
-## Disclaimer
+## Disclaimer of use
 
 Unofficial, not affiliated with YouTube or Google. For personal and
 educational use. YouTube Music has no official API; this client uses
 reverse-engineered Innertube calls plus a `yt-dlp` sidecar for stream
 resolution, which may violate YouTube's Terms of Service and risks
-account action. Streaming only: the app keeps no offline copies.
+account action, including suspension or termination. Use at your own
+risk: the software is provided as is, without warranty of any kind, and
+the author accepts no liability for account actions, data loss, or any
+other damages. Streaming only: the app keeps no offline copies. Cookie
+sessions are stored locally at `0600`; never share your `cookies.txt`
+or paste its contents anywhere. System package installation via the
+installer script uses `sudo` on Linux and Homebrew on macOS; review
+`packaging/install.sh` (or run with `--dry-run`) before piping it to a
+shell.
 
 ## Layout
 
@@ -118,7 +139,8 @@ before pushing.
 
 ## License
 
-MIT, see `LICENSE`. Third-party notices in `NOTICE.md` (Inter OFL-1.1,
+MIT, see `LICENSE`. By using or contributing to this project you agree to
+the MIT license terms. Third-party notices in `NOTICE.md` (Inter OFL-1.1,
 Lucide ISC, symphonia MPL-2.0, and others).
 
 Note: the default build links the system `libmpv`
