@@ -36,3 +36,4 @@ debug-panel = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+yutu-core = { path = "../yutu-core", features = ["test-fixtures"] }

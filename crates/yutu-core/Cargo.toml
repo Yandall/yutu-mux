@@ -2,7 +2,7 @@
 name = "yutu-core"
 version = "0.1.0"
 edition = "2021"
-description = "Models, backend trait, mock fixtures, auth + cache (yutu-mux)"
+description = "Models, backend trait, auth + cache (yutu-mux)"
 license = "MIT"
 
 [dependencies]
@@ -25,4 +25,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1"]
 lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
+# Test-only mock backend + fixtures (never in release binaries): enabled
+# via dev-dependencies by crates whose tests use `MockBackend`.
+test-fixtures = []
 

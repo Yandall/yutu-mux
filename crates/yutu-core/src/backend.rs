@@ -1,8 +1,8 @@
-//! Backend trait + deterministic mock (no network).
+//! Backend trait + test-only deterministic mock (no network).
 
-use crate::models::{
-    Album, Artist, Lyrics, LyricsLine, Playlist, PlaylistHit, SearchResults, Track,
-};
+#[cfg(any(test, feature = "test-fixtures"))]
+use crate::models::{Album, Artist, LyricsLine, PlaylistHit, Track};
+use crate::models::{Lyrics, Playlist, SearchResults};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -21,8 +21,10 @@ pub trait MusicBackend {
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 pub struct MockBackend;
 
+#[cfg(any(test, feature = "test-fixtures"))]
 impl MockBackend {
     pub fn new() -> Self {
         Self
@@ -89,12 +91,14 @@ impl MockBackend {
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 impl Default for MockBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 impl MusicBackend for MockBackend {
     fn search(&self, query: &str) -> SearchResults {
         let q = query.to_lowercase();

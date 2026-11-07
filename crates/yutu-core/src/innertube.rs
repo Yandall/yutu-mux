@@ -1,7 +1,7 @@
 //! Live Innertube backend built on the real `ytmapi-rs` 0.3 client.
 //!
-//! Feature-gated behind `innertube` so offline builds (and CI without network)
-//! keep working with [`crate::backend::MockBackend`].
+//! Feature-gated behind `innertube` so offline builds stay network-free
+//! (tests use the test-only `MockBackend` instead).
 //!
 //! What is live vs stubbed (see `docs/INNERTUBE.md` for the full picture):
 //! - LIVE: anonymous + cookie-file + Google-OAuth-device-flow connection,
