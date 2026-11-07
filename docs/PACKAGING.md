@@ -162,7 +162,8 @@ the Section-1 libraries installed.
 Supported path: `packaging/macos/build-app.sh` (reads the version from
 `Cargo.toml`, wraps the release binary with a launcher shim, ad-hoc
 signs; `--self-contained` bundles libmpv plus a standalone yt-dlp,
-`--zip` emits a distributable `dist/YutuMux-macos-<arch>.zip`):
+`--zip` emits a distributable `dist/YutuMux-macos-<arch>.zip` plus a
+matching `.sha256`):
 
 ```sh
 packaging/macos/build-app.sh --self-contained --zip
