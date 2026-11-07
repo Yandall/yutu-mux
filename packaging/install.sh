@@ -268,6 +268,33 @@ StartupNotify=true
 EOF
 }
 
+sha256_of() {
+    if have sha256sum; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif have shasum; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        fail "neither sha256sum nor shasum is available; install coreutils or perl, then rerun"
+    fi
+}
+
+# Verify a release tarball against its .sha256 file. Fails closed: a
+# missing or mismatched checksum aborts before anything is unpacked or
+# installed. (TLS already authenticates the GitHub download; the
+# checksum additionally guards against truncation, corruption, and
+# CDN mixups. It is not a signature: see docs/INSTALL.md.)
+verify_release() {
+    archive=$1
+    checksum_file=$2
+    [ -f "$checksum_file" ] || fail "checksum file is missing: $checksum_file"
+    expected=$(cut -d' ' -f1 < "$checksum_file")
+    case "$expected" in
+        ""|*[!0-9a-fA-F]*) fail "checksum file is malformed: $checksum_file" ;;
+    esac
+    actual=$(sha256_of "$archive")
+    [ "$expected" = "$actual" ] || fail "checksum mismatch for $(basename "$archive"): download is corrupt or tampered with, refusing to install"
+}
+
 if [ "$DEPS" -eq 1 ]; then
     if [ "$OS" = Linux ] && [ "$MODE" = "release" ]; then
         say "System dependencies: ALSA, X11/Wayland, SQLite, OpenSSL, libmpv and yt-dlp (runtime only, no compiler or Rust)."
@@ -309,16 +336,26 @@ if [ "$MODE" = "release" ]; then
     say "Downloading prebuilt yutu-mux ($VERSION, Linux x86_64)."
     if [ "$DRY_RUN" -eq 1 ]; then
         say "would download $URL and unpack it"
+        say "would verify $URL.sha256 before unpacking"
         BIN_SRC="$TMP_ROOT/yutu-mux-x86_64-unknown-linux-gnu/yutu-mux"
     elif [ -n "${YUTU_TEST_RELEASE_FILE:-}" ]; then
         say "Using test release file $YUTU_TEST_RELEASE_FILE."
         cp "$YUTU_TEST_RELEASE_FILE" "$TMP_ROOT/pkg.tar.gz"
+        if [ -f "${YUTU_TEST_RELEASE_FILE}.sha256" ]; then
+            cp "${YUTU_TEST_RELEASE_FILE}.sha256" "$TMP_ROOT/pkg.tar.gz.sha256"
+            verify_release "$TMP_ROOT/pkg.tar.gz" "$TMP_ROOT/pkg.tar.gz.sha256"
+        else
+            say "No test checksum file found; skipping verification (test hook only)."
+        fi
         run tar -xzf "$TMP_ROOT/pkg.tar.gz" -C "$TMP_ROOT"
         BIN_SRC=$(find "$TMP_ROOT" -name yutu-mux -type f | head -n 1)
         [ -n "$BIN_SRC" ] || fail "release archive did not contain a yutu-mux binary"
     else
         run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP_ROOT/pkg.tar.gz" "$URL" \
             || fail "download failed: $URL (check the release exists)"
+        run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP_ROOT/pkg.tar.gz.sha256" "$URL.sha256" \
+            || fail "checksum download failed: $URL.sha256 (the release is missing its .sha256 file)"
+        verify_release "$TMP_ROOT/pkg.tar.gz" "$TMP_ROOT/pkg.tar.gz.sha256"
         run tar -xzf "$TMP_ROOT/pkg.tar.gz" -C "$TMP_ROOT"
         BIN_SRC=$(find "$TMP_ROOT" -name yutu-mux -type f | head -n 1)
         [ -n "$BIN_SRC" ] || fail "release archive did not contain a yutu-mux binary"

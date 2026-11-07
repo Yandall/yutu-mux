@@ -7,7 +7,8 @@
   only for source builds), and installs per-user below `~/.local`.
   Linux x86_64 downloads the prebuilt release by default, so no
   compiler or Rust is needed; run it without a checkout via a curl
-  one-liner. Linux gets a desktop launcher; macOS gets the existing
+  one-liner. Every release publishes a `.sha256` file and the installer
+  refuses to install on a missing or mismatched checksum. Linux gets a desktop launcher; macOS gets the existing
   signed app bundle. Includes dry-run/dependency-only modes, version
   pinning, safe replacement prompts, uninstall support, and
   `docs/INSTALL.md`. The Linux path was built and verified;

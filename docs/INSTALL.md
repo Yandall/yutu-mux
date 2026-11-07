@@ -34,6 +34,12 @@ On Linux x86_64 the default is `--from-release`: download the
 release and install it. Only runtime libraries are installed (ALSA,
 X11/Wayland, SQLite, OpenSSL, libmpv, yt-dlp); no compiler and no Rust.
 
+Every release ships a matching `.sha256` file, and the installer refuses
+to unpack or install when the checksum is missing or mismatched. TLS
+already authenticates the GitHub download; the checksum additionally
+guards against truncation, corruption, and CDN mixups. It is an
+integrity check, not an authorship signature.
+
 ```sh
 # Pin a release, or point at a fork:
 sh install.sh --yes --version v0.2.0
