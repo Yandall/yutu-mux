@@ -23,3 +23,24 @@ app's dark surface (`#181818`) with the brand red (`#FF0033`).
 - `11-wordmark.svg`: `yutu` in white plus `mux` in red, bundled-Inter
   fallback stack (rendering varies by system fonts).
 - `12-orbit-m.svg`: red M with a white orbit ring, planet vibe.
+- `13-rings-m.svg`: white M broadcasting red signal rings.
+- `14-headphones.svg`: red headphone silhouette.
+- `15-cassette.svg`: retro tape with dark reels on a red shell.
+- `16-piano.svg`: white keys with the accidentals in brand red.
+- `17-speaker.svg`: red speaker cone with radiating sound arcs.
+- `18-treble-swirl.svg`: single-line treble-clef abstraction.
+- `19-bolt-m.svg`: sharp mitered zigzag M, high energy.
+- `20-chevrons.svg`: triple fast-forward chevrons.
+- `21-ring-m.svg`: white M inside a broken red ring.
+- `22-peaks-m.svg`: twin mountain peaks with snow caps on a red range.
+- `23-heartbeat.svg`: red heart outline with a white pulse trace.
+- `24-gem.svg`: faceted red gem, pure geometric mark with no letter.
+- `25-links.svg`: interlocking red and white rings.
+- `26-y.svg`: bold red Y for yutu.
+- `27-moon-note.svg`: white crescent with a small red note, late-night
+  listening.
+- `28-flame.svg`: red flame with a white core.
+- `29-origami-play.svg`: red play triangle with a folded paper corner.
+- `30-dots-m.svg`: dot-matrix M with one white dot.
+- `31-infinity.svg`: endless red loop, queue-that-never-ends nod.
+- `32-crown-m.svg`: red crown with a white base bar.
