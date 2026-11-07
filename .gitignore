@@ -16,3 +16,5 @@ logs/
 flatpak/vendor/
 flatpak/vendor-config.toml
 flatpak/cargo-sources.json
+# Local packaging output (macOS build-app.sh stage/bundle/manifest).
+/dist/
