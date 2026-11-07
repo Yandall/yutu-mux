@@ -1,7 +1,8 @@
-# Packaging (Phase 6)
+# Packaging
 
-How a `0.2.0` release ships: Linux Flatpak + portable tarball (CI-built),
-macOS `.dmg` notes (UNTESTED — the maintainer has no Mac).
+How a `0.1.0` release ships: portable Linux tarball (CI-built on every
+`v*` tag) + Flatpak manifest, macOS `.app` via
+`packaging/macos/build-app.sh` (built by hand on a Mac, ad-hoc signed).
 
 ## 1. Prerequisites
 
@@ -13,8 +14,8 @@ sudo apt-get install -y libasound2-dev pkg-config libx11-dev \
   libwayland-dev libxkbcommon-dev libmpv-dev
 ```
 
-Same set as `.github/workflows/ci.yml`, plus `libmpv-dev`: the default
-`mpv` cargo feature links the system library at runtime (see `NOTICE.md`
+Same set the release workflow installs (see `.github/workflows/release.yml`),
+plus `libmpv-dev`: the default `mpv` cargo feature links the system library at runtime (see `NOTICE.md`
 for the GPL note). Rust via `mise use -g rust@stable` (rust 1.99+).
 
 ### Flatpak tooling (Linux only)
@@ -34,22 +35,25 @@ needed. (If a newer LTS, e.g. `25.08`, becomes the Flathub default before
 release, bump `runtime-version` in `flatpak/org.yutu_mux.YutuMux.yaml` —
 nothing else changes.)
 
-### macOS (UNTESTED)
+### macOS (by hand, see Section 5)
 
-Xcode command-line tools + a stable Rust toolchain. No other prerequisites
-today (pure-Rust audio/UI; no Homebrew-only system deps).
+Xcode command-line tools + a stable Rust toolchain, plus
+`brew install mpv` (libmpv for the default feature set) and pkg-config.
+The repo's `.cargo/config.toml` already points the linker at Homebrew's
+lib dir. Rodio-only builds (`CARGO_FLAGS="--no-default-features
+--features submit,innertube,lyrics"`) skip the mpv requirement.
 
 ## 2. Flatpak: offline-vendor step (required before build)
 
 Flatpak builds are network-isolated, so crates.io sources must be staged
 up front. Generated files are NEVER committed (`flatpak/vendor/`,
-`flatpak/vendor-config.toml`, `flatpak/cargo-sources.json`); add them to
-`.gitignore` (maintainer action).
+`flatpak/vendor-config.toml`, `flatpak/cargo-sources.json` are already in
+`.gitignore`).
 
 Option A — local/dev builds, pure cargo (no extra tooling):
 
 ```sh
-git checkout v0.2.0  # or the release tag under test
+git checkout v0.1.0  # or the release tag under test
 cargo vendor vendor > flatpak/vendor-config.toml
 ```
 
@@ -112,10 +116,12 @@ Follow-up before Flathub submission: AppStream metainfo
 ## 4. Portable tarball
 
 `.github/workflows/release.yml` runs on every `v*` tag: checkout →
-toolchain → apt deps → `cargo test --workspace` → feature checks
-(`--all-features` compile for `innertube`, plus a non-blocking `mpv`
-probe) → `cargo build --release` → stage + `tar -czf` → upload to the
-GitHub Release via `softprops/action-gh-release@v2` (MIT-licensed action).
+toolchain → apt deps → `cargo test --workspace --locked` → feature
+checks (`--all-features` compile plus the `mpv` checks) →
+`cargo build --release --locked` → stage + `tar -czf` + `sha256sum` →
+upload to the GitHub Release via `softprops/action-gh-release@v2`
+(MIT-licensed action). There is no per-push CI; the release run is the
+only Actions usage (one Linux runner per tag).
 
 Tarball `yutu-mux-x86_64-unknown-linux-gnu.tar.gz` contents:
 
@@ -143,6 +149,7 @@ cp target/release/yutu-mux "$STAGE/"
 cp README.md "$STAGE/"
 if test -f LICENSE; then cp LICENSE "$STAGE/"; fi
 cp flatpak/org.yutu_mux.YutuMux.yaml flatpak/org.yutu_mux.YutuMux.desktop "$STAGE/"
+cp -R packaging/linux/icons "$STAGE/icons"
 tar -czf yutu-mux-x86_64-unknown-linux-gnu.tar.gz -C stage yutu-mux-x86_64-unknown-linux-gnu
 ```
 
@@ -150,15 +157,31 @@ Note: the tarball binary is linked against system ALSA/X11/Wayland, so it
 is "portable" across similar desktop distros, not static. Recipients need
 the Section-1 libraries installed.
 
-## 5. macOS `.dmg` — UNTESTED (maintainer has no Mac)
+## 5. macOS `.app` (built by hand on a Mac)
 
-Honest status: the steps below are standard practice but have never been
-run for this repo. Do NOT advertise a macOS release until someone with a
-Mac walks through them and updates this doc.
+Supported path: `packaging/macos/build-app.sh` (reads the version from
+`Cargo.toml`, wraps the release binary with a launcher shim, ad-hoc
+signs; `--self-contained` bundles libmpv plus a standalone yt-dlp,
+`--zip` emits a distributable `dist/YutuMux-macos-<arch>.zip`):
+
+```sh
+packaging/macos/build-app.sh --self-contained --zip
+```
+
+One architecture per run (native): repeat per arch and lipo the two
+binaries together for a universal bundle. Attach the zip to the GitHub
+Release by hand (`gh release upload` or the web UI): there is no macOS
+CI job. First launch is right-click, Open (unsigned bundle).
+
+Honest status: no maintainer Mac has verified this end to end. Do NOT
+advertise a macOS release until someone with a Mac walks through it
+and updates this doc.
+
+Manual equivalent (what the script automates, plus `.dmg` options):
 
 ```sh
 # 1. Release build on the Mac:
-cargo build --release
+cargo build --release --locked
 
 # 2. Assemble a minimal app bundle:
 APP="YutuMux.app"
@@ -171,7 +194,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>YutuMux</string>
   <key>CFBundleIdentifier</key><string>dev.yutu-mux.YutuMux</string>
   <key>CFBundleName</key><string>YutuMux</string>
-  <key>CFBundleVersion</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 PLIST
@@ -190,10 +213,10 @@ Notarization (paid Apple Developer ID, stapling, `notarytool`) is out of
 scope until there is a Mac-owning maintainer; until then any `.dmg` is
 ad-hoc-signed only.
 
-## 6. Version-bump checklist (0.2.0)
+## 6. Version-bump checklist (next release)
 
-There are FIVE `Cargo.toml` version fields (not four — the binary crate
-counts too); today all read `0.1.0`:
+There are FIVE `Cargo.toml` version fields (the binary crate counts
+too); today all read `0.1.0`:
 
 1. `Cargo.toml` (binary `yutu-mux`)
 2. `crates/yutu-core/Cargo.toml`
@@ -203,10 +226,13 @@ counts too); today all read `0.1.0`:
 
 Then:
 
-6. Add a `## 0.2.0` entry to `CHANGELOG.md`.
-7. Commit, tag `git tag v0.2.0`, push tag — `release.yml` builds the
+6. Move the shipped notes under a dated `## X.Y.Z` entry in
+   `CHANGELOG.md` (add a fresh heading on top for the next cycle).
+7. Commit, tag `git tag vX.Y.Z`, push tag — `release.yml` builds the
    tarball and attaches it to the GitHub Release automatically.
-8. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
+8. Build the macOS zip on a Mac (Section 5) and attach it to the same
+   Release by hand.
+9. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
    before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
 
 ## 7. License hygiene
