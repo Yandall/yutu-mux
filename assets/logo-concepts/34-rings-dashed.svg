@@ -12,5 +12,5 @@
     <circle cx="128" cy="128" r="78" stroke-width="9" stroke-dasharray="23.75 13.95"/>
     <circle cx="128" cy="128" r="98" stroke-width="7" stroke-dasharray="24.25 14.23"/>
   </g>
-  <polyline points="100,158 100,98 114,118 128,98 142,118 156,98 156,158" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="100,158 100,98 114,118 128,98 142,118 156,98 156,158" fill="none" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
