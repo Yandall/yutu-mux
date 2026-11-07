@@ -17,6 +17,11 @@
     `yutu-core` / `yutu-player`. Iced 0.14 with `tokio`, `image`, `svg`
     features.
   - `crates/yutu-desktop`: MPRIS2 D-Bus service, tray model, macOS notes.
+  - `packaging/install.sh`: Linux/macOS per-user installer; dependency
+    setup, release build, desktop launcher or macOS app bundle.
+  - `packaging/uninstall.sh`: removes installed app files, keeps user data.
+  - `packaging/macos/build-app.sh`: macOS `.app` bundle builder used by
+    the installer; optional self-contained distribution packaging.
   - `src/main.rs`: wires MPRIS `serve` + `watch_and_signal` loop, then
     runs `yutu_ui::run`.
 - Dependency rule (hard): `yutu-ui -> yutu-player -> yutu-core`.

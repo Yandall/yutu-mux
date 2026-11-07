@@ -2,6 +2,18 @@
 
 ## 0.2.0 (unreleased)
 
+- Easier installation: `packaging/install.sh` detects supported Linux
+  package managers or Homebrew on macOS, installs dependencies (Rust
+  only for source builds), and installs per-user below `~/.local`.
+  Linux x86_64 downloads the prebuilt release by default, so no
+  compiler or Rust is needed; run it without a checkout via a curl
+  one-liner. Every release publishes a `.sha256` file and the installer
+  refuses to install on a missing or mismatched checksum. Linux gets a desktop launcher; macOS gets the existing
+  signed app bundle. Includes dry-run/dependency-only modes, version
+  pinning, safe replacement prompts, uninstall support, and
+  `docs/INSTALL.md`. The Linux path was built and verified;
+  macOS remains untested on real hardware. Windows packaging is deferred.
+
 - Seeks never fail on a fresh stream: scrubbing before the song is
   ready remembers the position and retries until mpv accepts it
   (no more mpv seek raw -12 error), holding the bar without

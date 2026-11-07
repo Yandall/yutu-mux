@@ -126,6 +126,12 @@ Tarball `yutu-mux-x86_64-unknown-linux-gnu.tar.gz` contents:
 - `flatpak/org.yutu_mux.YutuMux.yaml` + `flatpak/org.yutu_mux.YutuMux.desktop`
   (so tarball users can rebuild/install the Flatpak manifest)
 
+The release job also publishes
+`yutu-mux-x86_64-unknown-linux-gnu.tar.gz.sha256` (a `sha256sum` output
+line for the tarball). `packaging/install.sh` downloads that file next
+to the tarball and refuses to unpack or install on a missing or
+mismatched checksum.
+
 Local repro of the packaging step (after `cargo build --release`):
 
 ```sh

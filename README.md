@@ -18,6 +18,49 @@ surface as errors, macOS packaging untested.
 
 ## Install
 
+### One-command installer (Linux + macOS)
+
+No checkout needed on Linux x86_64. This downloads the prebuilt release,
+so Rust is never installed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh | sh -s -- --yes
+```
+
+From a checkout, the same script lives at `packaging/install.sh`:
+
+```sh
+./packaging/install.sh
+```
+
+The script detects Linux `apt`, `dnf`, `pacman`, or `zypper`, or Homebrew
+on macOS, installs the needed dependencies, and installs per-user below
+`~/.local`. The script asks before using the system package manager and
+before replacing an existing installation. Linux installs the `yutu-mux`
+command and a desktop launcher. macOS builds and installs
+`~/.local/Applications/YutuMux.app` plus a `yutu-mux` command in
+`~/.local/bin` (add that directory to PATH if needed). The macOS app
+bundle is ad-hoc signed: first launch is right-click, Open.
+
+Useful variants:
+
+```sh
+./packaging/install.sh --dry-run       # show actions, change nothing
+./packaging/install.sh --no-deps       # dependencies already installed
+./packaging/install.sh --deps-only     # prepare a development machine
+./packaging/install.sh --prefix /some/absolute/path --yes
+./packaging/install.sh --build-from-source   # compile locally instead of the prebuilt release
+```
+
+Updating is the same command again (Linux x86_64 re-downloads the latest
+release; source builds recompile from an updated checkout). Remove it
+later with
+`packaging/uninstall.sh` (user library, cache, and login data are kept).
+See `docs/INSTALL.md` for supported package managers and install locations.
+Windows packaging is planned but not supported yet.
+
+### Manual development build
+
 Rust 1.99+ via `mise use -g rust@stable`. System deps:
 
 ```sh
