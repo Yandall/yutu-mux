@@ -14166,7 +14166,7 @@ impl AppState {
         container(
             column![
                 row![
-                    logo_mark(26.0),
+                    logo_mark(34.0),
                     text("yutu-mux")
                         .size(22)
                         .color(iced::Color::WHITE)
