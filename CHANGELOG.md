@@ -2,6 +2,11 @@
 
 ## 0.2.0 (unreleased)
 
+- Collapsed queue rail fills the window: the 6-thumb cap is gone, capacity
+  follows window height, the live song carries a red border, and the window
+  anchors with the live song 1st at the head, 2nd while scrolling, sinking
+  only when the tail cannot fill below it; autoplay fills leftover slots
+
 - Easier installation: `packaging/install.sh` detects supported Linux
   package managers or Homebrew on macOS, installs dependencies (Rust
   only for source builds), and installs per-user below `~/.local`.

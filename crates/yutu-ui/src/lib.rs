@@ -56,6 +56,46 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Collapsed rail thumb wrapper: red border for the live song, transparent
+/// same-size border otherwise so the pitch never shifts on highlight.
+fn rail_thumb_bg(current: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
+    move |_| iced::widget::container::Style {
+        background: Some(iced::Background::Color(CARD_BG)),
+        border: iced::Border {
+            color: if current {
+                SPOT_GREEN
+            } else {
+                iced::Color::TRANSPARENT
+            },
+            width: 2.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Collapsed rail window: slice [start, end) of at most `capacity` items
+/// keeping the live song pinned. Rules: first song sits 1st (no previous
+/// to show), otherwise the live song stays 2nd while there is room to
+/// scroll, and sinks to 3rd+ only when the tail cannot fill below it.
+/// Pure helper so unit tests pin the anchoring without a window.
+fn collapsed_rail_window(pos: Option<usize>, len: usize, capacity: usize) -> (usize, usize) {
+    if len == 0 || capacity == 0 {
+        return (0, 0);
+    }
+    let cap = capacity.min(len);
+    if cap >= len {
+        return (0, len);
+    }
+    let max_start = len - cap;
+    let start = match pos {
+        None => 0,
+        Some(0) => 0,
+        Some(p) => (p.saturating_sub(1)).min(max_start),
+    };
+    (start, start + cap)
+}
+
 /// Slim floating scrollbar shared by every scrollable (4px). Fully
 /// transparent until the list is hovered, dragged, or recently
 /// scrolled: Iced themes scrollbars by interaction status, and scroll
@@ -1913,6 +1953,19 @@ const RIGHT_GRACE: f32 = 16.0;
 const RIGHT_RAIL_W: f32 = 56.0;
 /// How far outside the collapsed rail the expand zone reaches.
 const RIGHT_EXPAND_GRACE: f32 = 8.0;
+/// Collapsed rail thumb size (matches the thumb_sized call below).
+const RAIL_THUMB_PX: f32 = 32.0;
+/// Collapsed rail pitch per thumb (thumb plus button padding plus wrapper
+/// padding plus column spacing). Idle and live share the same outer box
+/// (transparent vs red border) so the pitch never shifts on highlight.
+const RAIL_ITEM_PITCH: f32 = RAIL_THUMB_PX + 4.0 + 2.0 + 6.0;
+/// Collapsed rail vertical chrome (outer padding plus base spacing plus
+/// rail padding). Subtracted with the player reserve to size the fill.
+const RAIL_CHROME_PX: f32 = 48.0;
+/// Collapsed rail capacity bounds: never fewer than the old fixed 6,
+/// never more than a 4K-tall window could show.
+const RAIL_MIN_CAP: usize = 6;
+const RAIL_MAX_CAP: usize = 50;
 /// Bottom strip reserved for the player bar: sidebar hover expand never
 /// fires from inside this zone. Measured: status line (~16) + control
 /// row (~50) + player padding (2x10) + spacings (~16) with margin.
@@ -7519,6 +7572,16 @@ impl AppState {
     /// No queue and no autoplay: the collapsed rail would show nothing.
     fn right_rail_empty(&self) -> bool {
         self.queue.is_empty() && self.autoplay.is_empty()
+    }
+
+    /// Collapsed rail thumb capacity: how many 32px thumbs fill the
+    /// available height (window minus player reserve and chrome). Bounded
+    /// below by the old fixed 6 so tiny windows never collapse to nothing.
+    fn collapsed_rail_capacity(&self) -> usize {
+        let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+        let avail = (wh - self.player_zone_h() - RAIL_CHROME_PX).max(0.0);
+        let fit = ((avail + 6.0) / RAIL_ITEM_PITCH).floor() as usize;
+        fit.clamp(RAIL_MIN_CAP, RAIL_MAX_CAP)
     }
 
     /// True while any transition is still converging (drives the ticker).
@@ -14604,40 +14667,55 @@ impl AppState {
         .padding(6)
         .into();
         if self.right_w < 140.0 {
-            // Collapsed rail: queue thumbnails, a separator, then autoplay
-            // thumbnails: same jump targets as the expanded rows.
+            // Collapsed rail fills the available height: a queue window
+            // anchored on the live song plus autoplay with what is left.
+            // Same jump targets as the expanded rows.
+            let total = self.collapsed_rail_capacity();
+            let n = self.queue.items().len();
+            let m = self.autoplay.len();
             let pos = self.queue.position();
+            let (q_start, q_end) = collapsed_rail_window(pos, n, total);
+            let q_shown = q_end.saturating_sub(q_start);
+            let auto_shown = m.min(total.saturating_sub(q_shown));
             let mut rail: Vec<iced::Element<'_, Message>> = Vec::new();
-            for (i, t) in self.queue.items().iter().enumerate().take(6) {
-                let btn: iced::Element<'_, Message> = row_button(self.thumb_sized(t, 32.0))
-                    .style(hover_row)
-                    .on_press(Message::QueueJump(i))
-                    .padding(2)
-                    .into();
-                rail.push(if pos == Some(i) {
-                    container(btn).style(card_bg).padding(1).into()
-                } else {
-                    btn
-                });
-            }
-            rail.push(
-                container(
-                    iced::widget::Space::new()
-                        .height(iced::Length::Fixed(1.0))
-                        .width(Fill),
-                )
-                .style(card_bg)
-                .padding(0)
-                .into(),
-            );
-            for (i, t) in self.autoplay.iter().enumerate().take(4) {
+            for idx in q_start..q_end {
+                let Some(t) = self.queue.items().get(idx) else {
+                    continue;
+                };
+                let is_current = pos == Some(idx);
+                let btn: iced::Element<'_, Message> =
+                    row_button(self.thumb_sized(t, RAIL_THUMB_PX))
+                        .style(hover_row)
+                        .on_press(Message::QueueJump(idx))
+                        .padding(2)
+                        .into();
                 rail.push(
-                    row_button(self.thumb_sized(t, 32.0))
+                    container(btn)
+                        .style(rail_thumb_bg(is_current))
+                        .padding(1)
+                        .into(),
+                );
+            }
+            if q_shown > 0 && auto_shown > 0 {
+                rail.push(
+                    container(
+                        iced::widget::Space::new()
+                            .height(iced::Length::Fixed(1.0))
+                            .width(Fill),
+                    )
+                    .style(card_bg)
+                    .padding(0)
+                    .into(),
+                );
+            }
+            for (i, t) in self.autoplay.iter().enumerate().take(auto_shown) {
+                let btn: iced::Element<'_, Message> =
+                    row_button(self.thumb_sized(t, RAIL_THUMB_PX))
                         .style(hover_row)
                         .on_press(Message::PlayAutoplay(i))
                         .padding(2)
-                        .into(),
-                );
+                        .into();
+                rail.push(container(btn).style(rail_thumb_bg(false)).padding(1).into());
             }
             return container(
                 column(rail)
@@ -23448,6 +23526,33 @@ mod tests {
         assert!(!s.right_rail_empty());
         assert_eq!(s.right_target(), 56.0);
         assert!(!s.right_open());
+    }
+
+    #[test]
+    fn collapsed_rail_window_pins_live_song() {
+        // First song: live sits 1st.
+        assert_eq!(collapsed_rail_window(Some(0), 10, 6), (0, 6));
+        // One previous song: live stays 2nd while scrolling.
+        assert_eq!(collapsed_rail_window(Some(1), 10, 6), (0, 6));
+        assert_eq!(collapsed_rail_window(Some(5), 10, 6), (4, 10));
+        // Tail cannot fill below: live sinks to 3rd+.
+        assert_eq!(collapsed_rail_window(Some(9), 10, 6), (4, 10));
+        assert_eq!(collapsed_rail_window(Some(8), 10, 6), (4, 10));
+        // Short queue: everything shows.
+        assert_eq!(collapsed_rail_window(Some(2), 4, 6), (0, 4));
+        assert_eq!(collapsed_rail_window(None, 10, 6), (0, 6));
+        assert_eq!(collapsed_rail_window(Some(0), 0, 6), (0, 0));
+    }
+
+    #[test]
+    fn collapsed_rail_capacity_fills_tall_windows() {
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        // 800px window minus player reserve fills well past the old 6.
+        assert!(s.collapsed_rail_capacity() > 6);
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 400.0)));
+        // Tiny windows keep the old minimum instead of vanishing.
+        assert_eq!(s.collapsed_rail_capacity(), RAIL_MIN_CAP);
     }
 
     #[test]
