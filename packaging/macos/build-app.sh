@@ -1,14 +1,17 @@
 #!/bin/bash
 # Build the release binary and wrap it as a macOS YutuMux.app bundle.
 #
-#   packaging/macos/build-app.sh [--self-contained] [--zip] [--output DIR]
+#   packaging/macos/build-app.sh [--self-contained] [--output DIR]
+#
+# Output (under DIR, default dist/): stage/YutuMux.app plus a
+# YutuMux-macos-<arch>.sha256 manifest of every file in the bundle
+# (verify with `shasum -a 256 -c` from the stage dir). No zip step:
+# distribute the .app directory itself (or disk-image it).
 #
 # --self-contained bundles libmpv (+ its ffmpeg libs) via dylibbundler and
 # fetches the standalone yt-dlp macOS binary, so the app runs with nothing
 # installed. Without it the bundle links Homebrew's libmpv and finds
 # yt-dlp on PATH (both must exist on the machine).
-# --zip additionally produces a ditto zipped bundle for distribution
-# (plain zip breaks codesigning metadata).
 #
 # Requirements: Xcode CLT, Rust, and for the default feature set
 # `brew install mpv` (libmpv) plus pkg-config. The repo's
@@ -23,13 +26,11 @@
 set -euo pipefail
 
 SELF_CONTAINED=0
-ZIP=0
 OUT="dist"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --self-contained) SELF_CONTAINED=1 ;;
-        --zip) ZIP=1 ;;
         --output) OUT="$2"; shift ;;
         -h|--help)
             sed -n '2,20p' "$0"
@@ -132,22 +133,15 @@ fi
 echo "==> ad-hoc signing (personal use; distribution needs a Developer ID)"
 codesign -s - --deep --force "$APP" >/dev/null
 
-if [ "$ZIP" -eq 1 ]; then
-    ZIPFILE="$OUT/YutuMux-macos-$ARCH.zip"
-    ditto -c -k --sequesterRsrc "$APP" "$ZIPFILE"
-    echo "==> zipped: $ZIPFILE"
-    # Checksum next to the zip (same `<hash>  <file>` line format as the
-    # Linux tarball, verifiable with `shasum -a 256 -c` / `sha256sum -c`
-    # from the download dir). shasum is macOS stock, sha256sum the fallback.
-    if command -v shasum >/dev/null 2>&1; then
-        (cd "$OUT" && shasum -a 256 "$(basename "$ZIPFILE")") > "$ZIPFILE.sha256"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        (cd "$OUT" && sha256sum "$(basename "$ZIPFILE")") > "$ZIPFILE.sha256"
-    else
-        echo "warning: neither shasum nor sha256sum found; skipping checksum" >&2
-    fi
-    [ -f "$ZIPFILE.sha256" ] && echo "==> checksum: $ZIPFILE.sha256"
-fi
+# Checksum manifest of the signed bundle (deterministic order, paths
+# relative to the stage dir: verify with
+# `cd stage && shasum -a 256 -c ../YutuMux-macos-<arch>.sha256`).
+# shasum is macOS stock, and this script only runs on macOS.
+echo "==> writing bundle checksum manifest"
+SHAFILE="$OUT/YutuMux-macos-$ARCH.sha256"
+(cd "$STAGE" && find "$APP_NAME.app" \( -type f -o -type l \) -print0 \
+    | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$SHAFILE"
+echo "==> checksum: $SHAFILE"
 
 echo "done: $APP"
 echo "first launch: right-click -> Open (unsigned bundle), then sign in via cookies.txt in Settings"
