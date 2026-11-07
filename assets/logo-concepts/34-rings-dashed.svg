@@ -1,9 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="ringfade" gradientUnits="userSpaceOnUse" cx="128" cy="128" r="112">
+      <stop offset="0" stop-color="#FF0033" stop-opacity="1"/>
+      <stop offset="0.62" stop-color="#FF0033" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#FF0033" stop-opacity="0.08"/>
+    </radialGradient>
+  </defs>
   <rect width="256" height="256" rx="56" fill="#181818"/>
-  <g fill="none" stroke="#FF0033" stroke-linecap="round">
-    <circle cx="128" cy="128" r="58" stroke-width="12" stroke-dasharray="10 20.3686"/>
-    <circle cx="128" cy="128" r="78" stroke-width="9" stroke-dasharray="12 18.6305"/>
-    <circle cx="128" cy="128" r="98" stroke-width="7" stroke-dasharray="13 17.7876"/>
+  <g fill="none" stroke="url(#ringfade)" stroke-linecap="round">
+    <circle cx="128" cy="128" r="58" stroke-width="12" stroke-dasharray="25.5 14.99"/>
+    <circle cx="128" cy="128" r="78" stroke-width="9" stroke-dasharray="23.75 13.95"/>
+    <circle cx="128" cy="128" r="98" stroke-width="7" stroke-dasharray="24.25 14.23"/>
   </g>
   <polyline points="100,158 100,98 114,118 128,98 142,118 156,98 156,158" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
