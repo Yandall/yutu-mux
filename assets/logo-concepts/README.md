@@ -23,7 +23,18 @@ app's dark surface (`#181818`) with the brand red (`#FF0033`).
 - `11-wordmark.svg`: `yutu` in white plus `mux` in red, bundled-Inter
   fallback stack (rendering varies by system fonts).
 - `12-orbit-m.svg`: red M with a white orbit ring, planet vibe.
-- `13-rings-m.svg`: white M broadcasting red signal rings.
+- `13-rings-m.svg`: white M broadcasting red signal rings, all centered
+  on the canvas.
+- `33-rings-bold.svg`: heavier rings and a bolder M.
+- `34-rings-dashed.svg`: dotted signal rings.
+- `35-rings-inverse.svg`: red M inside white rings.
+- `36-ring-solo.svg`: single thick ring, minimal.
+- `37-rings-play.svg`: play triangle at the broadcast center.
+- `38-rings-note.svg`: eighth note at the broadcast center.
+- `39-rings-gradient.svg`: rings fading red to dark on near-black.
+- `40-rings-square.svg`: concentric rounded-square waves.
+- `41-rings-dot.svg`: red broadcast dot nested in the M valley.
+- `42-rings-mono.svg`: all-white single-color version.
 - `14-headphones.svg`: red headphone silhouette.
 - `15-cassette.svg`: retro tape with dark reels on a red shell.
 - `16-piano.svg`: white keys with the accidentals in brand red.
