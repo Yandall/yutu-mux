@@ -17786,6 +17786,28 @@ impl AppState {
     }
 }
 
+/// Window identity for taskbar/dock matching: the application id must
+/// equal the .desktop basename (`yutu-mux`) so the running window picks
+/// up the installed icon on X11 (WM_CLASS) and Wayland (app_id). Iced
+/// leaves it empty by default, which strands Wayland windows with a
+/// generic icon. Other platforms keep the default settings.
+fn window_settings() -> iced::window::Settings {
+    #[cfg(target_os = "linux")]
+    {
+        iced::window::Settings {
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "yutu-mux".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        iced::window::Settings::default()
+    }
+}
+
 pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
     // Display startup: the bundled Inter faces always register (the
     // System pick just leaves them unused) and the stored family
@@ -17808,6 +17830,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         AppState::view,
     )
     .title(|state: &AppState| state.window_title())
+    .window(window_settings())
     .font(include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice())
     .font(include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice())
     .font(include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice())
