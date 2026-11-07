@@ -18,7 +18,9 @@
 #
 # One architecture per run (native): repeat per arch and lipo the two
 # binaries together for a universal bundle.
-set -eu
+# pipefail: the release build tees through a log (for lock-error
+# detection), and without it a cargo failure would hide behind tee.
+set -euo pipefail
 
 SELF_CONTAINED=0
 ZIP=0
@@ -52,7 +54,30 @@ ARCH="$(uname -m)"
 [ -n "${CARGO_FLAGS:-}" ] && echo "cargo flags: $CARGO_FLAGS"
 
 echo "==> building release ($VERSION, $ARCH)"
-(cd "$ROOT" && cargo build --release --locked ${CARGO_FLAGS:-})
+# Prefer the pinned lockfile (same deps as the Linux CI tarball). When it
+# is missing or stale (partial checkout, local manifest edits), cargo
+# refuses --locked: warn and retry unlocked so the build still succeeds,
+# then remind about committing the regenerated lock.
+LOCK_ARGS="--locked"
+if [ ! -f "$ROOT/Cargo.lock" ]; then
+    echo "warning: no Cargo.lock in $ROOT; building unlocked" >&2
+    echo "prefer a full clone plus tag checkout for release builds" >&2
+    LOCK_ARGS=""
+fi
+BUILD_LOG="$(mktemp "${TMPDIR:-/tmp}/yutu-build.XXXXXX")"
+# shellcheck disable=SC2086
+if (cd "$ROOT" && cargo build --release $LOCK_ARGS ${CARGO_FLAGS:-} 2>&1 | tee "$BUILD_LOG"); then
+    rm -f "$BUILD_LOG"
+elif [ -n "$LOCK_ARGS" ] && grep -qi "lock file" "$BUILD_LOG"; then
+    echo "warning: --locked build failed; retrying unlocked to regenerate Cargo.lock" >&2
+    rm -f "$BUILD_LOG"
+    # shellcheck disable=SC2086
+    (cd "$ROOT" && cargo build --release ${CARGO_FLAGS:-})
+    echo "warning: built with a regenerated lock; commit Cargo.lock if it changed" >&2
+else
+    rm -f "$BUILD_LOG"
+    exit 1
+fi
 BIN="$ROOT/target/release/yutu-mux"
 [ -x "$BIN" ] || { echo "error: release binary missing at $BIN" >&2; exit 1; }
 

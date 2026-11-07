@@ -171,7 +171,10 @@ packaging/macos/build-app.sh --self-contained --zip
 One architecture per run (native): repeat per arch and lipo the two
 binaries together for a universal bundle. Attach the zip to the GitHub
 Release by hand (`gh release upload` or the web UI): there is no macOS
-CI job. First launch is right-click, Open (unsigned bundle).
+CI job. The script tries `--locked` first (same pinned deps as the
+Linux tarball) and falls back to unlocked with a warning when
+`Cargo.lock` is missing or stale. First launch is right-click, Open
+(unsigned bundle).
 
 Honest status: no maintainer Mac has verified this end to end. Do NOT
 advertise a macOS release until someone with a Mac walks through it
