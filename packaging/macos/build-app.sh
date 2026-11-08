@@ -3,11 +3,12 @@
 #
 #   packaging/macos/build-app.sh [--self-contained] [--output DIR]
 #
-# Output (under DIR, default dist/): stage/YutuMux.app, a
-# YutuMux-macos-<arch>.sha256 manifest of every file in the bundle
-# (verify with `shasum -a 256 -c` from the stage dir), and a
-# YutuMux-macos-<arch>.dmg disk image plus its `.dmg.sha256` checksum
-# (the single-file upload for GitHub Releases). No zip step.
+# Output (under DIR, default dist/): stage/YutuMux.app (+ an
+# Applications shortcut for the disk image), a
+# YutuMux-<version>-macos-<arch>.sha256 manifest of every file in the
+# bundle (verify with `shasum -a 256 -c` from the stage dir), and a
+# YutuMux-<version>-macos-<arch>.dmg disk image plus its `.dmg.sha256`
+# checksum (the single-file upload for GitHub Releases).
 #
 # --self-contained bundles libmpv (+ its ffmpeg libs) via dylibbundler and
 # fetches the standalone yt-dlp macOS binary, so the app runs with nothing
@@ -136,8 +137,8 @@ echo "==> building app icon (.icns from the grey master)"
 ICONSET_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yutu-iconset.XXXXXX")"
 ICONSET="$ICONSET_TMP/$APP_NAME.iconset"
 mkdir -p "$ICONSET"
-# Grey rounded-square master (assets/logo): every slot downscales from
-# it, so no upscaling anywhere. sips and iconutil are macOS stock.
+# Near-black rounded-square master (assets/logo): every slot downscales
+# from it, so no upscaling anywhere. sips and iconutil are macOS stock.
 ICONSRC="$ROOT/assets/logo/yutu-mux-background.png"
 while read -r px name; do
     sips -z "$px" "$px" "$ICONSRC" --out "$ICONSET/$name.png" >/dev/null
@@ -155,27 +156,33 @@ done <<'SIZES'
 SIZES
 iconutil -c icns -o "$APP/Contents/Resources/$APP_NAME.icns" "$ICONSET"
 rm -rf "$ICONSET_TMP"
+[ -s "$APP/Contents/Resources/$APP_NAME.icns" ] \
+    || { echo "error: .icns build failed (see iconutil output above)" >&2; exit 1; }
 
 echo "==> ad-hoc signing (personal use; distribution needs a Developer ID)"
 codesign -s - --deep --force "$APP" >/dev/null
+# Nudge Finder past its icon cache for rebuilt bundles at the same path.
+touch "$APP"
 
 # Checksum manifest of the signed bundle (deterministic order, paths
 # relative to the stage dir: verify with
-# `cd stage && shasum -a 256 -c ../YutuMux-macos-<arch>.sha256`).
+# `cd stage && shasum -a 256 -c ../YutuMux-<version>-macos-<arch>.sha256`).
 # shasum is macOS stock, and this script only runs on macOS.
 echo "==> writing bundle checksum manifest"
-SHAFILE="$OUT/YutuMux-macos-$ARCH.sha256"
+SHAFILE="$OUT/$APP_NAME-$VERSION-macos-$ARCH.sha256"
 (cd "$STAGE" && find "$APP_NAME.app" \( -type f -o -type l \) -print0 \
     | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$SHAFILE"
 echo "==> checksum: $SHAFILE"
 
 # Single-file distributable (GitHub Releases cannot take a directory):
-# UDZO disk image of the signed bundle, plus its checksum. hdiutil is
+# UDZO disk image with the signed bundle plus an Applications shortcut
+# for the standard drag-install, and the image checksum. hdiutil is
 # macOS stock, like everything else this script needs.
-echo "==> building disk image"
-DMG="$OUT/$APP_NAME-macos-$ARCH.dmg"
+echo "==> staging disk image (app + Applications shortcut)"
+ln -sfn /Applications "$STAGE/Applications"
+DMG="$OUT/$APP_NAME-$VERSION-macos-$ARCH.dmg"
 rm -f "$DMG"
-hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format UDZO "$DMG"
+hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "==> disk image: $DMG"
 (cd "$OUT" && shasum -a 256 "$(basename "$DMG")") > "$DMG.sha256"
 echo "==> checksum: $DMG.sha256"
