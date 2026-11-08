@@ -1133,11 +1133,9 @@ pub enum Message {
     /// Default lyrics provider pick (Settings + drawer stepper).
     SetLyricsProvider(LyricsProvider),
     /// Step the lyrics provider (`+1` next, `-1` previous): the drawer
-    /// and lyrics page `< >` stepper. Refetches the live track.
+    /// and lyrics page `< >` stepper. Tops up missing fetches for the
+    /// live track.
     CycleLyricsProvider(i8),
-    /// Manual lyrics refetch for one track (empty-state retry button):
-    /// tries the default provider first with automatic fallback.
-    RetryLyrics(String),
     StartRadio(String),
     PlayAll,
     CreatePlaylist(String),
@@ -9776,34 +9774,6 @@ impl AppState {
                 };
                 return self.update(Message::SetLyricsProvider(next));
             }
-            Message::RetryLyrics(id) => {
-                #[cfg(any(feature = "lyrics", feature = "innertube"))]
-                {
-                    if let Some(t) = self.find_track(&id) {
-                        // Drop every cached provider result (plus in-flight
-                        // markers) so both providers refetch fresh.
-                        for provider in LyricsProvider::all() {
-                            self.lyrics_cache.remove(&(id.clone(), provider));
-                            self.lyrics_loading.remove(&(id.clone(), provider));
-                        }
-                        let tasks = self.start_lyrics_fetch(t);
-                        if !tasks.is_empty() {
-                            let provider = self.lyrics_provider;
-                            self.status = format!("Fetching lyrics ({}).", provider.label());
-                            self.publish_mpris();
-                            return iced::Task::batch(tasks);
-                        }
-                        return iced::Task::none();
-                    }
-                    self.status = format!("Fetching info for {id}…");
-                    self.publish_mpris();
-                    return Self::hydrate_task(vec![id]);
-                }
-                #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
-                {
-                    let _ = id;
-                }
-            }
             Message::ArtworkReady { url, result } => {
                 self.artwork_loading.remove(&url);
                 match &result {
@@ -15832,39 +15802,18 @@ impl AppState {
                     .color(MUTED)
                     .into()
             }
-            None => {
-                let retry_id = id.to_string();
-                column![
-                    text("No lyrics for this track yet.").color(MUTED),
-                    row_button(
-                        btn_text(format!("Retry ({})", self.lyrics_provider.label()), 12)
-                            .color(MUTED),
-                    )
-                    .style(hover_row)
-                    .on_press(Message::RetryLyrics(retry_id))
-                    .padding(6),
-                ]
-                .spacing(6)
-                .into()
-            }
+            None => text("No lyrics for this track yet.").color(MUTED).into(),
         }
     }
 
     /// Lyrics provider `< >` stepper (drawer + lyrics page): switches
     /// the default provider (instant when preloaded: both providers
     /// fetch up front at song start). The label names the default; a
-    /// muted `via X` note names the displayed result when the default
-    /// failed and only the other provider has it cached.
-    fn lyrics_provider_stepper(&self, track_id: &str) -> iced::Element<'_, Message> {
+    /// failed default falls back to the other cached provider silently.
+    fn lyrics_provider_stepper(&self, _track_id: &str) -> iced::Element<'_, Message> {
         use iced::widget::{button, row, text};
         let label = self.lyrics_provider.label();
-        let via = match self.lyrics_display_entry(track_id) {
-            Some((source, _)) if source != self.lyrics_provider => {
-                format!("via {}", source.label())
-            }
-            _ => String::new(),
-        };
-        let mut items: Vec<iced::Element<'_, Message>> = vec![
+        let items: Vec<iced::Element<'_, Message>> = vec![
             button(btn_icon("chevron-left", 14.0, MUTED))
                 .style(hover_row)
                 .on_press(Message::CycleLyricsProvider(-1))
@@ -15882,9 +15831,6 @@ impl AppState {
                 .padding(4)
                 .into(),
         ];
-        if !via.is_empty() {
-            items.push(text(via).size(11).color(MUTED).into());
-        }
         row(items)
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center)
@@ -24308,28 +24254,12 @@ mod tests {
     }
 
     #[test]
-    fn lyrics_retry_clears_miss_and_refetches() {
+    fn lyrics_fallback_shows_silently_after_default_fails() {
         let mut s = test_state();
         let _ = s.update(Message::EnqueueTrack("m1".into()));
-        let _ = s.update(Message::LyricsReady {
-            track_id: "m1".into(),
-            provider: LyricsProvider::Lrclib,
-            result: Err("no lyrics found".into()),
-        });
-        #[cfg(any(feature = "lyrics", feature = "innertube"))]
-        assert!(s.lyrics_fetch_pending("m1"));
-        let lrclib_key = ("m1".to_string(), LyricsProvider::Lrclib);
-        assert!(!s.lyrics_cache.contains_key(&lrclib_key));
-        let _ = s.update(Message::RetryLyrics("m1".into()));
-        // Retry refetches the missing provider (YouTube Music is still
-        // in flight from the song start, so only LRCLIB is new).
-        #[cfg(any(feature = "lyrics", feature = "innertube"))]
-        assert!(s.lyrics_loading.contains(&lrclib_key));
-        #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
-        assert!(s.lyrics_loading.is_empty());
-        // A non-default arrival waits: the default is still in flight,
-        // so nothing displays yet (no fallback flash). Without fetch
-        // features nothing is ever in flight, so it displays at once.
+        // Non-default answers first while the default is in flight:
+        // nothing displays yet. (Without fetch features nothing is
+        // ever in flight, so it displays at once.)
         let _ = s.update(Message::LyricsReady {
             track_id: "m1".into(),
             provider: LyricsProvider::YouTubeMusic,
@@ -24347,7 +24277,7 @@ mod tests {
             Some(LyricsProvider::YouTubeMusic)
         );
         // Once the default settles without a result, the cached
-        // fallback displays.
+        // fallback displays (with no "via" label).
         let _ = s.update(Message::LyricsReady {
             track_id: "m1".into(),
             provider: LyricsProvider::Lrclib,
@@ -24357,6 +24287,7 @@ mod tests {
             s.lyrics_display_entry("m1").map(|(p, _)| p),
             Some(LyricsProvider::YouTubeMusic)
         );
+        assert!(!s.lyrics_fetch_pending("m1"));
     }
 
     #[test]
