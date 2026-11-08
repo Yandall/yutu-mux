@@ -108,6 +108,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
+  <key>CFBundleIconFile</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -129,6 +130,26 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
         https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
     chmod +x "$APP/Contents/MacOS/yt-dlp"
 fi
+
+echo "==> building app icon (.icns from hicolor PNGs)"
+ICONSET_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yutu-iconset.XXXXXX")"
+ICONSET="$ICONSET_TMP/$APP_NAME.iconset"
+mkdir -p "$ICONSET"
+ICONSRC="$ROOT/packaging/linux/icons/hicolor"
+cp "$ICONSRC/16x16/apps/yutu-mux.png" "$ICONSET/icon_16x16.png"
+cp "$ICONSRC/32x32/apps/yutu-mux.png" "$ICONSET/icon_16x16@2x.png"
+cp "$ICONSRC/32x32/apps/yutu-mux.png" "$ICONSET/icon_32x32.png"
+cp "$ICONSRC/64x64/apps/yutu-mux.png" "$ICONSET/icon_32x32@2x.png"
+cp "$ICONSRC/128x128/apps/yutu-mux.png" "$ICONSET/icon_128x128.png"
+cp "$ICONSRC/256x256/apps/yutu-mux.png" "$ICONSET/icon_128x128@2x.png"
+cp "$ICONSRC/256x256/apps/yutu-mux.png" "$ICONSET/icon_256x256.png"
+# No 512+ raster in the repo: upscale the 256px art for the two
+# largest slots (sips and iconutil are macOS stock).
+sips -z 512 512 "$ICONSRC/256x256/apps/yutu-mux.png" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+sips -z 512 512 "$ICONSRC/256x256/apps/yutu-mux.png" --out "$ICONSET/icon_512x512.png" >/dev/null
+sips -z 1024 1024 "$ICONSRC/256x256/apps/yutu-mux.png" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns -o "$APP/Contents/Resources/$APP_NAME.icns" "$ICONSET"
+rm -rf "$ICONSET_TMP"
 
 echo "==> ad-hoc signing (personal use; distribution needs a Developer ID)"
 codesign -s - --deep --force "$APP" >/dev/null
