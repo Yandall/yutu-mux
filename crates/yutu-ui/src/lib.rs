@@ -1179,7 +1179,7 @@ pub enum Message {
     CycleRepeat,
     Tick(std::time::Instant),
     /// Frame redraw tick (drives the debug FPS meter only; the
-    /// subscription exists solely in debug builds / `debug-panel`).
+    /// subscription exists solely with `debug-panel`).
     Frame(std::time::Instant),
     SeekTo(f32),
     /// Exact-ms seek (lyric verse clicks; no f32 truncation).
@@ -2421,7 +2421,8 @@ pub struct AppState {
     fps: f32,
     /// Last frame instant the meter saw (EMA needs the interval).
     last_frame: Option<std::time::Instant>,
-    /// Last view() build cost in milliseconds (debug FPS readout only).
+    /// Last view() build cost in milliseconds (FPS readout, flag only).
+    #[cfg(feature = "debug-panel")]
     view_build_ms: std::cell::Cell<f32>,
     /// Cookie-file path for import (Settings).
     cookie_path: String,
@@ -4648,6 +4649,7 @@ impl AppState {
             last_tick: None,
             fps: 0.0,
             last_frame: None,
+            #[cfg(feature = "debug-panel")]
             view_build_ms: std::cell::Cell::new(0.0),
             cookie_path: String::new(),
             playing_from: String::new(),
@@ -4909,11 +4911,12 @@ impl AppState {
             iced::Subscription::none()
         };
         let tick = iced::time::every(std::time::Duration::from_millis(500)).map(Message::Tick);
-        // Frame meter for the debug FPS readout: only while the debug
-        // UI can show it, so release builds never wake up just to count.
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        // Frame meter for the debug FPS readout: only with the
+        // debug-panel flag, so builds without it never wake up just
+        // to count.
+        #[cfg(feature = "debug-panel")]
         let frames = iced::window::frames().map(|_| Message::Frame(std::time::Instant::now()));
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         let frames = iced::Subscription::none();
         let anim = if self.animating() {
             iced::time::every(std::time::Duration::from_millis(ANIM_TICK_MS))
@@ -7476,14 +7479,14 @@ impl AppState {
     }
 
     /// In-app error log: the same lines that go to stderr (capped at 30).
-    /// Debug-only UI unless the `debug-panel` feature is enabled
-    /// (release builds keep stderr, not the panel, without it).
+    /// Visible only with the `debug-panel` feature (without it, builds
+    /// keep stderr, not the panel).
     fn error_section(&self) -> iced::Element<'_, Message> {
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         {
-            return iced::widget::text("").size(1).into();
+            iced::widget::text("").size(1).into()
         }
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         {
             use iced::widget::{column, text};
             let body: iced::Element<'_, Message> = if self.error_log.is_empty() {
@@ -7506,17 +7509,17 @@ impl AppState {
         }
     }
 
-    /// Debug-only cache census (or with the `debug-panel` feature):
+    /// Cache census, visible only with the `debug-panel` feature:
     /// every map here is capped and the
     /// renderer trims its own textures per frame, so a long session
-    /// plateaus instead of growing. Release builds hide it with the
-    /// error panel above.
+    /// plateaus instead of growing. Builds without the flag hide it
+    /// with the error panel above.
     fn cache_section(&self) -> iced::Element<'_, Message> {
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         {
-            return iced::widget::text("").size(1).into();
+            iced::widget::text("").size(1).into()
         }
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         {
             use iced::widget::{column, text};
             column![
@@ -8204,16 +8207,16 @@ impl AppState {
         }
     }
 
-    /// Live FPS meter (debug builds / `debug-panel` feature only):
+    /// Live FPS meter (`debug-panel` feature only):
     /// smoothed frame rate plus last view-build cost, next to the
-    /// status line. Release builds without the flag render (and
-    /// subscribe to) nothing.
+    /// status line. Builds without the flag render (and subscribe
+    /// to) nothing.
     fn fps_text(&self) -> iced::Element<'_, Message> {
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         {
-            return iced::widget::text("").size(1).into();
+            iced::widget::text("").size(1).into()
         }
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         {
             use iced::widget::text;
             if self.fps <= 0.0 {
@@ -8230,32 +8233,32 @@ impl AppState {
         }
     }
 
-    /// Bottom-bar failure text: full `label: detail` in debug builds
-    /// (or with the `debug-panel` feature), the human `label` alone in
-    /// release. Every call site logs `detail` to the app log, so release
-    /// builds never surface provider internals (URLs, status codes, raw
-    /// I/O errors) while diagnosis loses nothing.
+    /// Bottom-bar failure text: full `label: detail` with the
+    /// `debug-panel` feature, the human `label` alone without it.
+    /// Every call site logs `detail` to the app log, so builds without
+    /// the flag never surface provider internals (URLs, status codes,
+    /// raw I/O errors) while diagnosis loses nothing.
     fn failure_status(label: String, detail: impl std::fmt::Display) -> String {
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         {
             format!("{label}: {detail}")
         }
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         {
             drop(detail);
             label
         }
     }
 
-    /// Player-bar status text: the full last-action log in debug builds
-    /// (or with the `debug-panel` feature); release builds only surface
-    /// failures (no action chatter).
+    /// Player-bar status text: the full last-action log with the
+    /// `debug-panel` feature; otherwise only failures surface (no
+    /// action chatter, no provider internals).
     fn status_text(&self) -> String {
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         {
             self.status.clone()
         }
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         {
             if self.status.to_lowercase().contains("fail") {
                 self.status.clone()
@@ -8271,13 +8274,13 @@ impl AppState {
     fn status_row(&self) -> Option<iced::Element<'_, Message>> {
         use iced::widget::{row, text};
         let status = self.status_text();
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         {
             if status.is_empty() && self.fps <= 0.0 {
                 return None;
             }
         }
-        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        #[cfg(not(feature = "debug-panel"))]
         {
             if status.is_empty() {
                 return None;
@@ -9173,7 +9176,10 @@ impl AppState {
             Message::ScrobbleSubmitted { target, result } => {
                 self.status = match &result {
                     Ok(()) => format!("Scrobbled to {target}."),
-                    Err(e) => format!("Scrobble to {target} failed: {e}"),
+                    Err(e) => {
+                        yutu_core::app_log::warn("yutu-scrobble", format!("{target}: {e}"));
+                        Self::failure_status(format!("Scrobble to {target} failed"), e)
+                    }
                 };
                 self.publish_mpris();
                 iced::Task::none()
@@ -9618,11 +9624,11 @@ impl AppState {
                     Err(e) => {
                         // A lyrics miss is routine (no LRCLIB entry, a
                         // network flake): it always lands in the log, but
-                        // the bottom bar only shows it in debug builds
-                        // (or with `debug-panel`). Release stays clean:
-                        // the song plays fine without lyrics.
+                        // the bottom bar only shows it with the
+                        // `debug-panel` flag. Without it the bar stays
+                        // clean: the song plays fine without lyrics.
                         yutu_core::app_log::warn("yutu-lyrics", format!("{track_id}: {e}"));
-                        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+                        #[cfg(feature = "debug-panel")]
                         {
                             self.status = format!("Lyrics failed: {e}");
                         }
@@ -17218,10 +17224,10 @@ impl AppState {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         let t0 = std::time::Instant::now();
         let el = self.view_inner();
-        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        #[cfg(feature = "debug-panel")]
         self.view_build_ms.set(t0.elapsed().as_secs_f32() * 1000.0);
         el
     }
@@ -18253,14 +18259,14 @@ mod tests {
             query: "come".into(),
             result: Err("offline".into()),
         });
-        assert!(s.status.contains("offline"));
+        assert!(s.status.contains("Search failed"));
         assert!(s.results.tracks.is_empty());
         // Stale-query failures stay silent.
         let _ = s.update(Message::SearchCompleted {
             query: "ancient".into(),
             result: Err("offline".into()),
         });
-        assert!(s.status.contains("offline"));
+        assert!(s.status.contains("Search failed"));
     }
 
     #[test]
@@ -18842,7 +18848,7 @@ mod tests {
             result: Err("offline".into()),
         });
         assert!(s.status.contains("don't-recommend"));
-        assert!(s.status.contains("offline"));
+        assert!(s.status.contains("failed"));
     }
 
     #[cfg(feature = "innertube")]
@@ -21206,7 +21212,7 @@ mod tests {
             target: "Last.fm".into(),
             result: Err("403".into()),
         });
-        assert!(s.status.contains("failed: 403"));
+        assert!(s.status.contains("failed"), "{}", s.status);
     }
 
     #[test]
@@ -22485,6 +22491,7 @@ mod tests {
             track_id: "m2".into(),
             result: Err("offline".into()),
         });
+        #[cfg(feature = "debug-panel")]
         assert!(s.status.contains("Lyrics failed"));
     }
 
@@ -22638,7 +22645,7 @@ mod tests {
             kind: ImportKind::Library,
             result: Err("403".into()),
         });
-        assert!(s.status.contains("failed: 403"));
+        assert!(s.status.contains("failed"), "{}", s.status);
     }
 
     #[test]
@@ -23048,7 +23055,10 @@ mod tests {
             kind: ImportKind::Cookie,
             result: Err("bad cookies".into()),
         });
-        assert!(s.status.contains("bad cookies"));
+        #[cfg(feature = "debug-panel")]
+        assert!(s.status.contains("Cookie import failed: bad cookies"));
+        #[cfg(not(feature = "debug-panel"))]
+        assert_eq!(s.status, "Cookie import failed");
     }
 
     #[cfg(feature = "innertube")]
@@ -23571,7 +23581,10 @@ mod tests {
             kind: ImportKind::Cookie,
             result: Err("boom".into()),
         });
+        #[cfg(feature = "debug-panel")]
         assert!(s.status.contains("Cookie import failed: boom"));
+        #[cfg(not(feature = "debug-panel"))]
+        assert_eq!(s.status, "Cookie import failed");
     }
 
     #[test]
@@ -24620,6 +24633,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "debug-panel")]
     fn status_text_is_full_log_in_debug() {
         let mut s = test_state();
         s.status = "Loading x".into();
@@ -24627,9 +24641,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "debug-panel"))]
+    fn status_text_without_flag_shows_failures_only() {
+        let mut s = test_state();
+        s.status = "Loading x".into();
+        assert_eq!(s.status_text(), "");
+        s.status = "Search failed".into();
+        assert_eq!(s.status_text(), "Search failed");
+    }
+
+    #[test]
+    #[cfg(feature = "debug-panel")]
     fn failure_status_keeps_detail_in_debug() {
-        // Debug builds (and `debug-panel`) show the full line; the
-        // release-only label is covered by `cargo check --release`.
+        // The flag shows the full line (release label shape is pinned
+        // by the test below).
         assert_eq!(
             AppState::failure_status("Search failed".into(), "boom"),
             "Search failed: boom"
@@ -24645,11 +24670,40 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "debug-panel"))]
+    fn failure_status_without_flag_shows_label_only() {
+        assert_eq!(
+            AppState::failure_status("Search failed".into(), "boom"),
+            "Search failed"
+        );
+        let mut s = test_state();
+        s.search_query = "x".into();
+        let _ = s.update(Message::SearchCompleted {
+            query: "x".into(),
+            result: Err("boom".into()),
+        });
+        assert_eq!(s.status, "Search failed");
+    }
+
+    #[test]
+    #[cfg(feature = "debug-panel")]
     fn status_row_collapses_when_empty() {
         let mut s = test_state();
         s.status.clear();
         assert!(s.status_row().is_none());
         s.status = "Loading x".into();
+        assert!(s.status_row().is_some());
+    }
+
+    #[test]
+    #[cfg(not(feature = "debug-panel"))]
+    fn status_row_without_flag_hides_chatter() {
+        let mut s = test_state();
+        s.status.clear();
+        assert!(s.status_row().is_none());
+        s.status = "Loading x".into();
+        assert!(s.status_row().is_none());
+        s.status = "Search failed".into();
         assert!(s.status_row().is_some());
     }
 

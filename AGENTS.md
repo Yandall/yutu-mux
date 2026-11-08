@@ -107,10 +107,11 @@
   timestamp and must never steal the highlight (test asserts this).
 - **LRC blank lines survive parsing** as stanza separators (empty-text
   markers), rendered as vertical gaps.
-- **Status text**: full last-action log in debug builds; **release shows
-  failures only** (either flips on with the `debug-panel` feature, e.g.
-  `cargo run --features debug-panel`). In-app error panel is debug-only UI
-  (stderr always).
+- **Status text**: full last-action log only with the `debug-panel`
+  feature (e.g. `cargo run --features debug-panel`); without the flag
+  only failures surface (human labels, never provider internals), in
+  dev builds just like release. In-app error panel, cache census, and
+  FPS meter are flag-only UI too (stderr/log file always).
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -170,7 +171,9 @@
 
 - `yutu-ui` default = `["submit", "innertube", "mpv", "lyrics"]`
   (the real app). Opt-in `debug-panel` shows the debug UI (error panel,
-  cache census, full status text) in any build, for user bug reports.
+  cache census, FPS meter, full status text with failure detail) in any
+  build, including dev runs: `cargo run` without it behaves like
+  release. Pass the flag for user bug reports.
 - `--no-default-features` = offline/rodio-only compile check. Must stay
   green; gate Innertube-only UI (`cookie_section`, etc.) with
   `#[cfg(feature = "innertube")]`.
