@@ -131,23 +131,27 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
     chmod +x "$APP/Contents/MacOS/yt-dlp"
 fi
 
-echo "==> building app icon (.icns from hicolor PNGs)"
+echo "==> building app icon (.icns from the grey master)"
 ICONSET_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yutu-iconset.XXXXXX")"
 ICONSET="$ICONSET_TMP/$APP_NAME.iconset"
 mkdir -p "$ICONSET"
-ICONSRC="$ROOT/packaging/linux/icons/hicolor"
-cp "$ICONSRC/16x16/apps/yutu-mux.png" "$ICONSET/icon_16x16.png"
-cp "$ICONSRC/32x32/apps/yutu-mux.png" "$ICONSET/icon_16x16@2x.png"
-cp "$ICONSRC/32x32/apps/yutu-mux.png" "$ICONSET/icon_32x32.png"
-cp "$ICONSRC/64x64/apps/yutu-mux.png" "$ICONSET/icon_32x32@2x.png"
-cp "$ICONSRC/128x128/apps/yutu-mux.png" "$ICONSET/icon_128x128.png"
-cp "$ICONSRC/256x256/apps/yutu-mux.png" "$ICONSET/icon_128x128@2x.png"
-cp "$ICONSRC/256x256/apps/yutu-mux.png" "$ICONSET/icon_256x256.png"
-# No 512+ raster in the repo: upscale the 256px art for the two
-# largest slots (sips and iconutil are macOS stock).
-sips -z 512 512 "$ICONSRC/256x256/apps/yutu-mux.png" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
-sips -z 512 512 "$ICONSRC/256x256/apps/yutu-mux.png" --out "$ICONSET/icon_512x512.png" >/dev/null
-sips -z 1024 1024 "$ICONSRC/256x256/apps/yutu-mux.png" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+# Grey rounded-square master (assets/logo): every slot downscales from
+# it, so no upscaling anywhere. sips and iconutil are macOS stock.
+ICONSRC="$ROOT/assets/logo/yutu-mux-macos-1024.png"
+while read -r px name; do
+    sips -z "$px" "$px" "$ICONSRC" --out "$ICONSET/$name.png" >/dev/null
+done <<'SIZES'
+16 icon_16x16
+32 icon_16x16@2x
+32 icon_32x32
+64 icon_32x32@2x
+128 icon_128x128
+256 icon_128x128@2x
+256 icon_256x256
+512 icon_256x256@2x
+512 icon_512x512
+1024 icon_512x512@2x
+SIZES
 iconutil -c icns -o "$APP/Contents/Resources/$APP_NAME.icns" "$ICONSET"
 rm -rf "$ICONSET_TMP"
 

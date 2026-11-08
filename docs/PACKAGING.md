@@ -164,7 +164,9 @@ Supported path: `packaging/macos/build-app.sh` (reads the version from
 signs; `--self-contained` bundles libmpv plus a standalone yt-dlp.
 It also writes a `YutuMux-macos-<arch>.sha256` manifest of every file in
 the signed bundle (verify from the stage dir with
-`shasum -a 256 -c`):
+`shasum -a 256 -c`). App icon comes from
+`assets/logo/yutu-mux-macos-1024.png` (grey rounded square, downscaled
+to every iconset slot):
 
 ```sh
 packaging/macos/build-app.sh --self-contained
