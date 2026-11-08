@@ -4664,27 +4664,6 @@ fn load_persisted(
     )
 }
 
-/// Max chars of a picked path shown in the picker field; longer paths
-/// keep the last 30 chars (the filename matters, the home prefix does
-/// not), the rest truncated with `(...)`.
-#[cfg(feature = "innertube")]
-const COOKIE_PATH_SHOWN: usize = 30;
-
-/// Display form of a picked cookies.txt path: the full path when short,
-/// else `...` plus the tail so the filename stays visible.
-/// Char-based, so multi-byte names never split mid-codepoint.
-#[cfg(feature = "innertube")]
-fn trim_cookie_path(path: &str, max: usize) -> String {
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= max || max <= 3 {
-        return path.to_string();
-    }
-    format!(
-        "...{}",
-        chars[chars.len() - (max - 3)..].iter().collect::<String>()
-    )
-}
-
 /// True when the picked path is a plausible cookies.txt export: a `.txt`
 /// file. The picker filters for it; the Import button gates on this, so a
 /// stale non-txt pick never offers an import that cannot work.
@@ -7524,7 +7503,7 @@ impl AppState {
     /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, Column, Row};
+        use iced::widget::{button, column, text, text::Wrapping, Column, Row};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
@@ -7542,25 +7521,32 @@ impl AppState {
         let (pick_label, pick_color) = if self.cookie_path.trim().is_empty() {
             ("Choose cookies.txt file…".to_string(), MUTED)
         } else {
-            (
-                trim_cookie_path(self.cookie_path.trim(), COOKIE_PATH_SHOWN),
-                iced::Color::WHITE,
-            )
+            (self.cookie_path.trim().to_string(), iced::Color::WHITE)
         };
-        let mut row_items: Vec<iced::Element<'_, Message>> = vec![button(
-            iced::widget::row![
-                btn_icon("folder", 14.0, MUTED),
-                text(pick_label).size(12).color(pick_color),
-            ]
-            .spacing(8)
-            .align_y(iced::alignment::Vertical::Center)
-            .width(Fill),
-        )
-        .style(file_pick)
-        .on_press(Message::CookieBrowse)
-        .padding(10)
-        .width(Fill)
-        .into()];
+        // The picker keeps its capped width; Import sits to its right in
+        // leftover space, so the field never shrinks for the button. The
+        // label fills the field and clips like a real input (single
+        // line, no manual trim): whatever fits, fits.
+        let mut row_items: Vec<iced::Element<'_, Message>> = vec![settings_input(
+            button(
+                iced::widget::row![
+                    btn_icon("folder", 14.0, MUTED),
+                    text(pick_label)
+                        .size(12)
+                        .color(pick_color)
+                        .width(Fill)
+                        .wrapping(Wrapping::None),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .width(Fill),
+            )
+            .style(file_pick)
+            .on_press(Message::CookieBrowse)
+            .padding(10)
+            .width(Fill)
+            .into(),
+        )];
         // Import only once a txt file is picked: anything else cannot
         // import, so the button stays out of the way until it can work.
         if cookie_pick_valid(&self.cookie_path) {
@@ -7577,12 +7563,11 @@ impl AppState {
                 .size(11)
                 .color(MUTED)
                 .into(),
-            settings_input(
-                Row::with_children(row_items)
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .into(),
-            ),
+            Row::with_children(row_items)
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .width(Fill)
+                .into(),
         ];
         Column::with_children(content).spacing(4).into()
     }
@@ -23956,23 +23941,6 @@ mod tests {
         assert_eq!(s.cookie_path, "/tmp/cookies.txt");
         let _ = s.update(Message::CookieFilePicked(Some("   ".into())));
         assert_eq!(s.cookie_path, "/tmp/cookies.txt");
-    }
-
-    #[cfg(feature = "innertube")]
-    #[test]
-    fn trim_cookie_path_keeps_short_and_tails_long() {
-        assert_eq!(trim_cookie_path("/a/cookies.txt", 30), "/a/cookies.txt");
-        assert_eq!(trim_cookie_path("abc", 0), "abc");
-        let long = "/home/someone/very/long/download/folder/cookies.txt";
-        let shown = trim_cookie_path(long, 30);
-        assert_eq!(shown.chars().count(), 30);
-        assert!(shown.starts_with("..."));
-        assert!(shown.ends_with("cookies.txt"));
-        // Multi-byte names never split mid-codepoint.
-        let wide = format!("/h/{}/cookies.txt", "é".repeat(40));
-        let shown_wide = trim_cookie_path(&wide, 30);
-        assert_eq!(shown_wide.chars().count(), 30);
-        assert!(shown_wide.ends_with("cookies.txt"));
     }
 
     #[cfg(feature = "innertube")]
