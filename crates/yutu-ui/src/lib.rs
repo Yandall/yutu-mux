@@ -1248,6 +1248,13 @@ pub enum Message {
     /// Track row-leave (same enter-before-exit ordering; see
     /// [`Message::QueueExit`]).
     TrackExit(String),
+    /// Right-panel Recent hover (same id-keyed contract as track rows
+    /// but its own state, so a Recent row and a center row for the
+    /// same track never highlight together).
+    RecentHover(Option<String>),
+    /// Recent row-leave (same enter-before-exit ordering; see
+    /// [`Message::QueueExit`]).
+    RecentExit(String),
     /// Sidebar playlist hover (reveals the row play button).
     PlaylistHover(Option<String>),
     /// Sidebar playlist row-leave (same enter-before-exit ordering;
@@ -2390,8 +2397,14 @@ pub struct AppState {
     /// drag: slipping off delete must not become a reorder).
     hover_remove: Option<usize>,
     /// Track-row hover by id (reveals full-row highlight where lists are
-    /// not index-stable: search/library/discovery rows + recent).
+    /// not index-stable: search/library/discovery rows). Recent has its
+    /// own hover so the same track in the sidebar and the center never
+    /// light up together.
     hovered_track: Option<String>,
+    /// Right-panel Recent row under the cursor (id-keyed: the list
+    /// dedupes, so one id names one row; separate from hovered_track
+    /// so center rows with the same id stay at rest).
+    hovered_recent: Option<String>,
     /// Search collection hover by id (album/artist/playlist rows).
     hovered_album: Option<String>,
     hovered_artist: Option<String>,
@@ -4634,6 +4647,7 @@ impl AppState {
             hovered_history: None,
             hover_remove: None,
             hovered_track: None,
+            hovered_recent: None,
             hovered_album: None,
             hovered_artist: None,
             hovered_search_playlist: None,
@@ -10320,6 +10334,7 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+                self.hovered_recent = None;
             }
             Message::QueueExit(i) => {
                 // Match-guarded: a stale exit (enter(new) already
@@ -10346,6 +10361,7 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+                self.hovered_recent = None;
             }
             Message::HistoryExit(i) => {
                 if self.hovered_history == Some(i) {
@@ -10370,15 +10386,45 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+                self.hovered_recent = None;
             }
             Message::TrackExit(id) => {
                 if self.hovered_track.as_deref() == Some(id.as_str()) {
                     self.hovered_track = None;
                 }
             }
+            Message::RecentHover(h) => {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
+                    self.hovered_recent = None;
+                } else {
+                    self.hovered_recent = h;
+                }
+                // Same cross-list clearing as track rows: a Recent enter
+                // drops the center highlight for the same track id, so
+                // only the hovered component lights up.
+                self.hovered_track = None;
+                self.hovered_queue = None;
+                self.hovered_history = None;
+                self.hovered_auto = None;
+                self.hovered_album = None;
+                self.hovered_artist = None;
+                self.hovered_search_playlist = None;
+                self.hovered_playlist = None;
+                self.hover_remove = None;
+            }
+            Message::RecentExit(id) => {
+                if self.hovered_recent.as_deref() == Some(id.as_str()) {
+                    self.hovered_recent = None;
+                }
+            }
             Message::AlbumHover(h) => {
                 self.hovered_album = self.coll_hover(h);
                 self.hovered_track = None;
+                self.hovered_recent = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
@@ -10389,6 +10435,7 @@ impl AppState {
             Message::ArtistHover(h) => {
                 self.hovered_artist = self.coll_hover(h);
                 self.hovered_track = None;
+                self.hovered_recent = None;
                 self.hovered_album = None;
                 self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
@@ -10399,6 +10446,7 @@ impl AppState {
             Message::SearchPlaylistHover(h) => {
                 self.hovered_search_playlist = self.coll_hover(h);
                 self.hovered_track = None;
+                self.hovered_recent = None;
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_playlist = None;
@@ -10423,6 +10471,7 @@ impl AppState {
             }
             Message::ClearHovers => {
                 self.hovered_track = None;
+                self.hovered_recent = None;
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
@@ -10455,6 +10504,7 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+                self.hovered_recent = None;
             }
             Message::PlaylistExit(id) => {
                 if self.hovered_playlist.as_deref() == Some(id.as_str()) {
@@ -10475,6 +10525,7 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+                self.hovered_recent = None;
             }
             Message::AutoExit(i) => {
                 if self.hovered_auto == Some(i) {
@@ -10495,6 +10546,7 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+                self.hovered_recent = None;
             }
             Message::DragStart(from) => {
                 // Two-row lists reorder via the trailing edge slot, so
@@ -14850,7 +14902,7 @@ impl AppState {
                             .map(|t| {
                                 let menu_id = t.id.clone();
                                 let hover_id = t.id.clone();
-                                let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+                                let hovered = self.hovered_recent.as_deref() == Some(t.id.as_str());
                                 mouse_area(
                                     container(
                                         row![
@@ -14880,8 +14932,8 @@ impl AppState {
                                     .align_y(iced::alignment::Vertical::Center),
                                 )
                                 .on_right_press(Message::OpenContext(menu_id))
-                                .on_enter(Message::TrackHover(Some(hover_id.clone())))
-                                .on_exit(Message::TrackExit(hover_id))
+                                .on_enter(Message::RecentHover(Some(hover_id.clone())))
+                                .on_exit(Message::RecentExit(hover_id))
                                 .into()
                             })
                             .collect::<Vec<_>>(),
