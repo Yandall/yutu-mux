@@ -28,16 +28,14 @@
 //!
 //! Cookie safety: cookie material is never logged. [`CookieAuth::from_file`]
 //! validates the file locally first; ytmapi errors echoed here contain server
-//! responses, never request headers. `BrowserToken`'s own `Debug` impl prints
-//! only `"Private BrowserToken"`, so deriving `Debug` below is safe.
+//! responses, never request headers. `ModernBrowserToken`'s `Debug` impl
+//! prints only `"[cookie-redacted]"`, so deriving `Debug` below is safe.
 //!
 //! [`CookieAuth::from_file`]: crate::auth::CookieAuth
 
 use std::path::Path;
 
-use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::oauth::OAuthToken;
-use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{AlbumID, ArtistChannelID, PlaylistID, Thumbnail, VideoID, YoutubeID};
 use ytmapi_rs::parse::{
     AlbumSong, ArtistSong, PlaylistItem, SearchResultAlbum, SearchResultArtist,
@@ -50,12 +48,14 @@ use ytmapi_rs::YtMusic;
 use crate::auth::{CookieAuth, OAuthPersist};
 use crate::models::{Album, Artist, PlaylistHit, Track};
 use crate::stream::{StreamClient, StreamError, StreamRequest};
+use crate::ytm_token::{ModernAnonymousToken, ModernBrowserToken};
 
 /// Live YouTube Music handle.
 ///
-/// `YtMusic` is generic over its auth token (`NoAuthToken` vs `BrowserToken`),
-/// so both are carried in one enum instead of leaking the generic into our
-/// public API. The inner client owns a connection pool: clone and re-use it.
+/// `YtMusic` is generic over its auth token (anonymous vs cookie vs
+/// OAuth), so all three are carried in one enum instead of leaking the
+/// generic into our public API. The inner client owns a connection
+/// pool: clone and re-use it.
 #[derive(Debug, Clone)]
 pub struct InnertubeBackend {
     inner: Inner,
@@ -130,8 +130,8 @@ where
 
 #[derive(Debug, Clone)]
 enum Inner {
-    Anonymous(YtMusic<NoAuthToken>),
-    Cookie(YtMusic<BrowserToken>),
+    Anonymous(YtMusic<ModernAnonymousToken>),
+    Cookie(YtMusic<ModernBrowserToken>),
     OAuth(YtMusic<OAuthToken>),
 }
 
@@ -161,12 +161,12 @@ impl InnertubeBackend {
     /// Performs network I/O (fetches visitor data), so failures surface as a
     /// plain string without secret material (there is none here).
     pub async fn connect_anonymous() -> Result<Self, String> {
-        YtMusic::new_unauthenticated()
+        let token = ModernAnonymousToken::fetch()
             .await
-            .map(|client| Self {
-                inner: Inner::Anonymous(client),
-            })
-            .map_err(|e| format!("innertube anonymous connect failed: {e}"))
+            .map_err(|e| format!("innertube anonymous connect failed: {e}"))?;
+        Ok(Self {
+            inner: Inner::Anonymous(YtMusic::from_auth_token(token)),
+        })
     }
 
     /// Connect with a browser cookie file.
@@ -184,20 +184,20 @@ impl InnertubeBackend {
     /// [`CookieAuth::header_value`]). This is the stay-signed-in path: the
     /// saved session file holds the header, so no re-export is needed.
     pub async fn connect_with_cookie_str(header: &str) -> Result<Self, String> {
-        YtMusic::from_cookie(header)
+        let token = ModernBrowserToken::from_cookie_header(header)
             .await
-            .map(|client| Self {
-                inner: Inner::Cookie(client),
-            })
-            .map_err(|e| format!("innertube cookie login failed ({e}; bad/expired cookie?)"))
+            .map_err(|e| format!("innertube cookie login failed ({e}; bad/expired cookie?)"))?;
+        Ok(Self {
+            inner: Inner::Cookie(YtMusic::from_auth_token(token)),
+        })
     }
 
     /// Connect with a Google OAuth token bundle (see
     /// [`crate::auth::poll_google_login`]).
     ///
-    /// Synchronous: `YtMusic::from_auth_token` performs no network I/O (like
-    /// the cookie path, credentials are only exercised on first query). The
-    /// token material is never logged.
+    /// Synchronous: `YtMusic::from_auth_token` performs no network I/O
+    /// (unlike the cookie path, which fetches the login page up front).
+    /// The token material is never logged.
     pub fn connect_with_oauth(persist: &OAuthPersist) -> Result<Self, String> {
         Ok(Self {
             inner: Inner::OAuth(YtMusic::from_auth_token(persist.to_token())),

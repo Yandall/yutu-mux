@@ -69,4 +69,6 @@ pub use scrobble::{submit_lastfm_scrobble, submit_listenbrainz_listen};
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
 pub use ytdlp::{download_audio_bytes, find_yt_dlp, resolve_audio_url};
 #[cfg(feature = "innertube")]
+pub mod ytm_token;
+#[cfg(feature = "innertube")]
 pub use ytmapi_rs::auth::oauth::OAuthToken;

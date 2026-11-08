@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Fixed cookie import and anonymous connect: `ytmapi-rs` 0.3 sends a
+  hardcoded Firefox/88 user agent on its login-page fetch, which
+  YouTube's edge now kills at the HTTP/2 stream level, so every
+  import failed with `bad/expired cookie?` even for valid cookies
+  (anonymous search suggestions failed the same way). The app now
+  performs that page fetch with its own client and the current
+  Chromium user agent (same `SAPISIDHASH` scheme and visitor
+  parsing as before, real page client version instead of a
+  date-derived fallback for anonymous). Two known deviations:
+  server error JSON no longer gets a dedicated 401/403 message
+  (it surfaces as a downstream parse failure instead), and the
+  `ytmapi-rs` dependency is exact-pinned to 0.3.3 until upstream
+  updates its user agent.
+
 ## 0.1.0 - 2026-11-07
 
 - Collapsed queue rail fills the window: the 6-thumb cap is gone, capacity

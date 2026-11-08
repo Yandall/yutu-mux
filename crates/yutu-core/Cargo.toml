@@ -12,7 +12,10 @@ thiserror = "1"
 rusqlite = "0.32"
 md5 = "0.8"
 sha1 = { version = "0.10", optional = true }
-ytmapi-rs = { version = "0.3", optional = true }
+# Exact pin: `ytm_token` implements the public `AuthToken` + `LoggedIn`
+# traits, so an upstream 0.3.x that seals them or reshapes the public
+# surface must be adopted deliberately, never by a blind update.
+ytmapi-rs = { version = "=0.3.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 futures = { version = "0.3", optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
