@@ -11,8 +11,8 @@ use row_button::row_button;
 use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, history_section, history_section_label, should_scrobble, weekly_mix,
-    Album, Artist, HistoryEntry, HistorySection, LibraryStore, LyricsResult, Playlist, PlaylistHit,
-    QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
+    Album, Artist, HistoryEntry, HistorySection, LibraryStore, LyricsProvider, LyricsResult,
+    Playlist, PlaylistHit, QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
 };
 #[cfg(feature = "mpv")]
 use yutu_player::MpvBackend;
@@ -1130,6 +1130,14 @@ pub enum Message {
     OpenAlbum(String),
     OpenPlaylist(String),
     OpenLyrics(String),
+    /// Default lyrics provider pick (Settings + drawer stepper).
+    SetLyricsProvider(LyricsProvider),
+    /// Step the lyrics provider (`+1` next, `-1` previous): the drawer
+    /// and lyrics page `< >` stepper. Refetches the live track.
+    CycleLyricsProvider(i8),
+    /// Manual lyrics refetch for one track (empty-state retry button):
+    /// tries the default provider first with automatic fallback.
+    RetryLyrics(String),
     StartRadio(String),
     PlayAll,
     CreatePlaylist(String),
@@ -1464,6 +1472,7 @@ pub enum Message {
     },
     LyricsReady {
         track_id: String,
+        provider: LyricsProvider,
         result: Result<LyricsResult, String>,
     },
     ArtworkReady {
@@ -2210,9 +2219,18 @@ pub struct AppState {
     url_cache: HashMap<String, (String, u64)>,
     /// Next song's stream, resolved early (played instantly on advance).
     prefetched: Option<(String, String)>,
-    /// Lyrics by track id (LRCLIB, no login) + in-flight fetch.
+    /// Lyrics by track id + in-flight fetch. The cached entry is the last
+    /// successful provider result for the track; `lyrics_source` records
+    /// which provider supplied it. Switching providers refetches.
     lyrics_cache: HashMap<String, LyricsResult>,
     lyrics_loading: Option<String>,
+    /// Default lyrics provider (Settings, persisted `lyrics_provider`
+    /// pref): tried first on every fetch, with the other provider as
+    /// automatic fallback.
+    lyrics_provider: LyricsProvider,
+    /// Which provider supplied each cached entry (for the drawer switcher
+    /// label and fallback bookkeeping).
+    lyrics_source: HashMap<String, LyricsProvider>,
     /// Lyrics follow: auto-scroll the drawer so the current verse stays
     /// centered. Manual scrolling disengages (proximity, seek, or track
     /// change re-engages); never persisted.
@@ -4577,6 +4595,8 @@ impl AppState {
             prefetched: None,
             lyrics_cache: HashMap::new(),
             lyrics_loading: None,
+            lyrics_provider: LyricsProvider::Lrclib,
+            lyrics_source: HashMap::new(),
             lyrics_follow: true,
             lyrics_follow_at: None,
             lyrics_target: 0.0,
@@ -4798,6 +4818,13 @@ impl AppState {
                 state.eq_preset = "Flat".to_string();
             }
             state.eq_saved = Some((state.eq_preset.clone(), state.eq_gains, state.eq_enabled));
+        }
+        // Lyrics provider survives restarts (unknown values fall back to
+        // LRCLIB, which carries synced timing).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(raw) = store.get_pref("lyrics_provider").unwrap_or(None) {
+                state.lyrics_provider = LyricsProvider::parse(&raw);
+            }
         }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
@@ -5198,7 +5225,12 @@ impl AppState {
     /// need behind the `lyrics_loading` guard). The playing track and
     /// the open lyrics page are never evicted (dropping what is on
     /// screen would blank it until the next navigation).
-    fn cache_lyrics(&mut self, id: String, lyrics: yutu_core::LyricsResult) {
+    fn cache_lyrics(
+        &mut self,
+        id: String,
+        lyrics: yutu_core::LyricsResult,
+        provider: LyricsProvider,
+    ) {
         if self.lyrics_cache.len() >= LYRICS_CACHE_CAP {
             let protect_playing = self.queue.current().map(|t| t.id.clone());
             let protect_page = match &self.route {
@@ -5215,11 +5247,34 @@ impl AppState {
                 .take(LYRICS_CACHE_CAP / 2)
                 .cloned()
                 .collect();
-            for key in drop {
-                self.lyrics_cache.remove(&key);
+            for key in &drop {
+                self.lyrics_cache.remove(key);
+                self.lyrics_source.remove(key);
             }
         }
+        self.lyrics_source.insert(id.clone(), provider);
         self.lyrics_cache.insert(id, lyrics);
+    }
+
+    /// Start a lyrics fetch for `t` unless cached or already in flight:
+    /// disk hits land synchronously (tagged LRCLIB), otherwise the task
+    /// tries the default provider first with automatic fallback. Returns
+    /// `None` when no network is needed.
+    #[cfg(any(feature = "lyrics", feature = "innertube"))]
+    fn start_lyrics_fetch(&mut self, t: Track) -> Option<iced::Task<Message>> {
+        if self.lyrics_cache.contains_key(&t.id)
+            || self.lyrics_loading.as_deref() == Some(t.id.as_str())
+        {
+            return None;
+        }
+        #[cfg(feature = "lyrics")]
+        if let Some(cached) = load_lyrics(&t.id) {
+            self.cache_lyrics(t.id.clone(), cached, LyricsProvider::Lrclib);
+            return None;
+        }
+        let provider = self.lyrics_provider;
+        self.lyrics_loading = Some(t.id.clone());
+        Some(Self::lyrics_task(t, provider))
     }
 
     /// Record a play in history, capped: Home picks read the last 8,
@@ -5806,18 +5861,10 @@ impl AppState {
                 .collect();
             tasks.extend(self.artwork_tasks(&ahead));
         }
-        #[cfg(feature = "lyrics")]
+        #[cfg(any(feature = "lyrics", feature = "innertube"))]
         {
-            if !self.lyrics_cache.contains_key(&t.id)
-                && self.lyrics_loading.as_deref() != Some(t.id.as_str())
-            {
-                // Cached lyrics render with no network.
-                if let Some(cached) = load_lyrics(&t.id) {
-                    self.cache_lyrics(t.id.clone(), cached);
-                } else {
-                    self.lyrics_loading = Some(t.id.clone());
-                    tasks.push(Self::lyrics_task(t.clone()));
-                }
+            if let Some(task) = self.start_lyrics_fetch(t.clone()) {
+                tasks.push(task);
             }
         }
         tasks
@@ -8477,6 +8524,13 @@ impl AppState {
         ok
     }
 
+    /// Persist the default lyrics provider pref (best effort, same as EQ).
+    fn persist_lyrics_provider(&self) {
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref("lyrics_provider", self.lyrics_provider.as_pref());
+        }
+    }
+
     /// One-line EQ backend note for Settings (honest on rodio builds).
     fn eq_note(&self) -> String {
         match &self.audio {
@@ -9601,14 +9655,15 @@ impl AppState {
             Message::OpenLyrics(id) => {
                 self.close_menu();
                 self.go(Route::Lyrics(id.clone()));
-                #[cfg(feature = "lyrics")]
+                #[cfg(any(feature = "lyrics", feature = "innertube"))]
                 {
                     let needs = !self.lyrics_cache.contains_key(&id)
                         && self.lyrics_loading.as_deref() != Some(id.as_str());
                     if needs {
                         // Cached lyrics open with no network.
+                        #[cfg(feature = "lyrics")]
                         if let Some(cached) = load_lyrics(&id) {
-                            self.cache_lyrics(id, cached);
+                            self.cache_lyrics(id, cached, LyricsProvider::Lrclib);
                         } else {
                             match self.find_track(&id) {
                                 None => {
@@ -9617,36 +9672,115 @@ impl AppState {
                                     return Self::hydrate_task(vec![id]);
                                 }
                                 Some(t) => {
+                                    let provider = self.lyrics_provider;
                                     self.lyrics_loading = Some(id);
                                     self.publish_mpris();
-                                    return Self::lyrics_task(t);
+                                    return Self::lyrics_task(t, provider);
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "lyrics"))]
+                        {
+                            match self.find_track(&id) {
+                                None => {
+                                    self.status = format!("Fetching info for {id}…");
+                                    self.publish_mpris();
+                                    return Self::hydrate_task(vec![id]);
+                                }
+                                Some(t) => {
+                                    let provider = self.lyrics_provider;
+                                    self.lyrics_loading = Some(id);
+                                    self.publish_mpris();
+                                    return Self::lyrics_task(t, provider);
                                 }
                             }
                         }
                     }
                 }
             }
-            Message::LyricsReady { track_id, result } => {
+            Message::LyricsReady {
+                track_id,
+                provider,
+                result,
+            } => {
                 // Stale arrivals must not clear a newer in-flight fetch.
                 if self.lyrics_loading.as_deref() == Some(track_id.as_str()) {
                     self.lyrics_loading = None;
                 }
                 match result {
                     Ok(lyrics) => {
-                        self.cache_lyrics(track_id, lyrics);
+                        self.cache_lyrics(track_id, lyrics, provider);
                     }
                     Err(e) => {
-                        // A lyrics miss is routine (no LRCLIB entry, a
-                        // network flake): it always lands in the log, but
-                        // the bottom bar only shows it with the
-                        // `debug-panel` flag. Without it the bar stays
-                        // clean: the song plays fine without lyrics.
-                        yutu_core::app_log::warn("yutu-lyrics", format!("{track_id}: {e}"));
+                        // A lyrics miss is routine (no record on either
+                        // provider, a network flake after retries): it
+                        // always lands in the log, but the bottom bar only
+                        // shows it with the `debug-panel` flag. Without it
+                        // the bar stays clean: the song plays fine
+                        // without lyrics.
+                        yutu_core::app_log::warn(
+                            "yutu-lyrics",
+                            format!("{track_id} ({}): {e}", provider.label()),
+                        );
                         #[cfg(feature = "debug-panel")]
                         {
                             self.status = format!("Lyrics failed: {e}");
                         }
                     }
+                }
+            }
+            Message::SetLyricsProvider(provider) => {
+                if self.lyrics_provider != provider {
+                    self.lyrics_provider = provider;
+                    self.persist_lyrics_provider();
+                    self.publish_mpris();
+                }
+                // Refetch the live view with the new default (clears a
+                // stale miss so the provider switch always retries).
+                #[cfg(any(feature = "lyrics", feature = "innertube"))]
+                {
+                    let target = match &self.route {
+                        Route::Lyrics(id) => Some(id.clone()),
+                        _ => self.queue.current().map(|t| t.id.clone()),
+                    };
+                    if let Some(id) = target {
+                        if let Some(t) = self.find_track(&id) {
+                            self.lyrics_cache.remove(&id);
+                            self.lyrics_source.remove(&id);
+                            self.lyrics_loading = Some(id.clone());
+                            self.status = format!("Fetching lyrics ({}).", provider.label());
+                            return Self::lyrics_task(t, provider);
+                        }
+                    }
+                }
+            }
+            Message::CycleLyricsProvider(dir) => {
+                let next = if dir >= 0 {
+                    self.lyrics_provider.next()
+                } else {
+                    self.lyrics_provider.prev()
+                };
+                return self.update(Message::SetLyricsProvider(next));
+            }
+            Message::RetryLyrics(id) => {
+                #[cfg(any(feature = "lyrics", feature = "innertube"))]
+                {
+                    if let Some(t) = self.find_track(&id) {
+                        self.lyrics_cache.remove(&id);
+                        self.lyrics_source.remove(&id);
+                        let provider = self.lyrics_provider;
+                        self.lyrics_loading = Some(id);
+                        self.status = format!("Fetching lyrics ({}).", provider.label());
+                        self.publish_mpris();
+                        return Self::lyrics_task(t, provider);
+                    }
+                    self.status = format!("Fetching info for {id}…");
+                    self.publish_mpris();
+                    return Self::hydrate_task(vec![id]);
+                }
+                #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
+                {
+                    let _ = id;
                 }
             }
             Message::ArtworkReady { url, result } => {
@@ -12467,21 +12601,63 @@ impl AppState {
         )
     }
 
-    /// Lyrics fetch for one catalog track (LRCLIB, no login needed).
-    #[cfg(feature = "lyrics")]
-    fn lyrics_task(track: Track) -> iced::Task<Message> {
+    /// Lyrics fetch for one catalog track: tries the default provider
+    /// first with the other as automatic fallback (LRCLIB synced lines,
+    /// YouTube Music plain text). Each LRCLIB request already retries up
+    /// to 3 attempts with search fallback, so a transient error never
+    /// loses the chance to show lyrics.
+    #[cfg(any(feature = "lyrics", feature = "innertube"))]
+    fn lyrics_task(track: Track, primary: LyricsProvider) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = yutu_core::fetch_lrclib(
-                    &track.artist,
-                    &track.title,
-                    track.album.as_deref(),
-                    track.duration_secs,
-                )
-                .await;
-                (track.id, result)
+                let order = [primary, primary.next()];
+                let mut last_err = "lyrics unavailable".to_string();
+                for provider in order {
+                    match provider {
+                        LyricsProvider::Lrclib => {
+                            #[cfg(feature = "lyrics")]
+                            {
+                                match yutu_core::fetch_lrclib(
+                                    &track.artist,
+                                    &track.title,
+                                    track.album.as_deref(),
+                                    track.duration_secs,
+                                )
+                                .await
+                                {
+                                    ok @ Ok(_) => {
+                                        return (track.id, provider, ok);
+                                    }
+                                    Err(e) => last_err = e,
+                                }
+                            }
+                        }
+                        LyricsProvider::YouTubeMusic => {
+                            #[cfg(feature = "innertube")]
+                            {
+                                match Self::detail_backend().await {
+                                    Ok(backend) => match backend.song_lyrics(&track.id).await {
+                                        Ok(lines) => match yutu_core::ytm_lyrics_to_result(lines) {
+                                            ok @ Ok(_) => {
+                                                return (track.id, provider, ok);
+                                            }
+                                            Err(e) => last_err = e,
+                                        },
+                                        Err(e) => last_err = e,
+                                    },
+                                    Err(e) => last_err = e,
+                                }
+                            }
+                        }
+                    }
+                }
+                (track.id, primary, Err(last_err))
             },
-            |(track_id, result)| Message::LyricsReady { track_id, result },
+            |(track_id, provider, result)| Message::LyricsReady {
+                track_id,
+                provider,
+                result,
+            },
         )
     }
 
@@ -15619,10 +15795,64 @@ impl AppState {
             .spacing(6)
             .into(),
             None if self.lyrics_loading.as_deref() == Some(id) => {
-                text("Loading lyrics").color(MUTED).into()
+                text(format!("Loading lyrics ({})", self.lyrics_provider.label()))
+                    .color(MUTED)
+                    .into()
             }
-            None => text("No lyrics for this track yet.").color(MUTED).into(),
+            None => {
+                let retry_id = id.to_string();
+                column![
+                    text("No lyrics for this track yet.").color(MUTED),
+                    row_button(
+                        btn_text(format!("Retry ({})", self.lyrics_provider.label()), 12)
+                            .color(MUTED),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::RetryLyrics(retry_id))
+                    .padding(6),
+                ]
+                .spacing(6)
+                .into()
+            }
         }
+    }
+
+    /// Lyrics provider `< >` stepper (drawer + lyrics page): steps the
+    /// default provider and refetches the live track. The label names the
+    /// default; a muted `via X` note names the fallback source when the
+    /// cached entry came from the other provider.
+    fn lyrics_provider_stepper(&self, track_id: &str) -> iced::Element<'_, Message> {
+        use iced::widget::{button, row, text};
+        let label = self.lyrics_provider.label();
+        let via = match self.lyrics_source.get(track_id) {
+            Some(source) if *source != self.lyrics_provider => {
+                format!("via {}", source.label())
+            }
+            _ => String::new(),
+        };
+        let mut items: Vec<iced::Element<'_, Message>> = vec![
+            button(btn_icon("chevron-left", 14.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::CycleLyricsProvider(-1))
+                .padding(4)
+                .into(),
+            text(format!("Lyrics ({label})"))
+                .size(12)
+                .color(MUTED)
+                .into(),
+            button(btn_icon("chevron-right", 14.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::CycleLyricsProvider(1))
+                .padding(4)
+                .into(),
+        ];
+        if !via.is_empty() {
+            items.push(text(via).size(11).color(MUTED).into());
+        }
+        row(items)
+            .spacing(4)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
     }
 
     /// Now Playing drawer content (also the NowPlaying route): big art,
@@ -15691,11 +15921,15 @@ impl AppState {
         } else {
             text("").size(1).into()
         };
+        let stepper = self.lyrics_provider_stepper(&t.id);
         let body: iced::Element<'_, Message> = column![
             sticky,
             scrollable(
                 column![
                     container(hero)
+                        .width(Fill)
+                        .align_x(iced::alignment::Horizontal::Center),
+                    container(stepper)
                         .width(Fill)
                         .align_x(iced::alignment::Horizontal::Center),
                     // Narrow centered lyrics column that never overflows
@@ -16757,6 +16991,17 @@ impl AppState {
                         .size(12)
                         .color(MUTED),
                     eq_panel,
+                    text("Lyrics").size(17),
+                    text("Default provider (the other is automatic fallback)").size(13),
+                    pick_list(
+                        ["LRCLIB", "YouTube Music"].as_slice(),
+                        Some(self.lyrics_provider.label()),
+                        |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
+                    )
+                    .width(Fill),
+                    text("LRCLIB carries synced lines; YouTube Music is plain text.")
+                        .size(12)
+                        .color(MUTED),
                     text("Appearance").size(17),
                     text("Display font (takes effect on relaunch)").size(13),
                     pick_list(
@@ -17113,6 +17358,7 @@ impl AppState {
                     .find_track(id)
                     .map(|t| format!("{} · {}", t.title, t.artist))
                     .unwrap_or_else(|| id.clone());
+                let stepper = self.lyrics_provider_stepper(id);
                 let content = self.lyrics_content(id);
                 column![
                     text(title).size(22),
@@ -17133,6 +17379,7 @@ impl AppState {
                             .padding(8),
                     ]
                     .spacing(8),
+                    stepper,
                     content,
                 ]
                 .spacing(10)
@@ -22122,6 +22369,7 @@ mod tests {
                         synced: vec![],
                         plain: String::new(),
                     },
+                    LyricsProvider::Lrclib,
                 );
             }
             assert!(s.lyrics_cache.len() <= LYRICS_CACHE_CAP);
@@ -22528,6 +22776,7 @@ mod tests {
         // Arrival caches; failures report.
         let _ = s.update(Message::LyricsReady {
             track_id: "m1".into(),
+            provider: LyricsProvider::Lrclib,
             result: Ok(LyricsResult {
                 plain: "la\nla".into(),
                 synced: vec![LyricLine {
@@ -22539,8 +22788,10 @@ mod tests {
         });
         assert!(s.lyrics_loading.is_none());
         assert_eq!(s.lyrics_cache["m1"].synced.len(), 1);
+        assert_eq!(s.lyrics_source.get("m1"), Some(&LyricsProvider::Lrclib));
         let _ = s.update(Message::LyricsReady {
             track_id: "m2".into(),
+            provider: LyricsProvider::Lrclib,
             result: Err("offline".into()),
         });
         #[cfg(feature = "debug-panel")]
@@ -23935,14 +24186,69 @@ mod tests {
         s.lyrics_loading = Some("m2".into());
         let _ = s.update(Message::LyricsReady {
             track_id: "m1".into(),
+            provider: LyricsProvider::Lrclib,
             result: Err("gone".into()),
         });
         assert_eq!(s.lyrics_loading.as_deref(), Some("m2"));
         let _ = s.update(Message::LyricsReady {
             track_id: "m2".into(),
+            provider: LyricsProvider::YouTubeMusic,
             result: Err("gone".into()),
         });
         assert!(s.lyrics_loading.is_none());
+    }
+
+    #[test]
+    fn lyrics_provider_switch_refetches_live_track() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        assert_eq!(s.lyrics_provider, LyricsProvider::Lrclib);
+        let _ = s.update(Message::SetLyricsProvider(LyricsProvider::YouTubeMusic));
+        assert_eq!(s.lyrics_provider, LyricsProvider::YouTubeMusic);
+        let stored = LibraryStore::open(&s.library_path)
+            .expect("test store")
+            .get_pref("lyrics_provider")
+            .expect("pref read");
+        assert_eq!(stored.as_deref(), Some("youtubemusic"));
+        #[cfg(any(feature = "lyrics", feature = "innertube"))]
+        assert_eq!(s.lyrics_loading.as_deref(), Some("m1"));
+        #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
+        assert!(s.lyrics_loading.is_none());
+        // The `< >` stepper cycles back (and persists the default).
+        let _ = s.update(Message::CycleLyricsProvider(-1));
+        assert_eq!(s.lyrics_provider, LyricsProvider::Lrclib);
+    }
+
+    #[test]
+    fn lyrics_retry_clears_miss_and_refetches() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m1".into(),
+            provider: LyricsProvider::Lrclib,
+            result: Err("no lyrics found".into()),
+        });
+        assert!(s.lyrics_loading.is_none());
+        assert!(!s.lyrics_cache.contains_key("m1"));
+        let _ = s.update(Message::RetryLyrics("m1".into()));
+        #[cfg(any(feature = "lyrics", feature = "innertube"))]
+        assert_eq!(s.lyrics_loading.as_deref(), Some("m1"));
+        #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
+        assert!(s.lyrics_loading.is_none());
+        // A successful arrival records its source for the stepper label.
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m1".into(),
+            provider: LyricsProvider::YouTubeMusic,
+            result: Ok(LyricsResult {
+                plain: "hello".into(),
+                synced: vec![],
+                instrumental: false,
+            }),
+        });
+        assert_eq!(
+            s.lyrics_source.get("m1"),
+            Some(&LyricsProvider::YouTubeMusic)
+        );
     }
 
     #[test]

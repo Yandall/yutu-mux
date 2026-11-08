@@ -51,7 +51,10 @@ pub use library::LibraryStore;
 pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id, PendingOp};
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
-pub use lyrics_providers::{line_at, parse_lrc, LyricLine, LyricsResult};
+pub use lyrics_providers::{
+    line_at, normalize_for_match, parse_lrc, score_candidate, ytm_lyrics_to_result, LyricLine,
+    LyricsProvider, LyricsResult, MatchCandidate, MatchQuery,
+};
 pub use models::{
     hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, MixedRef, Playlist,
     PlaylistHit, QueueSnapshot, SearchAll, SearchResults, TopHit, TopKind, Track,
