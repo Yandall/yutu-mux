@@ -6823,15 +6823,6 @@ impl AppState {
                 // sweep: its cards warm on nav).
                 let mut y = BODY_PAD + Self::text_h(24.0) + 12.0;
                 let mut slots = Vec::new();
-                // Home hits (same top-6 source as the view).
-                if self.results.tracks.is_empty() {
-                    y += 24.0 + 12.0;
-                } else {
-                    y += Self::text_h(17.0) + 4.0;
-                    let hits: Vec<Track> = self.results.tracks.iter().take(6).cloned().collect();
-                    slots.extend(Self::track_row_slots(&hits, y, ROW_PITCH));
-                    y += (hits.len().min(6) as f32) * ROW_PITCH + 4.0 + 24.0 + 12.0;
-                }
                 // Picks grid (same order as the view): the cards render
                 // the hero key (`thumb_hero`), so only it is warmed.
                 // New shelves above: quick-pick + more-from rows use
@@ -15765,6 +15756,14 @@ impl AppState {
                 .padding(6)
                 .into()
         };
+        // Submit magnifier: same message as Enter in the input, so
+        // clicking it and pressing Enter always do the same thing.
+        let go_btn: iced::Element<'_, Message> =
+            button(btn_icon("search", 14.0, iced::Color::WHITE))
+                .style(hover_row)
+                .on_press(Message::SuggestPick)
+                .padding(6)
+                .into();
         // Pill width comes from the shared geometry (same number the
         // popup and scrim use, so edges always match).
         let (_, pill_w) = self.search_pill_geom();
@@ -15780,6 +15779,7 @@ impl AppState {
                     .width(Fill)
                     .padding(10),
                 clear_btn,
+                go_btn,
             ]
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center),
@@ -15974,33 +15974,8 @@ impl AppState {
                         ..iced::Padding::ZERO
                     })
                     .into();
-                let home_hits: iced::Element<'_, Message> =
-                    if self.searching && self.results.tracks.is_empty() {
-                        text("Searching YouTube Music…").color(MUTED).into()
-                    } else if self.search_query.trim().is_empty() {
-                        text("").size(1).into()
-                    } else if self.results.tracks.is_empty() {
-                        text("No matches yet: keep typing.").color(MUTED).into()
-                    } else {
-                        let top: Vec<iced::Element<'_, Message>> = self
-                            .results
-                            .tracks
-                            .iter()
-                            .take(6)
-                            .map(|t| self.track_row(t))
-                            .collect();
-                        column![
-                            text("Top results").size(17),
-                            column(top).spacing(2),
-                            button(btn_text("See all results →", 12))
-                                .style(hover_row)
-                                .on_press(Message::Navigate(Route::Search))
-                                .padding(8),
-                        ]
-                        .spacing(4)
-                        .into()
-                    };
-                let home_search_results: iced::Element<'_, Message> = home_hits;
+                // Home never shows search results: typing filters the
+                // suggest popup, and results live on the Search page.
                 let weekly_n = self.home_shelves.weekly.len();
                 let forgotten_n = self.home_shelves.forgotten.len();
                 // YouTube-style shelves, all local: heavy rotation, the
@@ -16132,7 +16107,6 @@ impl AppState {
                     };
                 column![
                     text("Good evening").size(24),
-                    home_search_results,
                     quick_section,
                     library_section,
                     albums_section,
@@ -16180,13 +16154,15 @@ impl AppState {
             }
             Route::Search => {
                 let query = self.search_query.trim().to_string();
-                // Blank until a searchable query: single characters can
-                // never have results (no network fires below 2 chars), so
-                // they blank instead of flashing "no results".
+                // Empty query: a hint to use the bar above (never a
+                // blank page). Single characters show it too (no
+                // network fires below 2 chars for results).
                 // Every branch below is page content only: the header
                 // (search input) and scroll wrapper always render.
                 let content: iced::Element<'_, Message> = if query.len() < 2 {
-                    iced::widget::Space::new().width(Fill).height(Fill).into()
+                    column![text("Write something in the search bar to find music.").color(MUTED),]
+                        .spacing(10)
+                        .into()
                 } else if self.searching
                     && results_empty(&self.results)
                     && all_empty(&self.all_results)
@@ -23032,6 +23008,23 @@ mod tests {
         s.drawer_open = true;
         let _ = s.update(Message::HomeSearchChanged("bonobo".into()));
         assert!(s.drawer_open);
+    }
+
+    #[test]
+    fn pill_search_button_matches_enter() {
+        // The pill magnifier sends SuggestPick, exactly like Enter:
+        // empty lands on Search with a type-something hint, typed
+        // submits the query there.
+        let mut s = test_state();
+        s.navigate(Route::Home);
+        let _ = s.update(Message::SuggestPick);
+        assert_eq!(s.route, Route::Search);
+        let mut s = test_state();
+        s.navigate(Route::Home);
+        let _ = s.update(Message::HomeSearchChanged("bonobo".into()));
+        let _ = s.update(Message::SuggestPick);
+        assert_eq!(s.route, Route::Search);
+        assert_eq!(s.search_query, "bonobo");
     }
 
     #[cfg(feature = "innertube")]
