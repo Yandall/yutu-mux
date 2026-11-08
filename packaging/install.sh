@@ -206,13 +206,19 @@ install_macos_runtime_deps() {
 }
 
 write_desktop_file() {
-    cat > "$1" <<'EOF'
+    # $1 is the file to write, $2 the absolute binary path. Exec must
+    # be absolute: desktop sessions often lack ~/.local/bin on PATH
+    # (it is usually added by shell profiles only), and a bare
+    # `Exec=yutu-mux` then silently does nothing from the launcher.
+    cat > "$1" <<EOF
 [Desktop Entry]
 Type=Application
 Name=YutuMux
 Comment=Native YouTube Music desktop client
-Exec=yutu-mux
+Exec=$2
+TryExec=$2
 Icon=yutu-mux
+StartupWMClass=yutu-mux
 Terminal=false
 Categories=AudioVideo;Audio;Player;Music;
 Keywords=YouTube;Music;Player;Streaming;
@@ -408,7 +414,7 @@ if [ "$OS" = Linux ]; then
     make_dir "$ICONS_DIR"
     STAGED_DESKTOP="$TMP_ROOT/yutu-mux.desktop"
     if [ "$DRY_RUN" -eq 0 ]; then
-        write_desktop_file "$STAGED_DESKTOP"
+        write_desktop_file "$STAGED_DESKTOP" "$BIN_DIR/yutu-mux"
     fi
     install_new_file 755 "$BIN_DIR/yutu-mux" "$BIN_SRC"
     install_new_file 644 "$APPS_DIR/yutu-mux.desktop" "$STAGED_DESKTOP"

@@ -81,9 +81,11 @@ Installed files:
 ~/.local/share/icons/hicolor/scalable/apps/yutu-mux.svg
 ```
 
-The desktop entry launches `yutu-mux` by name, so `~/.local/bin` must be on
-PATH. Many desktop distributions configure this automatically after the
-next login. The launcher uses the installed rings + M icon set
+The desktop entry points at the install prefix by absolute path, so
+the launcher works even when `~/.local/bin` is not on the desktop
+session PATH (shells usually add it via `~/.profile`, sessions often
+do not). Terminal use still wants it on PATH: many distributions add
+it automatically after the next login. The launcher uses the installed rings + M icon set
 (`~/.local/share/icons/hicolor`), refreshed with `gtk-update-icon-cache`
 when available.
 
