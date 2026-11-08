@@ -1232,19 +1232,41 @@ pub enum Message {
     RemoveAutoplay(usize),
     /// Queue-page hover tracking (reveals the row remove).
     QueueHover(Option<usize>),
+    /// Row-leave: clears the hover only when it still names this row.
+    /// Iced publishes enter/exit in tree order per event, so a fast
+    /// multi-row jump emits enter(new) before exit(old): a blind clear
+    /// would wipe the fresh hover and leave the cursor on a dead row.
+    QueueExit(usize),
     /// History-page hover tracking (per-row index: repeat plays share
     /// a track id, so id-keyed hover would light them all up at once).
     HistoryHover(Option<usize>),
+    /// History row-leave (same enter-before-exit ordering; see
+    /// [`Message::QueueExit`]).
+    HistoryExit(usize),
     /// Id-keyed row hover (full-row highlight on non-index lists).
     TrackHover(Option<String>),
+    /// Track row-leave (same enter-before-exit ordering; see
+    /// [`Message::QueueExit`]).
+    TrackExit(String),
     /// Sidebar playlist hover (reveals the row play button).
     PlaylistHover(Option<String>),
+    /// Sidebar playlist row-leave (same enter-before-exit ordering;
+    /// see [`Message::QueueExit`]).
+    PlaylistExit(String),
     /// Autoplay hover tracking (reveals the row remove).
     AutoHover(Option<usize>),
+    /// Autoplay row-leave (same enter-before-exit ordering; see
+    /// [`Message::QueueExit`]).
+    AutoExit(usize),
     /// Search collection hover (reveals the row highlight + menu).
     AlbumHover(Option<String>),
     ArtistHover(Option<String>),
     SearchPlaylistHover(Option<String>),
+    /// Search collection row-leaves (same enter-before-exit ordering;
+    /// see [`Message::QueueExit`]).
+    AlbumExit(String),
+    ArtistExit(String),
+    SearchPlaylistExit(String),
     /// Right-panel drag reorder (row press, slot hover, release anywhere).
     DragStart(usize),
     /// Global left press: arms a drag when the cursor is over a queue
@@ -1268,6 +1290,10 @@ pub enum Message {
     PanelHover(usize),
     /// Remove-button hover (presses there never arm a drag).
     RemoveHover(Option<usize>),
+    /// Remove-button leave: clears only when it still names this row,
+    /// so a fast jump onto another row's remove never disarms it (a
+    /// press there must delete, never start a drag).
+    RemoveExit(usize),
     /// Context menu open/close: right-click (per-row `mouse_area`) or the
     /// per-row `…` button opens it at the last cursor position.
     OpenContext(String),
@@ -6140,8 +6166,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -8752,8 +8778,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -10268,6 +10294,16 @@ impl AppState {
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
             }
+            Message::QueueExit(i) => {
+                // Match-guarded: a stale exit (enter(new) already
+                // latched before this exit in the same event batch) must
+                // never wipe the live hover. Other families are already
+                // None here (every enter clears them), so only our own
+                // field needs the guard.
+                if self.hovered_queue == Some(i) {
+                    self.hovered_queue = None;
+                }
+            }
             Message::HistoryHover(h) => {
                 // Modal open: rows behind scrims never highlight.
                 if self.context_menu.is_some()
@@ -10283,6 +10319,11 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+            }
+            Message::HistoryExit(i) => {
+                if self.hovered_history == Some(i) {
+                    self.hovered_history = None;
+                }
             }
             Message::TrackHover(h) => {
                 if self.context_menu.is_some()
@@ -10302,6 +10343,11 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+            }
+            Message::TrackExit(id) => {
+                if self.hovered_track.as_deref() == Some(id.as_str()) {
+                    self.hovered_track = None;
+                }
             }
             Message::AlbumHover(h) => {
                 self.hovered_album = self.coll_hover(h);
@@ -10333,6 +10379,21 @@ impl AppState {
                 self.hovered_auto = None;
                 self.hover_remove = None;
             }
+            Message::AlbumExit(id) => {
+                if self.hovered_album.as_deref() == Some(id.as_str()) {
+                    self.hovered_album = None;
+                }
+            }
+            Message::ArtistExit(id) => {
+                if self.hovered_artist.as_deref() == Some(id.as_str()) {
+                    self.hovered_artist = None;
+                }
+            }
+            Message::SearchPlaylistExit(id) => {
+                if self.hovered_search_playlist.as_deref() == Some(id.as_str()) {
+                    self.hovered_search_playlist = None;
+                }
+            }
             Message::ClearHovers => {
                 self.hovered_track = None;
                 self.hovered_album = None;
@@ -10346,6 +10407,11 @@ impl AppState {
             }
             Message::RemoveHover(h) => {
                 self.hover_remove = h;
+            }
+            Message::RemoveExit(i) => {
+                if self.hover_remove == Some(i) {
+                    self.hover_remove = None;
+                }
             }
             Message::PlaylistHover(h) => {
                 if self.context_menu.is_some()
@@ -10363,6 +10429,11 @@ impl AppState {
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
             }
+            Message::PlaylistExit(id) => {
+                if self.hovered_playlist.as_deref() == Some(id.as_str()) {
+                    self.hovered_playlist = None;
+                }
+            }
             Message::AutoHover(h) => {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
@@ -10377,6 +10448,11 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
+            }
+            Message::AutoExit(i) => {
+                if self.hovered_auto == Some(i) {
+                    self.hovered_auto = None;
+                }
             }
             Message::PanelHover(i) => {
                 if self.context_menu.is_some()
@@ -13301,8 +13377,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -13370,8 +13446,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -13429,8 +13505,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(menu_id))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -13795,8 +13871,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(t.id.clone()))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -13853,7 +13929,7 @@ impl AppState {
         )
         .on_right_press(Message::OpenAlbumMenu(a.id.clone()))
         .on_enter(Message::AlbumHover(Some(a.id.clone())))
-        .on_exit(Message::AlbumHover(None))
+        .on_exit(Message::AlbumExit(a.id.clone()))
         .into()
     }
 
@@ -13905,7 +13981,7 @@ impl AppState {
         )
         .on_right_press(Message::OpenArtistMenu(a.id.clone()))
         .on_enter(Message::ArtistHover(Some(a.id.clone())))
-        .on_exit(Message::ArtistHover(None))
+        .on_exit(Message::ArtistExit(a.id.clone()))
         .into()
     }
 
@@ -14015,7 +14091,7 @@ impl AppState {
         )
         .on_right_press(Message::OpenSearchPlaylistMenu(p.id.clone()))
         .on_enter(Message::SearchPlaylistHover(Some(p.id.clone())))
-        .on_exit(Message::SearchPlaylistHover(None))
+        .on_exit(Message::SearchPlaylistExit(p.id.clone()))
         .into()
     }
 
@@ -14155,7 +14231,7 @@ impl AppState {
         )
         .on_right_press(Message::OpenContext(menu_id))
         .on_enter(Message::HistoryHover(Some(index)))
-        .on_exit(Message::HistoryHover(None))
+        .on_exit(Message::HistoryExit(index))
         .into()
     }
 
@@ -14261,8 +14337,8 @@ impl AppState {
                     .width(Fill),
                 )
                 .on_right_press(Message::OpenPlaylistMenu(pl_id))
-                .on_enter(Message::PlaylistHover(Some(pl_hover)))
-                .on_exit(Message::PlaylistHover(None))
+                .on_enter(Message::PlaylistHover(Some(pl_hover.clone())))
+                .on_exit(Message::PlaylistExit(pl_hover))
                 .into()
             })
             .collect();
@@ -14410,7 +14486,7 @@ impl AppState {
             if hovered {
                 mouse_area(slot)
                     .on_enter(Message::RemoveHover(Some(i)))
-                    .on_exit(Message::RemoveHover(None))
+                    .on_exit(Message::RemoveExit(i))
                     .into()
             } else {
                 slot
@@ -14455,7 +14531,7 @@ impl AppState {
             .on_press(Message::DragStart(i))
             .on_right_press(Message::OpenContext(menu_id))
             .on_enter(Message::PanelHover(i))
-            .on_exit(Message::QueueHover(None))
+            .on_exit(Message::QueueExit(i))
             .into()
     }
 
@@ -14657,7 +14733,7 @@ impl AppState {
                 )
                 .on_right_press(Message::OpenContext(menu_id))
                 .on_enter(Message::AutoHover(Some(i)))
-                .on_exit(Message::AutoHover(None))
+                .on_exit(Message::AutoExit(i))
                 .into()
             })
             .collect();
@@ -14753,8 +14829,8 @@ impl AppState {
                                     .align_y(iced::alignment::Vertical::Center),
                                 )
                                 .on_right_press(Message::OpenContext(menu_id))
-                                .on_enter(Message::TrackHover(Some(hover_id)))
-                                .on_exit(Message::TrackHover(None))
+                                .on_enter(Message::TrackHover(Some(hover_id.clone())))
+                                .on_exit(Message::TrackExit(hover_id))
                                 .into()
                             })
                             .collect::<Vec<_>>(),
@@ -15763,8 +15839,8 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center),
         )
         .on_right_press(Message::OpenContext(menu_id))
-        .on_enter(Message::TrackHover(Some(hover_id)))
-        .on_exit(Message::TrackHover(None))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
         .into()
     }
 
@@ -16266,7 +16342,7 @@ impl AppState {
                         )
                         .on_right_press(Message::OpenContext(jump))
                         .on_enter(Message::QueueHover(Some(i)))
-                        .on_exit(Message::QueueHover(None))
+                        .on_exit(Message::QueueExit(i))
                         .into()
                     })
                     .collect();
@@ -16309,7 +16385,7 @@ impl AppState {
                         )
                         .on_right_press(Message::OpenContext(menu_id))
                         .on_enter(Message::AutoHover(Some(i)))
-                        .on_exit(Message::AutoHover(None))
+                        .on_exit(Message::AutoExit(i))
                         .into()
                     })
                     .collect();
@@ -24689,6 +24765,40 @@ mod tests {
         assert_eq!(s.hovered_track.as_deref(), Some("m1"));
         let _ = s.update(Message::TrackHover(None));
         assert!(s.hovered_track.is_none());
+    }
+
+    #[test]
+    fn stale_exit_never_wipes_fresh_hover() {
+        // Iced publishes enter/exit in tree order per event, so a fast
+        // multi-row jump emits enter(new) before exit(old). The exit
+        // must only clear when it still names the hovered row.
+        let mut s = test_state();
+        // Index-keyed (queue): enter row 1, then the stale exit for
+        // row 5 from the same batch arrives late.
+        let _ = s.update(Message::PanelHover(1));
+        let _ = s.update(Message::QueueExit(5));
+        assert_eq!(s.hovered_queue, Some(1));
+        // Matching exit still clears.
+        let _ = s.update(Message::QueueExit(1));
+        assert!(s.hovered_queue.is_none());
+        // Id-keyed (track rows across the whole app).
+        let _ = s.update(Message::TrackHover(Some("m2".into())));
+        let _ = s.update(Message::TrackExit("m1".into()));
+        assert_eq!(s.hovered_track.as_deref(), Some("m2"));
+        let _ = s.update(Message::TrackExit("m2".into()));
+        assert!(s.hovered_track.is_none());
+        // Cross-family: leaving an autoplay row must not wipe a fresh
+        // queue hover latched earlier in the same batch.
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::AutoExit(3));
+        assert_eq!(s.hovered_queue, Some(0));
+        // Remove-button hover: a stale exit must not disarm the × the
+        // cursor sits on (a press there must delete, never drag).
+        let _ = s.update(Message::RemoveHover(Some(2)));
+        let _ = s.update(Message::RemoveExit(0));
+        assert_eq!(s.hover_remove, Some(2));
+        let _ = s.update(Message::RemoveExit(2));
+        assert!(s.hover_remove.is_none());
     }
 
     #[test]
