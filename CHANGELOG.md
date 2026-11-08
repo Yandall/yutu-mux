@@ -18,9 +18,10 @@
   (loading, never a flash of the other one); the fallback shows only
   if the default finds nothing, and a miss on both renders the plain
   no-lyrics state. The stepper label always names the provider
-  actually on screen. Settings holds the default (persisted).
-  Musixmatch/Genius stay out (API keys and scraping, against the
-  free-tier call).
+  actually on screen. Pinning a track with the stepper disables the
+  fallback for it (no-lyrics state instead). Settings holds the
+  default (persisted). Musixmatch/Genius stay out (API keys and
+  scraping, against the free-tier call).
 - Fixed cookie import and anonymous connect: `ytmapi-rs` 0.3 sends a
   hardcoded Firefox/88 user agent on its login-page fetch, which
   YouTube's edge now kills at the HTTP/2 stream level, so every
