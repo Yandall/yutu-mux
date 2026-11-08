@@ -19,13 +19,17 @@ fontdb = "0.23"
 tokio = { version = "1", features = ["time", "sync", "rt"] }
 futures = "0.3"
 serde_json = "1"
+# System file picker for the cookies.txt import (portal on Linux,
+# native panel on macOS). Optional so the offline compile check stays
+# lean; only the innertube cookie flow uses it.
+rfd = { version = "0.18", optional = true }
 
 [features]
 # Default is the real app: live search/radio + scrobble submission + mpv
 # playback (seek/position/EQ). `--no-default-features` is the offline
 # compile check (empty states, rodio-only).
 default = ["submit", "innertube", "mpv", "lyrics"]
-innertube = ["yutu-core/innertube"]
+innertube = ["yutu-core/innertube", "dep:rfd"]
 submit = ["yutu-core/submit"]
 mpv = ["yutu-player/mpv"]
 lyrics = ["yutu-core/lyrics"]

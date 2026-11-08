@@ -13,6 +13,9 @@
   centered modal offers to delete the plaintext export (Delete is the
   CTA; scrim/Esc keeps it), appearing once playlist stages complete so
   progress is never covered.
+- Cookie import uses the system file picker (`Choose cookies file…`,
+  portal on Linux, native panel on macOS) instead of a pasted file path;
+  the picked path shows under the buttons until import.
 - Lyrics stepper arrows stay put: the provider label sits in a
   fixed-width centered box, so `< >` never drift when the provider
   name changes length.

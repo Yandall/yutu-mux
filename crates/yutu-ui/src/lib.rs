@@ -1417,6 +1417,12 @@ pub enum Message {
     HistoryMore,
     CookiePathChanged(String),
     CookieImport,
+    /// Open the system file picker for the cookies.txt export.
+    #[cfg(feature = "innertube")]
+    CookieBrowse,
+    /// File picker result (`None` = cancelled, path unchanged).
+    #[cfg(feature = "innertube")]
+    CookieFilePicked(Option<String>),
     /// First import stage done (songs + liked + playlist headers).
     #[cfg(feature = "innertube")]
     ImportStageReady {
@@ -7419,7 +7425,7 @@ impl AppState {
     /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, text_input};
+        use iced::widget::{button, column, row, text};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
@@ -7434,19 +7440,29 @@ impl AppState {
             .spacing(4)
             .into();
         }
+        let picked = if self.cookie_path.trim().is_empty() {
+            text("No file chosen yet.").size(11).color(MUTED)
+        } else {
+            text(self.cookie_path.clone()).size(11).color(MUTED)
+        };
         column![
-            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path (no Google Cloud client required). The session is saved in your OS keychain, so restarts and updates stay signed in. You can delete the export right after import.")
+            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then choose the file below (no Google Cloud client required). The session is saved in your OS keychain, so restarts and updates stay signed in. You can delete the export right after import.")
                 .size(11)
                 .color(MUTED),
-            text_input("/path/to/cookies.txt", &self.cookie_path)
-            .style(rounded_input)
-                .on_input(Message::CookiePathChanged)
-                .width(Fill)
-                .padding(10),
-            button(self.busy_content("Import", 12.0))
-            .style(green_play)
-            .on_press(Message::CookieImport)
-            .padding(7),
+            row![
+                button(btn_text("Choose cookies file…", 12))
+                    .style(hover_row)
+                    .on_press(Message::CookieBrowse)
+                    .padding(7),
+                button(self.busy_content("Import", 12.0))
+                    .style(green_play)
+                    .on_press(Message::CookieImport)
+                    .padding(7),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .width(Fill),
+            picked.width(Fill),
         ]
         .spacing(4)
         .into()
@@ -11702,13 +11718,26 @@ impl AppState {
             Message::CookiePathChanged(p) => {
                 self.cookie_path = p;
             }
+            #[cfg(feature = "innertube")]
+            Message::CookieBrowse => {
+                return Self::cookie_browse_task();
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieFilePicked(picked) => {
+                // Cancelled dialogs leave the previous pick alone.
+                if let Some(p) = picked {
+                    if !p.trim().is_empty() {
+                        self.cookie_path = p;
+                    }
+                }
+            }
             Message::CookieImport => {
                 let path = self.cookie_path.trim().to_string();
                 #[cfg(feature = "innertube")]
                 {
                     if path.is_empty() {
                         self.status =
-                            "Pick your exported cookies file first (see the note below).".into();
+                            "Choose your exported cookies file first (see the note below).".into();
                     } else {
                         self.login_busy = true;
                         self.import_active = true;
@@ -13582,6 +13611,23 @@ impl AppState {
                 (seed, result)
             },
             |(seed, result)| Message::AutoplayReady { seed, result },
+        )
+    }
+
+    /// System file picker for the cookies.txt export (portal on Linux,
+    /// native panel on macOS). Cancellation is `None`, never an error.
+    #[cfg(feature = "innertube")]
+    fn cookie_browse_task() -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Choose cookies.txt export")
+                    .add_filter("Text", &["txt"])
+                    .pick_file()
+                    .await
+                    .map(|h| h.path().to_string_lossy().into_owned())
+            },
+            Message::CookieFilePicked,
         )
     }
 
@@ -23682,6 +23728,19 @@ mod tests {
         );
         assert!(s.pending_cookie_cleanup.is_none());
         let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_file_picked_sets_path_and_cancel_keeps() {
+        let mut s = test_state();
+        assert!(s.cookie_path.is_empty());
+        let _ = s.update(Message::CookieFilePicked(Some("/tmp/cookies.txt".into())));
+        assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+        let _ = s.update(Message::CookieFilePicked(None));
+        assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+        let _ = s.update(Message::CookieFilePicked(Some("   ".into())));
+        assert_eq!(s.cookie_path, "/tmp/cookies.txt");
     }
 
     #[cfg(feature = "innertube")]
