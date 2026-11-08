@@ -9,12 +9,13 @@
   so near-miss titles resolve instead of showing nothing. YouTube
   Music is the automatic fallback and a selectable provider: timed
   lines when the track has a timed model (synced highlight + follow),
-  plain lines otherwise. Settings holds the default (persisted),
-  a `< >` stepper in the drawer and lyrics page switches provider
-  while playing (refetches live, `via X` note when the fallback
-  supplied the cached entry), and a Retry button sits on empty
-  states. Musixmatch/Genius stay out (API keys and scraping, against
-  the free-tier call).
+  plain lines otherwise. Both providers preload in parallel at song
+  start, so the drawer/lyrics-page `< >` stepper switches instantly
+  with no reload flash (first arrival displays while the other is
+  still in flight). Settings holds the default (persisted), a `via X`
+  note names the displayed result when only the other provider has
+  it cached, and a Retry button sits on empty states. Musixmatch/Genius
+  stay out (API keys and scraping, against the free-tier call).
 - Fixed cookie import and anonymous connect: `ytmapi-rs` 0.3 sends a
   hardcoded Firefox/88 user agent on its login-page fetch, which
   YouTube's edge now kills at the HTTP/2 stream level, so every
