@@ -14451,7 +14451,10 @@ impl AppState {
         // reach this area from text, art, or gaps (only the tiny remove
         // button owns its press). A clean press/release plays the row
         // via the DragEnd snapshot; a move to a slot reorders instead.
+        // The whole row is clickable, so it votes the pointing hand
+        // (inner content votes None, the remove × votes Pointer itself).
         mouse_area(lifted)
+            .interaction(iced::mouse::Interaction::Pointer)
             .on_press(Message::DragStart(i))
             .on_right_press(Message::OpenContext(menu_id))
             .on_enter(Message::PanelHover(i))
