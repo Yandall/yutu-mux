@@ -58,7 +58,6 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
 
 /// Modal backdrop: dims the app behind the dialog so it stands out.
 /// Alpha-only (no layout), same overlay idiom as `art_dim`.
-#[cfg(feature = "innertube")]
 fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(iced::Background::Color(iced::Color::from_rgba(
@@ -1208,6 +1207,10 @@ pub enum Message {
     ScrobbleFmKeyChanged(String),
     ScrobbleFmSecretChanged(String),
     ScrobbleFmSkChanged(String),
+    /// Open the scrobbling credentials dialog (Settings).
+    OpenScrobbleModal,
+    /// Close the scrobbling credentials dialog (scrim/Esc keeps edits).
+    CloseScrobbleModal,
     ScrobbleSubmitted {
         target: String,
         result: Result<(), String>,
@@ -2539,9 +2542,11 @@ pub struct AppState {
     #[cfg(feature = "innertube")]
     pending_cookie_source: Option<String>,
     /// Cleanup-modal entrance 0..1 (slides up from below while the
-    /// ticker runs, snaps when animations are off).
-    #[cfg(feature = "innertube")]
+    /// ticker runs, snaps when animations are off). Shared by every
+    /// modal dialog.
     modal_anim: f32,
+    /// Scrobbling credentials dialog open (Settings button).
+    scrobble_modal_open: bool,
     /// Where the queue is playing from (playlist/artist/radio label).
     playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
@@ -3414,27 +3419,32 @@ impl AppState {
         if let Some(src) = self.pending_cookie_source.take() {
             if !src.is_empty() && std::path::Path::new(&src).exists() {
                 self.pending_cookie_cleanup = Some(src);
-                // Restart the entrance so the card rises from below.
-                self.modal_anim = 0.0;
+                // Restart the entrance so the card rises from below
+                // (unless the scrobbling dialog is already settled on
+                // the shared ticker).
+                if !self.scrobble_modal_open {
+                    self.modal_anim = 0.0;
+                }
             }
         }
     }
 
-    /// True while the cleanup-modal entrance still needs ticker frames.
-    #[cfg(feature = "innertube")]
-    fn modal_animating(&self) -> bool {
-        self.modal_anim
-            != if self.pending_cookie_cleanup.is_some() {
-                1.0
-            } else {
-                0.0
-            }
+    /// Entrance target for the modal layer: 1 while any dialog is open.
+    fn modal_target(&self) -> f32 {
+        #[cfg(feature = "innertube")]
+        if self.pending_cookie_cleanup.is_some() {
+            return 1.0;
+        }
+        if self.scrobble_modal_open {
+            1.0
+        } else {
+            0.0
+        }
     }
 
-    /// True while the cleanup-modal entrance still needs ticker frames.
-    #[cfg(not(feature = "innertube"))]
+    /// True while a modal entrance still needs ticker frames.
     fn modal_animating(&self) -> bool {
-        false
+        self.modal_anim != self.modal_target()
     }
 
     /// Merge the import base stage (songs + liked) immediately so results
@@ -4524,32 +4534,44 @@ fn cookie_session_exists() -> bool {
 }
 
 /// Load the saved header from the keychain (migrating the legacy file).
+/// Hermetic under test (see [`load_scrobble_secret`]): unit builds fail
+/// fast without touching the keychain, so logout/sync paths can never
+/// delete or read a real session.
 #[cfg(feature = "innertube")]
 fn load_cookie_header() -> Result<String, String> {
-    yutu_core::load_cookie_session(
-        std::path::Path::new(&cookie_session_path()),
-        std::path::Path::new(&cookie_keyring_marker_path()),
-    )
+    #[cfg(test)]
+    {
+        Err("secure store disabled for tests".into())
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::load_cookie_session(
+            std::path::Path::new(&cookie_session_path()),
+            std::path::Path::new(&cookie_keyring_marker_path()),
+        )
+    }
 }
 
 /// Delete the session everywhere (keychain, marker, legacy file).
+/// Hermetic under test: unit builds report success without touching
+/// anything (see [`load_cookie_header`]).
 #[cfg(feature = "innertube")]
 fn delete_cookie_session_secure() -> Result<(), String> {
-    yutu_core::delete_cookie_session(
-        std::path::Path::new(&cookie_session_path()),
-        std::path::Path::new(&cookie_keyring_marker_path()),
-    )
+    #[cfg(test)]
+    {
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::delete_cookie_session(
+            std::path::Path::new(&cookie_session_path()),
+            std::path::Path::new(&cookie_keyring_marker_path()),
+        )
+    }
 }
 #[cfg(feature = "innertube")]
 fn oauth_path_exists() -> bool {
-    #[cfg(feature = "innertube")]
-    {
-        std::path::Path::new(&oauth_path()).exists()
-    }
-    #[cfg(not(feature = "innertube"))]
-    {
-        false
-    }
+    std::path::Path::new(&oauth_path()).exists()
 }
 
 /// Sync prefs from SQLite: auto-sync toggle (default on) plus the last
@@ -4720,6 +4742,36 @@ fn cookie_path_budget(field_w: f32) -> usize {
 fn cookie_pick_valid(path: &str) -> bool {
     let trimmed = path.trim();
     !trimmed.is_empty() && trimmed.to_lowercase().ends_with(".txt")
+}
+
+/// Load one scrobble secret, hermetic under test: unit builds read
+/// nothing (pre-existing in-memory values stand), so tests never touch
+/// the real keychain (`cfg(test)` does not propagate into dependency
+/// crates, so core cannot tell a UI test run apart).
+fn load_scrobble_secret(account: &str) -> Option<String> {
+    #[cfg(test)]
+    {
+        let _ = account;
+        None
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::load_secret(account).ok()
+    }
+}
+
+/// Save one scrobble secret, hermetic under test (see
+/// [`load_scrobble_secret`]): unit builds report success without writing.
+fn save_scrobble_secret(account: &str, value: &str) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let _ = (account, value);
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::save_secret(account, value)
+    }
 }
 
 impl AppState {
@@ -4896,8 +4948,8 @@ impl AppState {
             pending_cookie_cleanup: None,
             #[cfg(feature = "innertube")]
             pending_cookie_source: None,
-            #[cfg(feature = "innertube")]
             modal_anim: 0.0,
+            scrobble_modal_open: false,
             playing_from: String::new(),
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
@@ -4980,6 +5032,33 @@ impl AppState {
             {
                 state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
             }
+        }
+        // Scrobbling survives restarts: the toggle + display name live in
+        // SQLite with the other prefs, the tokens live in the OS keychain
+        // like the cookie session (one read each at launch, silent while
+        // the login keychain is unlocked; failures just mean re-entering
+        // them, exactly like before).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            state.scrobble_enabled = store
+                .get_pref("scrobble_enabled")
+                .unwrap_or(None)
+                .as_deref()
+                == Some("1");
+            if let Some(user) = store.get_pref("scrobble_user").unwrap_or(None) {
+                state.scrobble_user = user;
+            }
+        }
+        if let Some(token) = load_scrobble_secret(yutu_core::SCROBBLE_LB_TOKEN) {
+            state.scrobble_lb_token = token;
+        }
+        if let Some(key) = load_scrobble_secret(yutu_core::SCROBBLE_FM_KEY) {
+            state.scrobble_fm_key = key;
+        }
+        if let Some(secret) = load_scrobble_secret(yutu_core::SCROBBLE_FM_SECRET) {
+            state.scrobble_fm_secret = secret;
+        }
+        if let Some(sk) = load_scrobble_secret(yutu_core::SCROBBLE_FM_SK) {
+            state.scrobble_fm_sk = sk;
         }
         // Display prefs survive restarts (garbage falls back to the
         // defaults; the scale clamps into range and rejects NaN, which
@@ -7640,18 +7719,53 @@ impl AppState {
         Column::with_children(content).spacing(4).into()
     }
 
+    /// Shared modal frame: dimmed dismiss scrim plus a card that rises
+    /// from below on the shared entrance (snapped when animations are
+    /// off, so the dialog never strands off-center). `dismiss` fires on
+    /// scrim click (left or right).
+    fn modal_frame<'a>(
+        &self,
+        card: iced::Element<'a, Message>,
+        dismiss: Message,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{column, container, mouse_area, text, Space, Stack};
+        use iced::Fill;
+        /// Card travel below center at entrance start, in px.
+        const MODAL_RISE_PX: f32 = 48.0;
+        let scrim: iced::Element<'_, Message> = mouse_area(
+            container(text("").size(1))
+                .style(modal_dim)
+                .width(Fill)
+                .height(Fill),
+        )
+        .on_press(dismiss.clone())
+        .on_right_press(dismiss)
+        .on_enter(Message::ClearHovers)
+        .on_exit(Message::ClearHovers)
+        .into();
+        // Entrance: the card starts below center and settles as the
+        // ticker eases `modal_anim` to 1.
+        let rise = (1.0 - self.modal_anim).clamp(0.0, 1.0) * MODAL_RISE_PX;
+        let placed: iced::Element<'_, Message> = container(
+            column![Space::new().height(iced::Length::Fixed(rise)), card,]
+                .align_x(iced::alignment::Horizontal::Center),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center)
+        .into();
+        Stack::with_children(vec![scrim, placed]).into()
+    }
+
     /// Post-import cleanup prompt: the session is already in the OS
     /// keychain, so the plaintext export can go. Delete is the CTA;
     /// scrim/Esc keeps the file (safe default). Dimmed backdrop plus a
     /// card that rises from below, same layer pattern as the menus.
     #[cfg(feature = "innertube")]
     fn cookie_cleanup_dialog(&self) -> Option<iced::Element<'_, Message>> {
-        use iced::widget::{
-            button, column, container, mouse_area, text, text::Wrapping, Space, Stack,
-        };
+        use iced::widget::{button, column, container, text, text::Wrapping};
         use iced::Fill;
-        /// Card travel below center at entrance start, in px.
-        const MODAL_RISE_PX: f32 = 48.0;
         let src = self.pending_cookie_cleanup.clone()?;
         let card: iced::Element<'_, Message> = container(
             column![
@@ -7684,31 +7798,92 @@ impl AppState {
         .padding(16)
         .width(400)
         .into();
-        let scrim: iced::Element<'_, Message> = mouse_area(
-            container(text("").size(1))
-                .style(modal_dim)
-                .width(Fill)
-                .height(Fill),
+        Some(self.modal_frame(card, Message::CookieCleanupKeep))
+    }
+
+    /// Persist scrobble secrets to the OS keychain, one write per field
+    /// (never per keystroke). Empty fields delete their entries, so
+    /// cleared tokens leave no residue. Every field is attempted even
+    /// when one fails; the first error surfaces. In-memory state always
+    /// applies, so a locked/missing keychain only costs a re-entry next
+    /// launch; only failures surface (success stays quiet to never
+    /// clobber a progress status behind the dialog).
+    fn persist_scrobble_secrets(&mut self) {
+        let saves = [
+            (yutu_core::SCROBBLE_LB_TOKEN, self.scrobble_lb_token.clone()),
+            (yutu_core::SCROBBLE_FM_KEY, self.scrobble_fm_key.clone()),
+            (
+                yutu_core::SCROBBLE_FM_SECRET,
+                self.scrobble_fm_secret.clone(),
+            ),
+            (yutu_core::SCROBBLE_FM_SK, self.scrobble_fm_sk.clone()),
+        ];
+        let mut first_err: Option<String> = None;
+        for (account, value) in saves {
+            if let Err(e) = save_scrobble_secret(account, &value) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+        if let Some(e) = first_err {
+            yutu_core::app_log::warn("yutu-scrobble", format!("keychain save failed: {e}"));
+            self.status = Self::failure_status("Scrobble credentials save failed".into(), e);
+        }
+    }
+
+    /// Scrobbling credentials dialog: the enable toggle plus the
+    /// ListenBrainz/Last.fm fields, same controls as the old inline
+    /// section. Scrim/Esc closes it, edits are kept.
+    fn scrobble_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, checkbox, column, container, text, text_input};
+        if !self.scrobble_modal_open {
+            return None;
+        }
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text("Scrobbling").size(16),
+                text("Submit listens while playing. Tokens live in your OS keychain, the rest with your local library.")
+                    .size(12)
+                    .color(MUTED),
+                checkbox(self.scrobble_enabled)
+                    .label("Enable scrobbling")
+                    .on_toggle(Message::ScrobbleToggled),
+                text_input("Display name (informational)…", &self.scrobble_user)
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleUserChanged)
+                    .padding(10),
+                text_input("ListenBrainz token…", &self.scrobble_lb_token)
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleLbTokenChanged)
+                    .secure(true)
+                    .padding(10),
+                text_input("Last.fm API key…", &self.scrobble_fm_key)
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleFmKeyChanged)
+                    .padding(10),
+                text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleFmSecretChanged)
+                    .secure(true)
+                    .padding(10),
+                text_input("Last.fm session key…", &self.scrobble_fm_sk)
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleFmSkChanged)
+                    .secure(true)
+                    .padding(10),
+                button(btn_text("Done", 12))
+                    .style(green_play)
+                    .on_press(Message::CloseScrobbleModal)
+                    .padding(8),
+            ]
+            .spacing(8),
         )
-        .on_press(Message::CookieCleanupKeep)
-        .on_right_press(Message::CookieCleanupKeep)
-        .on_enter(Message::ClearHovers)
-        .on_exit(Message::ClearHovers)
+        .style(card_bg)
+        .padding(16)
+        .width(440)
         .into();
-        // Entrance: the card starts below center and settles as the
-        // ticker eases `modal_anim` to 1 (snapped when animations are
-        // off, so the dialog never strands off-center).
-        let rise = (1.0 - self.modal_anim).clamp(0.0, 1.0) * MODAL_RISE_PX;
-        let placed: iced::Element<'_, Message> = container(
-            column![Space::new().height(iced::Length::Fixed(rise)), card,]
-                .align_x(iced::alignment::Horizontal::Center),
-        )
-        .width(Fill)
-        .height(Fill)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center)
-        .into();
-        Some(Stack::with_children(vec![scrim, placed]).into())
+        Some(self.modal_frame(card, Message::CloseScrobbleModal))
     }
 
     /// Sync panel: manual refresh plus the scheduled pull that keeps
@@ -10601,14 +10776,37 @@ impl AppState {
             Message::EqToggled(on) => self.toggle_eq(on),
             Message::ScrobbleToggled(on) => {
                 self.scrobble_enabled = on;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("scrobble_enabled", if on { "1" } else { "0" });
+                }
                 self.status = if on {
                     "Scrobbling enabled (submits when credentials are set).".into()
                 } else {
                     "Scrobbling disabled.".into()
                 };
             }
+            Message::OpenScrobbleModal => {
+                // Restart the entrance only when nothing is open: the
+                // ticker is shared, so resetting under a settled dialog
+                // would make its card jump down and re-rise.
+                #[cfg(feature = "innertube")]
+                let cookie_open = self.pending_cookie_cleanup.is_some();
+                #[cfg(not(feature = "innertube"))]
+                let cookie_open = false;
+                if !self.scrobble_modal_open && !cookie_open {
+                    self.modal_anim = 0.0;
+                }
+                self.scrobble_modal_open = true;
+            }
+            Message::CloseScrobbleModal => {
+                self.scrobble_modal_open = false;
+                self.persist_scrobble_secrets();
+            }
             Message::ScrobbleUserChanged(u) => {
-                self.scrobble_user = u;
+                self.scrobble_user = u.clone();
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("scrobble_user", &u);
+                }
             }
             Message::ScrobbleLbTokenChanged(t) => {
                 self.scrobble_lb_token = t;
@@ -11170,14 +11368,7 @@ impl AppState {
                     self.sidebar_w = self.sidebar_target();
                     self.right_w = self.right_target();
                     self.drawer_anim = if self.drawer_open { 1.0 } else { 0.0 };
-                    #[cfg(feature = "innertube")]
-                    {
-                        self.modal_anim = if self.pending_cookie_cleanup.is_some() {
-                            1.0
-                        } else {
-                            0.0
-                        };
-                    }
+                    self.modal_anim = self.modal_target();
                     self.drag_gap = self.drag_gap_target();
                     for (_, o) in self.scroll_hint.values_mut() {
                         *o = 0.0;
@@ -11192,15 +11383,7 @@ impl AppState {
                     self.right_w = ease_toward(self.right_w, self.right_target(), right_step);
                     let target = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drawer_anim = ease_toward(self.drawer_anim, target, unit_step);
-                    #[cfg(feature = "innertube")]
-                    {
-                        let modal_target = if self.pending_cookie_cleanup.is_some() {
-                            1.0
-                        } else {
-                            0.0
-                        };
-                        self.modal_anim = ease_toward(self.modal_anim, modal_target, unit_step);
-                    }
+                    self.modal_anim = ease_toward(self.modal_anim, self.modal_target(), unit_step);
                     self.drag_gap = ease_toward(self.drag_gap, self.drag_gap_target(), unit_step);
                     // Scrollbar fades ease out after their idle delay (a
                     // real transition: bars light on motion, then fade).
@@ -11522,6 +11705,14 @@ impl AppState {
                 return iced::Task::none();
             }
             Message::CloseContext => {
+                // Topmost first: the scrobbling dialog renders above the
+                // cookie modal (pushed later), so Esc closes it first.
+                // Scrim/Esc closes it with edits kept.
+                if self.scrobble_modal_open {
+                    self.scrobble_modal_open = false;
+                    self.persist_scrobble_secrets();
+                    return iced::Task::none();
+                }
                 // Topmost first: cookie cleanup modal, menus, popup,
                 // drag, drawer. Esc keeps the export file (safe default).
                 #[cfg(feature = "innertube")]
@@ -17545,48 +17736,11 @@ impl AppState {
                         ),
                     ]
                     .spacing(4),
-                    text("Scrobbling (submits live when credentials are set)").size(17),
-                    checkbox(self.scrobble_enabled)
-                        .label("Enable scrobbling")
-                        .on_toggle(Message::ScrobbleToggled),
-                    settings_input(
-                        text_input("Display name (informational)…", &self.scrobble_user)
-                            .style(rounded_input)
-                            .on_input(Message::ScrobbleUserChanged)
-                            .padding(10)
-                            .into(),
-                    ),
-                    settings_input(
-                        text_input("ListenBrainz token…", &self.scrobble_lb_token)
-                            .style(rounded_input)
-                            .on_input(Message::ScrobbleLbTokenChanged)
-                            .secure(true)
-                            .padding(10)
-                            .into(),
-                    ),
-                    settings_input(
-                        text_input("Last.fm API key…", &self.scrobble_fm_key)
-                            .style(rounded_input)
-                            .on_input(Message::ScrobbleFmKeyChanged)
-                            .padding(10)
-                            .into(),
-                    ),
-                    settings_input(
-                        text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
-                            .style(rounded_input)
-                            .on_input(Message::ScrobbleFmSecretChanged)
-                            .secure(true)
-                            .padding(10)
-                            .into(),
-                    ),
-                    settings_input(
-                        text_input("Last.fm session key…", &self.scrobble_fm_sk)
-                            .style(rounded_input)
-                            .on_input(Message::ScrobbleFmSkChanged)
-                            .secure(true)
-                            .padding(10)
-                            .into(),
-                    ),
+                    text("Scrobbling").size(17),
+                    button(btn_text("Set up scrobbling", 12))
+                        .style(green_play)
+                        .on_press(Message::OpenScrobbleModal)
+                        .padding(8),
                     text("Cookie import").size(17),
                     self.cookie_section(),
                     text("Sync (web changes into the app)").size(17),
@@ -18815,6 +18969,11 @@ impl AppState {
         // a dismiss scrim. Esc/scrim keeps the file (safe default).
         #[cfg(feature = "innertube")]
         if let Some(dialog) = self.cookie_cleanup_dialog() {
+            layers.push(dialog);
+        }
+        // Scrobbling dialog above everything else: same dimmed frame,
+        // scrim/Esc closes it with edits kept.
+        if let Some(dialog) = self.scrobble_dialog() {
             layers.push(dialog);
         }
         // Always a Stack (even with one layer): flipping between bare
@@ -21986,6 +22145,66 @@ mod tests {
         assert!(s.status.contains("nothing to queue"));
         let _ = s.update(Message::PlayForgotten);
         assert!(s.status.contains("nothing to queue"));
+    }
+
+    #[test]
+    fn scrobble_modal_opens_closes_and_keeps_edits() {
+        let mut s = test_state();
+        assert!(!s.scrobble_modal_open);
+        assert!(s.scrobble_dialog().is_none());
+        let _ = s.update(Message::OpenScrobbleModal);
+        assert!(s.scrobble_modal_open);
+        assert!(s.scrobble_dialog().is_some());
+        // Entrance restarts on open and eases up on ticks.
+        assert_eq!(s.modal_anim, 0.0);
+        let _ = s.update(Message::Animate);
+        assert!(s.modal_anim > 0.0);
+        // Edits inside the dialog stick around the close.
+        let _ = s.update(Message::ScrobbleUserChanged("alice".into()));
+        let _ = s.update(Message::CloseScrobbleModal);
+        assert!(!s.scrobble_modal_open);
+        assert_eq!(s.scrobble_user, "alice");
+    }
+
+    #[test]
+    fn scrobble_modal_dismissed_by_esc() {
+        let mut s = test_state();
+        let _ = s.update(Message::OpenScrobbleModal);
+        assert!(s.scrobble_modal_open);
+        let _ = s.update(Message::CloseContext);
+        assert!(!s.scrobble_modal_open);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn esc_closes_topmost_scrobble_modal_first() {
+        let mut s = test_state();
+        s.pending_cookie_cleanup = Some("/tmp/cookies.txt".into());
+        // Settled cookie entrance survives opening scrobble on top.
+        s.modal_anim = 1.0;
+        let _ = s.update(Message::OpenScrobbleModal);
+        assert_eq!(s.modal_anim, 1.0);
+        let _ = s.update(Message::CloseContext);
+        assert!(!s.scrobble_modal_open);
+        assert!(s.pending_cookie_cleanup.is_some());
+    }
+
+    #[test]
+    fn scrobble_toggle_and_user_survive_restart() {
+        let mut s = test_state();
+        let _ = s.update(Message::ScrobbleToggled(true));
+        let _ = s.update(Message::ScrobbleUserChanged("alice".into()));
+        // Secrets ride in memory for the session (the keychain is never
+        // touched by unit builds) and survive the dialog close.
+        let _ = s.update(Message::OpenScrobbleModal);
+        let _ = s.update(Message::ScrobbleLbTokenChanged("tok".into()));
+        let _ = s.update(Message::CloseScrobbleModal);
+        assert_eq!(s.scrobble_lb_token, "tok");
+        // Non-secrets round-trip through SQLite; tokens do not.
+        let (again, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(again.scrobble_enabled);
+        assert_eq!(again.scrobble_user, "alice");
+        assert!(again.scrobble_lb_token.is_empty());
     }
 
     #[test]

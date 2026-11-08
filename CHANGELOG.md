@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Scrobbling credentials persist securely: the ListenBrainz token and
+  Last.fm key/secret/session key live in the OS keychain like the cookie
+  session (one entry each, empties delete their entries, no plaintext
+  fallback), while the toggle and display name stay in SQLite; secrets
+  save when the dialog closes and load at launch. "Set up scrobbling"
+  is now a red CTA like Sync now.
+- Scrobbling settings live behind a dialog: the Settings section shows
+  a "Set up scrobbling" opener and the toggle plus ListenBrainz/Last.fm
+  fields moved into a dimmed modal (same shared frame, dim, and rise
+  entrance as the cookie cleanup dialog; scrim/Esc closes it with edits
+  kept). The section header drops its parenthetical.
 - Secure cookie sessions: the normalised `Cookie` header is stored in the
   OS keychain (`yutu-mux` / `cookie-session`, stable across releases, so
   updates stay signed in) with a 0600 file fallback when the keychain is
