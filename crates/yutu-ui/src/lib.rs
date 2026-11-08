@@ -662,6 +662,30 @@ fn rounded_input(
     }
 }
 
+/// File-picker field: looks like a text input (dark fill, soft border)
+/// but opens the system dialog on press. The hover border lightens so it
+/// never reads as static text, and the red Import CTA stays distinct.
+#[cfg(feature = "innertube")]
+fn file_pick(_: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let hovered = matches!(status, iced::widget::button::Status::Hovered);
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(
+            0x1E, 0x1E, 0x1E,
+        ))),
+        text_color: iced::Color::WHITE,
+        border: iced::Border {
+            color: if hovered {
+                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+            } else {
+                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            },
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 /// Slider in theme red: red filled rail, pale track, white round handle.
 fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widget::slider::Style {
     iced::widget::slider::Style {
@@ -3368,10 +3392,10 @@ impl AppState {
         v
     }
 
-    /// Move the captured fresh-import source into the cleanup modal when
-    /// the import completes (the session is stored by then). Missing
-    /// files arm nothing; session re-imports and syncs never capture a
-    /// source, so they never prompt.
+    /// Move the captured fresh-import source into the cleanup modal once
+    /// the connection succeeds (base stage). Missing files arm nothing;
+    /// session re-imports and syncs never capture a source, so they
+    /// never prompt.
     #[cfg(feature = "innertube")]
     fn arm_cookie_cleanup(&mut self) {
         if let Some(src) = self.pending_cookie_source.take() {
@@ -3450,11 +3474,6 @@ impl AppState {
             self.sync_active = false;
             self.mark_synced();
             self.status = format!("{}: {n} library tracks ({m} liked).", kind.done_label());
-            // Import complete with nothing left to fetch: the modal can
-            // show now without covering progress.
-            if kind == ImportKind::Cookie {
-                self.arm_cookie_cleanup();
-            }
             self.publish_mpris();
             return iced::Task::batch(tasks);
         }
@@ -4632,23 +4651,24 @@ fn load_persisted(
     )
 }
 
-/// Max chars of a picked path shown in the chooser button; longer paths
-/// keep the tail (the filename matters, the home prefix does not).
+/// Max chars of a picked path shown in the picker field; longer paths
+/// keep the last 30 chars (the filename matters, the home prefix does
+/// not), the rest truncated with `(...)`.
 #[cfg(feature = "innertube")]
-const COOKIE_PATH_SHOWN: usize = 48;
+const COOKIE_PATH_SHOWN: usize = 30;
 
 /// Display form of a picked cookies.txt path: the full path when short,
-/// else an ellipsis plus the tail so the filename stays visible.
+/// else `(...)` plus the tail so the filename stays visible.
 /// Char-based, so multi-byte names never split mid-codepoint.
 #[cfg(feature = "innertube")]
 fn trim_cookie_path(path: &str, max: usize) -> String {
     let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= max || max < 2 {
+    if chars.len() <= max || max <= 5 {
         return path.to_string();
     }
     format!(
-        "…{}",
-        chars[chars.len() - (max - 1)..].iter().collect::<String>()
+        "(...){}",
+        chars[chars.len() - (max - 5)..].iter().collect::<String>()
     )
 }
 
@@ -7491,7 +7511,7 @@ impl AppState {
     /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, Row};
+        use iced::widget::{button, column, text, Column};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
@@ -7506,27 +7526,38 @@ impl AppState {
             .spacing(4)
             .into();
         }
-        let browse_label = if self.cookie_path.trim().is_empty() {
-            "Choose cookies.txt file".to_string()
+        let (pick_label, pick_color) = if self.cookie_path.trim().is_empty() {
+            ("Choose cookies.txt file…".to_string(), MUTED)
         } else {
-            trim_cookie_path(self.cookie_path.trim(), COOKIE_PATH_SHOWN)
+            (
+                trim_cookie_path(self.cookie_path.trim(), COOKIE_PATH_SHOWN),
+                iced::Color::WHITE,
+            )
         };
-        let mut actions: Vec<iced::Element<'_, Message>> = vec![button(
-            iced::widget::row![
-                btn_icon("folder", 14.0, iced::Color::WHITE),
-                btn_text(browse_label, 12),
-            ]
-            .spacing(8)
-            .align_y(iced::alignment::Vertical::Center),
-        )
-        .style(green_play)
-        .on_press(Message::CookieBrowse)
-        .padding(8)
-        .into()];
+        let mut content: Vec<iced::Element<'_, Message>> = vec![
+            text("Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.")
+                .size(11)
+                .color(MUTED)
+                .into(),
+            button(
+                iced::widget::row![
+                    btn_icon("folder", 14.0, MUTED),
+                    text(pick_label).size(12).color(pick_color),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .width(Fill),
+            )
+            .style(file_pick)
+            .on_press(Message::CookieBrowse)
+            .padding(10)
+            .width(Fill)
+            .into(),
+        ];
         // Import only once a txt file is picked: anything else cannot
         // import, so the button stays out of the way until it can work.
         if cookie_pick_valid(&self.cookie_path) {
-            actions.push(
+            content.push(
                 button(self.busy_content("Import", 12.0))
                     .style(green_play)
                     .on_press(Message::CookieImport)
@@ -7534,17 +7565,7 @@ impl AppState {
                     .into(),
             );
         }
-        column![
-            text("Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.")
-                .size(11)
-                .color(MUTED),
-            Row::with_children(actions)
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center)
-                .width(Fill),
-        ]
-        .spacing(4)
-        .into()
+        Column::with_children(content).spacing(4).into()
     }
 
     /// Post-import cleanup prompt: the session is already in the OS
@@ -7576,7 +7597,6 @@ impl AppState {
                         .padding(8),
                 ]
                 .spacing(8),
-                text("Esc keeps the file.").size(11).color(MUTED),
             ]
             .spacing(8),
         )
@@ -11872,6 +11892,12 @@ impl AppState {
             #[cfg(feature = "innertube")]
             Message::ImportStageReady { kind, result } => match result {
                 Ok(staged) => {
+                    // Connection succeeded and the session is stored:
+                    // offer to delete the plaintext export now, without
+                    // waiting for the playlist stages behind it.
+                    if kind == ImportKind::Cookie {
+                        self.arm_cookie_cleanup();
+                    }
                     return self.begin_playlist_stages(kind, staged);
                 }
                 Err(e) => {
@@ -11946,9 +11972,6 @@ impl AppState {
                     s.mark_synced();
                     if kind == ImportKind::Cookie {
                         s.cookie_logged_in = cookie_session_exists();
-                        // Playlists done: progress is final, so the
-                        // cleanup modal no longer covers it.
-                        s.arm_cookie_cleanup();
                     }
                 };
                 match result {
@@ -23810,6 +23833,33 @@ mod tests {
 
     #[cfg(feature = "innertube")]
     #[test]
+    fn cookie_modal_shows_on_connect_before_playlists_finish() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-early-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.pending_cookie_source = Some(src.to_string_lossy().into_owned());
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![("PLserver1", "Road Trip")],
+            )),
+        });
+        // Playlists still loading, but the modal is already up: the
+        // connection (and the secure stash) succeeded.
+        assert!(s.import_active);
+        assert_eq!(
+            s.pending_cookie_cleanup.as_deref(),
+            Some(src.to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
     fn cookie_session_reimport_never_arms_cleanup() {
         let mut s = test_state();
         assert!(s.pending_cookie_source.is_none());
@@ -23860,17 +23910,17 @@ mod tests {
     #[cfg(feature = "innertube")]
     #[test]
     fn trim_cookie_path_keeps_short_and_tails_long() {
-        assert_eq!(trim_cookie_path("/a/cookies.txt", 48), "/a/cookies.txt");
+        assert_eq!(trim_cookie_path("/a/cookies.txt", 30), "/a/cookies.txt");
         assert_eq!(trim_cookie_path("abc", 0), "abc");
         let long = "/home/someone/very/long/download/folder/cookies.txt";
-        let shown = trim_cookie_path(long, 20);
-        assert_eq!(shown.chars().count(), 20);
-        assert!(shown.starts_with('…'));
+        let shown = trim_cookie_path(long, 30);
+        assert_eq!(shown.chars().count(), 30);
+        assert!(shown.starts_with("(...)"));
         assert!(shown.ends_with("cookies.txt"));
         // Multi-byte names never split mid-codepoint.
         let wide = format!("/h/{}/cookies.txt", "é".repeat(40));
-        let shown_wide = trim_cookie_path(&wide, 20);
-        assert_eq!(shown_wide.chars().count(), 20);
+        let shown_wide = trim_cookie_path(&wide, 30);
+        assert_eq!(shown_wide.chars().count(), 30);
         assert!(shown_wide.ends_with("cookies.txt"));
     }
 
