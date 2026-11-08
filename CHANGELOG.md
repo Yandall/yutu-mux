@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Scrobbling settings live behind a dialog: the Settings section shows
+  a "Set up scrobbling" opener and the toggle plus ListenBrainz/Last.fm
+  fields moved into a dimmed modal (same shared frame, dim, and rise
+  entrance as the cookie cleanup dialog; scrim/Esc closes it with edits
+  kept). The section header drops its parenthetical.
 - Secure cookie sessions: the normalised `Cookie` header is stored in the
   OS keychain (`yutu-mux` / `cookie-session`, stable across releases, so
   updates stay signed in) with a 0600 file fallback when the keychain is
