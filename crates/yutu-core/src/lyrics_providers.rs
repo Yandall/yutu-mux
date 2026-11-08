@@ -244,6 +244,30 @@ pub fn ytm_lyrics_to_result(lines: Vec<String>) -> Result<LyricsResult, String> 
     })
 }
 
+/// Convert YouTube Music timed lyric lines into a [`LyricsResult`] with
+/// synced timing (highlight + follow work like LRCLIB synced lyrics).
+/// Empty input reads as no lyrics.
+pub fn ytm_timed_to_result(timed: Vec<LyricLine>) -> Result<LyricsResult, String> {
+    let mut kept: Vec<LyricLine> = timed
+        .into_iter()
+        .filter(|l| !l.text.trim().is_empty())
+        .collect();
+    if kept.is_empty() {
+        return Err("youtube music: no lyrics found".to_string());
+    }
+    kept.sort_by_key(|l| l.start_ms);
+    let plain = kept
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(LyricsResult {
+        plain,
+        synced: kept,
+        instrumental: false,
+    })
+}
+
 /// LRCLIB `/api/get` endpoint.
 pub const LRCLIB_API_URL: &str = "https://lrclib.net/api/get";
 
@@ -981,6 +1005,21 @@ mod tests {
         assert!(ok.synced.is_empty());
         assert!(!ok.instrumental);
         assert!(ytm_lyrics_to_result(vec!["  ".into()]).is_err());
+    }
+
+    #[test]
+    fn ytm_timed_lines_keep_sync() {
+        let timed = vec![
+            tagged(5_000, "second"),
+            tagged(1_000, "first"),
+            tagged(2_000, "  "),
+        ];
+        let ok = ytm_timed_to_result(timed).expect("timed join");
+        assert_eq!(ok.plain, "first\nsecond");
+        assert_eq!(ok.synced.len(), 2);
+        assert_eq!(ok.synced[0].start_ms, 1_000);
+        assert!(!ok.instrumental);
+        assert!(ytm_timed_to_result(vec![]).is_err());
     }
 
     #[cfg(feature = "lyrics")]

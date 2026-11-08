@@ -14,6 +14,8 @@ pub mod pot;
 #[cfg(feature = "innertube")]
 pub mod raw_browse;
 #[cfg(feature = "innertube")]
+pub mod raw_lyrics;
+#[cfg(feature = "innertube")]
 pub mod raw_search;
 pub mod scrobble;
 pub mod stream;
@@ -52,8 +54,8 @@ pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id, P
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{
-    line_at, normalize_for_match, parse_lrc, score_candidate, ytm_lyrics_to_result, LyricLine,
-    LyricsProvider, LyricsResult, MatchCandidate, MatchQuery,
+    line_at, normalize_for_match, parse_lrc, score_candidate, ytm_lyrics_to_result,
+    ytm_timed_to_result, LyricLine, LyricsProvider, LyricsResult, MatchCandidate, MatchQuery,
 };
 pub use models::{
     hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, MixedRef, Playlist,

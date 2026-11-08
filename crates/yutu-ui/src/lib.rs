@@ -12602,10 +12602,11 @@ impl AppState {
     }
 
     /// Lyrics fetch for one catalog track: tries the default provider
-    /// first with the other as automatic fallback (LRCLIB synced lines,
-    /// YouTube Music plain text). Each LRCLIB request already retries up
-    /// to 3 attempts with search fallback, so a transient error never
-    /// loses the chance to show lyrics.
+    /// first with the other as automatic fallback. LRCLIB carries synced
+    /// lines and retries up to 3 attempts with search fallback, so a
+    /// transient error never loses the chance to show lyrics; YouTube
+    /// Music prefers its timed model (synced) and falls back to plain
+    /// lines when the track has no timed model.
     #[cfg(any(feature = "lyrics", feature = "innertube"))]
     fn lyrics_task(track: Track, primary: LyricsProvider) -> iced::Task<Message> {
         iced::Task::perform(
@@ -12636,15 +12637,32 @@ impl AppState {
                             #[cfg(feature = "innertube")]
                             {
                                 match Self::detail_backend().await {
-                                    Ok(backend) => match backend.song_lyrics(&track.id).await {
-                                        Ok(lines) => match yutu_core::ytm_lyrics_to_result(lines) {
-                                            ok @ Ok(_) => {
-                                                return (track.id, provider, ok);
+                                    Ok(backend) => {
+                                        // Timed model first (synced lines);
+                                        // plain description shelf when the
+                                        // track has no timed model.
+                                        let timed = backend
+                                            .song_timed_lyrics(&track.id)
+                                            .await
+                                            .ok()
+                                            .and_then(|lines| {
+                                                yutu_core::ytm_timed_to_result(lines).ok()
+                                            });
+                                        if let Some(result) = timed {
+                                            return (track.id, provider, Ok(result));
+                                        }
+                                        match backend.song_lyrics(&track.id).await {
+                                            Ok(lines) => {
+                                                match yutu_core::ytm_lyrics_to_result(lines) {
+                                                    ok @ Ok(_) => {
+                                                        return (track.id, provider, ok);
+                                                    }
+                                                    Err(e) => last_err = e,
+                                                }
                                             }
                                             Err(e) => last_err = e,
-                                        },
-                                        Err(e) => last_err = e,
-                                    },
+                                        }
+                                    }
                                     Err(e) => last_err = e,
                                 }
                             }
@@ -15836,10 +15854,7 @@ impl AppState {
                 .on_press(Message::CycleLyricsProvider(-1))
                 .padding(4)
                 .into(),
-            text(format!("Lyrics ({label})"))
-                .size(12)
-                .color(MUTED)
-                .into(),
+            text(label.to_string()).size(12).color(MUTED).into(),
             button(btn_icon("chevron-right", 14.0, MUTED))
                 .style(hover_row)
                 .on_press(Message::CycleLyricsProvider(1))
@@ -16999,7 +17014,7 @@ impl AppState {
                         |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
                     )
                     .width(Fill),
-                    text("LRCLIB carries synced lines; YouTube Music is plain text.")
+                    text("Both providers carry synced lines when available.")
                         .size(12)
                         .color(MUTED),
                     text("Appearance").size(17),

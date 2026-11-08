@@ -7,12 +7,14 @@
   exact `/api/get` match to a fuzzy `/api/search` pick (alternate
   spellings, featured artists, remaster suffixes, duration tolerance),
   so near-miss titles resolve instead of showing nothing. YouTube
-  Music plain lyrics are the automatic fallback and a selectable
-  provider: Settings default (persisted), `< >` stepper in the drawer
-  and lyrics page to switch while playing (refetches live), `via X`
-  note when the fallback supplied the cached entry, and a Retry
-  button on empty states. Musixmatch/Genius stay out (API keys and
-  scraping, against the free-tier call).
+  Music is the automatic fallback and a selectable provider: timed
+  lines when the track has a timed model (synced highlight + follow),
+  plain lines otherwise. Settings holds the default (persisted),
+  a `< >` stepper in the drawer and lyrics page switches provider
+  while playing (refetches live, `via X` note when the fallback
+  supplied the cached entry), and a Retry button sits on empty
+  states. Musixmatch/Genius stay out (API keys and scraping, against
+  the free-tier call).
 - Fixed cookie import and anonymous connect: `ytmapi-rs` 0.3 sends a
   hardcoded Firefox/88 user agent on its login-page fetch, which
   YouTube's edge now kills at the HTTP/2 stream level, so every

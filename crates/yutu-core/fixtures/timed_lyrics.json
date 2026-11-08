@@ -1,0 +1,41 @@
+{
+  "contents": {
+    "elementRenderer": {
+      "newElement": {
+        "type": {
+          "componentType": {
+            "model": {
+              "timedLyricsModel": {
+                "lyricsData": {
+                  "timedLyricsData": [
+                    {
+                      "cueRange": {
+                        "startTimeMilliseconds": "5010",
+                        "endTimeMilliseconds": "9300"
+                      },
+                      "lyricLine": "second line"
+                    },
+                    {
+                      "cueRange": {
+                        "startTimeMilliseconds": "1240",
+                        "endTimeMilliseconds": "5010"
+                      },
+                      "lyricLine": "Hello"
+                    },
+                    {
+                      "cueRange": {
+                        "startTimeMilliseconds": "9300",
+                        "endTimeMilliseconds": "14000"
+                      },
+                      "lyricLine": "third line"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1025,14 +1025,14 @@ impl InnertubeBackend {
         Ok(tracks.iter().map(watch_track_to_track).collect())
     }
 
-    /// YouTube Music lyrics for `video_id` as plain text lines (no timing:
-    /// timing is LRCLIB's job).
+    /// YouTube Music lyrics for `video_id` as plain text lines.
     ///
     /// Two-step upstream flow: `get_lyrics_id` (watch `next` endpoint) then
     /// `get_lyrics` (browse the lyrics id). Both queries are
     /// `impl<A: AuthToken>`, so this is attempted on all backends; in
     /// practice lyric availability is per-track server-side (many tracks have
-    /// none: that surfaces as an API error here).
+    /// none: that surfaces as an API error here). For synced lines see
+    /// [`Self::song_timed_lyrics`].
     pub async fn song_lyrics(&self, video_id: &str) -> Result<Vec<String>, String> {
         let lyrics_id = match &self.inner {
             Inner::Anonymous(client) => client
@@ -1063,6 +1063,35 @@ impl InnertubeBackend {
                 .map_err(|e| format!("lyrics failed: {e}"))?,
         };
         Ok(lyrics.lyrics.lines().map(str::to_string).collect())
+    }
+
+    /// YouTube Music synced lyrics for `video_id` as timestamped lines.
+    ///
+    /// Same lyrics `browseId` as [`Self::song_lyrics`] (via the typed
+    /// `get_lyrics_id` flow, so the id lookup stays authenticated), then
+    /// a raw ANDROID_MUSIC `browse`: only mobile clients are served the
+    /// `timedLyricsModel`, while WEB_REMIX gets the plain description
+    /// shelf. Empty when the server has no timed model for the track:
+    /// callers fall back to the plain [`Self::song_lyrics`] lines.
+    pub async fn song_timed_lyrics(
+        &self,
+        video_id: &str,
+    ) -> Result<Vec<crate::lyrics_providers::LyricLine>, String> {
+        let lyrics_id = match &self.inner {
+            Inner::Anonymous(client) => client
+                .get_lyrics_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("lyrics id failed: {e}"))?,
+            Inner::Cookie(client) => client
+                .get_lyrics_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("lyrics id failed: {e}"))?,
+            Inner::OAuth(client) => client
+                .get_lyrics_id(VideoID::from_raw(video_id))
+                .await
+                .map_err(|e| format!("lyrics id failed: {e}"))?,
+        };
+        crate::raw_lyrics::raw_timed_lyrics(lyrics_id.get_raw()).await
     }
 
     /// Resolve `req.video_id` to a playable URL, walking the
@@ -1528,6 +1557,24 @@ pub(crate) fn web_context() -> serde_json::Value {
         "client": {
             "clientName": "WEB_REMIX",
             "clientVersion": web_remix_version(),
+            "hl": "en",
+            "gl": "US",
+        },
+        "user": { "lockedSafetyMode": false },
+    })
+}
+
+/// Android music client context: the lyrics `browse` endpoint only
+/// serves the `timedLyricsModel` (line timestamps) to mobile clients.
+/// WEB_REMIX gets the plain description shelf instead, which is why the
+/// typed `ytmapi-rs` flow is plain-text only. Version pinned to a
+/// release known to serve timed lyrics (InnerTube tolerates stale
+/// mobile versions on browse).
+pub(crate) fn android_music_context() -> serde_json::Value {
+    serde_json::json!({
+        "client": {
+            "clientName": "ANDROID_MUSIC",
+            "clientVersion": "7.21.50",
             "hl": "en",
             "gl": "US",
         },
