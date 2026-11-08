@@ -5475,7 +5475,8 @@ impl AppState {
         self.end_advanced = true;
         self.pending_seek = None;
         self.autoload = false;
-        self.status = format!("Playback failed for {title}: {err} (end of queue).");
+        self.status =
+            Self::failure_status(format!("Playback failed for {title} (end of queue)"), &err);
         self.publish_mpris();
         iced::Task::none()
     }
@@ -5513,7 +5514,8 @@ impl AppState {
                 }
                 Err(e) => {
                     self.pending_resume = None;
-                    self.status = format!("Playback failed for {}: {e}", t.id);
+                    self.status =
+                        Self::failure_status(format!("Playback failed for {}", t.title), &e);
                     false
                 }
             },
@@ -8237,6 +8239,23 @@ impl AppState {
         }
     }
 
+    /// Bottom-bar failure text: full `label: detail` in debug builds
+    /// (or with the `debug-panel` feature), the human `label` alone in
+    /// release. Every call site logs `detail` to the app log, so release
+    /// builds never surface provider internals (URLs, status codes, raw
+    /// I/O errors) while diagnosis loses nothing.
+    fn failure_status(label: String, detail: impl std::fmt::Display) -> String {
+        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+        {
+            format!("{label}: {detail}")
+        }
+        #[cfg(not(any(debug_assertions, feature = "debug-panel")))]
+        {
+            drop(detail);
+            label
+        }
+    }
+
     /// Player-bar status text: the full last-action log in debug builds
     /// (or with the `debug-panel` feature); release builds only surface
     /// failures (no action chatter).
@@ -9383,7 +9402,8 @@ impl AppState {
                     Err(e) => {
                         // Stale-query errors stay silent; current ones report.
                         if query.trim() == self.search_query.trim() {
-                            self.status = format!("Search failed: {e}");
+                            yutu_core::app_log::warn("yutu-search", format!("{query}: {e}"));
+                            self.status = Self::failure_status("Search failed".into(), &e);
                         }
                     }
                 }
@@ -9605,7 +9625,16 @@ impl AppState {
                         self.cache_lyrics(track_id, lyrics);
                     }
                     Err(e) => {
-                        self.status = format!("Lyrics failed: {e}");
+                        // A lyrics miss is routine (no LRCLIB entry, a
+                        // network flake): it always lands in the log, but
+                        // the bottom bar only shows it in debug builds
+                        // (or with `debug-panel`). Release stays clean:
+                        // the song plays fine without lyrics.
+                        yutu_core::app_log::warn("yutu-lyrics", format!("{track_id}: {e}"));
+                        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+                        {
+                            self.status = format!("Lyrics failed: {e}");
+                        }
                     }
                 }
             }
@@ -9714,7 +9743,8 @@ impl AppState {
                     return iced::Task::batch(tasks);
                 }
                 Err(e) => {
-                    self.status = format!("Radio failed: {e}");
+                    yutu_core::app_log::warn("yutu-radio", format!("{seed}: {e}"));
+                    self.status = Self::failure_status("Radio failed".into(), &e);
                 }
             },
             Message::QueueTrack(id) => {
@@ -11091,7 +11121,7 @@ impl AppState {
                             format_args!("artist top failed: {channel_id} ({e})"),
                         );
                         if watching && self.route_shows_browse(&channel_id, true) {
-                            self.status = format!("Live top songs failed ({e}).");
+                            self.status = Self::failure_status("Live top songs failed".into(), &e);
                         }
                     }
                 }
@@ -11131,7 +11161,7 @@ impl AppState {
                             format_args!("artist full failed: {channel_id} ({e})"),
                         );
                         if watching && self.route_shows_browse(&channel_id, true) {
-                            self.status = format!("Live top songs failed ({e}).");
+                            self.status = Self::failure_status("Live top songs failed".into(), &e);
                         }
                     }
                 }
@@ -11166,7 +11196,8 @@ impl AppState {
                             format_args!("album tracklist failed: {album_id} ({e})"),
                         );
                         if watching && self.route_shows_browse(&album_id, false) {
-                            self.status = format!("Live album songs failed ({e}).");
+                            self.status =
+                                Self::failure_status("Live album songs failed".into(), &e);
                         }
                     }
                 }
@@ -11204,7 +11235,7 @@ impl AppState {
                             format_args!("artist resolve failed: {name} ({e})"),
                         );
                         if watching && showing {
-                            self.status = format!("Artist lookup failed ({e}).");
+                            self.status = Self::failure_status("Artist lookup failed".into(), &e);
                         }
                     }
                 }
@@ -11241,7 +11272,7 @@ impl AppState {
                             format_args!("album resolve failed: {title} ({e})"),
                         );
                         if watching && showing {
-                            self.status = format!("Album lookup failed ({e}).");
+                            self.status = Self::failure_status("Album lookup failed".into(), &e);
                         }
                     }
                 }
@@ -11366,9 +11397,11 @@ impl AppState {
                         self.cookie_logged_in = false;
                     }
                     self.status = if kind == ImportKind::Sync {
-                        format!("Sync failed: {e}")
+                        yutu_core::app_log::warn("yutu-import", format!("sync: {e}"));
+                        Self::failure_status("Sync failed".into(), &e)
                     } else {
-                        format!("{} import failed: {e}", kind.label())
+                        yutu_core::app_log::warn("yutu-import", format!("{}: {e}", kind.label()));
+                        Self::failure_status(format!("{} import failed", kind.label()), &e)
                     };
                 }
             },
@@ -11524,7 +11557,8 @@ impl AppState {
                             self.status = "Cookie session cleared.".into();
                         }
                         Err(e) => {
-                            self.status = format!("Sign-out failed: {e}");
+                            yutu_core::app_log::warn("yutu-auth", format!("sign-out: {e}"));
+                            self.status = Self::failure_status("Sign-out failed".into(), &e);
                         }
                     }
                 } else {
@@ -11541,8 +11575,11 @@ impl AppState {
                 Ok(()) => self.clear_pending_rate(if liked { "like" } else { "unlike" }, &track_id),
                 Err(e) => {
                     let verb = if liked { "like" } else { "unlike" };
-                    self.status =
-                        format!("YouTube {verb} of {track_id} failed (kept locally): {e}");
+                    yutu_core::app_log::warn("yutu-sync", format!("{verb} {track_id}: {e}"));
+                    self.status = Self::failure_status(
+                        format!("YouTube {verb} of {track_id} failed (kept locally)"),
+                        &e,
+                    );
                 }
             },
             #[cfg(feature = "innertube")]
@@ -11559,8 +11596,11 @@ impl AppState {
                     } else {
                         "clear-dislike"
                     };
-                    self.status =
-                        format!("YouTube {verb} of {track_id} failed (kept locally): {e}");
+                    yutu_core::app_log::warn("yutu-sync", format!("{verb} {track_id}: {e}"));
+                    self.status = Self::failure_status(
+                        format!("YouTube {verb} of {track_id} failed (kept locally)"),
+                        &e,
+                    );
                 }
             },
             #[cfg(feature = "innertube")]
@@ -11634,7 +11674,11 @@ impl AppState {
                     );
                 }
                 Err(e) => {
-                    self.status = format!("Created {title} locally (YouTube sync failed: {e})");
+                    yutu_core::app_log::warn("yutu-sync", format!("create {title}: {e}"));
+                    self.status = Self::failure_status(
+                        format!("Created {title} locally (YouTube sync failed)"),
+                        &e,
+                    );
                 }
             },
             #[cfg(feature = "innertube")]
@@ -11662,7 +11706,8 @@ impl AppState {
                     }
                 }
                 Err(e) => {
-                    self.status = format!("{detail} (kept locally): {e}");
+                    yutu_core::app_log::warn("yutu-sync", format!("{detail}: {e}"));
+                    self.status = Self::failure_status(format!("{detail} (kept locally)"), &e);
                 }
             },
             #[cfg(feature = "innertube")]
@@ -11691,7 +11736,8 @@ impl AppState {
                             "Approve in your browser, then press “I’ve approved: check”.".into();
                     }
                     Err(e) => {
-                        self.status = format!("Sign-in failed: {e}");
+                        yutu_core::app_log::warn("yutu-login", format!("begin: {e}"));
+                        self.status = Self::failure_status("Sign-in failed".into(), &e);
                     }
                 }
             }
@@ -11724,7 +11770,11 @@ impl AppState {
                                 return Self::library_import_task(self.library_path.clone());
                             }
                             Err(e) => {
-                                self.status = format!("Sign-in failed: {e}");
+                                yutu_core::app_log::warn(
+                                    "yutu-login",
+                                    format!("save session: {e}"),
+                                );
+                                self.status = Self::failure_status("Sign-in failed".into(), &e);
                             }
                         }
                     }
@@ -11739,7 +11789,8 @@ impl AppState {
                             self.status =
                                 "Code expired: press “Sign in with Google” to restart.".into();
                         } else {
-                            self.status = format!("Check failed: {e}");
+                            yutu_core::app_log::warn("yutu-login", format!("poll: {e}"));
+                            self.status = Self::failure_status("Check failed".into(), &e);
                         }
                     }
                 }
@@ -24580,6 +24631,24 @@ mod tests {
         let mut s = test_state();
         s.status = "Loading x".into();
         assert_eq!(s.status_text(), "Loading x");
+    }
+
+    #[test]
+    fn failure_status_keeps_detail_in_debug() {
+        // Debug builds (and `debug-panel`) show the full line; the
+        // release-only label is covered by `cargo check --release`.
+        assert_eq!(
+            AppState::failure_status("Search failed".into(), "boom"),
+            "Search failed: boom"
+        );
+        // End to end: a search failure still reports the line here.
+        let mut s = test_state();
+        s.search_query = "x".into();
+        let _ = s.update(Message::SearchCompleted {
+            query: "x".into(),
+            result: Err("boom".into()),
+        });
+        assert_eq!(s.status, "Search failed: boom");
     }
 
     #[test]
