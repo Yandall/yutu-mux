@@ -9605,7 +9605,16 @@ impl AppState {
                         self.cache_lyrics(track_id, lyrics);
                     }
                     Err(e) => {
-                        self.status = format!("Lyrics failed: {e}");
+                        // A lyrics miss is routine (no LRCLIB entry, a
+                        // network flake): it always lands in the log, but
+                        // the bottom bar only shows it in debug builds
+                        // (or with `debug-panel`). Release stays clean:
+                        // the song plays fine without lyrics.
+                        yutu_core::app_log::warn("yutu-lyrics", format!("{track_id}: {e}"));
+                        #[cfg(any(debug_assertions, feature = "debug-panel"))]
+                        {
+                            self.status = format!("Lyrics failed: {e}");
+                        }
                     }
                 }
             }
