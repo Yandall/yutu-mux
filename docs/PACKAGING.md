@@ -173,10 +173,9 @@ packaging/macos/build-app.sh --self-contained
 ```
 
 One architecture per run (native): repeat per arch and lipo the two
-binaries together for a universal bundle. Attach the `.app` directory
-(or a disk image of it) plus the `.sha256` manifest to the GitHub
-Release by hand (`gh release upload` or the web UI): there is no macOS
-CI job. The script tries `--locked` first (same pinned deps as the
+binaries together for a universal bundle. Upload the `.dmg` plus its
+`.dmg.sha256` to the GitHub Release by hand (`gh release upload` or the
+web UI): there is no macOS CI job. The script tries `--locked` first (same pinned deps as the
 Linux tarball) and falls back to unlocked with a warning when
 `Cargo.lock` is missing or stale. First launch is right-click, Open
 (unsigned bundle).
@@ -238,8 +237,8 @@ Then:
    `CHANGELOG.md` (add a fresh heading on top for the next cycle).
 7. Commit, tag `git tag vX.Y.Z`, push tag — `release.yml` builds the
    tarball and attaches it to the GitHub Release automatically.
-8. Build the macOS app on a Mac (Section 5) and attach the `.app`
-   plus its `.sha256` manifest to the same Release by hand.
+8. Build the macOS app on a Mac (Section 5) and upload the `.dmg`
+   plus its `.dmg.sha256` to the same Release by hand.
 9. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
    before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
 

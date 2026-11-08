@@ -3,10 +3,11 @@
 #
 #   packaging/macos/build-app.sh [--self-contained] [--output DIR]
 #
-# Output (under DIR, default dist/): stage/YutuMux.app plus a
+# Output (under DIR, default dist/): stage/YutuMux.app, a
 # YutuMux-macos-<arch>.sha256 manifest of every file in the bundle
-# (verify with `shasum -a 256 -c` from the stage dir). No zip step:
-# distribute the .app directory itself (or disk-image it).
+# (verify with `shasum -a 256 -c` from the stage dir), and a
+# YutuMux-macos-<arch>.dmg disk image plus its `.dmg.sha256` checksum
+# (the single-file upload for GitHub Releases). No zip step.
 #
 # --self-contained bundles libmpv (+ its ffmpeg libs) via dylibbundler and
 # fetches the standalone yt-dlp macOS binary, so the app runs with nothing
@@ -167,6 +168,17 @@ SHAFILE="$OUT/YutuMux-macos-$ARCH.sha256"
 (cd "$STAGE" && find "$APP_NAME.app" \( -type f -o -type l \) -print0 \
     | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$SHAFILE"
 echo "==> checksum: $SHAFILE"
+
+# Single-file distributable (GitHub Releases cannot take a directory):
+# UDZO disk image of the signed bundle, plus its checksum. hdiutil is
+# macOS stock, like everything else this script needs.
+echo "==> building disk image"
+DMG="$OUT/$APP_NAME-macos-$ARCH.dmg"
+rm -f "$DMG"
+hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format UDZO "$DMG"
+echo "==> disk image: $DMG"
+(cd "$OUT" && shasum -a 256 "$(basename "$DMG")") > "$DMG.sha256"
+echo "==> checksum: $DMG.sha256"
 
 echo "done: $APP"
 echo "first launch: right-click -> Open (unsigned bundle), then sign in via cookies.txt in Settings"
