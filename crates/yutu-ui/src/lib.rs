@@ -16974,7 +16974,7 @@ impl AppState {
                         .color(MUTED),
                     eq_panel,
                     text("Lyrics").size(17),
-                    text("Default provider (the other is automatic fallback)").size(13),
+                    text("Default lyrics provider").size(13),
                     pick_list(
                         ["LRCLIB", "YouTube Music"].as_slice(),
                         Some(self.lyrics_provider.label()),
