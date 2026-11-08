@@ -161,18 +161,23 @@ the Section-1 libraries installed.
 
 Supported path: `packaging/macos/build-app.sh` (reads the version from
 `Cargo.toml`, wraps the release binary with a launcher shim, ad-hoc
-signs; `--self-contained` bundles libmpv plus a standalone yt-dlp,
-`--zip` emits a distributable `dist/YutuMux-macos-<arch>.zip` plus a
-matching `.sha256`):
+signs; `--self-contained` bundles libmpv plus a standalone yt-dlp.
+It also writes a `YutuMux-<version>-macos-<arch>.sha256` manifest of
+every file in the signed bundle (verify from the stage dir with
+`shasum -a 256 -c`). App icon comes from
+`assets/logo/yutu-mux-background.png` (near-black rounded square,
+downscaled to every iconset slot). The disk image holds the app plus
+an Applications shortcut for the standard drag-install:
 
 ```sh
-packaging/macos/build-app.sh --self-contained --zip
+packaging/macos/build-app.sh --self-contained
 ```
 
 One architecture per run (native): repeat per arch and lipo the two
-binaries together for a universal bundle. Attach the zip to the GitHub
-Release by hand (`gh release upload` or the web UI): there is no macOS
-CI job. The script tries `--locked` first (same pinned deps as the
+binaries together for a universal bundle. Upload the
+`YutuMux-<version>-macos-<arch>.dmg` plus its `.dmg.sha256` to the
+GitHub Release by hand (`gh release upload` or the
+web UI): there is no macOS CI job. The script tries `--locked` first (same pinned deps as the
 Linux tarball) and falls back to unlocked with a warning when
 `Cargo.lock` is missing or stale. First launch is right-click, Open
 (unsigned bundle).
@@ -234,8 +239,9 @@ Then:
    `CHANGELOG.md` (add a fresh heading on top for the next cycle).
 7. Commit, tag `git tag vX.Y.Z`, push tag — `release.yml` builds the
    tarball and attaches it to the GitHub Release automatically.
-8. Build the macOS zip on a Mac (Section 5) and attach it to the same
-   Release by hand.
+8. Build the macOS app on a Mac (Section 5) and upload the
+   `YutuMux-<version>-macos-<arch>.dmg` plus its `.dmg.sha256` to the
+   same Release by hand.
 9. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
    before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
 

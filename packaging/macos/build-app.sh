@@ -1,14 +1,19 @@
 #!/bin/bash
 # Build the release binary and wrap it as a macOS YutuMux.app bundle.
 #
-#   packaging/macos/build-app.sh [--self-contained] [--zip] [--output DIR]
+#   packaging/macos/build-app.sh [--self-contained] [--output DIR]
+#
+# Output (under DIR, default dist/): stage/YutuMux.app (+ an
+# Applications shortcut for the disk image), a
+# YutuMux-<version>-macos-<arch>.sha256 manifest of every file in the
+# bundle (verify with `shasum -a 256 -c` from the stage dir), and a
+# YutuMux-<version>-macos-<arch>.dmg disk image plus its `.dmg.sha256`
+# checksum (the single-file upload for GitHub Releases).
 #
 # --self-contained bundles libmpv (+ its ffmpeg libs) via dylibbundler and
 # fetches the standalone yt-dlp macOS binary, so the app runs with nothing
 # installed. Without it the bundle links Homebrew's libmpv and finds
 # yt-dlp on PATH (both must exist on the machine).
-# --zip additionally produces a ditto zipped bundle for distribution
-# (plain zip breaks codesigning metadata).
 #
 # Requirements: Xcode CLT, Rust, and for the default feature set
 # `brew install mpv` (libmpv) plus pkg-config. The repo's
@@ -23,13 +28,11 @@
 set -euo pipefail
 
 SELF_CONTAINED=0
-ZIP=0
 OUT="dist"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --self-contained) SELF_CONTAINED=1 ;;
-        --zip) ZIP=1 ;;
         --output) OUT="$2"; shift ;;
         -h|--help)
             sed -n '2,20p' "$0"
@@ -107,6 +110,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
+  <key>CFBundleIconFile</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -129,25 +133,59 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
     chmod +x "$APP/Contents/MacOS/yt-dlp"
 fi
 
+echo "==> building app icon (.icns from the grey master)"
+ICONSET_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yutu-iconset.XXXXXX")"
+ICONSET="$ICONSET_TMP/$APP_NAME.iconset"
+mkdir -p "$ICONSET"
+# Near-black rounded-square master (assets/logo): every slot downscales
+# from it, so no upscaling anywhere. sips and iconutil are macOS stock.
+ICONSRC="$ROOT/assets/logo/yutu-mux-background.png"
+while read -r px name; do
+    sips -z "$px" "$px" "$ICONSRC" --out "$ICONSET/$name.png" >/dev/null
+done <<'SIZES'
+16 icon_16x16
+32 icon_16x16@2x
+32 icon_32x32
+64 icon_32x32@2x
+128 icon_128x128
+256 icon_128x128@2x
+256 icon_256x256
+512 icon_256x256@2x
+512 icon_512x512
+1024 icon_512x512@2x
+SIZES
+iconutil -c icns -o "$APP/Contents/Resources/$APP_NAME.icns" "$ICONSET"
+rm -rf "$ICONSET_TMP"
+[ -s "$APP/Contents/Resources/$APP_NAME.icns" ] \
+    || { echo "error: .icns build failed (see iconutil output above)" >&2; exit 1; }
+
 echo "==> ad-hoc signing (personal use; distribution needs a Developer ID)"
 codesign -s - --deep --force "$APP" >/dev/null
+# Nudge Finder past its icon cache for rebuilt bundles at the same path.
+touch "$APP"
 
-if [ "$ZIP" -eq 1 ]; then
-    ZIPFILE="$OUT/YutuMux-macos-$ARCH.zip"
-    ditto -c -k --sequesterRsrc "$APP" "$ZIPFILE"
-    echo "==> zipped: $ZIPFILE"
-    # Checksum next to the zip (same `<hash>  <file>` line format as the
-    # Linux tarball, verifiable with `shasum -a 256 -c` / `sha256sum -c`
-    # from the download dir). shasum is macOS stock, sha256sum the fallback.
-    if command -v shasum >/dev/null 2>&1; then
-        (cd "$OUT" && shasum -a 256 "$(basename "$ZIPFILE")") > "$ZIPFILE.sha256"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        (cd "$OUT" && sha256sum "$(basename "$ZIPFILE")") > "$ZIPFILE.sha256"
-    else
-        echo "warning: neither shasum nor sha256sum found; skipping checksum" >&2
-    fi
-    [ -f "$ZIPFILE.sha256" ] && echo "==> checksum: $ZIPFILE.sha256"
-fi
+# Checksum manifest of the signed bundle (deterministic order, paths
+# relative to the stage dir: verify with
+# `cd stage && shasum -a 256 -c ../YutuMux-<version>-macos-<arch>.sha256`).
+# shasum is macOS stock, and this script only runs on macOS.
+echo "==> writing bundle checksum manifest"
+SHAFILE="$OUT/$APP_NAME-$VERSION-macos-$ARCH.sha256"
+(cd "$STAGE" && find "$APP_NAME.app" \( -type f -o -type l \) -print0 \
+    | LC_ALL=C sort -z | xargs -0 shasum -a 256) > "$SHAFILE"
+echo "==> checksum: $SHAFILE"
+
+# Single-file distributable (GitHub Releases cannot take a directory):
+# UDZO disk image with the signed bundle plus an Applications shortcut
+# for the standard drag-install, and the image checksum. hdiutil is
+# macOS stock, like everything else this script needs.
+echo "==> staging disk image (app + Applications shortcut)"
+ln -sfn /Applications "$STAGE/Applications"
+DMG="$OUT/$APP_NAME-$VERSION-macos-$ARCH.dmg"
+rm -f "$DMG"
+hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+echo "==> disk image: $DMG"
+(cd "$OUT" && shasum -a 256 "$(basename "$DMG")") > "$DMG.sha256"
+echo "==> checksum: $DMG.sha256"
 
 echo "done: $APP"
 echo "first launch: right-click -> Open (unsigned bundle), then sign in via cookies.txt in Settings"
