@@ -15,11 +15,13 @@
   progress is never covered.
 - Cookie import uses the system file picker (portal on Linux, native
   panel on macOS) instead of a pasted file path: an input-style picker
-  field shows the picked path (last 30 chars with `(...)` when long)
-  and Import appears only once a txt file is picked. The cleanup modal
-  shows as soon as the connection succeeds (no waiting for playlists),
-  dims the app behind it, and its card rises from below on the
-  animation ticker (snapped when animations are off).
+  field shows the picked path (last 30 chars with `...` when long) next
+  to Import, which appears only once a txt file is picked. All Settings
+  inputs (text fields, pickers, sliders, the cookie row) share a 560px
+  max width. The section header drops the parenthetical. The cleanup
+  modal shows as soon as the connection succeeds (no waiting for
+  playlists), dims the app behind it, and its card rises from below on
+  the animation ticker (snapped when animations are off).
 - Lyrics stepper arrows stay put: the provider label sits in a
   fixed-width centered box, so `< >` never drift when the provider
   name changes length.

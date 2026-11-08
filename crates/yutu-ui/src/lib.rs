@@ -686,6 +686,19 @@ fn file_pick(_: &iced::Theme, status: iced::widget::button::Status) -> iced::wid
     }
 }
 
+/// Shared cap for Settings inputs (text fields, pickers, sliders, the
+/// cookie picker row): full width on narrow windows, aligned cap on wide
+/// ones so no field stretches across the whole pane.
+const SETTINGS_INPUT_W: f32 = 560.0;
+
+/// Cap a Settings input at the shared width (pass-through element).
+fn settings_input(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
+    iced::widget::container(content)
+        .width(iced::Fill)
+        .max_width(SETTINGS_INPUT_W)
+        .into()
+}
+
 /// Slider in theme red: red filled rail, pale track, white round handle.
 fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widget::slider::Style {
     iced::widget::slider::Style {
@@ -4658,17 +4671,17 @@ fn load_persisted(
 const COOKIE_PATH_SHOWN: usize = 30;
 
 /// Display form of a picked cookies.txt path: the full path when short,
-/// else `(...)` plus the tail so the filename stays visible.
+/// else `...` plus the tail so the filename stays visible.
 /// Char-based, so multi-byte names never split mid-codepoint.
 #[cfg(feature = "innertube")]
 fn trim_cookie_path(path: &str, max: usize) -> String {
     let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= max || max <= 5 {
+    if chars.len() <= max || max <= 3 {
         return path.to_string();
     }
     format!(
-        "(...){}",
-        chars[chars.len() - (max - 5)..].iter().collect::<String>()
+        "...{}",
+        chars[chars.len() - (max - 3)..].iter().collect::<String>()
     )
 }
 
@@ -7511,7 +7524,7 @@ impl AppState {
     /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, Column};
+        use iced::widget::{button, column, text, Column, Row};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
@@ -7534,30 +7547,24 @@ impl AppState {
                 iced::Color::WHITE,
             )
         };
-        let mut content: Vec<iced::Element<'_, Message>> = vec![
-            text("Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.")
-                .size(11)
-                .color(MUTED)
-                .into(),
-            button(
-                iced::widget::row![
-                    btn_icon("folder", 14.0, MUTED),
-                    text(pick_label).size(12).color(pick_color),
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center)
-                .width(Fill),
-            )
-            .style(file_pick)
-            .on_press(Message::CookieBrowse)
-            .padding(10)
-            .width(Fill)
-            .into(),
-        ];
+        let mut row_items: Vec<iced::Element<'_, Message>> = vec![button(
+            iced::widget::row![
+                btn_icon("folder", 14.0, MUTED),
+                text(pick_label).size(12).color(pick_color),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .width(Fill),
+        )
+        .style(file_pick)
+        .on_press(Message::CookieBrowse)
+        .padding(10)
+        .width(Fill)
+        .into()];
         // Import only once a txt file is picked: anything else cannot
         // import, so the button stays out of the way until it can work.
         if cookie_pick_valid(&self.cookie_path) {
-            content.push(
+            row_items.push(
                 button(self.busy_content("Import", 12.0))
                     .style(green_play)
                     .on_press(Message::CookieImport)
@@ -7565,6 +7572,18 @@ impl AppState {
                     .into(),
             );
         }
+        let content: Vec<iced::Element<'_, Message>> = vec![
+            text("Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.")
+                .size(11)
+                .color(MUTED)
+                .into(),
+            settings_input(
+                Row::with_children(row_items)
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .into(),
+            ),
+        ];
         Column::with_children(content).spacing(4).into()
     }
 
@@ -17380,15 +17399,18 @@ impl AppState {
                             format!("Volume {:.0}%", self.volume * 100.0)
                         })
                         .size(13),
-                        row![
-                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                .step(0.01_f32)
-                                .style(themed_slider)
-                                .width(Fill),
-                            self.mute_button(),
-                        ]
-                        .spacing(6)
-                        .align_y(iced::alignment::Vertical::Center),
+                        settings_input(
+                            row![
+                                pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                    .step(0.01_f32)
+                                    .style(themed_slider)
+                                    .width(Fill),
+                                self.mute_button(),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .into(),
+                        ),
                     ]
                     .spacing(4),
                     row(eq_buttons).spacing(4),
@@ -17398,35 +17420,46 @@ impl AppState {
                     eq_panel,
                     text("Lyrics").size(17),
                     text("Default lyrics provider").size(13),
-                    pick_list(
-                        ["LRCLIB", "YouTube Music"].as_slice(),
-                        Some(self.lyrics_provider.label()),
-                        |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
-                    )
-                    .width(Fill),
+                    settings_input(
+                        pick_list(
+                            ["LRCLIB", "YouTube Music"].as_slice(),
+                            Some(self.lyrics_provider.label()),
+                            |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
+                        )
+                        .width(Fill)
+                        .into(),
+                    ),
                     text("Both providers carry synced lines when available.")
                         .size(12)
                         .color(MUTED),
                     text("Appearance").size(17),
                     text("Display font (takes effect on relaunch)").size(13),
-                    pick_list(
-                        self.font_rows.as_slice(),
-                        Some(self.font_family.label().to_string()),
-                        |name: String| Message::FontFamilyChanged(FontFamily::from_label(&name)),
-                    )
-                    .width(Fill),
+                    settings_input(
+                        pick_list(
+                            self.font_rows.as_slice(),
+                            Some(self.font_family.label().to_string()),
+                            |name: String| Message::FontFamilyChanged(FontFamily::from_label(
+                                &name
+                            )),
+                        )
+                        .width(Fill)
+                        .into(),
+                    ),
                     relaunch_button,
                     stale_font_note,
                     column![
                         text(format!("Interface scale: {:.0}%", self.ui_scale * 100.0)).size(13),
-                        pointing_slider(
-                            UI_SCALE_MIN..=UI_SCALE_MAX,
-                            self.ui_scale,
-                            Message::UiScaleChanged
-                        )
-                        .step(0.05_f32)
-                        .style(themed_slider)
-                        .width(Fill),
+                        settings_input(
+                            pointing_slider(
+                                UI_SCALE_MIN..=UI_SCALE_MAX,
+                                self.ui_scale,
+                                Message::UiScaleChanged
+                            )
+                            .step(0.05_f32)
+                            .style(themed_slider)
+                            .width(Fill)
+                            .into(),
+                        ),
                         text("Scales text and controls together, applies instantly.")
                             .size(12)
                             .color(MUTED),
@@ -17438,44 +17471,62 @@ impl AppState {
                         .on_toggle(Message::AnimationsToggled),
                     column![
                         text(format!("Animation duration: {} ms", self.anim_ms)).size(13),
-                        pointing_slider(
-                            ANIM_MIN_MS as f32..=ANIM_MAX_MS as f32,
-                            self.anim_ms as f32,
-                            Message::AnimMsChanged
-                        )
-                        .step(5.0_f32)
-                        .style(themed_slider)
-                        .width(Fill),
+                        settings_input(
+                            pointing_slider(
+                                ANIM_MIN_MS as f32..=ANIM_MAX_MS as f32,
+                                self.anim_ms as f32,
+                                Message::AnimMsChanged
+                            )
+                            .step(5.0_f32)
+                            .style(themed_slider)
+                            .width(Fill)
+                            .into(),
+                        ),
                     ]
                     .spacing(4),
                     text("Scrobbling (submits live when credentials are set)").size(17),
                     checkbox(self.scrobble_enabled)
                         .label("Enable scrobbling")
                         .on_toggle(Message::ScrobbleToggled),
-                    text_input("Display name (informational)…", &self.scrobble_user)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleUserChanged)
-                        .padding(10),
-                    text_input("ListenBrainz token…", &self.scrobble_lb_token)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleLbTokenChanged)
-                        .secure(true)
-                        .padding(10),
-                    text_input("Last.fm API key…", &self.scrobble_fm_key)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleFmKeyChanged)
-                        .padding(10),
-                    text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleFmSecretChanged)
-                        .secure(true)
-                        .padding(10),
-                    text_input("Last.fm session key…", &self.scrobble_fm_sk)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleFmSkChanged)
-                        .secure(true)
-                        .padding(10),
-                    text("Cookie import (no OAuth client needed)").size(17),
+                    settings_input(
+                        text_input("Display name (informational)…", &self.scrobble_user)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleUserChanged)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("ListenBrainz token…", &self.scrobble_lb_token)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleLbTokenChanged)
+                            .secure(true)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("Last.fm API key…", &self.scrobble_fm_key)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleFmKeyChanged)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleFmSecretChanged)
+                            .secure(true)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("Last.fm session key…", &self.scrobble_fm_sk)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleFmSkChanged)
+                            .secure(true)
+                            .padding(10)
+                            .into(),
+                    ),
+                    text("Cookie import").size(17),
                     self.cookie_section(),
                     text("Sync (web changes into the app)").size(17),
                     self.sync_section(),
@@ -23915,7 +23966,7 @@ mod tests {
         let long = "/home/someone/very/long/download/folder/cookies.txt";
         let shown = trim_cookie_path(long, 30);
         assert_eq!(shown.chars().count(), 30);
-        assert!(shown.starts_with("(...)"));
+        assert!(shown.starts_with("..."));
         assert!(shown.ends_with("cookies.txt"));
         // Multi-byte names never split mid-codepoint.
         let wide = format!("/h/{}/cookies.txt", "é".repeat(40));
