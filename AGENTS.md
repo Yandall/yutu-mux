@@ -137,7 +137,8 @@
 - Cursor: every clickable component shows the pointing hand
   (`RowButton` votes Pointer when pressable, plain buttons/toggles/
   checkboxes/pick lists already do, `PointingSlider` maps the stock
-  grab votes, seek bar and EQ graph vote Pointer). Text fields keep
+  grab votes, seek bar and EQ graph vote Pointer, queue sidebar rows
+  vote Pointer via their whole-row `mouse_area` interaction). Text fields keep
   the I-beam, disabled rows keep the arrow, invisible dismiss scrims
   keep the arrow.
 - `text_input` padding: use the widget's own `.padding(10)` **at the end
