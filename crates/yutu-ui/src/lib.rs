@@ -1499,6 +1499,12 @@ pub enum Message {
     /// Delete the saved cookie session (stays out of the account).
     #[cfg(feature = "innertube")]
     CookieLogout,
+    /// Delete the just-imported `cookies.txt` export (secure session kept).
+    #[cfg(feature = "innertube")]
+    CookieCleanupDelete,
+    /// Keep the just-imported `cookies.txt` export on disk.
+    #[cfg(feature = "innertube")]
+    CookieCleanupKeep,
     /// Manual refresh from Settings: replays pending pushes, then pulls
     /// web changes (likes, playlist songs/titles, deletions) via the
     /// saved session. Same pipeline as imports, "Sync" wording.
@@ -2466,6 +2472,17 @@ pub struct AppState {
     view_build_ms: std::cell::Cell<f32>,
     /// Cookie-file path for import (Settings).
     cookie_path: String,
+    /// Source export awaiting a delete/keep decision after a successful
+    /// cookie import (modal). The secure session is already stored, so
+    /// this plaintext file can go. `None` hides the modal.
+    #[cfg(feature = "innertube")]
+    pending_cookie_cleanup: Option<String>,
+    /// Fresh-import source captured at dispatch (immune to later edits of
+    /// the path field). Moved into `pending_cookie_cleanup` when the
+    /// import completes; session re-imports and syncs never set it, so
+    /// they never offer to delete a file they did not consume.
+    #[cfg(feature = "innertube")]
+    pending_cookie_source: Option<String>,
     /// Where the queue is playing from (playlist/artist/radio label).
     playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
@@ -3329,6 +3346,19 @@ impl AppState {
         v
     }
 
+    /// Move the captured fresh-import source into the cleanup modal when
+    /// the import completes (the session is stored by then). Missing
+    /// files arm nothing; session re-imports and syncs never capture a
+    /// source, so they never prompt.
+    #[cfg(feature = "innertube")]
+    fn arm_cookie_cleanup(&mut self) {
+        if let Some(src) = self.pending_cookie_source.take() {
+            if !src.is_empty() && std::path::Path::new(&src).exists() {
+                self.pending_cookie_cleanup = Some(src);
+            }
+        }
+    }
+
     /// Merge the import base stage (songs + liked) immediately so results
     /// show without waiting for playlists, then fan out one task per
     /// playlist header. Each arrival updates the status line, so a slow
@@ -3379,6 +3409,11 @@ impl AppState {
             self.sync_active = false;
             self.mark_synced();
             self.status = format!("{}: {n} library tracks ({m} liked).", kind.done_label());
+            // Import complete with nothing left to fetch: the modal can
+            // show now without covering progress.
+            if kind == ImportKind::Cookie {
+                self.arm_cookie_cleanup();
+            }
             self.publish_mpris();
             return iced::Task::batch(tasks);
         }
@@ -4388,19 +4423,50 @@ pub fn oauth_path() -> String {
     format!("{}/youtube_oauth.json", data_dir())
 }
 
-/// Saved cookie session: the normalised `Cookie` header (0600, written
-/// on every successful cookie import). Restarts reuse it, so the account
-/// stays signed in without another export.
+/// Saved cookie session fallback: the normalised `Cookie` header as a
+/// 0600 file. Primary storage is the OS keychain (see
+/// [`cookie_keyring_marker_path`]); this file holds the session only when
+/// the keychain is unreachable, plus pre-keychain legacy sessions until
+/// they migrate on next load.
 #[cfg(feature = "innertube")]
 pub fn cookie_session_path() -> String {
     format!("{}/cookie_session.txt", data_dir())
 }
 
+/// Non-secret marker: the session lives in the OS keychain
+/// (`yutu-mux` / `cookie-session`, stable across releases). The marker
+/// lets startup check existence without unlocking the keychain, so
+/// opening the app never prompts for an OS password.
 #[cfg(feature = "innertube")]
-fn cookie_session_exists() -> bool {
-    std::path::Path::new(&cookie_session_path()).exists()
+pub fn cookie_keyring_marker_path() -> String {
+    format!("{}/cookie_session.keyring", data_dir())
 }
 
+#[cfg(feature = "innertube")]
+fn cookie_session_exists() -> bool {
+    yutu_core::secure_session_exists(
+        std::path::Path::new(&cookie_session_path()),
+        std::path::Path::new(&cookie_keyring_marker_path()),
+    )
+}
+
+/// Load the saved header from the keychain (migrating the legacy file).
+#[cfg(feature = "innertube")]
+fn load_cookie_header() -> Result<String, String> {
+    yutu_core::load_cookie_session(
+        std::path::Path::new(&cookie_session_path()),
+        std::path::Path::new(&cookie_keyring_marker_path()),
+    )
+}
+
+/// Delete the session everywhere (keychain, marker, legacy file).
+#[cfg(feature = "innertube")]
+fn delete_cookie_session_secure() -> Result<(), String> {
+    yutu_core::delete_cookie_session(
+        std::path::Path::new(&cookie_session_path()),
+        std::path::Path::new(&cookie_keyring_marker_path()),
+    )
+}
 #[cfg(feature = "innertube")]
 fn oauth_path_exists() -> bool {
     #[cfg(feature = "innertube")]
@@ -4695,6 +4761,10 @@ impl AppState {
             #[cfg(feature = "debug-panel")]
             view_build_ms: std::cell::Cell::new(0.0),
             cookie_path: String::new(),
+            #[cfg(feature = "innertube")]
+            pending_cookie_cleanup: None,
+            #[cfg(feature = "innertube")]
+            pending_cookie_source: None,
             playing_from: String::new(),
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
@@ -7365,7 +7435,7 @@ impl AppState {
             .into();
         }
         column![
-            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path (no Google Cloud client required). The session is saved, so restarts stay signed in.")
+            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path (no Google Cloud client required). The session is saved in your OS keychain, so restarts and updates stay signed in. You can delete the export right after import.")
                 .size(11)
                 .color(MUTED),
             text_input("/path/to/cookies.txt", &self.cookie_path)
@@ -7380,6 +7450,57 @@ impl AppState {
         ]
         .spacing(4)
         .into()
+    }
+
+    /// Post-import cleanup prompt: the session is already in the OS
+    /// keychain, so the plaintext export can go. Delete is the CTA;
+    /// scrim/Esc keeps the file (safe default). Centered card above a
+    /// dismiss scrim, same layer pattern as the context menus.
+    #[cfg(feature = "innertube")]
+    fn cookie_cleanup_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, mouse_area, text, Stack};
+        use iced::Fill;
+        let src = self.pending_cookie_cleanup.clone()?;
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text("Signed in. Delete the export file?").size(16),
+                text("Your session is saved in the OS keychain and survives restarts and updates. The export is plaintext and no longer needed.")
+                    .size(12)
+                    .color(MUTED),
+                text(src).size(11).color(MUTED).width(Fill),
+                iced::widget::row![
+                    button(btn_text("Delete export", 12))
+                        .style(green_play)
+                        .on_press(Message::CookieCleanupDelete)
+                        .padding(8),
+                    button(btn_text("Keep file", 12))
+                        .style(hover_row)
+                        .on_press(Message::CookieCleanupKeep)
+                        .padding(8),
+                ]
+                .spacing(8),
+                text("Esc keeps the file.").size(11).color(MUTED),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(400)
+        .into();
+        let scrim: iced::Element<'_, Message> =
+            mouse_area(container(text("").size(1)).width(Fill).height(Fill))
+                .on_press(Message::CookieCleanupKeep)
+                .on_right_press(Message::CookieCleanupKeep)
+                .on_enter(Message::ClearHovers)
+                .on_exit(Message::ClearHovers)
+                .into();
+        let placed: iced::Element<'_, Message> = container(card)
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center)
+            .into();
+        Some(Stack::with_children(vec![scrim, placed]).into())
     }
 
     /// Sync panel: manual refresh plus the scheduled pull that keeps
@@ -11175,6 +11296,18 @@ impl AppState {
                 return iced::Task::none();
             }
             Message::CloseContext => {
+                // Topmost first: cookie cleanup modal, menus, popup,
+                // drag, drawer. Esc keeps the export file (safe default).
+                #[cfg(feature = "innertube")]
+                if self.pending_cookie_cleanup.is_some() {
+                    self.pending_cookie_cleanup = None;
+                    self.cookie_path.clear();
+                    if !self.import_active {
+                        self.status =
+                            "Signed in. Export file kept (delete it manually when ready).".into();
+                    }
+                    return iced::Task::none();
+                }
                 // Topmost first: menus, popup, drag, drawer. Menus sit
                 // above the popup in the layer stack.
                 if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
@@ -11581,6 +11714,11 @@ impl AppState {
                         self.import_active = true;
                         self.sync_active = false;
                         self.status = "Reading cookies + contacting YouTube Music…".into();
+                        // Capture the source now: the modal decision later
+                        // must name the file actually imported, not
+                        // whatever the field holds when stages finish.
+                        self.pending_cookie_source = Some(path.clone());
+                        self.pending_cookie_cleanup = None;
                         self.publish_mpris();
                         return Self::cookie_import_task(path, self.library_path.clone());
                     }
@@ -11601,12 +11739,17 @@ impl AppState {
                     self.login_busy = false;
                     self.import_active = false;
                     self.sync_active = false;
+                    // A failed fresh import owns no session: drop its
+                    // source so no modal can name it later.
+                    if kind == ImportKind::Cookie {
+                        self.pending_cookie_source = None;
+                    }
                     // A dead saved session must not keep posing as signed
                     // in: drop it so the panel goes back to the file picker.
                     if matches!(kind, ImportKind::Cookie | ImportKind::Sync)
                         && e.contains("saved cookie session")
                     {
-                        let _ = std::fs::remove_file(cookie_session_path());
+                        let _ = delete_cookie_session_secure();
                         self.cookie_logged_in = false;
                     }
                     self.status = if kind == ImportKind::Sync {
@@ -11664,6 +11807,9 @@ impl AppState {
                     s.mark_synced();
                     if kind == ImportKind::Cookie {
                         s.cookie_logged_in = cookie_session_exists();
+                        // Playlists done: progress is final, so the
+                        // cleanup modal no longer covers it.
+                        s.arm_cookie_cleanup();
                     }
                 };
                 match result {
@@ -11763,8 +11909,10 @@ impl AppState {
                 self.import_shown = 0;
                 self.import_live.clear();
                 self.import_finished.clear();
+                self.pending_cookie_cleanup = None;
+                self.pending_cookie_source = None;
                 if cookie_session_exists() {
-                    match std::fs::remove_file(cookie_session_path()) {
+                    match delete_cookie_session_secure() {
                         Ok(()) => {
                             self.cookie_logged_in = false;
                             self.status = "Cookie session cleared.".into();
@@ -11777,6 +11925,49 @@ impl AppState {
                 } else {
                     self.cookie_logged_in = false;
                     self.status = "Cookie session cleared.".into();
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieCleanupDelete => {
+                if let Some(src) = self.pending_cookie_cleanup.take() {
+                    self.cookie_path.clear();
+                    match std::fs::remove_file(&src) {
+                        Ok(()) => {
+                            yutu_core::app_log::info(
+                                "yutu-auth",
+                                format_args!("export file deleted"),
+                            );
+                            // Progress owns the status while playlists
+                            // load; confirm only once idle.
+                            if !self.import_active {
+                                self.status = "Signed in. Export file deleted.".into();
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            if !self.import_active {
+                                self.status = "Signed in. Export file is already gone.".into();
+                            }
+                        }
+                        Err(e) => {
+                            yutu_core::app_log::warn(
+                                "yutu-auth",
+                                format!("export delete failed: {e}"),
+                            );
+                            self.status =
+                                Self::failure_status("Could not delete export file".into(), e);
+                            // Re-arm so the user can retry (file kept).
+                            self.pending_cookie_cleanup = Some(src);
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieCleanupKeep => {
+                self.pending_cookie_cleanup = None;
+                self.cookie_path.clear();
+                if !self.import_active {
+                    self.status =
+                        "Signed in. Export file kept (delete it manually when ready).".into();
                 }
             }
             #[cfg(feature = "innertube")]
@@ -12825,10 +13016,7 @@ impl AppState {
             }
         }
         if cookie_session_exists() {
-            return yutu_core::InnertubeBackend::connect_with_cookie_file(std::path::Path::new(
-                &cookie_session_path(),
-            ))
-            .await;
+            return Self::connect_saved_cookie().await;
         }
         Err("sign in first (cookies or Google)".into())
     }
@@ -12863,10 +13051,10 @@ impl AppState {
             }
         }
         if cookie_session_exists() {
-            if let Ok(auth) =
-                yutu_core::CookieAuth::from_file(std::path::Path::new(&cookie_session_path()))
-            {
-                return SearchAuth::from_cookie(&auth);
+            if let Ok(header) = load_cookie_header() {
+                if let Ok(auth) = yutu_core::CookieAuth::from_header_str(&header) {
+                    return SearchAuth::from_cookie(&auth);
+                }
             }
         }
         SearchAuth::anonymous()
@@ -13397,8 +13585,8 @@ impl AppState {
         )
     }
 
-    /// Cookie import, base stage: connect, stash the 0600 session, fetch
-    /// songs + liked + playlist headers. The user logs into
+    /// Cookie import, base stage: connect, stash the session securely,
+    /// fetch songs + liked + playlist headers. The user logs into
     /// music.youtube.com in their own browser and exports cookies to a
     /// file (no OAuth client needed). Playlist tracks stream in next, one
     /// task per list, so progress shows instead of one silent future.
@@ -13414,15 +13602,29 @@ impl AppState {
                 if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                // Stay signed in: stash the normalised header (0600) only
-                // for a validated import, so failures leave no session.
+                // Stay signed in: stash the normalised header in the OS
+                // keychain (0600 file fallback) only for a validated
+                // import, so failures leave no session.
                 if let Ok(auth) = yutu_core::CookieAuth::from_file(std::path::Path::new(&path)) {
-                    if let Err(e) = auth.save_to_file(std::path::Path::new(&cookie_session_path()))
-                    {
-                        yutu_core::app_log::error(
-                            "yutu-login",
-                            format_args!("session stash failed: {e}"),
-                        );
+                    let stash = yutu_core::save_cookie_session(
+                        auth.header_value(),
+                        std::path::Path::new(&cookie_session_path()),
+                        std::path::Path::new(&cookie_keyring_marker_path()),
+                    );
+                    match stash {
+                        Ok(yutu_core::SecureBackend::File) => {
+                            yutu_core::app_log::warn(
+                                "yutu-login",
+                                "keychain unavailable: session saved to file",
+                            );
+                        }
+                        Ok(yutu_core::SecureBackend::Keyring) => {}
+                        Err(e) => {
+                            yutu_core::app_log::error(
+                                "yutu-login",
+                                format_args!("session stash failed: {e}"),
+                            );
+                        }
                     }
                 }
                 Self::persist_base_pull(&library_path, &base);
@@ -13435,19 +13637,25 @@ impl AppState {
         )
     }
 
+    /// Connect with the saved cookie session (keychain first, legacy file
+    /// migrates). One place so import, sync, and search share the error.
+    #[cfg(feature = "innertube")]
+    async fn connect_saved_cookie() -> Result<yutu_core::InnertubeBackend, String> {
+        let header = load_cookie_header()?;
+        yutu_core::InnertubeBackend::connect_with_cookie_str(&header)
+            .await
+            .map_err(|e| {
+                format!("saved cookie session failed ({e}): import your cookies file again")
+            })
+    }
+
     /// Re-import base stage via the saved cookie session (no file picker
     /// round trip). Playlist tracks stream in next like a fresh import.
     #[cfg(feature = "innertube")]
     fn cookie_session_import_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
-                    std::path::Path::new(&cookie_session_path()),
-                )
-                .await
-                .map_err(|e| {
-                    format!("saved cookie session failed ({e}): import your cookies file again")
-                })?;
+                let backend = Self::connect_saved_cookie().await?;
                 let base = Self::fetch_base(&backend).await?;
                 if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
@@ -13490,13 +13698,7 @@ impl AppState {
     fn sync_cookie_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
-                    std::path::Path::new(&cookie_session_path()),
-                )
-                .await
-                .map_err(|e| {
-                    format!("saved cookie session failed ({e}): import your cookies file again")
-                })?;
+                let backend = Self::connect_saved_cookie().await?;
                 let base = Self::fetch_base(&backend).await?;
                 Self::persist_base_pull(&library_path, &base);
                 Ok(Self::staged_of(backend, base))
@@ -18317,6 +18519,12 @@ impl AppState {
                 layers.push(coll_scrim);
                 layers.push(coll_placed);
             }
+        }
+        // Cookie cleanup modal: topmost (above menus), centered card over
+        // a dismiss scrim. Esc/scrim keeps the file (safe default).
+        #[cfg(feature = "innertube")]
+        if let Some(dialog) = self.cookie_cleanup_dialog() {
+            layers.push(dialog);
         }
         // Always a Stack (even with one layer): flipping between bare
         // content and Stack would rebuild all widget state (search focus
@@ -23412,6 +23620,121 @@ mod tests {
         assert!(s.status.contains("Cookie import failed: bad cookies"));
         #[cfg(not(feature = "debug-panel"))]
         assert_eq!(s.status, "Cookie import failed");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_import_success_arms_cleanup_modal() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-modal-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        // Simulate the dispatch capture: the modal must name the file
+        // actually imported, not the live path field.
+        s.pending_cookie_source = Some(src.to_string_lossy().into_owned());
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![],
+            )),
+        });
+        assert_eq!(
+            s.pending_cookie_cleanup.as_deref(),
+            Some(src.to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_session_reimport_never_arms_cleanup() {
+        let mut s = test_state();
+        assert!(s.pending_cookie_source.is_none());
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![],
+            )),
+        });
+        assert!(s.pending_cookie_cleanup.is_none());
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_import_dispatch_captures_source() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src = std::env::temp_dir().join(format!(
+            "yutu-cleanup-dispatch-{}-{n}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.cookie_path = src.to_string_lossy().into_owned();
+        let _ = s.update(Message::CookieImport);
+        assert_eq!(
+            s.pending_cookie_source.as_deref(),
+            Some(src.to_string_lossy().as_ref())
+        );
+        assert!(s.pending_cookie_cleanup.is_none());
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_cleanup_delete_removes_export() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src = std::env::temp_dir().join(format!(
+            "yutu-cleanup-delete-{}-{n}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.cookie_path = src.to_string_lossy().into_owned();
+        s.pending_cookie_cleanup = Some(src.to_string_lossy().into_owned());
+        s.import_active = false;
+        let _ = s.update(Message::CookieCleanupDelete);
+        assert!(s.pending_cookie_cleanup.is_none());
+        assert!(s.cookie_path.is_empty());
+        assert!(!src.exists());
+        assert!(s.status.contains("deleted"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_cleanup_keep_preserves_export() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-keep-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.cookie_path = src.to_string_lossy().into_owned();
+        s.pending_cookie_cleanup = Some(src.to_string_lossy().into_owned());
+        s.import_active = false;
+        let _ = s.update(Message::CookieCleanupKeep);
+        assert!(s.pending_cookie_cleanup.is_none());
+        assert!(src.exists());
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cleanup_modal_dismissed_by_esc_as_keep() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-esc-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.pending_cookie_cleanup = Some(src.to_string_lossy().into_owned());
+        s.import_active = false;
+        let _ = s.update(Message::CloseContext);
+        assert!(s.pending_cookie_cleanup.is_none());
+        assert!(src.exists());
+        let _ = std::fs::remove_file(&src);
     }
 
     #[cfg(feature = "innertube")]

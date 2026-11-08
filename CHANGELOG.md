@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Secure cookie sessions: the normalised `Cookie` header is stored in the
+  OS keychain (`yutu-mux` / `cookie-session`, stable across releases, so
+  updates stay signed in) with a 0600 file fallback when the keychain is
+  unreachable. Startup checks a non-secret marker/legacy file only, so
+  opening the app never prompts for an OS password; the header is cached
+  in memory after the first connect. Legacy `cookie_session.txt` files
+  migrate into the keychain on next load. Sign out clears the keychain
+  entry plus every fallback file. After a successful cookies.txt import a
+  centered modal offers to delete the plaintext export (Delete is the
+  CTA; scrim/Esc keeps it), appearing once playlist stages complete so
+  progress is never covered.
 - Lyrics stepper arrows stay put: the provider label sits in a
   fixed-width centered box, so `< >` never drift when the provider
   name changes length.
