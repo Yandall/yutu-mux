@@ -174,10 +174,11 @@ packaging/macos/build-app.sh --self-contained
 ```
 
 One architecture per run (native): repeat per arch and lipo the two
-binaries together for a universal bundle. Upload the
+binaries together for a universal bundle. The `macos-dmg` release job
+builds the self-contained arm64 image in CI and uploads the
 `YutuMux-<version>-macos-<arch>.dmg` plus its `.dmg.sha256` to the
-GitHub Release by hand (`gh release upload` or the
-web UI): there is no macOS CI job. The script tries `--locked` first (same pinned deps as the
+GitHub Release automatically; an Intel Mac still builds by hand
+(`gh release upload` or the web UI). The script tries `--locked` first (same pinned deps as the
 Linux tarball) and falls back to unlocked with a warning when
 `Cargo.lock` is missing or stale. First launch is right-click, Open
 (unsigned bundle).
@@ -238,10 +239,12 @@ Then:
 6. Move the shipped notes under a dated `## X.Y.Z` entry in
    `CHANGELOG.md` (add a fresh heading on top for the next cycle).
 7. Commit, tag `git tag vX.Y.Z`, push tag — `release.yml` builds the
-   tarball and attaches it to the GitHub Release automatically.
-8. Build the macOS app on a Mac (Section 5) and upload the
-   `YutuMux-<version>-macos-<arch>.dmg` plus its `.dmg.sha256` to the
-   same Release by hand.
+   Linux tarball and the macOS disk image and attaches both to the
+   GitHub Release automatically.
+8. Only an Intel-mac asset still needs a by-hand build on a Mac
+   (Section 5) and a `gh release upload` of the
+   `YutuMux-<version>-macos-x86_64.dmg` plus its `.dmg.sha256` to the
+   same Release.
 9. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
    before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
 

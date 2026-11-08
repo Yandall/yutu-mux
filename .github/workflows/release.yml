@@ -43,3 +43,19 @@ jobs:
           files: |
             yutu-mux-x86_64-unknown-linux-gnu.tar.gz
             yutu-mux-x86_64-unknown-linux-gnu.tar.gz.sha256
+  macos-dmg:
+    name: macOS arm64 disk image
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build deps (libmpv headers, dylibbundler for the self-contained bundle)
+        run: brew install mpv pkg-config dylibbundler
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build self-contained app and disk image
+        run: packaging/macos/build-app.sh --self-contained --output dist
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/*.sha256

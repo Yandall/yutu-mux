@@ -5,7 +5,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh | sh -s -- --yes [options]
 #
 # Options:
-#   --from-release     Download the prebuilt release (Linux x86_64 default).
+#   --from-release     Download the prebuilt release artifact: the Linux
+#                      x86_64 tarball or the macOS arm64 disk image (the
+#                      default on both; other platforms build from source).
 #   --build-from-source
 #                      Compile locally with Cargo (needs Rust and a checkout).
 #   --version TAG      Release to download (default: latest).
@@ -21,10 +23,11 @@
 # launcher to PREFIX/share/applications. macOS installs YutuMux.app to
 # PREFIX/Applications and a yutu-mux command to PREFIX/bin.
 #
-# Prebuilt releases cover Linux x86_64. Anything else compiles from
-# source, which needs a checkout (cloned automatically when git is
-# available) plus Rust. Linux system packages use sudo and macOS
-# dependencies use Homebrew. Application files stay below PREFIX.
+# Prebuilt releases cover Linux x86_64 (tarball) and macOS arm64 (disk
+# image). Anything without a prebuilt asset compiles from source, which
+# needs a checkout (cloned automatically when git is available) plus
+# Rust. Linux system packages use sudo and macOS dependencies use
+# Homebrew. Application files stay below PREFIX.
 set -eu
 
 usage() {
@@ -119,16 +122,17 @@ case "$ARCH" in
 esac
 
 if [ "$MODE" = "auto" ]; then
-    if [ "$OS" = "Linux" ] && [ "$ARCH" = "x86_64" ]; then
-        MODE="release"
-    else
-        MODE="source"
-    fi
+    case "$OS-$ARCH" in
+        Linux-x86_64|Darwin-*) MODE="release" ;;
+        *) MODE="source" ;;
+    esac
 fi
 
 if [ "$MODE" = "release" ]; then
-    [ "$OS" = "Linux" ] || fail "prebuilt releases cover Linux x86_64 only; rerun with --build-from-source"
-    [ "$ARCH" = "x86_64" ] || fail "no prebuilt release for $ARCH; rerun with --build-from-source"
+    case "$OS-$ARCH" in
+        Linux-x86_64|Darwin-arm64|Darwin-x86_64) ;;
+        *) fail "no prebuilt release for $OS $ARCH; rerun with --build-from-source" ;;
+    esac
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -253,6 +257,11 @@ install_macos_deps() {
     run brew install mpv yt-dlp pkg-config git
 }
 
+install_macos_runtime_deps() {
+    have brew || fail "Homebrew is required for automatic macOS dependencies; install it from https://brew.sh or install mpv and yt-dlp manually, then rerun with --no-deps"
+    run brew install mpv yt-dlp
+}
+
 write_desktop_file() {
     cat > "$1" <<'EOF'
 [Desktop Entry]
@@ -295,11 +304,30 @@ verify_release() {
     [ "$expected" = "$actual" ] || fail "checksum mismatch for $(basename "$archive"): download is corrupt or tampered with, refusing to install"
 }
 
+# Follow the /releases/latest redirect to its tag (vX.Y.Z). The disk
+# image asset name embeds the Cargo version, so `latest` must resolve
+# to a tag before the asset name is known.
+resolve_latest_tag() {
+    effective=$(curl --proto '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") \
+        || fail "could not resolve the latest release (check that $REPO has releases)"
+    case "$effective" in
+        */releases/tag/?*)
+            tag=${effective##*/releases/tag/}
+            ;;
+        *)
+            fail "could not resolve the latest release tag from $effective"
+            ;;
+    esac
+    printf '%s\n' "$tag"
+}
+
 if [ "$DEPS" -eq 1 ]; then
     if [ "$OS" = Linux ] && [ "$MODE" = "release" ]; then
         say "System dependencies: ALSA, X11/Wayland, SQLite, OpenSSL, libmpv and yt-dlp (runtime only, no compiler or Rust)."
     elif [ "$OS" = Linux ]; then
         say "System dependencies: build tools, ALSA, X11/Wayland, SQLite, OpenSSL, libmpv and yt-dlp."
+    elif [ "$MODE" = "release" ]; then
+        say "Homebrew dependencies: mpv and yt-dlp (runtime only, no compiler or Rust; the bundle also carries its own copies)."
     else
         say "Homebrew dependencies: mpv, yt-dlp, pkg-config and git."
     fi
@@ -309,6 +337,8 @@ if [ "$DEPS" -eq 1 ]; then
             install_linux_runtime_deps
         elif [ "$OS" = Linux ]; then
             install_linux_build_deps
+        elif [ "$MODE" = "release" ]; then
+            install_macos_runtime_deps
         else
             install_macos_deps
         fi
@@ -324,6 +354,7 @@ fi
 
 if [ "$MODE" = "release" ]; then
     have curl || fail "curl is required to download the release; install it, then rerun"
+    if [ "$OS" = "Linux" ]; then
     have tar || fail "tar is required to unpack the release; install it, then rerun"
     ASSET="yutu-mux-x86_64-unknown-linux-gnu.tar.gz"
     if [ -n "${YUTU_RELEASE_URL:-}" ]; then
@@ -359,6 +390,59 @@ if [ "$MODE" = "release" ]; then
         run tar -xzf "$TMP_ROOT/pkg.tar.gz" -C "$TMP_ROOT"
         BIN_SRC=$(find "$TMP_ROOT" -name yutu-mux -type f | head -n 1)
         [ -n "$BIN_SRC" ] || fail "release archive did not contain a yutu-mux binary"
+    fi
+    else
+        # macOS disk image (YutuMux-<version>-macos-<arch>.dmg). The
+        # asset name embeds the Cargo version without a leading v,
+        # while --version takes the release tag, so strip one leading
+        # v. `latest` resolves through the /releases/latest redirect.
+        have hdiutil || fail "hdiutil is required to mount the disk image; it ships with macOS"
+        if [ "$VERSION" = "latest" ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                say "would resolve the latest release tag"
+                TAG="vX.Y.Z"
+            else
+                TAG=$(resolve_latest_tag)
+            fi
+        else
+            TAG="$VERSION"
+        fi
+        case "$TAG" in
+            v*) ASSET_VERSION=${TAG#v} ;;
+            *) ASSET_VERSION=$TAG ;;
+        esac
+        ASSET="YutuMux-$ASSET_VERSION-macos-$ARCH.dmg"
+        if [ -n "${YUTU_RELEASE_URL:-}" ]; then
+            URL="$YUTU_RELEASE_URL"
+        elif [ "$VERSION" = "latest" ]; then
+            URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+        else
+            URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+        fi
+        say "Downloading prebuilt YutuMux ($TAG, macOS $ARCH)."
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "would download $URL and mount it"
+            say "would verify $URL.sha256 before mounting"
+            APP_SRC="$TMP_ROOT/YutuMux.app"
+        else
+            run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP_ROOT/pkg.dmg" "$URL" \
+                || fail "download failed: $URL (check the release has a macOS $ARCH asset, or rerun with --build-from-source)"
+            run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP_ROOT/pkg.dmg.sha256" "$URL.sha256" \
+                || fail "checksum download failed: $URL.sha256 (the release is missing its .sha256 file)"
+            verify_release "$TMP_ROOT/pkg.dmg" "$TMP_ROOT/pkg.dmg.sha256"
+            MNT="$TMP_ROOT/mnt"
+            make_dir "$MNT"
+            trap 'hdiutil detach "$MNT" >/dev/null 2>&1 || true; rm -rf -- "$TMP_ROOT"' EXIT INT TERM
+            run hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$TMP_ROOT/pkg.dmg"
+            if [ ! -d "$MNT/YutuMux.app" ]; then
+                run hdiutil detach "$MNT" || true
+                fail "disk image did not contain YutuMux.app"
+            fi
+            rm -rf -- "$TMP_ROOT/YutuMux.app"
+            copy_file "$MNT/YutuMux.app" "$TMP_ROOT/"
+            run hdiutil detach "$MNT"
+            APP_SRC="$TMP_ROOT/YutuMux.app"
+        fi
     fi
 else
     if [ -z "$ROOT" ]; then
@@ -469,17 +553,21 @@ if [ "$OS" = Linux ]; then
 else
     APP_DIR="$PREFIX/Applications/YutuMux.app"
     BIN_DIR="$PREFIX/bin"
-    BUILD_OUT="$ROOT/target/install-macos"
+    if [ "$MODE" != "release" ]; then
+        # Source builds stage the bundle here; release mode already set
+        # APP_SRC from the mounted disk image above.
+        APP_SRC="$ROOT/target/install-macos/stage/YutuMux.app"
+    fi
     replace_target "$APP_DIR"
     replace_target "$BIN_DIR/yutu-mux"
     make_dir "$PREFIX/Applications"
     make_dir "$BIN_DIR"
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "would copy $BUILD_OUT/stage/YutuMux.app to $PREFIX/Applications/"
+        say "would copy $APP_SRC to $PREFIX/Applications/"
     else
         temporary="$PREFIX/Applications/.YutuMux.app.install-new.$$"
         rm -rf -- "$temporary"
-        copy_file "$BUILD_OUT/stage/YutuMux.app" "$temporary"
+        copy_file "$APP_SRC" "$temporary"
         rm -rf -- "$APP_DIR"
         mv -- "$temporary" "$APP_DIR"
     fi
