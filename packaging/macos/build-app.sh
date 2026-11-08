@@ -137,7 +137,7 @@ ICONSET="$ICONSET_TMP/$APP_NAME.iconset"
 mkdir -p "$ICONSET"
 # Grey rounded-square master (assets/logo): every slot downscales from
 # it, so no upscaling anywhere. sips and iconutil are macOS stock.
-ICONSRC="$ROOT/assets/logo/yutu-mux-macos-1024.png"
+ICONSRC="$ROOT/assets/logo/yutu-mux-background.png"
 while read -r px name; do
     sips -z "$px" "$px" "$ICONSRC" --out "$ICONSET/$name.png" >/dev/null
 done <<'SIZES'

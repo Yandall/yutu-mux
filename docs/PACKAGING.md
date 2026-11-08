@@ -165,7 +165,7 @@ signs; `--self-contained` bundles libmpv plus a standalone yt-dlp.
 It also writes a `YutuMux-macos-<arch>.sha256` manifest of every file in
 the signed bundle (verify from the stage dir with
 `shasum -a 256 -c`). App icon comes from
-`assets/logo/yutu-mux-macos-1024.png` (grey rounded square, downscaled
+`assets/logo/yutu-mux-background.png` (grey rounded square, downscaled
 to every iconset slot):
 
 ```sh
