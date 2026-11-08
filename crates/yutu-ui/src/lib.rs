@@ -4534,32 +4534,44 @@ fn cookie_session_exists() -> bool {
 }
 
 /// Load the saved header from the keychain (migrating the legacy file).
+/// Hermetic under test (see [`load_scrobble_secret`]): unit builds fail
+/// fast without touching the keychain, so logout/sync paths can never
+/// delete or read a real session.
 #[cfg(feature = "innertube")]
 fn load_cookie_header() -> Result<String, String> {
-    yutu_core::load_cookie_session(
-        std::path::Path::new(&cookie_session_path()),
-        std::path::Path::new(&cookie_keyring_marker_path()),
-    )
+    #[cfg(test)]
+    {
+        Err("secure store disabled for tests".into())
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::load_cookie_session(
+            std::path::Path::new(&cookie_session_path()),
+            std::path::Path::new(&cookie_keyring_marker_path()),
+        )
+    }
 }
 
 /// Delete the session everywhere (keychain, marker, legacy file).
+/// Hermetic under test: unit builds report success without touching
+/// anything (see [`load_cookie_header`]).
 #[cfg(feature = "innertube")]
 fn delete_cookie_session_secure() -> Result<(), String> {
-    yutu_core::delete_cookie_session(
-        std::path::Path::new(&cookie_session_path()),
-        std::path::Path::new(&cookie_keyring_marker_path()),
-    )
+    #[cfg(test)]
+    {
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::delete_cookie_session(
+            std::path::Path::new(&cookie_session_path()),
+            std::path::Path::new(&cookie_keyring_marker_path()),
+        )
+    }
 }
 #[cfg(feature = "innertube")]
 fn oauth_path_exists() -> bool {
-    #[cfg(feature = "innertube")]
-    {
-        std::path::Path::new(&oauth_path()).exists()
-    }
-    #[cfg(not(feature = "innertube"))]
-    {
-        false
-    }
+    std::path::Path::new(&oauth_path()).exists()
 }
 
 /// Sync prefs from SQLite: auto-sync toggle (default on) plus the last
@@ -4730,6 +4742,36 @@ fn cookie_path_budget(field_w: f32) -> usize {
 fn cookie_pick_valid(path: &str) -> bool {
     let trimmed = path.trim();
     !trimmed.is_empty() && trimmed.to_lowercase().ends_with(".txt")
+}
+
+/// Load one scrobble secret, hermetic under test: unit builds read
+/// nothing (pre-existing in-memory values stand), so tests never touch
+/// the real keychain (`cfg(test)` does not propagate into dependency
+/// crates, so core cannot tell a UI test run apart).
+fn load_scrobble_secret(account: &str) -> Option<String> {
+    #[cfg(test)]
+    {
+        let _ = account;
+        None
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::load_secret(account).ok()
+    }
+}
+
+/// Save one scrobble secret, hermetic under test (see
+/// [`load_scrobble_secret`]): unit builds report success without writing.
+fn save_scrobble_secret(account: &str, value: &str) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let _ = (account, value);
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        yutu_core::save_secret(account, value)
+    }
 }
 
 impl AppState {
@@ -4990,6 +5032,33 @@ impl AppState {
             {
                 state.anim_ms = ms.clamp(ANIM_MIN_MS, ANIM_MAX_MS);
             }
+        }
+        // Scrobbling survives restarts: the toggle + display name live in
+        // SQLite with the other prefs, the tokens live in the OS keychain
+        // like the cookie session (one read each at launch, silent while
+        // the login keychain is unlocked; failures just mean re-entering
+        // them, exactly like before).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            state.scrobble_enabled = store
+                .get_pref("scrobble_enabled")
+                .unwrap_or(None)
+                .as_deref()
+                == Some("1");
+            if let Some(user) = store.get_pref("scrobble_user").unwrap_or(None) {
+                state.scrobble_user = user;
+            }
+        }
+        if let Some(token) = load_scrobble_secret(yutu_core::SCROBBLE_LB_TOKEN) {
+            state.scrobble_lb_token = token;
+        }
+        if let Some(key) = load_scrobble_secret(yutu_core::SCROBBLE_FM_KEY) {
+            state.scrobble_fm_key = key;
+        }
+        if let Some(secret) = load_scrobble_secret(yutu_core::SCROBBLE_FM_SECRET) {
+            state.scrobble_fm_secret = secret;
+        }
+        if let Some(sk) = load_scrobble_secret(yutu_core::SCROBBLE_FM_SK) {
+            state.scrobble_fm_sk = sk;
         }
         // Display prefs survive restarts (garbage falls back to the
         // defaults; the scale clamps into range and rejects NaN, which
@@ -7732,6 +7801,37 @@ impl AppState {
         Some(self.modal_frame(card, Message::CookieCleanupKeep))
     }
 
+    /// Persist scrobble secrets to the OS keychain, one write per field
+    /// (never per keystroke). Empty fields delete their entries, so
+    /// cleared tokens leave no residue. Every field is attempted even
+    /// when one fails; the first error surfaces. In-memory state always
+    /// applies, so a locked/missing keychain only costs a re-entry next
+    /// launch; only failures surface (success stays quiet to never
+    /// clobber a progress status behind the dialog).
+    fn persist_scrobble_secrets(&mut self) {
+        let saves = [
+            (yutu_core::SCROBBLE_LB_TOKEN, self.scrobble_lb_token.clone()),
+            (yutu_core::SCROBBLE_FM_KEY, self.scrobble_fm_key.clone()),
+            (
+                yutu_core::SCROBBLE_FM_SECRET,
+                self.scrobble_fm_secret.clone(),
+            ),
+            (yutu_core::SCROBBLE_FM_SK, self.scrobble_fm_sk.clone()),
+        ];
+        let mut first_err: Option<String> = None;
+        for (account, value) in saves {
+            if let Err(e) = save_scrobble_secret(account, &value) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+        if let Some(e) = first_err {
+            yutu_core::app_log::warn("yutu-scrobble", format!("keychain save failed: {e}"));
+            self.status = Self::failure_status("Scrobble credentials save failed".into(), e);
+        }
+    }
+
     /// Scrobbling credentials dialog: the enable toggle plus the
     /// ListenBrainz/Last.fm fields, same controls as the old inline
     /// section. Scrim/Esc closes it, edits are kept.
@@ -7743,7 +7843,7 @@ impl AppState {
         let card: iced::Element<'_, Message> = container(
             column![
                 text("Scrobbling").size(16),
-                text("Submit listens while playing. Credentials stay with your local library.")
+                text("Submit listens while playing. Tokens live in your OS keychain, the rest with your local library.")
                     .size(12)
                     .color(MUTED),
                 checkbox(self.scrobble_enabled)
@@ -10676,6 +10776,9 @@ impl AppState {
             Message::EqToggled(on) => self.toggle_eq(on),
             Message::ScrobbleToggled(on) => {
                 self.scrobble_enabled = on;
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("scrobble_enabled", if on { "1" } else { "0" });
+                }
                 self.status = if on {
                     "Scrobbling enabled (submits when credentials are set).".into()
                 } else {
@@ -10697,9 +10800,13 @@ impl AppState {
             }
             Message::CloseScrobbleModal => {
                 self.scrobble_modal_open = false;
+                self.persist_scrobble_secrets();
             }
             Message::ScrobbleUserChanged(u) => {
-                self.scrobble_user = u;
+                self.scrobble_user = u.clone();
+                if let Ok(store) = LibraryStore::open(&self.library_path) {
+                    let _ = store.set_pref("scrobble_user", &u);
+                }
             }
             Message::ScrobbleLbTokenChanged(t) => {
                 self.scrobble_lb_token = t;
@@ -11603,6 +11710,7 @@ impl AppState {
                 // Scrim/Esc closes it with edits kept.
                 if self.scrobble_modal_open {
                     self.scrobble_modal_open = false;
+                    self.persist_scrobble_secrets();
                     return iced::Task::none();
                 }
                 // Topmost first: cookie cleanup modal, menus, popup,
@@ -17630,7 +17738,7 @@ impl AppState {
                     .spacing(4),
                     text("Scrobbling").size(17),
                     button(btn_text("Set up scrobbling", 12))
-                        .style(hover_row)
+                        .style(green_play)
                         .on_press(Message::OpenScrobbleModal)
                         .padding(8),
                     text("Cookie import").size(17),
@@ -22079,6 +22187,24 @@ mod tests {
         let _ = s.update(Message::CloseContext);
         assert!(!s.scrobble_modal_open);
         assert!(s.pending_cookie_cleanup.is_some());
+    }
+
+    #[test]
+    fn scrobble_toggle_and_user_survive_restart() {
+        let mut s = test_state();
+        let _ = s.update(Message::ScrobbleToggled(true));
+        let _ = s.update(Message::ScrobbleUserChanged("alice".into()));
+        // Secrets ride in memory for the session (the keychain is never
+        // touched by unit builds) and survive the dialog close.
+        let _ = s.update(Message::OpenScrobbleModal);
+        let _ = s.update(Message::ScrobbleLbTokenChanged("tok".into()));
+        let _ = s.update(Message::CloseScrobbleModal);
+        assert_eq!(s.scrobble_lb_token, "tok");
+        // Non-secrets round-trip through SQLite; tokens do not.
+        let (again, _) = AppState::with_library_path(s.library_path.clone());
+        assert!(again.scrobble_enabled);
+        assert_eq!(again.scrobble_user, "alice");
+        assert!(again.scrobble_lb_token.is_empty());
     }
 
     #[test]

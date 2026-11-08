@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Scrobbling credentials persist securely: the ListenBrainz token and
+  Last.fm key/secret/session key live in the OS keychain like the cookie
+  session (one entry each, empties delete their entries, no plaintext
+  fallback), while the toggle and display name stay in SQLite; secrets
+  save when the dialog closes and load at launch. "Set up scrobbling"
+  is now a red CTA like Sync now.
 - Scrobbling settings live behind a dialog: the Settings section shows
   a "Set up scrobbling" opener and the toggle plus ListenBrainz/Last.fm
   fields moved into a dimmed modal (same shared frame, dim, and rise

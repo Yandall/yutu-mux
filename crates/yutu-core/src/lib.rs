@@ -18,7 +18,6 @@ pub mod raw_lyrics;
 #[cfg(feature = "innertube")]
 pub mod raw_search;
 pub mod scrobble;
-#[cfg(feature = "innertube")]
 pub mod secure_store;
 pub mod stream;
 pub mod ytdlp;
@@ -77,6 +76,10 @@ pub use scrobble::{submit_lastfm_scrobble, submit_listenbrainz_listen};
 pub use secure_store::{
     cookie_session_exists as secure_session_exists, delete_cookie_session, load_cookie_session,
     save_cookie_session, SecureBackend, COOKIE_ACCOUNT, COOKIE_SERVICE,
+};
+pub use secure_store::{
+    delete_secret, load_secret, save_secret, SCROBBLE_FM_KEY, SCROBBLE_FM_SECRET, SCROBBLE_FM_SK,
+    SCROBBLE_LB_TOKEN,
 };
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
 pub use ytdlp::{download_audio_bytes, find_yt_dlp, resolve_audio_url};

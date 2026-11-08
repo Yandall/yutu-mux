@@ -23,10 +23,14 @@ reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "form",
 ], optional = true }
-keyring = { version = "4", optional = true }
+# OS keychain for cookie sessions + scrobble tokens (Secret Service on
+# Linux, Keychain on macOS, Credential Manager on Windows). Unconditional:
+# scrobbling persistence is not feature-gated, and headless machines use
+# the keychain-error paths (no compile-time system deps on Linux).
+keyring = "4"
 
 [features]
-innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1", "dep:keyring"]
+innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1"]
 lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
 # Test-only mock backend + fixtures (never in release binaries): enabled
