@@ -17,7 +17,9 @@
   panel on macOS) instead of a pasted file path: a fixed-width
   input-style picker field (aligned with the other capped Settings
   inputs) shows the picked path trimmed to `...` plus the tail, with
-  Import beside it in leftover space; Import appears only once a txt
+  Import beside it in leftover space; on narrow windows the field goes
+  fluid and shrinks so Import stays visible, with the label budget
+  fitted to the actual field width. Import appears only once a txt
   file is picked. All Settings inputs share a 560px max width. The
   section header drops the parenthetical. The cleanup modal shows as
   soon as the connection succeeds (no waiting for playlists), dims the

@@ -4664,6 +4664,11 @@ fn load_persisted(
     )
 }
 
+/// Width for the Import button plus row spacing, in px (generous
+/// estimate: the button must never be pushed out of view).
+#[cfg(feature = "innertube")]
+const COOKIE_IMPORT_ROOM: f32 = 120.0;
+
 /// Chars of a picked path shown in the fixed-width picker field: `...`
 /// plus the tail. Budget fits the 560px field at 12px (icon, spacing,
 /// and padding discounted, margin to spare at every UI scale, since
@@ -4685,6 +4690,27 @@ fn trim_cookie_path(path: &str, max: usize) -> String {
         "...{}",
         chars[chars.len() - (max - 3)..].iter().collect::<String>()
     )
+}
+
+/// True when a center column of `center_w` px fits the full-width picker
+/// field plus Import beside it. Otherwise the field goes fluid: it
+/// shrinks and Import stays visible instead of being pushed out of view.
+#[cfg(feature = "innertube")]
+fn cookie_row_roomy(center_w: f32) -> bool {
+    center_w >= SETTINGS_INPUT_W + COOKIE_IMPORT_ROOM
+}
+
+/// Label char budget for the picked path: full budget when the field is
+/// full width, fitted to the shrunken field on narrow windows (icon,
+/// spacing, and padding discounted, ~7px a char at 12px). The floor
+/// keeps short names whole; the ceiling is the full-width budget.
+#[cfg(feature = "innertube")]
+fn cookie_path_budget(field_w: f32) -> usize {
+    if field_w >= SETTINGS_INPUT_W {
+        COOKIE_PATH_SHOWN
+    } else {
+        (((field_w - 42.0) / 7.0) as usize).clamp(24, COOKIE_PATH_SHOWN)
+    }
 }
 
 /// True when the picked path is a plausible cookies.txt export: a `.txt`
@@ -7541,19 +7567,32 @@ impl AppState {
             .spacing(4)
             .into();
         }
+        // Room check from live geometry: window minus the animated
+        // sidebars, app padding, and row spacing (conservative). Roomy
+        // windows get the fixed field aligned with the other inputs;
+        // narrow ones get a fluid field that shrinks, so Import is always
+        // reachable. The label budget follows the actual field width.
+        let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let center_w = win_w - self.sidebar_w - self.right_w - 32.0;
+        let roomy = cookie_row_roomy(center_w);
+        let field_w = if roomy {
+            SETTINGS_INPUT_W
+        } else {
+            (center_w - COOKIE_IMPORT_ROOM).max(0.0)
+        };
         let (pick_label, pick_color) = if self.cookie_path.trim().is_empty() {
             ("Choose cookies.txt file…".to_string(), MUTED)
         } else {
             (
-                trim_cookie_path(self.cookie_path.trim(), COOKIE_PATH_SHOWN),
+                trim_cookie_path(self.cookie_path.trim(), cookie_path_budget(field_w)),
                 iced::Color::WHITE,
             )
         };
-        // Fixed field width, aligned with the other capped inputs: a Row
-        // hands Fill children tight limits that no max_width can shrink,
-        // so the cap here is the width itself. Import sits to its right
-        // in leftover space. The trimmed label can never outgrow the
-        // field, so nothing paints past the border.
+        // Fixed field width on roomy windows, aligned with the other
+        // capped inputs (a Row hands Fill children tight limits that no
+        // max_width can shrink, so the cap here is the width itself).
+        // Import sits to its right in leftover space. The trimmed label
+        // can never outgrow the field, so nothing paints past the border.
         let mut row_items: Vec<iced::Element<'_, Message>> = vec![button(
             iced::widget::row![
                 btn_icon("folder", 14.0, MUTED),
@@ -7570,7 +7609,11 @@ impl AppState {
         .style(file_pick)
         .on_press(Message::CookieBrowse)
         .padding(10)
-        .width(iced::Length::Fixed(SETTINGS_INPUT_W))
+        .width(if roomy {
+            iced::Length::Fixed(SETTINGS_INPUT_W)
+        } else {
+            Fill
+        })
         .into()];
         // Import only once a txt file is picked: anything else cannot
         // import, so the button stays out of the way until it can work.
@@ -23994,6 +24037,29 @@ mod tests {
         let shown_wide = trim_cookie_path(&wide, COOKIE_PATH_SHOWN);
         assert_eq!(shown_wide.chars().count(), COOKIE_PATH_SHOWN);
         assert!(shown_wide.ends_with("cookies.txt"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_row_roomy_needs_field_plus_import() {
+        assert!(cookie_row_roomy(SETTINGS_INPUT_W + COOKIE_IMPORT_ROOM));
+        assert!(cookie_row_roomy(2000.0));
+        assert!(!cookie_row_roomy(
+            SETTINGS_INPUT_W + COOKIE_IMPORT_ROOM - 1.0
+        ));
+        assert!(!cookie_row_roomy(400.0));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_path_budget_follows_field_width() {
+        assert_eq!(cookie_path_budget(SETTINGS_INPUT_W), COOKIE_PATH_SHOWN);
+        assert_eq!(cookie_path_budget(2000.0), COOKIE_PATH_SHOWN);
+        // Narrow field: fitted budget, still tail-trimmed by the caller.
+        assert_eq!(cookie_path_budget(400.0), 51);
+        // Tiny field: floor keeps short names whole.
+        assert_eq!(cookie_path_budget(0.0), 24);
+        assert_eq!(cookie_path_budget(100.0), 24);
     }
 
     #[cfg(feature = "innertube")]
