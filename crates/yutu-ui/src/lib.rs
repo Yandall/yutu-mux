@@ -4664,6 +4664,29 @@ fn load_persisted(
     )
 }
 
+/// Chars of a picked path shown in the fixed-width picker field: `...`
+/// plus the tail. Budget fits the 560px field at 12px (icon, spacing,
+/// and padding discounted, margin to spare at every UI scale, since
+/// field and glyphs scale together). Iced never clips overflowing text,
+/// so an untrimmed label would paint past the field border.
+#[cfg(feature = "innertube")]
+const COOKIE_PATH_SHOWN: usize = 71;
+
+/// Display form of a picked cookies.txt path: the full path when short,
+/// else `...` plus the tail so the filename stays visible.
+/// Char-based, so multi-byte names never split mid-codepoint.
+#[cfg(feature = "innertube")]
+fn trim_cookie_path(path: &str, max: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max || max <= 3 {
+        return path.to_string();
+    }
+    format!(
+        "...{}",
+        chars[chars.len() - (max - 3)..].iter().collect::<String>()
+    )
+}
+
 /// True when the picked path is a plausible cookies.txt export: a `.txt`
 /// file. The picker filters for it; the Import button gates on this, so a
 /// stale non-txt pick never offers an import that cannot work.
@@ -7521,32 +7544,34 @@ impl AppState {
         let (pick_label, pick_color) = if self.cookie_path.trim().is_empty() {
             ("Choose cookies.txt file…".to_string(), MUTED)
         } else {
-            (self.cookie_path.trim().to_string(), iced::Color::WHITE)
-        };
-        // The picker keeps its capped width; Import sits to its right in
-        // leftover space, so the field never shrinks for the button. The
-        // label fills the field and clips like a real input (single
-        // line, no manual trim): whatever fits, fits.
-        let mut row_items: Vec<iced::Element<'_, Message>> = vec![settings_input(
-            button(
-                iced::widget::row![
-                    btn_icon("folder", 14.0, MUTED),
-                    text(pick_label)
-                        .size(12)
-                        .color(pick_color)
-                        .width(Fill)
-                        .wrapping(Wrapping::None),
-                ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center)
-                .width(Fill),
+            (
+                trim_cookie_path(self.cookie_path.trim(), COOKIE_PATH_SHOWN),
+                iced::Color::WHITE,
             )
-            .style(file_pick)
-            .on_press(Message::CookieBrowse)
-            .padding(10)
-            .width(Fill)
-            .into(),
-        )];
+        };
+        // Fixed field width, aligned with the other capped inputs: a Row
+        // hands Fill children tight limits that no max_width can shrink,
+        // so the cap here is the width itself. Import sits to its right
+        // in leftover space. The trimmed label can never outgrow the
+        // field, so nothing paints past the border.
+        let mut row_items: Vec<iced::Element<'_, Message>> = vec![button(
+            iced::widget::row![
+                btn_icon("folder", 14.0, MUTED),
+                text(pick_label)
+                    .size(12)
+                    .color(pick_color)
+                    .width(Fill)
+                    .wrapping(Wrapping::None),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .width(Fill),
+        )
+        .style(file_pick)
+        .on_press(Message::CookieBrowse)
+        .padding(10)
+        .width(iced::Length::Fixed(SETTINGS_INPUT_W))
+        .into()];
         // Import only once a txt file is picked: anything else cannot
         // import, so the button stays out of the way until it can work.
         if cookie_pick_valid(&self.cookie_path) {
@@ -7578,7 +7603,9 @@ impl AppState {
     /// card that rises from below, same layer pattern as the menus.
     #[cfg(feature = "innertube")]
     fn cookie_cleanup_dialog(&self) -> Option<iced::Element<'_, Message>> {
-        use iced::widget::{button, column, container, mouse_area, text, Space, Stack};
+        use iced::widget::{
+            button, column, container, mouse_area, text, text::Wrapping, Space, Stack,
+        };
         use iced::Fill;
         /// Card travel below center at entrance start, in px.
         const MODAL_RISE_PX: f32 = 48.0;
@@ -7589,7 +7616,13 @@ impl AppState {
                 text("Your session is saved in the OS keychain and survives restarts and updates. The export is plaintext and no longer needed.")
                     .size(12)
                     .color(MUTED),
-                text(src).size(11).color(MUTED).width(Fill),
+                // Glyph wrapping: a long path wraps mid-name and grows
+                // the card instead of painting past its border.
+                text(src)
+                    .size(11)
+                    .color(MUTED)
+                    .width(Fill)
+                    .wrapping(Wrapping::WordOrGlyph),
                 iced::widget::row![
                     button(btn_text("Delete export", 12))
                         .style(green_play)
@@ -23941,6 +23974,26 @@ mod tests {
         assert_eq!(s.cookie_path, "/tmp/cookies.txt");
         let _ = s.update(Message::CookieFilePicked(Some("   ".into())));
         assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn trim_cookie_path_tails_long_paths() {
+        assert_eq!(
+            trim_cookie_path("/a/cookies.txt", COOKIE_PATH_SHOWN),
+            "/a/cookies.txt"
+        );
+        assert_eq!(trim_cookie_path("abc", 0), "abc");
+        let long = "/home/someone/very/long/nested/download/folder/with/extra/dirs/cookies.txt";
+        let shown = trim_cookie_path(long, COOKIE_PATH_SHOWN);
+        assert_eq!(shown.chars().count(), COOKIE_PATH_SHOWN);
+        assert!(shown.starts_with("..."));
+        assert!(shown.ends_with("cookies.txt"));
+        // Multi-byte names never split mid-codepoint.
+        let wide = format!("/h/{}/cookies.txt", "é".repeat(100));
+        let shown_wide = trim_cookie_path(&wide, COOKIE_PATH_SHOWN);
+        assert_eq!(shown_wide.chars().count(), COOKIE_PATH_SHOWN);
+        assert!(shown_wide.ends_with("cookies.txt"));
     }
 
     #[cfg(feature = "innertube")]

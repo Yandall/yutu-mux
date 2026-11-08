@@ -14,15 +14,16 @@
   CTA; scrim/Esc keeps it), appearing once playlist stages complete so
   progress is never covered.
 - Cookie import uses the system file picker (portal on Linux, native
-  panel on macOS) instead of a pasted file path: an input-style picker
-  field (capped with the other Settings inputs) shows the picked path
-  clipped to whatever fits, with Import beside it in leftover space;
-  Import appears only once a txt file is picked. All Settings inputs
-  (text fields, pickers, sliders, the cookie row) share a 560px max
-  width. The section header drops the parenthetical. The cleanup modal
-  shows as soon as the connection succeeds (no waiting for playlists),
-  dims the app behind it, and its card rises from below on the
-  animation ticker (snapped when animations are off).
+  panel on macOS) instead of a pasted file path: a fixed-width
+  input-style picker field (aligned with the other capped Settings
+  inputs) shows the picked path trimmed to `...` plus the tail, with
+  Import beside it in leftover space; Import appears only once a txt
+  file is picked. All Settings inputs share a 560px max width. The
+  section header drops the parenthetical. The cleanup modal shows as
+  soon as the connection succeeds (no waiting for playlists), dims the
+  app behind it, wraps long paths mid-name instead of overflowing, and
+  its card rises from below on the animation ticker (snapped when
+  animations are off).
 - Lyrics stepper arrows stay put: the provider label sits in a
   fixed-width centered box, so `< >` never drift when the provider
   name changes length.
