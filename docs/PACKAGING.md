@@ -131,7 +131,8 @@ checksum (the two files uploaded). Tarball contents (under a top-level
 directory of the same name):
 
 - `yutu-mux` (release binary, x86_64 Linux)
-- `icons/` (hicolor PNGs plus the scalable SVG, same layout the
+- `icons/` (hicolor PNGs plus the scalable SVG, all rendered from the
+  `assets/logo/yutu-mux-background.png` master, same layout the
   installer copies below `~/.local/share/icons`)
 - `README.md`
 - `LICENSE` (if present in the repo)

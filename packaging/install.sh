@@ -22,7 +22,8 @@
 #
 # Linux installs the yutu-mux binary to PREFIX/bin and a desktop
 # launcher to PREFIX/share/applications. macOS installs YutuMux.app to
-# PREFIX/Applications and a yutu-mux command to PREFIX/bin.
+# the global /Applications (needs sudo) and a yutu-mux command to
+# PREFIX/bin.
 #
 # Linux system packages use sudo and macOS dependencies use Homebrew.
 # Application files stay below PREFIX.
@@ -449,21 +450,22 @@ if [ "$OS" = Linux ]; then
     say "Installed yutu-mux to $BIN_DIR/yutu-mux"
     say "Desktop launcher: $APPS_DIR/yutu-mux.desktop"
 else
-    APP_DIR="$PREFIX/Applications/YutuMux.app"
+    # The bundle goes to the global /Applications (needs sudo); only
+    # the command-line symlink lives below the prefix.
+    APP_DIR="/Applications/YutuMux.app"
     BIN_DIR="$PREFIX/bin"
     # APP_SRC came from the mounted disk image above.
     replace_target "$APP_DIR"
     replace_target "$BIN_DIR/yutu-mux"
-    make_dir "$PREFIX/Applications"
     make_dir "$BIN_DIR"
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "would copy $APP_SRC to $PREFIX/Applications/"
+        say "would copy $APP_SRC to $APP_DIR/ (needs sudo)"
     else
-        temporary="$PREFIX/Applications/.YutuMux.app.install-new.$$"
-        rm -rf -- "$temporary"
-        copy_file "$APP_SRC" "$temporary"
-        rm -rf -- "$APP_DIR"
-        mv -- "$temporary" "$APP_DIR"
+        temporary="/Applications/.YutuMux.app.install-new.$$"
+        run_sudo rm -rf -- "$temporary"
+        run_sudo cp -R "$APP_SRC" "$temporary"
+        run_sudo rm -rf -- "$APP_DIR"
+        run_sudo mv -- "$temporary" "$APP_DIR"
     fi
     # The bundle launcher supplies Homebrew paths for yt-dlp and libmpv.
     # Link the command-line entry point to that same launcher.

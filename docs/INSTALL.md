@@ -100,11 +100,13 @@ and ad-hoc sign the bundle (see `docs/PACKAGING.md`).
 Installed files:
 
 ```text
-~/.local/Applications/YutuMux.app
-~/.local/bin/yutu-mux -> ~/.local/Applications/YutuMux.app/Contents/MacOS/YutuMux
+/Applications/YutuMux.app
+~/.local/bin/yutu-mux -> /Applications/YutuMux.app/Contents/MacOS/YutuMux
 ```
 
-Move `YutuMux.app` to `/Applications` manually if preferred. First launch
+The bundle goes to the global `/Applications` (the installer uses
+`sudo` for that step); only the command-line symlink lives below the
+prefix. First launch
 requires right-click, Open because the bundle is ad-hoc signed, not
 notarized. The release disk image is self-contained (libmpv plus its
 own yt-dlp sidecar); the Homebrew packages stay as fallback. The macOS
