@@ -1958,6 +1958,10 @@ const DIVIDER_PX: f32 = 5.0;
 /// line height + like row + spacings.
 /// Scrollable id for the drawer lyrics pane (follow snap target).
 const LYRICS_SCROLL_ID: &str = "drawer-lyrics";
+/// Provider stepper label box: fits "YouTube Music" at 12px with
+/// headroom for wider display fonts, so the `< >` arrows never drift
+/// when the provider changes. Text centers inside.
+const LYRICS_PROVIDER_LABEL_W: f32 = 104.0;
 /// Estimated hero block height (see sum above).
 const LYRIC_HERO_H: f32 = 428.0;
 /// Hero-to-lyrics column spacing.
@@ -15863,7 +15867,12 @@ impl AppState {
                 .on_press(Message::CycleLyricsProvider(-1))
                 .padding(4)
                 .into(),
-            text(label.to_string()).size(12).color(MUTED).into(),
+            text(label.to_string())
+                .size(12)
+                .color(MUTED)
+                .width(iced::Length::Fixed(LYRICS_PROVIDER_LABEL_W))
+                .align_x(iced::alignment::Horizontal::Center)
+                .into(),
             button(btn_icon("chevron-right", 14.0, MUTED))
                 .style(hover_row)
                 .on_press(Message::CycleLyricsProvider(1))

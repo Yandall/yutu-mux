@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Lyrics stepper arrows stay put: the provider label sits in a
+  fixed-width centered box, so `< >` never drift when the provider
+  name changes length.
 - Lyrics providers with fallback: LRCLIB retries up to 3 attempts per
   request (honoring `Retry-After` on 429/503) and falls back from the
   exact `/api/get` match to a fuzzy `/api/search` pick (alternate
