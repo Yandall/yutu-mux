@@ -1,7 +1,8 @@
 # Per-user installer (Linux + macOS)
 
-No checkout needed on Linux x86_64: the installer downloads the prebuilt
-release, so Rust is never installed. One command (pass `--yes` because a
+No checkout needed on Linux x86_64 or macOS arm64: the installer
+downloads the prebuilt release (tarball or disk image), so Rust is
+never installed. One command (pass `--yes` because a
 pipe has no terminal for confirmation prompts):
 
 ```sh
@@ -29,10 +30,13 @@ replacing existing application files. Use `--yes` for unattended installs.
 
 ## Prebuilt release vs source build
 
-On Linux x86_64 the default is `--from-release`: download the
-`yutu-mux-x86_64-unknown-linux-gnu.tar.gz` asset from the latest GitHub
-release and install it. Only runtime libraries are installed (ALSA,
-X11/Wayland, SQLite, OpenSSL, libmpv, yt-dlp); no compiler and no Rust.
+The default is `--from-release`: download the prebuilt artifact from
+the latest GitHub release and install it. Linux x86_64 gets the
+`yutu-mux-<version>-linux-x86_64.tar.gz` tarball (runtime libraries
+only: ALSA, X11/Wayland, SQLite, OpenSSL, libmpv, yt-dlp); macOS
+arm64 gets the self-contained `YutuMux-<version>-macos-arm64.dmg`
+disk image (Homebrew mpv and yt-dlp as runtime fallback). No compiler
+and no Rust on either platform.
 
 Every release ships a matching `.sha256` file, and the installer refuses
 to unpack or install when the checksum is missing or mismatched. TLS
@@ -44,14 +48,14 @@ integrity check, not an authorship signature.
 # Pin a release, or point at a fork:
 sh install.sh --yes --version v0.2.0
 sh install.sh --yes --repo OWNER/REPO
-# Compile locally instead (needs Rust plus a checkout):
-sh install.sh --build-from-source
+# Build manually instead (needs Rust plus a checkout; the installer
+# never compiles): cargo build --release, or
+# packaging/macos/build-app.sh --self-contained on a Mac.
 ```
 
-Anything without a prebuilt asset (macOS, other architectures) always
-builds from source: a checkout is required, or cloned automatically when
-git is available, and Rust is installed through rustup only when Cargo is
-missing.
+Platforms without a prebuilt asset are not covered by the installer;
+build them manually (`cargo build --release`, or
+`packaging/macos/build-app.sh` on a Mac, see `docs/PACKAGING.md`).
 
 ## Linux
 
@@ -77,29 +81,36 @@ Installed files:
 ~/.local/share/icons/hicolor/scalable/apps/yutu-mux.svg
 ```
 
-The desktop entry launches `yutu-mux` by name, so `~/.local/bin` must be on
-PATH. Many desktop distributions configure this automatically after the
-next login. The launcher uses the installed rings + M icon set
+The desktop entry points at the install prefix by absolute path, so
+the launcher works even when `~/.local/bin` is not on the desktop
+session PATH (shells usually add it via `~/.profile`, sessions often
+do not). Terminal use still wants it on PATH: many distributions add
+it automatically after the next login. The launcher uses the installed rings + M icon set
 (`~/.local/share/icons/hicolor`), refreshed with `gtk-update-icon-cache`
 when available.
 
 ## macOS
 
-Dependencies come from Homebrew: `mpv`, `yt-dlp`, and `pkg-config`. The
-script reuses `packaging/macos/build-app.sh` to build and ad-hoc sign the
-existing native app bundle.
+The default release path mounts the downloaded disk image (checksum
+verified first), copies `YutuMux.app` out, and installs it below the
+prefix. Dependencies come from Homebrew (`mpv` and `yt-dlp`, runtime
+fallback). Manual builds reuse `packaging/macos/build-app.sh` to build
+and ad-hoc sign the bundle (see `docs/PACKAGING.md`).
 
 Installed files:
 
 ```text
-~/.local/Applications/YutuMux.app
-~/.local/bin/yutu-mux -> ~/.local/Applications/YutuMux.app/Contents/MacOS/YutuMux
+/Applications/YutuMux.app
+~/.local/bin/yutu-mux -> /Applications/YutuMux.app/Contents/MacOS/YutuMux
 ```
 
-Move `YutuMux.app` to `/Applications` manually if preferred. First launch
+The bundle goes to the global `/Applications` (the installer uses
+`sudo` for that step); only the command-line symlink lives below the
+prefix. First launch
 requires right-click, Open because the bundle is ad-hoc signed, not
-notarized. Homebrew remains required for libmpv and yt-dlp; this is not the
-self-contained distribution bundle. The macOS installer path is untested
+notarized. The release disk image is self-contained (libmpv plus its
+own yt-dlp sidecar); the Homebrew packages stay as fallback. The macOS
+installer path is untested
 because the maintainer has no Mac.
 
 ## Options and removal

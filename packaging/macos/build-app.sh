@@ -4,11 +4,12 @@
 #   packaging/macos/build-app.sh [--self-contained] [--output DIR]
 #
 # Output (under DIR, default dist/): stage/YutuMux.app (+ an
-# Applications shortcut for the disk image), a
+# Applications shortcut for the disk image), a versioned folder
+# YutuMux-<version>-macos-<arch>/ holding the disk image
+# YutuMux-<version>-macos-<arch>.dmg plus its `.dmg.sha256` checksum
+# (the two files uploaded to GitHub Releases), and a
 # YutuMux-<version>-macos-<arch>.sha256 manifest of every file in the
-# bundle (verify with `shasum -a 256 -c` from the stage dir), and a
-# YutuMux-<version>-macos-<arch>.dmg disk image plus its `.dmg.sha256`
-# checksum (the single-file upload for GitHub Releases).
+# bundle (verify with `shasum -a 256 -c` from the stage dir).
 #
 # --self-contained bundles libmpv (+ its ffmpeg libs) via dylibbundler and
 # fetches the standalone yt-dlp macOS binary, so the app runs with nothing
@@ -176,15 +177,18 @@ echo "==> checksum: $SHAFILE"
 
 # Single-file distributable (GitHub Releases cannot take a directory):
 # UDZO disk image with the signed bundle plus an Applications shortcut
-# for the standard drag-install, and the image checksum. hdiutil is
-# macOS stock, like everything else this script needs.
+# for the standard drag-install, collected with its checksum in a
+# versioned folder. hdiutil is macOS stock, like everything else this
+# script needs.
 echo "==> staging disk image (app + Applications shortcut)"
 ln -sfn /Applications "$STAGE/Applications"
-DMG="$OUT/$APP_NAME-$VERSION-macos-$ARCH.dmg"
-rm -f "$DMG"
+FOLDER="$OUT/$APP_NAME-$VERSION-macos-$ARCH"
+rm -rf "$FOLDER"
+mkdir -p "$FOLDER"
+DMG="$FOLDER/$APP_NAME-$VERSION-macos-$ARCH.dmg"
 hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "==> disk image: $DMG"
-(cd "$OUT" && shasum -a 256 "$(basename "$DMG")") > "$DMG.sha256"
+(cd "$FOLDER" && shasum -a 256 "$(basename "$DMG")") > "$DMG.sha256"
 echo "==> checksum: $DMG.sha256"
 
 echo "done: $APP"

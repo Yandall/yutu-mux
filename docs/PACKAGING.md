@@ -118,40 +118,32 @@ Follow-up before Flathub submission: AppStream metainfo
 `.github/workflows/release.yml` runs on every `v*` tag: checkout →
 toolchain → apt deps → `cargo test --workspace --locked` → feature
 checks (`--all-features` compile plus the `mpv` checks) →
-`cargo build --release --locked` → stage + `tar -czf` + `sha256sum` →
-upload to the GitHub Release via `softprops/action-gh-release@v2`
-(MIT-licensed action). There is no per-push CI; the release run is the
-only Actions usage (one Linux runner per tag).
+`packaging/linux/build-tarball.sh --output dist` (release build plus
+staging) → upload to the GitHub Release via
+`softprops/action-gh-release@v2` (MIT-licensed action). There is no
+per-push CI; the release run is the only Actions usage (one Linux
+runner per tag).
 
-Tarball `yutu-mux-x86_64-unknown-linux-gnu.tar.gz` contents:
+The script writes a versioned folder,
+`dist/yutu-mux-<version>-linux-<arch>/`, holding the tarball
+`yutu-mux-<version>-linux-<arch>.tar.gz` plus its `.tar.gz.sha256`
+checksum (the two files uploaded). Tarball contents (under a top-level
+directory of the same name):
 
 - `yutu-mux` (release binary, x86_64 Linux)
-- `icons/` (hicolor PNGs plus the scalable SVG, same layout the
+- `icons/` (hicolor PNGs plus the scalable SVG, all rendered from the
+  `assets/logo/yutu-mux-background.png` master, same layout the
   installer copies below `~/.local/share/icons`)
 - `README.md`
 - `LICENSE` (if present in the repo)
 - `flatpak/org.yutu_mux.YutuMux.yaml` + `flatpak/org.yutu_mux.YutuMux.desktop`
   (so tarball users can rebuild/install the Flatpak manifest)
 
-The release job also publishes
-`yutu-mux-x86_64-unknown-linux-gnu.tar.gz.sha256` (a `sha256sum` output
-line for the tarball). `packaging/install.sh` downloads that file next
-to the tarball and refuses to unpack or install on a missing or
-mismatched checksum.
+`packaging/install.sh` downloads the tarball next to its checksum and
+refuses to unpack or install on a missing or mismatched checksum.
 
-Local repro of the packaging step (after `cargo build --release`):
-
-```sh
-set -eu
-STAGE="stage/yutu-mux-x86_64-unknown-linux-gnu"
-mkdir -p "$STAGE"
-cp target/release/yutu-mux "$STAGE/"
-cp README.md "$STAGE/"
-if test -f LICENSE; then cp LICENSE "$STAGE/"; fi
-cp flatpak/org.yutu_mux.YutuMux.yaml flatpak/org.yutu_mux.YutuMux.desktop "$STAGE/"
-cp -R packaging/linux/icons "$STAGE/icons"
-tar -czf yutu-mux-x86_64-unknown-linux-gnu.tar.gz -C stage yutu-mux-x86_64-unknown-linux-gnu
-```
+Local repro: `packaging/linux/build-tarball.sh --output dist` (after
+installing the Section-1 build libraries).
 
 Note: the tarball binary is linked against system ALSA/X11/Wayland, so it
 is "portable" across similar desktop distros, not static. Recipients need
@@ -174,10 +166,12 @@ packaging/macos/build-app.sh --self-contained
 ```
 
 One architecture per run (native): repeat per arch and lipo the two
-binaries together for a universal bundle. Upload the
-`YutuMux-<version>-macos-<arch>.dmg` plus its `.dmg.sha256` to the
-GitHub Release by hand (`gh release upload` or the
-web UI): there is no macOS CI job. The script tries `--locked` first (same pinned deps as the
+binaries together for a universal bundle. The `macos-dmg` release job
+builds the self-contained arm64 image in CI and uploads the versioned
+folder contents (`YutuMux-<version>-macos-<arch>.dmg` plus its
+`.dmg.sha256`, under `dist/YutuMux-<version>-macos-<arch>/`) to the
+GitHub Release automatically; an Intel Mac still builds by hand
+(`gh release upload` or the web UI). The script tries `--locked` first (same pinned deps as the
 Linux tarball) and falls back to unlocked with a warning when
 `Cargo.lock` is missing or stale. First launch is right-click, Open
 (unsigned bundle).
@@ -238,10 +232,12 @@ Then:
 6. Move the shipped notes under a dated `## X.Y.Z` entry in
    `CHANGELOG.md` (add a fresh heading on top for the next cycle).
 7. Commit, tag `git tag vX.Y.Z`, push tag — `release.yml` builds the
-   tarball and attaches it to the GitHub Release automatically.
-8. Build the macOS app on a Mac (Section 5) and upload the
-   `YutuMux-<version>-macos-<arch>.dmg` plus its `.dmg.sha256` to the
-   same Release by hand.
+   Linux tarball and the macOS disk image and attaches both to the
+   GitHub Release automatically.
+8. Only an Intel-mac asset still needs a by-hand build on a Mac
+   (Section 5) and a `gh release upload` of the
+   `YutuMux-<version>-macos-x86_64.dmg` plus its `.dmg.sha256` to the
+   same Release.
 9. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
    before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
 

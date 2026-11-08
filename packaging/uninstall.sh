@@ -56,6 +56,22 @@ remove_file() {
     fi
 }
 
+remove_sudo() {
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf 'would remove %s (needs sudo)\n' "$1"
+        elif [ "$(id -u)" -eq 0 ]; then
+            rm -rf -- "$1"
+            printf 'removed %s\n' "$1"
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo rm -rf -- "$1"
+            printf 'removed %s\n' "$1"
+        else
+            printf 'cannot remove %s without sudo; remove it manually\n' "$1" >&2
+        fi
+    fi
+}
+
 remove_file "$PREFIX/bin/yutu-mux"
 remove_file "$PREFIX/share/applications/yutu-mux.desktop"
 # Icon theme entries installed alongside the Linux launcher. A dangling
@@ -65,5 +81,7 @@ for icon in "$PREFIX"/share/icons/hicolor/*/apps/yutu-mux.png \
     "$PREFIX/share/icons/hicolor/scalable/apps/yutu-mux.svg"; do
     remove_file "$icon"
 done
+# Legacy per-user bundle location (older installer versions).
 remove_file "$PREFIX/Applications/YutuMux.app"
+remove_sudo "/Applications/YutuMux.app"
 printf 'User library, cache, and login data were not removed.\n'
