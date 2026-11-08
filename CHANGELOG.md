@@ -17,7 +17,8 @@
   with no reload flash. The view waits for the default provider
   (loading, never a flash of the other one); the fallback shows only
   if the default finds nothing, and a miss on both renders the plain
-  no-lyrics state. Settings holds the default (persisted).
+  no-lyrics state. The stepper label always names the provider
+  actually on screen. Settings holds the default (persisted).
   Musixmatch/Genius stay out (API keys and scraping, against the
   free-tier call).
 - Fixed cookie import and anonymous connect: `ytmapi-rs` 0.3 sends a
