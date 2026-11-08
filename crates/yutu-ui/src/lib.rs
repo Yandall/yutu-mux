@@ -900,14 +900,19 @@ pub enum Route {
 }
 
 /// In-progress right-panel drag: source index + insertion slot.
-/// Slots live strictly *between* rows (1..=len-1): drops above the
-/// first row or below the last are not representable, so the ghost
-/// never floats over empty space. The origin row collapses to zero
-/// height while dragging; siblings close ranks around it.
+/// Slots sit between rows plus both edges (0 before the first row, len
+/// after the last) so every song always has a committable move. A press
+/// first arms the drag invisibly (`live` false, no layout change) so a
+/// plain click never shifts rows; the slot lanes only appear once the
+/// cursor moves past click slop (`live` true). The origin row keeps its
+/// full height while held and only the armed slot parts rows, so long
+/// lists never jump by O(n) on press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DragState {
     from: usize,
     slot: Option<usize>,
+    /// Armed (press held) vs live (moved past slop, lanes visible).
+    live: bool,
 }
 
 /// Press snapshot for click-vs-drag: a release with no committed move
@@ -7629,9 +7634,20 @@ impl AppState {
         }
     }
 
+    /// True once the press has moved past click slop and the slot lanes
+    /// are visible. A merely armed press (plain click) never counts.
+    fn dragging(&self) -> bool {
+        self.drag.is_some_and(|d| d.live)
+    }
+
     /// Latched slot filtered to real moves (own-spot hovers are None).
+    /// Armed-but-unmoved presses never report a slot, so the gap stays
+    /// shut and no bar renders before the lanes exist.
     fn effective_drag_slot(&self) -> Option<usize> {
         self.drag.and_then(|d| {
+            if !d.live {
+                return None;
+            }
             d.slot
                 .filter(|s| slot_commit(self.queue.len(), d.from, *s).is_some())
         })
@@ -10380,12 +10396,18 @@ impl AppState {
             Message::DragStart(from) => {
                 // Two-row lists reorder via the trailing edge slot, so
                 // drags start at two rows and up. Never from the remove
-                // button: slipping off delete must not reorder.
+                // button: slipping off delete must not reorder. Arming
+                // is invisible: lanes appear only after the cursor moves
+                // past click slop, so a plain click never shifts rows.
                 if from < self.queue.len()
                     && self.queue.len() >= 2
                     && self.hover_remove != Some(from)
                 {
-                    self.drag = Some(DragState { from, slot: None });
+                    self.drag = Some(DragState {
+                        from,
+                        slot: None,
+                        live: false,
+                    });
                     self.press_snap = Some(PressSnap {
                         from,
                         pos: self.cursor,
@@ -10403,13 +10425,15 @@ impl AppState {
                 // Arm from the hovered queue row: one press path for text,
                 // art, and gaps (only the remove button owns its press).
                 // Queue-page buttons coexist order-independently (a shared
-                // release either jumps once or no-ops).
+                // release either jumps once or no-ops). Armed, not live:
+                // no layout change until the cursor actually moves.
                 if self.drag.is_none() && self.queue.len() >= 2 {
                     if let Some(i) = self.hovered_queue {
                         if i < self.queue.len() && self.hover_remove != Some(i) {
                             self.drag = Some(DragState {
                                 from: i,
                                 slot: None,
+                                live: false,
                             });
                             self.press_snap = Some(PressSnap {
                                 from: i,
@@ -10427,11 +10451,15 @@ impl AppState {
                 }
             }
             Message::DragSlot(k) => {
-                // Slot strips only exist while dragging (edges included);
-                // anything else is a stale hover (no-op).
+                // Slot lanes only exist while live (edges included);
+                // anything else is a stale hover (no-op). Latching a slot
+                // goes live: in tests the hover is sent without a cursor
+                // move, and in the app the lane cannot be hovered before
+                // the move made it visible.
                 if let Some(drag) = self.drag.as_mut() {
                     if k <= self.queue.len() {
                         drag.slot = Some(k);
+                        drag.live = true;
                     }
                 }
             }
@@ -10449,7 +10477,10 @@ impl AppState {
                             && self.queue.items().get(s.from).is_some_and(|t| t.id == s.id)
                     });
                     let mut committed = false;
-                    if snap_ok {
+                    // Only a live drag (moved past slop, lanes visible)
+                    // can reorder: an armed press released in place is a
+                    // click even if a stale slot hover arrived.
+                    if snap_ok && drag.live {
                         if let Some(slot) = drag.slot {
                             if let Some(to) = slot_commit(self.queue.len(), drag.from, slot) {
                                 if self.queue.move_to(drag.from, to) {
@@ -10766,6 +10797,27 @@ impl AppState {
             }
             Message::CursorMoved(p) => {
                 self.cursor = Some(p);
+                // Press moved past click slop: the armed drag goes live
+                // and the slot lanes appear. Until then the layout stays
+                // exactly as at rest, so a plain click never shifts rows
+                // under the cursor.
+                if let Some(drag) = self.drag.as_mut() {
+                    if !drag.live {
+                        let moved = match self.press_snap.as_ref().and_then(|s| s.pos) {
+                            Some(a) => {
+                                let dx = a.x - p.x;
+                                let dy = a.y - p.y;
+                                dx * dx + dy * dy >= CLICK_SLOP_PX * CLICK_SLOP_PX
+                            }
+                            // No press position (cursor never tracked):
+                            // any motion counts as a drag.
+                            None => true,
+                        };
+                        if moved {
+                            drag.live = true;
+                        }
+                    }
+                }
                 // Modal freeze: hover latch never glides behind menus.
                 let modal = self.context_menu.is_some()
                     || self.pl_menu.is_some()
@@ -14307,12 +14359,15 @@ impl AppState {
         .into()
     }
 
-    /// Collapsed origin: zero height while dragging, so siblings close
-    /// ranks and no hole remains where the song was picked up.
+    /// Held origin while live-dragging: a full-height chip (same art +
+    /// title as the row, no handlers) so the song stays visible while
+    /// held and siblings never shift, since only the thin bar opens at
+    /// the armed slot. Armed-but-unmoved presses render the normal row,
+    /// so a click never flickers the layout.
     fn queue_row(&self, i: usize) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
-        if self.drag.is_some_and(|d| d.from == i) {
+        if self.drag.is_some_and(|d| d.live && d.from == i) {
             // Origin keeps a full-size held chip (same art + title as the
             // row, no red border, no handlers): the song stays visible
             // while held and siblings never shift, since only the thin
@@ -14404,10 +14459,11 @@ impl AppState {
             .into()
     }
 
-    /// Insertion slot: slot `k` sits before row `k` (0..=len, edges
-    /// included) so every song always has a committable move. Resting
-    /// height is a 10px invisible lane; the armed slot shows a single
-    /// red insertion bar, so rows visibly part for it.
+    /// Edge insertion lane: slot 0 before the first row or slot len
+    /// after the last. Only the two edges use a 10px lane (easy to hit);
+    /// middles reuse the 5px divider (see `drop_divider`), so a live drag
+    /// adds a constant 20px instead of O(n) slot height on long queues.
+    /// The armed slot shows a single red insertion bar instead.
     fn drop_slot(&self, k: usize) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area};
         use iced::Fill;
@@ -14441,6 +14497,51 @@ impl AppState {
             container(inner).padding(0)
         };
         mouse_area(padded).on_enter(Message::DragSlot(k)).into()
+    }
+
+    /// Middle insertion lane: slot `k` (1..=len-1) rendered as the same
+    /// 5px hairline the rest layout uses, so rows never shift while
+    /// live-dragging except for the one armed bar (6..12px). Hovering
+    /// the hairline arms it; at rest it reads as a plain divider.
+    fn drop_divider(&self, k: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area};
+        use iced::Fill;
+        let active = self.effective_drag_slot() == Some(k);
+        if active {
+            let bar_h = 2.0 + 6.0 * self.drag_gap;
+            let inner: iced::Element<'_, Message> = container(
+                iced::widget::Space::new()
+                    .height(iced::Length::Fixed(bar_h))
+                    .width(Fill),
+            )
+            .style(drop_bar)
+            .into();
+            // Slightly narrower than the rows, like the edge bar.
+            let padded = container(inner).padding(iced::Padding {
+                left: 10.0,
+                right: 10.0,
+                top: 2.0,
+                bottom: 2.0,
+            });
+            mouse_area(padded).on_enter(Message::DragSlot(k)).into()
+        } else {
+            // Byte-for-byte the rest divider (1px line + 2px breathing
+            // room each side): same 5px so switching layouts cannot move
+            // rows. Wrapped in a hover lane so it still arms the slot.
+            let line = container(
+                iced::widget::Space::new()
+                    .height(iced::Length::Fixed(1.0))
+                    .width(Fill),
+            )
+            .style(hairline);
+            let padded = container(line).padding(iced::Padding {
+                top: 2.0,
+                bottom: 2.0,
+                left: 0.0,
+                right: 0.0,
+            });
+            mouse_area(padded).on_enter(Message::DragSlot(k)).into()
+        }
     }
 
     fn right_panel_view(&self) -> iced::Element<'_, Message> {
@@ -14479,20 +14580,26 @@ impl AppState {
             .spacing(4)
             .into(),
         };
-        // Slot-interleaved manual list while dragging: slot k sits
-        // before row k (0..=len, edges included). Dividers stay off
-        // while dragging on purpose (slots need clean lanes); they
-        // return at rest. At rest rows render plain with dividers.
+        // Live-drag manual list: middle slots reuse the 5px divider so
+        // rows sit exactly where they do at rest; only the two 10px edge
+        // lanes are extra (constant 20px, never O(n)). Armed-but-unmoved
+        // presses render the rest layout, so clicks never shift rows.
+        // At rest rows render plain with dividers.
         let n = self.queue.len();
+        let live = self.dragging();
         let mut upcoming: Vec<iced::Element<'_, Message>> =
-            Vec::with_capacity(if self.drag.is_some() { 2 * n + 1 } else { n });
-        if self.drag.is_some() {
+            Vec::with_capacity(if live { 2 * n + 1 } else { n });
+        if live {
             upcoming.push(self.drop_slot(0));
         }
         for k in 0..n {
             upcoming.push(self.queue_row(k));
-            if self.drag.is_some() {
-                upcoming.push(self.drop_slot(k + 1));
+            if live {
+                if k + 1 < n {
+                    upcoming.push(self.drop_divider(k + 1));
+                } else {
+                    upcoming.push(self.drop_slot(k + 1));
+                }
             }
         }
         let tab_queue = button(btn_text("Queue", 12))
@@ -14573,7 +14680,7 @@ impl AppState {
                     .padding(4),
                 scrollable(
                     column![
-                        column(if self.drag.is_some() {
+                        column(if live {
                             upcoming
                         } else {
                             with_dividers(upcoming)
@@ -24499,6 +24606,73 @@ mod tests {
         assert!(s.drag.is_none());
         let _ = s.update(Message::QueueJump(1));
         assert_eq!(s.queue.position(), Some(1));
+    }
+
+    #[test]
+    fn drag_arms_invisible_until_moved() {
+        // A press arms without going live: no lanes, no slot, no gap,
+        // so a plain click never shifts rows under the cursor.
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        let at = iced::Point::new(10.0, 10.0);
+        let _ = s.update(Message::CursorMoved(at));
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::DragStart(0));
+        assert!(s.drag.is_some());
+        assert!(!s.dragging());
+        assert_eq!(s.effective_drag_slot(), None);
+        assert_eq!(s.drag_gap_target(), 0.0);
+        // Tremor inside slop stays armed (still a click on release).
+        let _ = s.update(Message::CursorMoved(iced::Point::new(12.0, 11.0)));
+        assert!(!s.dragging());
+        // Past slop goes live and the lanes appear.
+        let _ = s.update(Message::CursorMoved(iced::Point::new(40.0, 40.0)));
+        assert!(s.dragging());
+    }
+
+    #[test]
+    fn armed_slot_without_move_never_reorders() {
+        // A stale slot latched on an armed (unmoved) press must not
+        // commit: only live drags reorder. Direct field write keeps
+        // `live` false the way the DragSlot message never can.
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::EnqueueTrack("m2".into()));
+        let _ = s.update(Message::EnqueueTrack("m3".into()));
+        let _ = s.update(Message::PanelHover(0));
+        let _ = s.update(Message::DragStart(0));
+        assert!(!s.dragging());
+        if let Some(drag) = s.drag.as_mut() {
+            drag.slot = Some(2);
+        }
+        assert_eq!(s.effective_drag_slot(), None);
+        assert_eq!(s.drag_gap_target(), 0.0);
+        let _ = s.update(Message::DragEnd);
+        let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
+    }
+
+    #[test]
+    fn live_drag_extra_height_is_constant() {
+        // Rest height = rows + dividers; live drag reuses the dividers
+        // for middle slots and adds only the two 10px edge lanes, so the
+        // delta is a constant 20px for any queue length (never O(n)).
+        let rest = |n: usize| {
+            if n == 0 {
+                0.0
+            } else {
+                n as f32 * QUEUE_ROW_H + (n as f32 - 1.0) * DIVIDER_PX
+            }
+        };
+        let live_idle = |n: usize| rest(n) + 20.0;
+        for n in [2usize, 3, 10, 100] {
+            assert_eq!(live_idle(n) - rest(n), 20.0, "n = {n}");
+        }
+        // The constants behind the math: dividers stay 5px, edges 10px.
+        assert_eq!(DIVIDER_PX, 5.0);
+        assert_eq!(QUEUE_ROW_H, 64.0);
     }
 
     #[test]
