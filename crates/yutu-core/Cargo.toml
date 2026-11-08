@@ -23,9 +23,10 @@ reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "form",
 ], optional = true }
+keyring = { version = "4", optional = true }
 
 [features]
-innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1"]
+innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1", "dep:keyring"]
 lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
 # Test-only mock backend + fixtures (never in release binaries): enabled

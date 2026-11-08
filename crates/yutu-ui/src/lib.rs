@@ -56,6 +56,18 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Modal backdrop: dims the app behind the dialog so it stands out.
+/// Alpha-only (no layout), same overlay idiom as `art_dim`.
+#[cfg(feature = "innertube")]
+fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgba(
+            0.0, 0.0, 0.0, 0.55,
+        ))),
+        ..Default::default()
+    }
+}
+
 /// Collapsed rail thumb wrapper: red border for the live song, transparent
 /// same-size border otherwise so the pitch never shifts on highlight.
 fn rail_thumb_bg(current: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
@@ -648,6 +660,43 @@ fn rounded_input(
         value: iced::Color::WHITE,
         selection: SPOT_GREEN,
     }
+}
+
+/// File-picker field: looks like a text input (dark fill, soft border)
+/// but opens the system dialog on press. The hover border lightens so it
+/// never reads as static text, and the red Import CTA stays distinct.
+#[cfg(feature = "innertube")]
+fn file_pick(_: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let hovered = matches!(status, iced::widget::button::Status::Hovered);
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(
+            0x1E, 0x1E, 0x1E,
+        ))),
+        text_color: iced::Color::WHITE,
+        border: iced::Border {
+            color: if hovered {
+                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+            } else {
+                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            },
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Shared cap for Settings inputs (text fields, pickers, sliders, the
+/// cookie picker row): full width on narrow windows, aligned cap on wide
+/// ones so no field stretches across the whole pane.
+const SETTINGS_INPUT_W: f32 = 560.0;
+
+/// Cap a Settings input at the shared width (pass-through element).
+fn settings_input(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
+    iced::widget::container(content)
+        .width(iced::Fill)
+        .max_width(SETTINGS_INPUT_W)
+        .into()
 }
 
 /// Slider in theme red: red filled rail, pale track, white round handle.
@@ -1417,6 +1466,12 @@ pub enum Message {
     HistoryMore,
     CookiePathChanged(String),
     CookieImport,
+    /// Open the system file picker for the cookies.txt export.
+    #[cfg(feature = "innertube")]
+    CookieBrowse,
+    /// File picker result (`None` = cancelled, path unchanged).
+    #[cfg(feature = "innertube")]
+    CookieFilePicked(Option<String>),
     /// First import stage done (songs + liked + playlist headers).
     #[cfg(feature = "innertube")]
     ImportStageReady {
@@ -1499,6 +1554,12 @@ pub enum Message {
     /// Delete the saved cookie session (stays out of the account).
     #[cfg(feature = "innertube")]
     CookieLogout,
+    /// Delete the just-imported `cookies.txt` export (secure session kept).
+    #[cfg(feature = "innertube")]
+    CookieCleanupDelete,
+    /// Keep the just-imported `cookies.txt` export on disk.
+    #[cfg(feature = "innertube")]
+    CookieCleanupKeep,
     /// Manual refresh from Settings: replays pending pushes, then pulls
     /// web changes (likes, playlist songs/titles, deletions) via the
     /// saved session. Same pipeline as imports, "Sync" wording.
@@ -2466,6 +2527,21 @@ pub struct AppState {
     view_build_ms: std::cell::Cell<f32>,
     /// Cookie-file path for import (Settings).
     cookie_path: String,
+    /// Source export awaiting a delete/keep decision after a successful
+    /// cookie import (modal). The secure session is already stored, so
+    /// this plaintext file can go. `None` hides the modal.
+    #[cfg(feature = "innertube")]
+    pending_cookie_cleanup: Option<String>,
+    /// Fresh-import source captured at dispatch (immune to later edits of
+    /// the path field). Moved into `pending_cookie_cleanup` when the
+    /// import completes; session re-imports and syncs never set it, so
+    /// they never offer to delete a file they did not consume.
+    #[cfg(feature = "innertube")]
+    pending_cookie_source: Option<String>,
+    /// Cleanup-modal entrance 0..1 (slides up from below while the
+    /// ticker runs, snaps when animations are off).
+    #[cfg(feature = "innertube")]
+    modal_anim: f32,
     /// Where the queue is playing from (playlist/artist/radio label).
     playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
@@ -3327,6 +3403,38 @@ impl AppState {
         let mut v: Vec<Track> = self.catalog.values().cloned().collect();
         v.sort_by(|a, b| a.title.cmp(&b.title));
         v
+    }
+
+    /// Move the captured fresh-import source into the cleanup modal once
+    /// the connection succeeds (base stage). Missing files arm nothing;
+    /// session re-imports and syncs never capture a source, so they
+    /// never prompt.
+    #[cfg(feature = "innertube")]
+    fn arm_cookie_cleanup(&mut self) {
+        if let Some(src) = self.pending_cookie_source.take() {
+            if !src.is_empty() && std::path::Path::new(&src).exists() {
+                self.pending_cookie_cleanup = Some(src);
+                // Restart the entrance so the card rises from below.
+                self.modal_anim = 0.0;
+            }
+        }
+    }
+
+    /// True while the cleanup-modal entrance still needs ticker frames.
+    #[cfg(feature = "innertube")]
+    fn modal_animating(&self) -> bool {
+        self.modal_anim
+            != if self.pending_cookie_cleanup.is_some() {
+                1.0
+            } else {
+                0.0
+            }
+    }
+
+    /// True while the cleanup-modal entrance still needs ticker frames.
+    #[cfg(not(feature = "innertube"))]
+    fn modal_animating(&self) -> bool {
+        false
     }
 
     /// Merge the import base stage (songs + liked) immediately so results
@@ -4388,19 +4496,50 @@ pub fn oauth_path() -> String {
     format!("{}/youtube_oauth.json", data_dir())
 }
 
-/// Saved cookie session: the normalised `Cookie` header (0600, written
-/// on every successful cookie import). Restarts reuse it, so the account
-/// stays signed in without another export.
+/// Saved cookie session fallback: the normalised `Cookie` header as a
+/// 0600 file. Primary storage is the OS keychain (see
+/// [`cookie_keyring_marker_path`]); this file holds the session only when
+/// the keychain is unreachable, plus pre-keychain legacy sessions until
+/// they migrate on next load.
 #[cfg(feature = "innertube")]
 pub fn cookie_session_path() -> String {
     format!("{}/cookie_session.txt", data_dir())
 }
 
+/// Non-secret marker: the session lives in the OS keychain
+/// (`yutu-mux` / `cookie-session`, stable across releases). The marker
+/// lets startup check existence without unlocking the keychain, so
+/// opening the app never prompts for an OS password.
 #[cfg(feature = "innertube")]
-fn cookie_session_exists() -> bool {
-    std::path::Path::new(&cookie_session_path()).exists()
+pub fn cookie_keyring_marker_path() -> String {
+    format!("{}/cookie_session.keyring", data_dir())
 }
 
+#[cfg(feature = "innertube")]
+fn cookie_session_exists() -> bool {
+    yutu_core::secure_session_exists(
+        std::path::Path::new(&cookie_session_path()),
+        std::path::Path::new(&cookie_keyring_marker_path()),
+    )
+}
+
+/// Load the saved header from the keychain (migrating the legacy file).
+#[cfg(feature = "innertube")]
+fn load_cookie_header() -> Result<String, String> {
+    yutu_core::load_cookie_session(
+        std::path::Path::new(&cookie_session_path()),
+        std::path::Path::new(&cookie_keyring_marker_path()),
+    )
+}
+
+/// Delete the session everywhere (keychain, marker, legacy file).
+#[cfg(feature = "innertube")]
+fn delete_cookie_session_secure() -> Result<(), String> {
+    yutu_core::delete_cookie_session(
+        std::path::Path::new(&cookie_session_path()),
+        std::path::Path::new(&cookie_keyring_marker_path()),
+    )
+}
 #[cfg(feature = "innertube")]
 fn oauth_path_exists() -> bool {
     #[cfg(feature = "innertube")]
@@ -4523,6 +4662,64 @@ fn load_persisted(
         seq,
         cached,
     )
+}
+
+/// Width for the Import button plus row spacing, in px (generous
+/// estimate: the button must never be pushed out of view).
+#[cfg(feature = "innertube")]
+const COOKIE_IMPORT_ROOM: f32 = 120.0;
+
+/// Chars of a picked path shown in the fixed-width picker field: `...`
+/// plus the tail. Budget fits the 560px field at 12px (icon, spacing,
+/// and padding discounted, margin to spare at every UI scale, since
+/// field and glyphs scale together). Iced never clips overflowing text,
+/// so an untrimmed label would paint past the field border.
+#[cfg(feature = "innertube")]
+const COOKIE_PATH_SHOWN: usize = 71;
+
+/// Display form of a picked cookies.txt path: the full path when short,
+/// else `...` plus the tail so the filename stays visible.
+/// Char-based, so multi-byte names never split mid-codepoint.
+#[cfg(feature = "innertube")]
+fn trim_cookie_path(path: &str, max: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max || max <= 3 {
+        return path.to_string();
+    }
+    format!(
+        "...{}",
+        chars[chars.len() - (max - 3)..].iter().collect::<String>()
+    )
+}
+
+/// True when a center column of `center_w` px fits the full-width picker
+/// field plus Import beside it. Otherwise the field goes fluid: it
+/// shrinks and Import stays visible instead of being pushed out of view.
+#[cfg(feature = "innertube")]
+fn cookie_row_roomy(center_w: f32) -> bool {
+    center_w >= SETTINGS_INPUT_W + COOKIE_IMPORT_ROOM
+}
+
+/// Label char budget for the picked path: full budget when the field is
+/// full width, fitted to the shrunken field on narrow windows (icon,
+/// spacing, and padding discounted, ~7px a char at 12px). The floor
+/// keeps short names whole; the ceiling is the full-width budget.
+#[cfg(feature = "innertube")]
+fn cookie_path_budget(field_w: f32) -> usize {
+    if field_w >= SETTINGS_INPUT_W {
+        COOKIE_PATH_SHOWN
+    } else {
+        (((field_w - 42.0) / 7.0) as usize).clamp(24, COOKIE_PATH_SHOWN)
+    }
+}
+
+/// True when the picked path is a plausible cookies.txt export: a `.txt`
+/// file. The picker filters for it; the Import button gates on this, so a
+/// stale non-txt pick never offers an import that cannot work.
+#[cfg(feature = "innertube")]
+fn cookie_pick_valid(path: &str) -> bool {
+    let trimmed = path.trim();
+    !trimmed.is_empty() && trimmed.to_lowercase().ends_with(".txt")
 }
 
 impl AppState {
@@ -4695,6 +4892,12 @@ impl AppState {
             #[cfg(feature = "debug-panel")]
             view_build_ms: std::cell::Cell::new(0.0),
             cookie_path: String::new(),
+            #[cfg(feature = "innertube")]
+            pending_cookie_cleanup: None,
+            #[cfg(feature = "innertube")]
+            pending_cookie_source: None,
+            #[cfg(feature = "innertube")]
+            modal_anim: 0.0,
             playing_from: String::new(),
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
@@ -7349,7 +7552,7 @@ impl AppState {
     /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, text_input};
+        use iced::widget::{button, column, text, text::Wrapping, Column, Row};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
@@ -7364,22 +7567,148 @@ impl AppState {
             .spacing(4)
             .into();
         }
-        column![
-            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then paste the file path (no Google Cloud client required). The session is saved, so restarts stay signed in.")
+        // Room check from live geometry: window minus the animated
+        // sidebars, app padding, and row spacing (conservative). Roomy
+        // windows get the fixed field aligned with the other inputs;
+        // narrow ones get a fluid field that shrinks, so Import is always
+        // reachable. The label budget follows the actual field width.
+        let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let center_w = win_w - self.sidebar_w - self.right_w - 32.0;
+        let roomy = cookie_row_roomy(center_w);
+        let field_w = if roomy {
+            SETTINGS_INPUT_W
+        } else {
+            (center_w - COOKIE_IMPORT_ROOM).max(0.0)
+        };
+        let (pick_label, pick_color) = if self.cookie_path.trim().is_empty() {
+            ("Choose cookies.txt file…".to_string(), MUTED)
+        } else {
+            (
+                trim_cookie_path(self.cookie_path.trim(), cookie_path_budget(field_w)),
+                iced::Color::WHITE,
+            )
+        };
+        // Fixed field width on roomy windows, aligned with the other
+        // capped inputs (a Row hands Fill children tight limits that no
+        // max_width can shrink, so the cap here is the width itself).
+        // Import sits to its right in leftover space. The trimmed label
+        // can never outgrow the field, so nothing paints past the border.
+        let mut row_items: Vec<iced::Element<'_, Message>> = vec![button(
+            iced::widget::row![
+                btn_icon("folder", 14.0, MUTED),
+                text(pick_label)
+                    .size(12)
+                    .color(pick_color)
+                    .width(Fill)
+                    .wrapping(Wrapping::None),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .width(Fill),
+        )
+        .style(file_pick)
+        .on_press(Message::CookieBrowse)
+        .padding(10)
+        .width(if roomy {
+            iced::Length::Fixed(SETTINGS_INPUT_W)
+        } else {
+            Fill
+        })
+        .into()];
+        // Import only once a txt file is picked: anything else cannot
+        // import, so the button stays out of the way until it can work.
+        if cookie_pick_valid(&self.cookie_path) {
+            row_items.push(
+                button(self.busy_content("Import", 12.0))
+                    .style(green_play)
+                    .on_press(Message::CookieImport)
+                    .padding(8)
+                    .into(),
+            );
+        }
+        let content: Vec<iced::Element<'_, Message>> = vec![
+            text("Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.")
                 .size(11)
-                .color(MUTED),
-            text_input("/path/to/cookies.txt", &self.cookie_path)
-            .style(rounded_input)
-                .on_input(Message::CookiePathChanged)
+                .color(MUTED)
+                .into(),
+            Row::with_children(row_items)
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
                 .width(Fill)
-                .padding(10),
-            button(self.busy_content("Import", 12.0))
-            .style(green_play)
-            .on_press(Message::CookieImport)
-            .padding(7),
-        ]
-        .spacing(4)
-        .into()
+                .into(),
+        ];
+        Column::with_children(content).spacing(4).into()
+    }
+
+    /// Post-import cleanup prompt: the session is already in the OS
+    /// keychain, so the plaintext export can go. Delete is the CTA;
+    /// scrim/Esc keeps the file (safe default). Dimmed backdrop plus a
+    /// card that rises from below, same layer pattern as the menus.
+    #[cfg(feature = "innertube")]
+    fn cookie_cleanup_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{
+            button, column, container, mouse_area, text, text::Wrapping, Space, Stack,
+        };
+        use iced::Fill;
+        /// Card travel below center at entrance start, in px.
+        const MODAL_RISE_PX: f32 = 48.0;
+        let src = self.pending_cookie_cleanup.clone()?;
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text("Signed in. Delete the export file?").size(16),
+                text("Your session is saved in the OS keychain and survives restarts and updates. The export is plaintext and no longer needed.")
+                    .size(12)
+                    .color(MUTED),
+                // Glyph wrapping: a long path wraps mid-name and grows
+                // the card instead of painting past its border.
+                text(src)
+                    .size(11)
+                    .color(MUTED)
+                    .width(Fill)
+                    .wrapping(Wrapping::WordOrGlyph),
+                iced::widget::row![
+                    button(btn_text("Delete export", 12))
+                        .style(green_play)
+                        .on_press(Message::CookieCleanupDelete)
+                        .padding(8),
+                    button(btn_text("Keep file", 12))
+                        .style(hover_row)
+                        .on_press(Message::CookieCleanupKeep)
+                        .padding(8),
+                ]
+                .spacing(8),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(400)
+        .into();
+        let scrim: iced::Element<'_, Message> = mouse_area(
+            container(text("").size(1))
+                .style(modal_dim)
+                .width(Fill)
+                .height(Fill),
+        )
+        .on_press(Message::CookieCleanupKeep)
+        .on_right_press(Message::CookieCleanupKeep)
+        .on_enter(Message::ClearHovers)
+        .on_exit(Message::ClearHovers)
+        .into();
+        // Entrance: the card starts below center and settles as the
+        // ticker eases `modal_anim` to 1 (snapped when animations are
+        // off, so the dialog never strands off-center).
+        let rise = (1.0 - self.modal_anim).clamp(0.0, 1.0) * MODAL_RISE_PX;
+        let placed: iced::Element<'_, Message> = container(
+            column![Space::new().height(iced::Length::Fixed(rise)), card,]
+                .align_x(iced::alignment::Horizontal::Center),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center)
+        .into();
+        Some(Stack::with_children(vec![scrim, placed]).into())
     }
 
     /// Sync panel: manual refresh plus the scheduled pull that keeps
@@ -7741,6 +8070,7 @@ impl AppState {
             || self.pipeline_busy()
             || self.artist_full_loading.is_some()
             || self.lyrics_gliding()
+            || self.modal_animating()
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -10840,6 +11170,14 @@ impl AppState {
                     self.sidebar_w = self.sidebar_target();
                     self.right_w = self.right_target();
                     self.drawer_anim = if self.drawer_open { 1.0 } else { 0.0 };
+                    #[cfg(feature = "innertube")]
+                    {
+                        self.modal_anim = if self.pending_cookie_cleanup.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                    }
                     self.drag_gap = self.drag_gap_target();
                     for (_, o) in self.scroll_hint.values_mut() {
                         *o = 0.0;
@@ -10854,6 +11192,15 @@ impl AppState {
                     self.right_w = ease_toward(self.right_w, self.right_target(), right_step);
                     let target = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drawer_anim = ease_toward(self.drawer_anim, target, unit_step);
+                    #[cfg(feature = "innertube")]
+                    {
+                        let modal_target = if self.pending_cookie_cleanup.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        self.modal_anim = ease_toward(self.modal_anim, modal_target, unit_step);
+                    }
                     self.drag_gap = ease_toward(self.drag_gap, self.drag_gap_target(), unit_step);
                     // Scrollbar fades ease out after their idle delay (a
                     // real transition: bars light on motion, then fade).
@@ -11175,6 +11522,18 @@ impl AppState {
                 return iced::Task::none();
             }
             Message::CloseContext => {
+                // Topmost first: cookie cleanup modal, menus, popup,
+                // drag, drawer. Esc keeps the export file (safe default).
+                #[cfg(feature = "innertube")]
+                if self.pending_cookie_cleanup.is_some() {
+                    self.pending_cookie_cleanup = None;
+                    self.cookie_path.clear();
+                    if !self.import_active {
+                        self.status =
+                            "Signed in. Export file kept (delete it manually when ready).".into();
+                    }
+                    return iced::Task::none();
+                }
                 // Topmost first: menus, popup, drag, drawer. Menus sit
                 // above the popup in the layer stack.
                 if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
@@ -11569,18 +11928,36 @@ impl AppState {
             Message::CookiePathChanged(p) => {
                 self.cookie_path = p;
             }
+            #[cfg(feature = "innertube")]
+            Message::CookieBrowse => {
+                return Self::cookie_browse_task();
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieFilePicked(picked) => {
+                // Cancelled dialogs leave the previous pick alone.
+                if let Some(p) = picked {
+                    if !p.trim().is_empty() {
+                        self.cookie_path = p;
+                    }
+                }
+            }
             Message::CookieImport => {
                 let path = self.cookie_path.trim().to_string();
                 #[cfg(feature = "innertube")]
                 {
                     if path.is_empty() {
                         self.status =
-                            "Pick your exported cookies file first (see the note below).".into();
+                            "Choose your exported cookies file first (see the note below).".into();
                     } else {
                         self.login_busy = true;
                         self.import_active = true;
                         self.sync_active = false;
                         self.status = "Reading cookies + contacting YouTube Music…".into();
+                        // Capture the source now: the modal decision later
+                        // must name the file actually imported, not
+                        // whatever the field holds when stages finish.
+                        self.pending_cookie_source = Some(path.clone());
+                        self.pending_cookie_cleanup = None;
                         self.publish_mpris();
                         return Self::cookie_import_task(path, self.library_path.clone());
                     }
@@ -11595,18 +11972,29 @@ impl AppState {
             #[cfg(feature = "innertube")]
             Message::ImportStageReady { kind, result } => match result {
                 Ok(staged) => {
+                    // Connection succeeded and the session is stored:
+                    // offer to delete the plaintext export now, without
+                    // waiting for the playlist stages behind it.
+                    if kind == ImportKind::Cookie {
+                        self.arm_cookie_cleanup();
+                    }
                     return self.begin_playlist_stages(kind, staged);
                 }
                 Err(e) => {
                     self.login_busy = false;
                     self.import_active = false;
                     self.sync_active = false;
+                    // A failed fresh import owns no session: drop its
+                    // source so no modal can name it later.
+                    if kind == ImportKind::Cookie {
+                        self.pending_cookie_source = None;
+                    }
                     // A dead saved session must not keep posing as signed
                     // in: drop it so the panel goes back to the file picker.
                     if matches!(kind, ImportKind::Cookie | ImportKind::Sync)
                         && e.contains("saved cookie session")
                     {
-                        let _ = std::fs::remove_file(cookie_session_path());
+                        let _ = delete_cookie_session_secure();
                         self.cookie_logged_in = false;
                     }
                     self.status = if kind == ImportKind::Sync {
@@ -11763,8 +12151,10 @@ impl AppState {
                 self.import_shown = 0;
                 self.import_live.clear();
                 self.import_finished.clear();
+                self.pending_cookie_cleanup = None;
+                self.pending_cookie_source = None;
                 if cookie_session_exists() {
-                    match std::fs::remove_file(cookie_session_path()) {
+                    match delete_cookie_session_secure() {
                         Ok(()) => {
                             self.cookie_logged_in = false;
                             self.status = "Cookie session cleared.".into();
@@ -11777,6 +12167,49 @@ impl AppState {
                 } else {
                     self.cookie_logged_in = false;
                     self.status = "Cookie session cleared.".into();
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieCleanupDelete => {
+                if let Some(src) = self.pending_cookie_cleanup.take() {
+                    self.cookie_path.clear();
+                    match std::fs::remove_file(&src) {
+                        Ok(()) => {
+                            yutu_core::app_log::info(
+                                "yutu-auth",
+                                format_args!("export file deleted"),
+                            );
+                            // Progress owns the status while playlists
+                            // load; confirm only once idle.
+                            if !self.import_active {
+                                self.status = "Signed in. Export file deleted.".into();
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            if !self.import_active {
+                                self.status = "Signed in. Export file is already gone.".into();
+                            }
+                        }
+                        Err(e) => {
+                            yutu_core::app_log::warn(
+                                "yutu-auth",
+                                format!("export delete failed: {e}"),
+                            );
+                            self.status =
+                                Self::failure_status("Could not delete export file".into(), e);
+                            // Re-arm so the user can retry (file kept).
+                            self.pending_cookie_cleanup = Some(src);
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "innertube")]
+            Message::CookieCleanupKeep => {
+                self.pending_cookie_cleanup = None;
+                self.cookie_path.clear();
+                if !self.import_active {
+                    self.status =
+                        "Signed in. Export file kept (delete it manually when ready).".into();
                 }
             }
             #[cfg(feature = "innertube")]
@@ -12825,10 +13258,7 @@ impl AppState {
             }
         }
         if cookie_session_exists() {
-            return yutu_core::InnertubeBackend::connect_with_cookie_file(std::path::Path::new(
-                &cookie_session_path(),
-            ))
-            .await;
+            return Self::connect_saved_cookie().await;
         }
         Err("sign in first (cookies or Google)".into())
     }
@@ -12863,10 +13293,10 @@ impl AppState {
             }
         }
         if cookie_session_exists() {
-            if let Ok(auth) =
-                yutu_core::CookieAuth::from_file(std::path::Path::new(&cookie_session_path()))
-            {
-                return SearchAuth::from_cookie(&auth);
+            if let Ok(header) = load_cookie_header() {
+                if let Ok(auth) = yutu_core::CookieAuth::from_header_str(&header) {
+                    return SearchAuth::from_cookie(&auth);
+                }
             }
         }
         SearchAuth::anonymous()
@@ -13397,8 +13827,25 @@ impl AppState {
         )
     }
 
-    /// Cookie import, base stage: connect, stash the 0600 session, fetch
-    /// songs + liked + playlist headers. The user logs into
+    /// System file picker for the cookies.txt export (portal on Linux,
+    /// native panel on macOS). Cancellation is `None`, never an error.
+    #[cfg(feature = "innertube")]
+    fn cookie_browse_task() -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Choose cookies.txt export")
+                    .add_filter("Text", &["txt"])
+                    .pick_file()
+                    .await
+                    .map(|h| h.path().to_string_lossy().into_owned())
+            },
+            Message::CookieFilePicked,
+        )
+    }
+
+    /// Cookie import, base stage: connect, stash the session securely,
+    /// fetch songs + liked + playlist headers. The user logs into
     /// music.youtube.com in their own browser and exports cookies to a
     /// file (no OAuth client needed). Playlist tracks stream in next, one
     /// task per list, so progress shows instead of one silent future.
@@ -13414,15 +13861,29 @@ impl AppState {
                 if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
                 }
-                // Stay signed in: stash the normalised header (0600) only
-                // for a validated import, so failures leave no session.
+                // Stay signed in: stash the normalised header in the OS
+                // keychain (0600 file fallback) only for a validated
+                // import, so failures leave no session.
                 if let Ok(auth) = yutu_core::CookieAuth::from_file(std::path::Path::new(&path)) {
-                    if let Err(e) = auth.save_to_file(std::path::Path::new(&cookie_session_path()))
-                    {
-                        yutu_core::app_log::error(
-                            "yutu-login",
-                            format_args!("session stash failed: {e}"),
-                        );
+                    let stash = yutu_core::save_cookie_session(
+                        auth.header_value(),
+                        std::path::Path::new(&cookie_session_path()),
+                        std::path::Path::new(&cookie_keyring_marker_path()),
+                    );
+                    match stash {
+                        Ok(yutu_core::SecureBackend::File) => {
+                            yutu_core::app_log::warn(
+                                "yutu-login",
+                                "keychain unavailable: session saved to file",
+                            );
+                        }
+                        Ok(yutu_core::SecureBackend::Keyring) => {}
+                        Err(e) => {
+                            yutu_core::app_log::error(
+                                "yutu-login",
+                                format_args!("session stash failed: {e}"),
+                            );
+                        }
                     }
                 }
                 Self::persist_base_pull(&library_path, &base);
@@ -13435,19 +13896,25 @@ impl AppState {
         )
     }
 
+    /// Connect with the saved cookie session (keychain first, legacy file
+    /// migrates). One place so import, sync, and search share the error.
+    #[cfg(feature = "innertube")]
+    async fn connect_saved_cookie() -> Result<yutu_core::InnertubeBackend, String> {
+        let header = load_cookie_header()?;
+        yutu_core::InnertubeBackend::connect_with_cookie_str(&header)
+            .await
+            .map_err(|e| {
+                format!("saved cookie session failed ({e}): import your cookies file again")
+            })
+    }
+
     /// Re-import base stage via the saved cookie session (no file picker
     /// round trip). Playlist tracks stream in next like a fresh import.
     #[cfg(feature = "innertube")]
     fn cookie_session_import_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
-                    std::path::Path::new(&cookie_session_path()),
-                )
-                .await
-                .map_err(|e| {
-                    format!("saved cookie session failed ({e}): import your cookies file again")
-                })?;
+                let backend = Self::connect_saved_cookie().await?;
                 let base = Self::fetch_base(&backend).await?;
                 if base.tracks.is_empty() && base.headers.is_empty() {
                     return Err("library is empty: like songs or make a playlist on music.youtube.com, then import again".to_string());
@@ -13490,13 +13957,7 @@ impl AppState {
     fn sync_cookie_task(library_path: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let backend = yutu_core::InnertubeBackend::connect_with_cookie_file(
-                    std::path::Path::new(&cookie_session_path()),
-                )
-                .await
-                .map_err(|e| {
-                    format!("saved cookie session failed ({e}): import your cookies file again")
-                })?;
+                let backend = Self::connect_saved_cookie().await?;
                 let base = Self::fetch_base(&backend).await?;
                 Self::persist_base_pull(&library_path, &base);
                 Ok(Self::staged_of(backend, base))
@@ -16999,15 +17460,18 @@ impl AppState {
                             format!("Volume {:.0}%", self.volume * 100.0)
                         })
                         .size(13),
-                        row![
-                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                .step(0.01_f32)
-                                .style(themed_slider)
-                                .width(Fill),
-                            self.mute_button(),
-                        ]
-                        .spacing(6)
-                        .align_y(iced::alignment::Vertical::Center),
+                        settings_input(
+                            row![
+                                pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                    .step(0.01_f32)
+                                    .style(themed_slider)
+                                    .width(Fill),
+                                self.mute_button(),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .into(),
+                        ),
                     ]
                     .spacing(4),
                     row(eq_buttons).spacing(4),
@@ -17017,35 +17481,46 @@ impl AppState {
                     eq_panel,
                     text("Lyrics").size(17),
                     text("Default lyrics provider").size(13),
-                    pick_list(
-                        ["LRCLIB", "YouTube Music"].as_slice(),
-                        Some(self.lyrics_provider.label()),
-                        |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
-                    )
-                    .width(Fill),
+                    settings_input(
+                        pick_list(
+                            ["LRCLIB", "YouTube Music"].as_slice(),
+                            Some(self.lyrics_provider.label()),
+                            |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
+                        )
+                        .width(Fill)
+                        .into(),
+                    ),
                     text("Both providers carry synced lines when available.")
                         .size(12)
                         .color(MUTED),
                     text("Appearance").size(17),
                     text("Display font (takes effect on relaunch)").size(13),
-                    pick_list(
-                        self.font_rows.as_slice(),
-                        Some(self.font_family.label().to_string()),
-                        |name: String| Message::FontFamilyChanged(FontFamily::from_label(&name)),
-                    )
-                    .width(Fill),
+                    settings_input(
+                        pick_list(
+                            self.font_rows.as_slice(),
+                            Some(self.font_family.label().to_string()),
+                            |name: String| Message::FontFamilyChanged(FontFamily::from_label(
+                                &name
+                            )),
+                        )
+                        .width(Fill)
+                        .into(),
+                    ),
                     relaunch_button,
                     stale_font_note,
                     column![
                         text(format!("Interface scale: {:.0}%", self.ui_scale * 100.0)).size(13),
-                        pointing_slider(
-                            UI_SCALE_MIN..=UI_SCALE_MAX,
-                            self.ui_scale,
-                            Message::UiScaleChanged
-                        )
-                        .step(0.05_f32)
-                        .style(themed_slider)
-                        .width(Fill),
+                        settings_input(
+                            pointing_slider(
+                                UI_SCALE_MIN..=UI_SCALE_MAX,
+                                self.ui_scale,
+                                Message::UiScaleChanged
+                            )
+                            .step(0.05_f32)
+                            .style(themed_slider)
+                            .width(Fill)
+                            .into(),
+                        ),
                         text("Scales text and controls together, applies instantly.")
                             .size(12)
                             .color(MUTED),
@@ -17057,44 +17532,62 @@ impl AppState {
                         .on_toggle(Message::AnimationsToggled),
                     column![
                         text(format!("Animation duration: {} ms", self.anim_ms)).size(13),
-                        pointing_slider(
-                            ANIM_MIN_MS as f32..=ANIM_MAX_MS as f32,
-                            self.anim_ms as f32,
-                            Message::AnimMsChanged
-                        )
-                        .step(5.0_f32)
-                        .style(themed_slider)
-                        .width(Fill),
+                        settings_input(
+                            pointing_slider(
+                                ANIM_MIN_MS as f32..=ANIM_MAX_MS as f32,
+                                self.anim_ms as f32,
+                                Message::AnimMsChanged
+                            )
+                            .step(5.0_f32)
+                            .style(themed_slider)
+                            .width(Fill)
+                            .into(),
+                        ),
                     ]
                     .spacing(4),
                     text("Scrobbling (submits live when credentials are set)").size(17),
                     checkbox(self.scrobble_enabled)
                         .label("Enable scrobbling")
                         .on_toggle(Message::ScrobbleToggled),
-                    text_input("Display name (informational)…", &self.scrobble_user)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleUserChanged)
-                        .padding(10),
-                    text_input("ListenBrainz token…", &self.scrobble_lb_token)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleLbTokenChanged)
-                        .secure(true)
-                        .padding(10),
-                    text_input("Last.fm API key…", &self.scrobble_fm_key)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleFmKeyChanged)
-                        .padding(10),
-                    text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleFmSecretChanged)
-                        .secure(true)
-                        .padding(10),
-                    text_input("Last.fm session key…", &self.scrobble_fm_sk)
-                        .style(rounded_input)
-                        .on_input(Message::ScrobbleFmSkChanged)
-                        .secure(true)
-                        .padding(10),
-                    text("Cookie import (no OAuth client needed)").size(17),
+                    settings_input(
+                        text_input("Display name (informational)…", &self.scrobble_user)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleUserChanged)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("ListenBrainz token…", &self.scrobble_lb_token)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleLbTokenChanged)
+                            .secure(true)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("Last.fm API key…", &self.scrobble_fm_key)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleFmKeyChanged)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("Last.fm shared secret…", &self.scrobble_fm_secret)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleFmSecretChanged)
+                            .secure(true)
+                            .padding(10)
+                            .into(),
+                    ),
+                    settings_input(
+                        text_input("Last.fm session key…", &self.scrobble_fm_sk)
+                            .style(rounded_input)
+                            .on_input(Message::ScrobbleFmSkChanged)
+                            .secure(true)
+                            .padding(10)
+                            .into(),
+                    ),
+                    text("Cookie import").size(17),
                     self.cookie_section(),
                     text("Sync (web changes into the app)").size(17),
                     self.sync_section(),
@@ -18317,6 +18810,12 @@ impl AppState {
                 layers.push(coll_scrim);
                 layers.push(coll_placed);
             }
+        }
+        // Cookie cleanup modal: topmost (above menus), centered card over
+        // a dismiss scrim. Esc/scrim keeps the file (safe default).
+        #[cfg(feature = "innertube")]
+        if let Some(dialog) = self.cookie_cleanup_dialog() {
+            layers.push(dialog);
         }
         // Always a Stack (even with one layer): flipping between bare
         // content and Stack would rebuild all widget state (search focus
@@ -23412,6 +23911,219 @@ mod tests {
         assert!(s.status.contains("Cookie import failed: bad cookies"));
         #[cfg(not(feature = "debug-panel"))]
         assert_eq!(s.status, "Cookie import failed");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_import_success_arms_cleanup_modal() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-modal-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        // Simulate the dispatch capture: the modal must name the file
+        // actually imported, not the live path field.
+        s.pending_cookie_source = Some(src.to_string_lossy().into_owned());
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![],
+            )),
+        });
+        assert_eq!(
+            s.pending_cookie_cleanup.as_deref(),
+            Some(src.to_string_lossy().as_ref())
+        );
+        // Entrance restarts on arm and eases up on ticks.
+        assert_eq!(s.modal_anim, 0.0);
+        let _ = s.update(Message::Animate);
+        assert!(s.modal_anim > 0.0);
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_modal_shows_on_connect_before_playlists_finish() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-early-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.pending_cookie_source = Some(src.to_string_lossy().into_owned());
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![("PLserver1", "Road Trip")],
+            )),
+        });
+        // Playlists still loading, but the modal is already up: the
+        // connection (and the secure stash) succeeded.
+        assert!(s.import_active);
+        assert_eq!(
+            s.pending_cookie_cleanup.as_deref(),
+            Some(src.to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_session_reimport_never_arms_cleanup() {
+        let mut s = test_state();
+        assert!(s.pending_cookie_source.is_none());
+        let _ = s.update(Message::ImportStageReady {
+            kind: ImportKind::Cookie,
+            result: Ok(staged(
+                vec![mk_track("c1", "Cookie Song", "Someone")],
+                vec!["c1".into()],
+                vec![],
+            )),
+        });
+        assert!(s.pending_cookie_cleanup.is_none());
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_import_dispatch_captures_source() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src = std::env::temp_dir().join(format!(
+            "yutu-cleanup-dispatch-{}-{n}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.cookie_path = src.to_string_lossy().into_owned();
+        let _ = s.update(Message::CookieImport);
+        assert_eq!(
+            s.pending_cookie_source.as_deref(),
+            Some(src.to_string_lossy().as_ref())
+        );
+        assert!(s.pending_cookie_cleanup.is_none());
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_file_picked_sets_path_and_cancel_keeps() {
+        let mut s = test_state();
+        assert!(s.cookie_path.is_empty());
+        let _ = s.update(Message::CookieFilePicked(Some("/tmp/cookies.txt".into())));
+        assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+        let _ = s.update(Message::CookieFilePicked(None));
+        assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+        let _ = s.update(Message::CookieFilePicked(Some("   ".into())));
+        assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn trim_cookie_path_tails_long_paths() {
+        assert_eq!(
+            trim_cookie_path("/a/cookies.txt", COOKIE_PATH_SHOWN),
+            "/a/cookies.txt"
+        );
+        assert_eq!(trim_cookie_path("abc", 0), "abc");
+        let long = "/home/someone/very/long/nested/download/folder/with/extra/dirs/cookies.txt";
+        let shown = trim_cookie_path(long, COOKIE_PATH_SHOWN);
+        assert_eq!(shown.chars().count(), COOKIE_PATH_SHOWN);
+        assert!(shown.starts_with("..."));
+        assert!(shown.ends_with("cookies.txt"));
+        // Multi-byte names never split mid-codepoint.
+        let wide = format!("/h/{}/cookies.txt", "é".repeat(100));
+        let shown_wide = trim_cookie_path(&wide, COOKIE_PATH_SHOWN);
+        assert_eq!(shown_wide.chars().count(), COOKIE_PATH_SHOWN);
+        assert!(shown_wide.ends_with("cookies.txt"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_row_roomy_needs_field_plus_import() {
+        assert!(cookie_row_roomy(SETTINGS_INPUT_W + COOKIE_IMPORT_ROOM));
+        assert!(cookie_row_roomy(2000.0));
+        assert!(!cookie_row_roomy(
+            SETTINGS_INPUT_W + COOKIE_IMPORT_ROOM - 1.0
+        ));
+        assert!(!cookie_row_roomy(400.0));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_path_budget_follows_field_width() {
+        assert_eq!(cookie_path_budget(SETTINGS_INPUT_W), COOKIE_PATH_SHOWN);
+        assert_eq!(cookie_path_budget(2000.0), COOKIE_PATH_SHOWN);
+        // Narrow field: fitted budget, still tail-trimmed by the caller.
+        assert_eq!(cookie_path_budget(400.0), 51);
+        // Tiny field: floor keeps short names whole.
+        assert_eq!(cookie_path_budget(0.0), 24);
+        assert_eq!(cookie_path_budget(100.0), 24);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_pick_valid_needs_txt() {
+        assert!(cookie_pick_valid("/tmp/cookies.txt"));
+        assert!(cookie_pick_valid("/tmp/COOKIES.TXT"));
+        assert!(!cookie_pick_valid(""));
+        assert!(!cookie_pick_valid("   "));
+        assert!(!cookie_pick_valid("/tmp/cookies.json"));
+        assert!(!cookie_pick_valid("/tmp/txt-backup"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_cleanup_delete_removes_export() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src = std::env::temp_dir().join(format!(
+            "yutu-cleanup-delete-{}-{n}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.cookie_path = src.to_string_lossy().into_owned();
+        s.pending_cookie_cleanup = Some(src.to_string_lossy().into_owned());
+        s.import_active = false;
+        let _ = s.update(Message::CookieCleanupDelete);
+        assert!(s.pending_cookie_cleanup.is_none());
+        assert!(s.cookie_path.is_empty());
+        assert!(!src.exists());
+        assert!(s.status.contains("deleted"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_cleanup_keep_preserves_export() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-keep-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.cookie_path = src.to_string_lossy().into_owned();
+        s.pending_cookie_cleanup = Some(src.to_string_lossy().into_owned());
+        s.import_active = false;
+        let _ = s.update(Message::CookieCleanupKeep);
+        assert!(s.pending_cookie_cleanup.is_none());
+        assert!(src.exists());
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cleanup_modal_dismissed_by_esc_as_keep() {
+        let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+        let src =
+            std::env::temp_dir().join(format!("yutu-cleanup-esc-{}-{n}.txt", std::process::id()));
+        std::fs::write(&src, "SID=x; SAPISID=y").unwrap();
+        let mut s = test_state();
+        s.pending_cookie_cleanup = Some(src.to_string_lossy().into_owned());
+        s.import_active = false;
+        let _ = s.update(Message::CloseContext);
+        assert!(s.pending_cookie_cleanup.is_none());
+        assert!(src.exists());
+        let _ = std::fs::remove_file(&src);
     }
 
     #[cfg(feature = "innertube")]

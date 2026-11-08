@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Secure cookie sessions: the normalised `Cookie` header is stored in the
+  OS keychain (`yutu-mux` / `cookie-session`, stable across releases, so
+  updates stay signed in) with a 0600 file fallback when the keychain is
+  unreachable. Startup checks a non-secret marker/legacy file only, so
+  opening the app never prompts for an OS password; the header is cached
+  in memory after the first connect. Legacy `cookie_session.txt` files
+  migrate into the keychain on next load. Sign out clears the keychain
+  entry plus every fallback file. After a successful cookies.txt import a
+  centered modal offers to delete the plaintext export (Delete is the
+  CTA; scrim/Esc keeps it), appearing once playlist stages complete so
+  progress is never covered.
+- Cookie import uses the system file picker (portal on Linux, native
+  panel on macOS) instead of a pasted file path: a fixed-width
+  input-style picker field (aligned with the other capped Settings
+  inputs) shows the picked path trimmed to `...` plus the tail, with
+  Import beside it in leftover space; on narrow windows the field goes
+  fluid and shrinks so Import stays visible, with the label budget
+  fitted to the actual field width. Import appears only once a txt
+  file is picked. All Settings inputs share a 560px max width. The
+  section header drops the parenthetical. The cleanup modal shows as
+  soon as the connection succeeds (no waiting for playlists), dims the
+  app behind it, wraps long paths mid-name instead of overflowing, and
+  its card rises from below on the animation ticker (snapped when
+  animations are off).
 - Lyrics stepper arrows stay put: the provider label sits in a
   fixed-width centered box, so `< >` never drift when the provider
   name changes length.
