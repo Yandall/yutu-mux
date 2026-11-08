@@ -4,12 +4,13 @@
 #   sh packaging/install.sh [options]
 #   curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh | sh -s -- --yes [options]
 #
+# The installer only fetches prebuilt release artifacts (Linux x86_64
+# tarball, macOS arm64 disk image) plus system dependencies. It never
+# compiles anything and never installs Rust. To build from source, see
+# docs/PACKAGING.md and run cargo or packaging/macos/build-app.sh
+# by hand.
+#
 # Options:
-#   --from-release     Download the prebuilt release artifact: the Linux
-#                      x86_64 tarball or the macOS arm64 disk image (the
-#                      default on both; other platforms build from source).
-#   --build-from-source
-#                      Compile locally with Cargo (needs Rust and a checkout).
 #   --version TAG      Release to download (default: latest).
 #   --repo OWNER/REPO  GitHub repository (default: Yandall/yutu-mux).
 #   --deps-only        Install system dependencies, then stop.
@@ -23,11 +24,8 @@
 # launcher to PREFIX/share/applications. macOS installs YutuMux.app to
 # PREFIX/Applications and a yutu-mux command to PREFIX/bin.
 #
-# Prebuilt releases cover Linux x86_64 (tarball) and macOS arm64 (disk
-# image). Anything without a prebuilt asset compiles from source, which
-# needs a checkout (cloned automatically when git is available) plus
-# Rust. Linux system packages use sudo and macOS dependencies use
-# Homebrew. Application files stay below PREFIX.
+# Linux system packages use sudo and macOS dependencies use Homebrew.
+# Application files stay below PREFIX.
 set -eu
 
 usage() {
@@ -51,15 +49,14 @@ DEPS=1
 DEPS_ONLY=0
 ASSUME_YES=0
 DRY_RUN=0
-MODE="auto"
 PREFIX="${YUTU_INSTALL_PREFIX:-$HOME/.local}"
 REPO="${YUTU_REPO:-Yandall/yutu-mux}"
 VERSION="${YUTU_VERSION:-latest}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --from-release) MODE="release" ;;
-        --build-from-source|--build) MODE="source" ;;
+        --from-release) ;;
+        --build-from-source|--build) fail "the installer never builds from source; it only installs the prebuilt release (build manually with cargo, see docs/PACKAGING.md)" ;;
         --version)
             [ "$#" -ge 2 ] || fail "--version needs a tag (for example v0.2.0)"
             VERSION=$2
@@ -97,20 +94,6 @@ case "$PREFIX" in
     *"/.."|*"/../"*|"/.."|*"/./"*|*"/.") fail "install prefix must not contain . or .. components" ;;
 esac
 
-# A checkout is only required for source builds. Remote runs
-# (curl ... | sh) have no checkout; the release path never needs one.
-ROOT=""
-if [ -n "${0:-}" ]; then
-    case "$0" in
-        *install.sh)
-            candidate=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd) || candidate=""
-            if [ -n "$candidate" ] && [ -f "$candidate/Cargo.toml" ]; then
-                ROOT="$candidate"
-            fi
-            ;;
-    esac
-fi
-
 OS=$(uname -s)
 case "$OS" in
     Linux|Darwin) ;;
@@ -121,19 +104,10 @@ case "$ARCH" in
     x86_64|amd64) ARCH="x86_64" ;;
 esac
 
-if [ "$MODE" = "auto" ]; then
-    case "$OS-$ARCH" in
-        Linux-x86_64|Darwin-*) MODE="release" ;;
-        *) MODE="source" ;;
-    esac
-fi
-
-if [ "$MODE" = "release" ]; then
-    case "$OS-$ARCH" in
-        Linux-x86_64|Darwin-arm64|Darwin-x86_64) ;;
-        *) fail "no prebuilt release for $OS $ARCH; rerun with --build-from-source" ;;
-    esac
-fi
+case "$OS-$ARCH" in
+    Linux-x86_64|Darwin-arm64|Darwin-x86_64) ;;
+    *) fail "no prebuilt release for $OS $ARCH" ;;
+esac
 
 if [ "$DRY_RUN" -eq 1 ]; then
     TMP_ROOT="/tmp/yutu-mux-install-dry-run"
@@ -189,32 +163,6 @@ else
     }
 fi
 
-install_linux_build_deps() {
-    if have apt-get; then
-        run_sudo apt-get update
-        run_sudo apt-get install -y \
-            build-essential pkg-config curl ca-certificates tar \
-            libasound2-dev libx11-dev libwayland-dev libxkbcommon-dev \
-            libsqlite3-dev libssl-dev libmpv-dev yt-dlp git
-    elif have dnf; then
-        run_sudo dnf install -y \
-            gcc gcc-c++ make pkgconf-pkg-config curl ca-certificates tar \
-            alsa-lib-devel libX11-devel wayland-devel libxkbcommon-devel \
-            sqlite-devel openssl-devel mpv-libs-devel yt-dlp git
-    elif have pacman; then
-        run_sudo pacman -S --needed \
-            base-devel pkgconf curl ca-certificates tar \
-            alsa-lib libx11 wayland libxkbcommon sqlite openssl mpv yt-dlp git
-    elif have zypper; then
-        run_sudo zypper install -y \
-            gcc gcc-c++ make pkg-config curl ca-certificates tar \
-            alsa-devel libX11-devel wayland-devel libxkbcommon-devel \
-            sqlite3-devel libopenssl-devel libmpv-devel yt-dlp git
-    else
-        fail "no supported package manager found; install build tools, ALSA, X11/Wayland, SQLite, OpenSSL, libmpv, yt-dlp and git, then rerun with --no-deps"
-    fi
-}
-
 install_linux_runtime_deps() {
     if have apt-get; then
         run_sudo apt-get update
@@ -250,11 +198,6 @@ run_sudo() {
     else
         fail "system packages require root or sudo; install them manually, then rerun with --no-deps"
     fi
-}
-
-install_macos_deps() {
-    have brew || fail "Homebrew is required for automatic macOS dependencies; install it from https://brew.sh or install mpv, yt-dlp and pkg-config manually, then rerun with --no-deps"
-    run brew install mpv yt-dlp pkg-config git
 }
 
 install_macos_runtime_deps() {
@@ -322,25 +265,17 @@ resolve_latest_tag() {
 }
 
 if [ "$DEPS" -eq 1 ]; then
-    if [ "$OS" = Linux ] && [ "$MODE" = "release" ]; then
+    if [ "$OS" = Linux ]; then
         say "System dependencies: ALSA, X11/Wayland, SQLite, OpenSSL, libmpv and yt-dlp (runtime only, no compiler or Rust)."
-    elif [ "$OS" = Linux ]; then
-        say "System dependencies: build tools, ALSA, X11/Wayland, SQLite, OpenSSL, libmpv and yt-dlp."
-    elif [ "$MODE" = "release" ]; then
-        say "Homebrew dependencies: mpv and yt-dlp (runtime only, no compiler or Rust; the bundle also carries its own copies)."
     else
-        say "Homebrew dependencies: mpv, yt-dlp, pkg-config and git."
+        say "Homebrew dependencies: mpv and yt-dlp (runtime only, no compiler or Rust; the bundle also carries its own copies)."
     fi
     confirm "Install system dependencies?"
     if [ "$DRY_RUN" -eq 0 ]; then
-        if [ "$OS" = Linux ] && [ "$MODE" = "release" ]; then
+        if [ "$OS" = Linux ]; then
             install_linux_runtime_deps
-        elif [ "$OS" = Linux ]; then
-            install_linux_build_deps
-        elif [ "$MODE" = "release" ]; then
-            install_macos_runtime_deps
         else
-            install_macos_deps
+            install_macos_runtime_deps
         fi
     else
         say "would install dependencies using the detected package manager"
@@ -352,9 +287,8 @@ fi
     exit 0
 }
 
-if [ "$MODE" = "release" ]; then
-    have curl || fail "curl is required to download the release; install it, then rerun"
-    if [ "$OS" = "Linux" ]; then
+have curl || fail "curl is required to download the release; install it, then rerun"
+if [ "$OS" = "Linux" ]; then
     have tar || fail "tar is required to unpack the release; install it, then rerun"
     ASSET="yutu-mux-x86_64-unknown-linux-gnu.tar.gz"
     if [ -n "${YUTU_RELEASE_URL:-}" ]; then
@@ -426,7 +360,7 @@ if [ "$MODE" = "release" ]; then
             APP_SRC="$TMP_ROOT/YutuMux.app"
         else
             run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP_ROOT/pkg.dmg" "$URL" \
-                || fail "download failed: $URL (check the release has a macOS $ARCH asset, or rerun with --build-from-source)"
+                || fail "download failed: $URL (check the release has a macOS $ARCH asset)"
             run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP_ROOT/pkg.dmg.sha256" "$URL.sha256" \
                 || fail "checksum download failed: $URL.sha256 (the release is missing its .sha256 file)"
             verify_release "$TMP_ROOT/pkg.dmg" "$TMP_ROOT/pkg.dmg.sha256"
@@ -444,57 +378,6 @@ if [ "$MODE" = "release" ]; then
             APP_SRC="$TMP_ROOT/YutuMux.app"
         fi
     fi
-else
-    if [ -z "$ROOT" ]; then
-        have git || fail "building from source needs a checkout: git clone https://github.com/$REPO.git, then run packaging/install.sh there"
-        confirm "No checkout found. Clone $REPO now?"
-        if [ "$DRY_RUN" -eq 1 ]; then
-            say "would clone https://github.com/$REPO.git (tag: $VERSION)"
-            ROOT="$TMP_ROOT/yutu-mux-src"
-        else
-            if [ "$VERSION" = "latest" ]; then
-                run git clone --depth 1 "https://github.com/$REPO.git" "$TMP_ROOT/yutu-mux-src"
-            else
-                run git clone --depth 1 --branch "$VERSION" "https://github.com/$REPO.git" "$TMP_ROOT/yutu-mux-src"
-            fi
-            ROOT="$TMP_ROOT/yutu-mux-src"
-            [ -f "$ROOT/Cargo.toml" ] || fail "clone did not produce a yutu-mux checkout"
-        fi
-    fi
-    if ! have cargo; then
-        if [ "$DEPS" -eq 0 ]; then
-            fail "Rust/Cargo is missing; install it from https://rustup.rs, then rerun"
-        fi
-        confirm "Rust is missing. Install it with rustup now?"
-        have curl || fail "curl is required to install Rust"
-        if [ "$DRY_RUN" -eq 1 ]; then
-            say "would download and run rustup-init with -y --profile minimal --default-toolchain stable"
-        else
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-                | sh -s -- -y --profile minimal --default-toolchain stable
-            # rustup installs here unless the user configured CARGO_HOME.
-            # Do not replace an existing CARGO_HOME.
-            CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
-            PATH="$CARGO_BIN:$PATH"
-            export PATH
-        fi
-    fi
-    if [ "$DRY_RUN" -eq 0 ] && ! have cargo; then
-        fail "Cargo is still unavailable; restart the shell or add ~/.cargo/bin to PATH"
-    fi
-    say "Building yutu-mux in release mode (this can take several minutes)."
-    if [ "$OS" = Linux ]; then
-        run cargo build --release --locked --manifest-path "$ROOT/Cargo.toml"
-    else
-        # build-app.sh performs the release build and ad-hoc signs the bundle.
-        run env CARGO_FLAGS= "$ROOT/packaging/macos/build-app.sh" \
-            --output "$ROOT/target/install-macos"
-    fi
-    BIN_SRC="$ROOT/target/release/yutu-mux"
-    if [ "$DRY_RUN" -eq 0 ] && [ ! -x "$BIN_SRC" ]; then
-        fail "release build finished without producing $BIN_SRC"
-    fi
-fi
 
 replace_target() {
     if [ -e "$1" ] || [ -L "$1" ]; then
@@ -502,9 +385,8 @@ replace_target() {
     fi
 }
 
-# Install only after the complete release download or build has
-# succeeded. A failed download or build therefore leaves the previous
-# application untouched.
+# Install only after the complete release download has succeeded. A
+# failed download therefore leaves the previous application untouched.
 install_new_file() {
     target=$2
     replace_target "$target"
@@ -531,8 +413,19 @@ if [ "$OS" = Linux ]; then
     fi
     install_new_file 755 "$BIN_DIR/yutu-mux" "$BIN_SRC"
     install_new_file 644 "$APPS_DIR/yutu-mux.desktop" "$STAGED_DESKTOP"
-    if [ -n "$ROOT" ] && [ -d "$ROOT/packaging/linux/icons/hicolor" ]; then
-        ICON_SRC="$ROOT/packaging/linux/icons/hicolor"
+    # Icons ship inside the tarball; a checkout run prefers its own
+    # icon tree (same files).
+    SCRIPT_ICONS=""
+    case "$0" in
+        *install.sh)
+            candidate=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd) || candidate=""
+            if [ -n "$candidate" ] && [ -d "$candidate/packaging/linux/icons/hicolor" ]; then
+                SCRIPT_ICONS="$candidate/packaging/linux/icons/hicolor"
+            fi
+            ;;
+    esac
+    if [ -n "$SCRIPT_ICONS" ]; then
+        ICON_SRC="$SCRIPT_ICONS"
     else
         ICON_SRC=$(find "$TMP_ROOT" -type d -name hicolor | head -n 1)
     fi
@@ -553,11 +446,7 @@ if [ "$OS" = Linux ]; then
 else
     APP_DIR="$PREFIX/Applications/YutuMux.app"
     BIN_DIR="$PREFIX/bin"
-    if [ "$MODE" != "release" ]; then
-        # Source builds stage the bundle here; release mode already set
-        # APP_SRC from the mounted disk image above.
-        APP_SRC="$ROOT/target/install-macos/stage/YutuMux.app"
-    fi
+    # APP_SRC came from the mounted disk image above.
     replace_target "$APP_DIR"
     replace_target "$BIN_DIR/yutu-mux"
     make_dir "$PREFIX/Applications"

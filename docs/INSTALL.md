@@ -48,14 +48,14 @@ integrity check, not an authorship signature.
 # Pin a release, or point at a fork:
 sh install.sh --yes --version v0.2.0
 sh install.sh --yes --repo OWNER/REPO
-# Compile locally instead (needs Rust plus a checkout):
-sh install.sh --build-from-source
+# Build manually instead (needs Rust plus a checkout; the installer
+# never compiles): cargo build --release, or
+# packaging/macos/build-app.sh --self-contained on a Mac.
 ```
 
-Anything without a prebuilt asset (other architectures) always
-builds from source: a checkout is required, or cloned automatically when
-git is available, and Rust is installed through rustup only when Cargo is
-missing.
+Platforms without a prebuilt asset are not covered by the installer;
+build them manually (`cargo build --release`, or
+`packaging/macos/build-app.sh` on a Mac, see `docs/PACKAGING.md`).
 
 ## Linux
 
@@ -92,9 +92,8 @@ when available.
 The default release path mounts the downloaded disk image (checksum
 verified first), copies `YutuMux.app` out, and installs it below the
 prefix. Dependencies come from Homebrew (`mpv` and `yt-dlp`, runtime
-fallback); `--build-from-source` instead needs `pkg-config` and `git`
-too, and reuses `packaging/macos/build-app.sh` to build and ad-hoc
-sign the bundle.
+fallback). Manual builds reuse `packaging/macos/build-app.sh` to build
+and ad-hoc sign the bundle (see `docs/PACKAGING.md`).
 
 Installed files:
 
@@ -106,8 +105,8 @@ Installed files:
 Move `YutuMux.app` to `/Applications` manually if preferred. First launch
 requires right-click, Open because the bundle is ad-hoc signed, not
 notarized. The release disk image is self-contained (libmpv plus its
-own yt-dlp sidecar); the Homebrew packages stay as fallback and for
-`--build-from-source`. The macOS installer path is untested
+own yt-dlp sidecar); the Homebrew packages stay as fallback. The macOS
+installer path is untested
 because the maintainer has no Mac.
 
 ## Options and removal
