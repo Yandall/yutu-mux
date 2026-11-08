@@ -14,11 +14,12 @@
   lines when the track has a timed model (synced highlight + follow),
   plain lines otherwise. Both providers preload in parallel at song
   start, so the drawer/lyrics-page `< >` stepper switches instantly
-  with no reload flash (first arrival displays while the other is
-  still in flight). Settings holds the default (persisted), a `via X`
-  note names the displayed result when only the other provider has
-  it cached, and a Retry button sits on empty states. Musixmatch/Genius
-  stay out (API keys and scraping, against the free-tier call).
+  with no reload flash. The view waits for the default provider
+  (loading, never a flash of the other one); the fallback shows only
+  if the default fails, named by a `via X` note. Settings holds the
+  default (persisted), and a Retry button sits on empty states.
+  Musixmatch/Genius stay out (API keys and scraping, against the
+  free-tier call).
 - Fixed cookie import and anonymous connect: `ytmapi-rs` 0.3 sends a
   hardcoded Firefox/88 user agent on its login-page fetch, which
   YouTube's edge now kills at the HTTP/2 stream level, so every

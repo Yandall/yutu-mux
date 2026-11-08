@@ -5261,15 +5261,18 @@ impl AppState {
     }
 
     /// The entry to display for `id`: the default provider's result when
-    /// cached, else any other cached provider's result (fallback while
-    /// the default is still loading or failed). `None` renders loading
-    /// or empty states.
+    /// cached; while the default fetch is still in flight, nothing (the
+    /// view shows loading, never a flash of the other provider); once
+    /// the default has settled without a result (failed), any other
+    /// cached provider's result as fallback. `None` renders loading or
+    /// empty states.
     fn lyrics_display_entry(&self, id: &str) -> Option<(LyricsProvider, &LyricsResult)> {
-        if let Some(cached) = self
-            .lyrics_cache
-            .get(&(id.to_string(), self.lyrics_provider))
-        {
+        let default_key = (id.to_string(), self.lyrics_provider);
+        if let Some(cached) = self.lyrics_cache.get(&default_key) {
             return Some((self.lyrics_provider, cached));
+        }
+        if self.lyrics_loading.contains(&default_key) {
+            return None;
         }
         for provider in LyricsProvider::all() {
             if provider != self.lyrics_provider {
@@ -15850,8 +15853,8 @@ impl AppState {
     /// Lyrics provider `< >` stepper (drawer + lyrics page): switches
     /// the default provider (instant when preloaded: both providers
     /// fetch up front at song start). The label names the default; a
-    /// muted `via X` note names the displayed result when only the
-    /// other provider has it cached.
+    /// muted `via X` note names the displayed result when the default
+    /// failed and only the other provider has it cached.
     fn lyrics_provider_stepper(&self, track_id: &str) -> iced::Element<'_, Message> {
         use iced::widget::{button, row, text};
         let label = self.lyrics_provider.label();
@@ -24324,7 +24327,9 @@ mod tests {
         assert!(s.lyrics_loading.contains(&lrclib_key));
         #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
         assert!(s.lyrics_loading.is_empty());
-        // A successful arrival records the entry the stepper displays.
+        // A non-default arrival waits: the default is still in flight,
+        // so nothing displays yet (no fallback flash). Without fetch
+        // features nothing is ever in flight, so it displays at once.
         let _ = s.update(Message::LyricsReady {
             track_id: "m1".into(),
             provider: LyricsProvider::YouTubeMusic,
@@ -24334,10 +24339,64 @@ mod tests {
                 instrumental: false,
             }),
         });
+        #[cfg(any(feature = "lyrics", feature = "innertube"))]
+        assert_eq!(s.lyrics_display_entry("m1"), None);
+        #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
         assert_eq!(
             s.lyrics_display_entry("m1").map(|(p, _)| p),
             Some(LyricsProvider::YouTubeMusic)
         );
+        // Once the default settles without a result, the cached
+        // fallback displays.
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m1".into(),
+            provider: LyricsProvider::Lrclib,
+            result: Err("no lyrics found".into()),
+        });
+        assert_eq!(
+            s.lyrics_display_entry("m1").map(|(p, _)| p),
+            Some(LyricsProvider::YouTubeMusic)
+        );
+    }
+
+    #[test]
+    fn lyrics_waits_for_default_before_fallback() {
+        let mut s = test_state();
+        let _ = s.update(Message::EnqueueTrack("m1".into()));
+        let _ = s.update(Message::SetLyricsProvider(LyricsProvider::YouTubeMusic));
+        // Fallback answers first while the default is in flight:
+        // still loading, never a "via" flash. (Without fetch features
+        // nothing is ever in flight, so it displays at once.)
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m1".into(),
+            provider: LyricsProvider::Lrclib,
+            result: Ok(LyricsResult {
+                plain: "hola".into(),
+                synced: vec![],
+                instrumental: false,
+            }),
+        });
+        #[cfg(any(feature = "lyrics", feature = "innertube"))]
+        {
+            assert_eq!(s.lyrics_display_entry("m1"), None);
+            assert!(s.lyrics_fetch_pending("m1"));
+        }
+        #[cfg(not(any(feature = "lyrics", feature = "innertube")))]
+        assert_eq!(
+            s.lyrics_display_entry("m1").map(|(p, _)| p),
+            Some(LyricsProvider::Lrclib)
+        );
+        // Default failure falls back to the cached result.
+        let _ = s.update(Message::LyricsReady {
+            track_id: "m1".into(),
+            provider: LyricsProvider::YouTubeMusic,
+            result: Err("gone".into()),
+        });
+        assert_eq!(
+            s.lyrics_display_entry("m1").map(|(p, _)| p),
+            Some(LyricsProvider::Lrclib)
+        );
+        assert!(!s.lyrics_fetch_pending("m1"));
     }
 
     #[test]
