@@ -56,6 +56,18 @@ fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Modal backdrop: dims the app behind the dialog so it stands out.
+/// Alpha-only (no layout), same overlay idiom as `art_dim`.
+#[cfg(feature = "innertube")]
+fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgba(
+            0.0, 0.0, 0.0, 0.55,
+        ))),
+        ..Default::default()
+    }
+}
+
 /// Collapsed rail thumb wrapper: red border for the live song, transparent
 /// same-size border otherwise so the pitch never shifts on highlight.
 fn rail_thumb_bg(current: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
@@ -2489,6 +2501,10 @@ pub struct AppState {
     /// they never offer to delete a file they did not consume.
     #[cfg(feature = "innertube")]
     pending_cookie_source: Option<String>,
+    /// Cleanup-modal entrance 0..1 (slides up from below while the
+    /// ticker runs, snaps when animations are off).
+    #[cfg(feature = "innertube")]
+    modal_anim: f32,
     /// Where the queue is playing from (playlist/artist/radio label).
     playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
@@ -3361,8 +3377,27 @@ impl AppState {
         if let Some(src) = self.pending_cookie_source.take() {
             if !src.is_empty() && std::path::Path::new(&src).exists() {
                 self.pending_cookie_cleanup = Some(src);
+                // Restart the entrance so the card rises from below.
+                self.modal_anim = 0.0;
             }
         }
+    }
+
+    /// True while the cleanup-modal entrance still needs ticker frames.
+    #[cfg(feature = "innertube")]
+    fn modal_animating(&self) -> bool {
+        self.modal_anim
+            != if self.pending_cookie_cleanup.is_some() {
+                1.0
+            } else {
+                0.0
+            }
+    }
+
+    /// True while the cleanup-modal entrance still needs ticker frames.
+    #[cfg(not(feature = "innertube"))]
+    fn modal_animating(&self) -> bool {
+        false
     }
 
     /// Merge the import base stage (songs + liked) immediately so results
@@ -4597,6 +4632,35 @@ fn load_persisted(
     )
 }
 
+/// Max chars of a picked path shown in the chooser button; longer paths
+/// keep the tail (the filename matters, the home prefix does not).
+#[cfg(feature = "innertube")]
+const COOKIE_PATH_SHOWN: usize = 48;
+
+/// Display form of a picked cookies.txt path: the full path when short,
+/// else an ellipsis plus the tail so the filename stays visible.
+/// Char-based, so multi-byte names never split mid-codepoint.
+#[cfg(feature = "innertube")]
+fn trim_cookie_path(path: &str, max: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max || max < 2 {
+        return path.to_string();
+    }
+    format!(
+        "…{}",
+        chars[chars.len() - (max - 1)..].iter().collect::<String>()
+    )
+}
+
+/// True when the picked path is a plausible cookies.txt export: a `.txt`
+/// file. The picker filters for it; the Import button gates on this, so a
+/// stale non-txt pick never offers an import that cannot work.
+#[cfg(feature = "innertube")]
+fn cookie_pick_valid(path: &str) -> bool {
+    let trimmed = path.trim();
+    !trimmed.is_empty() && trimmed.to_lowercase().ends_with(".txt")
+}
+
 impl AppState {
     pub fn new() -> (Self, iced::Task<Message>) {
         Self::with_library_path(default_library_path())
@@ -4771,6 +4835,8 @@ impl AppState {
             pending_cookie_cleanup: None,
             #[cfg(feature = "innertube")]
             pending_cookie_source: None,
+            #[cfg(feature = "innertube")]
+            modal_anim: 0.0,
             playing_from: String::new(),
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
@@ -7425,7 +7491,7 @@ impl AppState {
     /// pulls web changes in: the Sync section below holds the action.
     #[cfg(feature = "innertube")]
     fn cookie_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, row, text};
+        use iced::widget::{button, column, text, Row};
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
@@ -7440,29 +7506,42 @@ impl AppState {
             .spacing(4)
             .into();
         }
-        let picked = if self.cookie_path.trim().is_empty() {
-            text("No file chosen yet.").size(11).color(MUTED)
+        let browse_label = if self.cookie_path.trim().is_empty() {
+            "Choose cookies.txt file".to_string()
         } else {
-            text(self.cookie_path.clone()).size(11).color(MUTED)
+            trim_cookie_path(self.cookie_path.trim(), COOKIE_PATH_SHOWN)
         };
-        column![
-            text("Log into music.youtube.com in your browser, export cookies (e.g. the “Get cookies.txt” extension), then choose the file below (no Google Cloud client required). The session is saved in your OS keychain, so restarts and updates stay signed in. You can delete the export right after import.")
-                .size(11)
-                .color(MUTED),
-            row![
-                button(btn_text("Choose cookies file…", 12))
-                    .style(hover_row)
-                    .on_press(Message::CookieBrowse)
-                    .padding(7),
+        let mut actions: Vec<iced::Element<'_, Message>> = vec![button(
+            iced::widget::row![
+                btn_icon("folder", 14.0, iced::Color::WHITE),
+                btn_text(browse_label, 12),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(green_play)
+        .on_press(Message::CookieBrowse)
+        .padding(8)
+        .into()];
+        // Import only once a txt file is picked: anything else cannot
+        // import, so the button stays out of the way until it can work.
+        if cookie_pick_valid(&self.cookie_path) {
+            actions.push(
                 button(self.busy_content("Import", 12.0))
                     .style(green_play)
                     .on_press(Message::CookieImport)
-                    .padding(7),
-            ]
-            .spacing(8)
-            .align_y(iced::alignment::Vertical::Center)
-            .width(Fill),
-            picked.width(Fill),
+                    .padding(8)
+                    .into(),
+            );
+        }
+        column![
+            text("Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.")
+                .size(11)
+                .color(MUTED),
+            Row::with_children(actions)
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .width(Fill),
         ]
         .spacing(4)
         .into()
@@ -7470,12 +7549,14 @@ impl AppState {
 
     /// Post-import cleanup prompt: the session is already in the OS
     /// keychain, so the plaintext export can go. Delete is the CTA;
-    /// scrim/Esc keeps the file (safe default). Centered card above a
-    /// dismiss scrim, same layer pattern as the context menus.
+    /// scrim/Esc keeps the file (safe default). Dimmed backdrop plus a
+    /// card that rises from below, same layer pattern as the menus.
     #[cfg(feature = "innertube")]
     fn cookie_cleanup_dialog(&self) -> Option<iced::Element<'_, Message>> {
-        use iced::widget::{button, column, container, mouse_area, text, Stack};
+        use iced::widget::{button, column, container, mouse_area, text, Space, Stack};
         use iced::Fill;
+        /// Card travel below center at entrance start, in px.
+        const MODAL_RISE_PX: f32 = 48.0;
         let src = self.pending_cookie_cleanup.clone()?;
         let card: iced::Element<'_, Message> = container(
             column![
@@ -7503,19 +7584,30 @@ impl AppState {
         .padding(16)
         .width(400)
         .into();
-        let scrim: iced::Element<'_, Message> =
-            mouse_area(container(text("").size(1)).width(Fill).height(Fill))
-                .on_press(Message::CookieCleanupKeep)
-                .on_right_press(Message::CookieCleanupKeep)
-                .on_enter(Message::ClearHovers)
-                .on_exit(Message::ClearHovers)
-                .into();
-        let placed: iced::Element<'_, Message> = container(card)
-            .width(Fill)
-            .height(Fill)
-            .align_x(iced::alignment::Horizontal::Center)
-            .align_y(iced::alignment::Vertical::Center)
-            .into();
+        let scrim: iced::Element<'_, Message> = mouse_area(
+            container(text("").size(1))
+                .style(modal_dim)
+                .width(Fill)
+                .height(Fill),
+        )
+        .on_press(Message::CookieCleanupKeep)
+        .on_right_press(Message::CookieCleanupKeep)
+        .on_enter(Message::ClearHovers)
+        .on_exit(Message::ClearHovers)
+        .into();
+        // Entrance: the card starts below center and settles as the
+        // ticker eases `modal_anim` to 1 (snapped when animations are
+        // off, so the dialog never strands off-center).
+        let rise = (1.0 - self.modal_anim).clamp(0.0, 1.0) * MODAL_RISE_PX;
+        let placed: iced::Element<'_, Message> = container(
+            column![Space::new().height(iced::Length::Fixed(rise)), card,]
+                .align_x(iced::alignment::Horizontal::Center),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center)
+        .into();
         Some(Stack::with_children(vec![scrim, placed]).into())
     }
 
@@ -7878,6 +7970,7 @@ impl AppState {
             || self.pipeline_busy()
             || self.artist_full_loading.is_some()
             || self.lyrics_gliding()
+            || self.modal_animating()
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -10977,6 +11070,14 @@ impl AppState {
                     self.sidebar_w = self.sidebar_target();
                     self.right_w = self.right_target();
                     self.drawer_anim = if self.drawer_open { 1.0 } else { 0.0 };
+                    #[cfg(feature = "innertube")]
+                    {
+                        self.modal_anim = if self.pending_cookie_cleanup.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                    }
                     self.drag_gap = self.drag_gap_target();
                     for (_, o) in self.scroll_hint.values_mut() {
                         *o = 0.0;
@@ -10991,6 +11092,15 @@ impl AppState {
                     self.right_w = ease_toward(self.right_w, self.right_target(), right_step);
                     let target = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drawer_anim = ease_toward(self.drawer_anim, target, unit_step);
+                    #[cfg(feature = "innertube")]
+                    {
+                        let modal_target = if self.pending_cookie_cleanup.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        self.modal_anim = ease_toward(self.modal_anim, modal_target, unit_step);
+                    }
                     self.drag_gap = ease_toward(self.drag_gap, self.drag_gap_target(), unit_step);
                     // Scrollbar fades ease out after their idle delay (a
                     // real transition: bars light on motion, then fade).
@@ -23691,6 +23801,10 @@ mod tests {
             s.pending_cookie_cleanup.as_deref(),
             Some(src.to_string_lossy().as_ref())
         );
+        // Entrance restarts on arm and eases up on ticks.
+        assert_eq!(s.modal_anim, 0.0);
+        let _ = s.update(Message::Animate);
+        assert!(s.modal_anim > 0.0);
         let _ = std::fs::remove_file(&src);
     }
 
@@ -23741,6 +23855,34 @@ mod tests {
         assert_eq!(s.cookie_path, "/tmp/cookies.txt");
         let _ = s.update(Message::CookieFilePicked(Some("   ".into())));
         assert_eq!(s.cookie_path, "/tmp/cookies.txt");
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn trim_cookie_path_keeps_short_and_tails_long() {
+        assert_eq!(trim_cookie_path("/a/cookies.txt", 48), "/a/cookies.txt");
+        assert_eq!(trim_cookie_path("abc", 0), "abc");
+        let long = "/home/someone/very/long/download/folder/cookies.txt";
+        let shown = trim_cookie_path(long, 20);
+        assert_eq!(shown.chars().count(), 20);
+        assert!(shown.starts_with('…'));
+        assert!(shown.ends_with("cookies.txt"));
+        // Multi-byte names never split mid-codepoint.
+        let wide = format!("/h/{}/cookies.txt", "é".repeat(40));
+        let shown_wide = trim_cookie_path(&wide, 20);
+        assert_eq!(shown_wide.chars().count(), 20);
+        assert!(shown_wide.ends_with("cookies.txt"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn cookie_pick_valid_needs_txt() {
+        assert!(cookie_pick_valid("/tmp/cookies.txt"));
+        assert!(cookie_pick_valid("/tmp/COOKIES.TXT"));
+        assert!(!cookie_pick_valid(""));
+        assert!(!cookie_pick_valid("   "));
+        assert!(!cookie_pick_valid("/tmp/cookies.json"));
+        assert!(!cookie_pick_valid("/tmp/txt-backup"));
     }
 
     #[cfg(feature = "innertube")]
