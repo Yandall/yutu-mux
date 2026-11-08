@@ -23,26 +23,14 @@ jobs:
           cargo check --workspace --all-features --locked
           pkg-config --modversion mpv
           cargo check -p yutu-player --features mpv --locked
-      - name: Build release
-        run: cargo build --release --locked
-      - name: Package portable tarball
-        run: |
-          set -eu
-          STAGE="stage/yutu-mux-x86_64-unknown-linux-gnu"
-          mkdir -p "$STAGE"
-          cp target/release/yutu-mux "$STAGE/"
-          cp README.md "$STAGE/"
-          if test -f LICENSE; then cp LICENSE "$STAGE/"; fi
-          cp flatpak/org.yutu_mux.YutuMux.yaml flatpak/org.yutu_mux.YutuMux.desktop "$STAGE/"
-          cp -R packaging/linux/icons "$STAGE/icons"
-          tar -czf yutu-mux-x86_64-unknown-linux-gnu.tar.gz -C stage yutu-mux-x86_64-unknown-linux-gnu
-          sha256sum yutu-mux-x86_64-unknown-linux-gnu.tar.gz > yutu-mux-x86_64-unknown-linux-gnu.tar.gz.sha256
+      - name: Build portable tarball
+        run: packaging/linux/build-tarball.sh --output dist
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            yutu-mux-x86_64-unknown-linux-gnu.tar.gz
-            yutu-mux-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/*/*.tar.gz
+            dist/*/*.tar.gz.sha256
   macos-dmg:
     name: macOS arm64 disk image
     runs-on: macos-latest
@@ -57,5 +45,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/*.dmg
-            dist/*.sha256
+            dist/*/*.dmg
+            dist/*/*.dmg.sha256

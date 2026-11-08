@@ -288,9 +288,25 @@ fi
 }
 
 have curl || fail "curl is required to download the release; install it, then rerun"
+# Asset names embed the Cargo version (no leading v); --version takes
+# the release tag. `latest` resolves through /releases/latest first.
+if [ "$VERSION" = "latest" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "would resolve the latest release tag"
+        TAG="vX.Y.Z"
+    else
+        TAG=$(resolve_latest_tag)
+    fi
+else
+    TAG="$VERSION"
+fi
+case "$TAG" in
+    v*) ASSET_VERSION=${TAG#v} ;;
+    *) ASSET_VERSION=$TAG ;;
+esac
 if [ "$OS" = "Linux" ]; then
     have tar || fail "tar is required to unpack the release; install it, then rerun"
-    ASSET="yutu-mux-x86_64-unknown-linux-gnu.tar.gz"
+    ASSET="yutu-mux-$ASSET_VERSION-linux-$ARCH.tar.gz"
     if [ -n "${YUTU_RELEASE_URL:-}" ]; then
         URL="$YUTU_RELEASE_URL"
     elif [ "$VERSION" = "latest" ]; then
@@ -298,11 +314,11 @@ if [ "$OS" = "Linux" ]; then
     else
         URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
     fi
-    say "Downloading prebuilt yutu-mux ($VERSION, Linux x86_64)."
+    say "Downloading prebuilt yutu-mux ($TAG, Linux $ARCH)."
     if [ "$DRY_RUN" -eq 1 ]; then
         say "would download $URL and unpack it"
         say "would verify $URL.sha256 before unpacking"
-        BIN_SRC="$TMP_ROOT/yutu-mux-x86_64-unknown-linux-gnu/yutu-mux"
+        BIN_SRC="$TMP_ROOT/yutu-mux-$ASSET_VERSION-linux-$ARCH/yutu-mux"
     elif [ -n "${YUTU_TEST_RELEASE_FILE:-}" ]; then
         say "Using test release file $YUTU_TEST_RELEASE_FILE."
         cp "$YUTU_TEST_RELEASE_FILE" "$TMP_ROOT/pkg.tar.gz"
@@ -326,25 +342,8 @@ if [ "$OS" = "Linux" ]; then
         [ -n "$BIN_SRC" ] || fail "release archive did not contain a yutu-mux binary"
     fi
     else
-        # macOS disk image (YutuMux-<version>-macos-<arch>.dmg). The
-        # asset name embeds the Cargo version without a leading v,
-        # while --version takes the release tag, so strip one leading
-        # v. `latest` resolves through the /releases/latest redirect.
+        # macOS disk image (YutuMux-<version>-macos-<arch>.dmg).
         have hdiutil || fail "hdiutil is required to mount the disk image; it ships with macOS"
-        if [ "$VERSION" = "latest" ]; then
-            if [ "$DRY_RUN" -eq 1 ]; then
-                say "would resolve the latest release tag"
-                TAG="vX.Y.Z"
-            else
-                TAG=$(resolve_latest_tag)
-            fi
-        else
-            TAG="$VERSION"
-        fi
-        case "$TAG" in
-            v*) ASSET_VERSION=${TAG#v} ;;
-            *) ASSET_VERSION=$TAG ;;
-        esac
         ASSET="YutuMux-$ASSET_VERSION-macos-$ARCH.dmg"
         if [ -n "${YUTU_RELEASE_URL:-}" ]; then
             URL="$YUTU_RELEASE_URL"

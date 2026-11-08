@@ -32,7 +32,7 @@ replacing existing application files. Use `--yes` for unattended installs.
 
 The default is `--from-release`: download the prebuilt artifact from
 the latest GitHub release and install it. Linux x86_64 gets the
-`yutu-mux-x86_64-unknown-linux-gnu.tar.gz` tarball (runtime libraries
+`yutu-mux-<version>-linux-x86_64.tar.gz` tarball (runtime libraries
 only: ALSA, X11/Wayland, SQLite, OpenSSL, libmpv, yt-dlp); macOS
 arm64 gets the self-contained `YutuMux-<version>-macos-arm64.dmg`
 disk image (Homebrew mpv and yt-dlp as runtime fallback). No compiler
