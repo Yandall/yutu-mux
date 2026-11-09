@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- History page warms artwork while scrolling: it was missing scroll-sweep
+  slots, so rows past the first screenful kept placeholders until played.
 - Removed the "Playing from ..." line in the right panel entirely, along
   with the now-write-only `playing_from` field.
 - Restored queues no longer set a source line either ("Saved queue" gone,
