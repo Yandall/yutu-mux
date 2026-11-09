@@ -1334,14 +1334,16 @@ pub struct StagedImport {
     pub library_ok: bool,
 }
 
-/// Search collection menu target: which album/artist hit or
-/// community playlist the open menu belongs to (track menus and user
-/// playlist menus keep their own id-keyed state).
+/// Collection menu target: which search album/artist hit,
+/// community playlist, or home recommended-album group the open menu
+/// belongs to (track menus and user playlist menus keep their own
+/// id-keyed state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CollectionMenu {
     Album(String),
     Artist(String),
     Playlist(String),
+    HomeAlbum { album: String, artist: String },
 }
 
 #[derive(Debug, Clone)]
@@ -1412,6 +1414,21 @@ pub enum Message {
     PlayQuickPicks,
     /// Recommended-album card: queue that album's tracks in order.
     PlayHomeAlbum {
+        album: String,
+        artist: String,
+    },
+    /// Recommended-album card right-click menu.
+    OpenHomeAlbumMenu {
+        album: String,
+        artist: String,
+    },
+    /// Recommended-album menu: append that album's tracks to the queue.
+    QueueHomeAlbum {
+        album: String,
+        artist: String,
+    },
+    /// Recommended-album menu: shuffle-play that album's tracks.
+    ShuffleHomeAlbum {
         album: String,
         artist: String,
     },
@@ -7260,6 +7277,17 @@ impl AppState {
         scored.into_iter().take(n).collect()
     }
 
+    /// Tracks for one recommended-album group, in card order (id
+    /// order, same as the shelf). Shared by the card play action and
+    /// the card right-click menu so both queue the same list.
+    fn home_album_tracks(&self, album: &str, artist: &str) -> Vec<Track> {
+        self.recommended_albums(usize::MAX)
+            .into_iter()
+            .find(|g| g.title == album && g.artist == artist)
+            .map(|g| g.tracks)
+            .unwrap_or_default()
+    }
+
     /// Recompute the memoized Home/Discovery shelves (quick picks,
     /// albums, more-from, weekly mix, forgotten). Ranking scans the
     /// whole catalog plus a history query, so views read the cache
@@ -8485,21 +8513,29 @@ impl AppState {
         }
     }
 
-    /// The collection menu's hit is still in results (stale rows never
-    /// open a scrim-less modal, and fresh results prune a dead menu).
+    /// The collection menu's hit is still present (search hits live
+    /// in results, home album groups live in the catalog: stale rows
+    /// never open a scrim-less modal, and fresh results prune a dead
+    /// search menu).
     fn coll_hit_present(&self, menu: &CollectionMenu) -> bool {
         match menu {
             CollectionMenu::Album(id) => self.results.albums.iter().any(|a| &a.id == id),
             CollectionMenu::Artist(id) => self.results.artists.iter().any(|a| &a.id == id),
             CollectionMenu::Playlist(id) => self.results.playlists.iter().any(|p| &p.id == id),
+            CollectionMenu::HomeAlbum { album, artist } => self
+                .catalog
+                .values()
+                .any(|t| t.album.as_deref() == Some(album.as_str()) && &t.artist == artist),
         }
     }
 
-    /// Open a collection menu only when its hit is still in results.
+    /// Open a collection menu only when its hit is still present.
     fn open_coll_for(&mut self, menu: CollectionMenu) {
         if self.coll_hit_present(&menu) {
             self.show_suggest = false;
             self.open_coll_menu(menu);
+        } else if matches!(menu, CollectionMenu::HomeAlbum { .. }) {
+            self.status = "That album is not cached anymore.".into();
         } else {
             self.status = "That result is gone: search again.".into();
         }
@@ -10968,18 +11004,75 @@ impl AppState {
                 }
             }
             Message::PlayHomeAlbum { album, artist } => {
-                let tracks: Vec<Track> = self
-                    .recommended_albums(usize::MAX)
-                    .into_iter()
-                    .find(|g| g.title == album && g.artist == artist)
-                    .map(|g| g.tracks)
-                    .unwrap_or_default();
+                let tracks = self.home_album_tracks(&album, &artist);
                 if tracks.is_empty() {
                     self.status = format!("Album {album} is not cached anymore.");
                 } else {
                     let task = self.queue_many(tracks, &format!("Album {album}"));
                     self.publish_mpris();
                     return task;
+                }
+            }
+            Message::OpenHomeAlbumMenu { album, artist } => {
+                self.open_coll_for(CollectionMenu::HomeAlbum {
+                    album: album.clone(),
+                    artist: artist.clone(),
+                });
+                // Same hero-header contract as playlist menus: warm
+                // the first track's hero so the menu never
+                // placeholders for its lifetime.
+                if let Some(task) = self
+                    .home_album_tracks(&album, &artist)
+                    .first()
+                    .and_then(|t| self.find_track(&t.id))
+                    .and_then(|t| self.large_art_task(&t))
+                {
+                    return task;
+                }
+            }
+            Message::QueueHomeAlbum { album, artist } => {
+                self.close_menu();
+                self.show_suggest = false;
+                let tracks = self.home_album_tracks(&album, &artist);
+                if tracks.is_empty() {
+                    self.status = format!("Album {album} is not cached anymore.");
+                } else {
+                    // Append-only like QueuePlaylist: never hijacks
+                    // playback, absorbs matching autoplay ids.
+                    let label = format!("Album {album}");
+                    let n = tracks.len();
+                    let was_empty = self.queue.is_empty();
+                    let incoming: std::collections::HashSet<&str> =
+                        tracks.iter().map(|t| t.id.as_str()).collect();
+                    self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
+                    let resolved: Vec<Track> = tracks
+                        .iter()
+                        .map(|t| self.resolve_for_play_mem(t))
+                        .collect();
+                    self.cache_tracks(&resolved);
+                    for rt in resolved {
+                        self.queue.push(rt);
+                    }
+                    self.status = format!("{label}: queued {n} track(s).");
+                    self.publish_mpris();
+                    if was_empty {
+                        self.queue.jump_to(0);
+                        self.apply_volume();
+                        return self.play_current_task();
+                    }
+                }
+            }
+            Message::ShuffleHomeAlbum { album, artist } => {
+                self.close_menu();
+                self.show_suggest = false;
+                let tracks = self.home_album_tracks(&album, &artist);
+                if tracks.is_empty() {
+                    self.status = format!("Album {album} is not cached anymore.");
+                } else {
+                    // Same path as the playlist Shuffle pill: fully
+                    // shuffled with a random head, always reshuffled.
+                    self.cancel_drag();
+                    return self.play_fresh(tracks, &format!("Album {album}"), true);
                 }
             }
             Message::PlayNow(id) => {
@@ -15801,11 +15894,15 @@ impl AppState {
         };
         let list: iced::Element<'_, Message> = match self.right_tab {
             RightTab::Queue => column![
-                text("Up next").size(13).color(MUTED),
-                button(btn_text(format!("Clear queue ({})", self.queue.len()), 12))
-                    .style(ghost_button)
-                    .on_press(Message::QueueClear)
-                    .padding(8),
+                row![
+                    text("Up next").size(13).color(MUTED).width(Fill),
+                    button(btn_text(format!("Clear queue ({})", self.queue.len()), 12))
+                        .style(ghost_button)
+                        .on_press(Message::QueueClear)
+                        .padding(8),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
                 scrollable(
                     column![
                         column(if live {
@@ -16834,12 +16931,17 @@ impl AppState {
     /// Click behavior comes from the caller (open a playlist, play an
     /// album); no right-click menu (the id would be a guess, and menus
     /// live on the rows and detail pages instead).
+    /// Home shelf card: art + title + subtitle open on left-click,
+    /// right-click opens the card menu (playlist or album actions).
+    /// Cards follow the app-wide pattern: no separate play button,
+    /// extra actions live in the right-click menu only.
     fn home_card(
         &self,
         art: &Track,
         title: String,
         sub: String,
-        msg: Message,
+        press: Message,
+        right: Message,
     ) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{column, mouse_area};
@@ -16866,12 +16968,13 @@ impl AppState {
                 .width(Fill),
             )
             .style(card_button)
-            .on_press(msg)
+            .on_press(press)
             .padding(0)
             .width(iced::Length::Fixed(HOME_CARD_W))
             .height(iced::Length::Fixed(HOME_CARD_H))
             .clip(true),
         )
+        .on_right_press(right)
         .into()
     }
 
@@ -17058,6 +17161,7 @@ impl AppState {
                             p.title.clone(),
                             sub,
                             Message::OpenPlaylist(p.id.clone()),
+                            Message::OpenPlaylistMenu(p.id.clone()),
                         )
                     })
                     .collect();
@@ -17085,6 +17189,10 @@ impl AppState {
                             g.title.clone(),
                             g.artist.clone(),
                             Message::PlayHomeAlbum {
+                                album: g.title.clone(),
+                                artist: g.artist.clone(),
+                            },
+                            Message::OpenHomeAlbumMenu {
                                 album: g.title.clone(),
                                 artist: g.artist.clone(),
                             },
@@ -18628,9 +18736,10 @@ impl AppState {
                 layers.push(pl_placed);
             }
         }
-        // Search collection menu: same frozen-anchor scrim pattern, no
-        // flyout. The hit resolves live: results may have moved on since
-        // the menu opened, and then nothing renders.
+        // Collection menu: same frozen-anchor scrim pattern, no
+        // flyout. Search hits resolve live (results may have moved on
+        // since the menu opened, and then nothing renders); home album
+        // groups resolve against the catalog instead.
         if let Some(menu) = self.coll_menu.clone() {
             let hit: Option<(iced::Element<'_, Message>, String, String)> = match &menu {
                 CollectionMenu::Album(id) => {
@@ -18669,6 +18778,24 @@ impl AppState {
                             self.playlist_art(p, 56.0),
                             p.title.clone(),
                             format!("Playlist · {} · {}", p.author, p.detail),
+                        )
+                    }),
+                CollectionMenu::HomeAlbum { album, artist } => self
+                    .catalog
+                    .values()
+                    .find(|t| t.album.as_deref() == Some(album.as_str()) && &t.artist == artist)
+                    .map(|t| {
+                        let n = self
+                            .catalog
+                            .values()
+                            .filter(|x| {
+                                x.album.as_deref() == Some(album.as_str()) && &x.artist == artist
+                            })
+                            .count();
+                        (
+                            self.thumb_hero(t, 56.0),
+                            album.clone(),
+                            format!("Album · {artist} · {n} tracks"),
                         )
                     }),
             };
@@ -18737,6 +18864,53 @@ impl AppState {
                             "Shuffle play".to_string(),
                             Message::PlaySearchPlaylistShuffled(id),
                         ));
+                    }
+                    CollectionMenu::HomeAlbum { album, artist } => {
+                        items.push(menu_item(
+                            "play",
+                            "Play".to_string(),
+                            Message::PlayHomeAlbum {
+                                album: album.clone(),
+                                artist: artist.clone(),
+                            },
+                        ));
+                        items.push(menu_item(
+                            "plus",
+                            "Add to queue".to_string(),
+                            Message::QueueHomeAlbum {
+                                album: album.clone(),
+                                artist: artist.clone(),
+                            },
+                        ));
+                        items.push(menu_item(
+                            "shuffle",
+                            "Shuffle play".to_string(),
+                            Message::ShuffleHomeAlbum {
+                                album: album.clone(),
+                                artist: artist.clone(),
+                            },
+                        ));
+                        if let Some(seed) = self
+                            .catalog
+                            .values()
+                            .find(|t| {
+                                t.album.as_deref() == Some(album.as_str()) && t.artist == *artist
+                            })
+                            .map(|t| t.id.clone())
+                        {
+                            items.push(menu_item(
+                                "radio",
+                                "Start mix".to_string(),
+                                Message::StartRadio(seed),
+                            ));
+                        }
+                        if !artist.is_empty() {
+                            items.push(menu_item(
+                                "user-round",
+                                "Go to artist".to_string(),
+                                Message::OpenArtist(artist),
+                            ));
+                        }
                     }
                 }
                 let coll_menu = container(
@@ -21441,6 +21615,71 @@ mod tests {
         s.history_full = vec![hist_entry("q1", HIST_NOW), hist_entry("q2", HIST_NOW - 1)];
         s.route = Route::Home;
         let _ = s.view();
+    }
+
+    #[test]
+    fn home_cards_right_click_menus() {
+        let mut s = test_state();
+        for (id, title, artist, album) in [
+            ("h1", "One", "A", Some("Alpha")),
+            ("h2", "Two", "A", Some("Alpha")),
+        ] {
+            s.catalog
+                .insert(id.into(), shelf_track(id, title, artist, album));
+        }
+        s.user_playlists.push(yutu_core::Playlist {
+            id: "u1".into(),
+            title: "Gym".into(),
+            tracks: vec![mk_track("h1", "One", "A"), mk_track("h2", "Two", "A")],
+        });
+        s.route = Route::Home;
+        let _ = s.view();
+        // Library card right-click opens the user playlist menu.
+        let _ = s.update(Message::OpenPlaylistMenu("u1".into()));
+        assert_eq!(s.pl_menu.as_deref(), Some("u1"));
+        assert!(s.context_menu.is_none() && s.coll_menu.is_none());
+        let _ = s.view();
+        let _ = s.update(Message::CloseContext);
+        assert!(s.pl_menu.is_none());
+        // Recommended-album card right-click opens the home album menu.
+        let _ = s.update(Message::OpenHomeAlbumMenu {
+            album: "Alpha".into(),
+            artist: "A".into(),
+        });
+        assert_eq!(
+            s.coll_menu,
+            Some(CollectionMenu::HomeAlbum {
+                album: "Alpha".into(),
+                artist: "A".into(),
+            })
+        );
+        let _ = s.view();
+        // Queue appends the album without hijacking playback.
+        let _ = s.update(Message::QueueHomeAlbum {
+            album: "Alpha".into(),
+            artist: "A".into(),
+        });
+        assert!(s.coll_menu.is_none());
+        assert_eq!(s.queue.len(), 2);
+        // Shuffle plays the album fresh and shuffled.
+        let _ = s.update(Message::ShuffleHomeAlbum {
+            album: "Alpha".into(),
+            artist: "A".into(),
+        });
+        assert_eq!(s.queue.len(), 2);
+        assert!(s.queue.shuffle);
+        // Unknown albums never open a scrim-less modal.
+        let _ = s.update(Message::OpenHomeAlbumMenu {
+            album: "Ghost".into(),
+            artist: "Nobody".into(),
+        });
+        assert!(s.coll_menu.is_none());
+        assert!(s.status.contains("not cached"));
+        let _ = s.update(Message::QueueHomeAlbum {
+            album: "Ghost".into(),
+            artist: "Nobody".into(),
+        });
+        assert!(s.status.contains("not cached"));
     }
 
     #[test]

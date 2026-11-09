@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Home shelf cards answer right-click: library cards open the playlist
+  menu (Play, Add to queue, Shuffle play, Delete) and recommended-album
+  cards open an album menu (Play, Add to queue, Shuffle play, Start mix,
+  Go to artist). Unknown albums report honestly instead of opening air.
 - Player-bar transport is centered again: the repeat button no longer
   keeps its 24px badge box when Repeat is off (the empty space pushed
   the icon left of its frame and Play left of the row center), and the
