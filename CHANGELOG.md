@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Icon centering pass: context-menu rows center icons in their fixed
+  hitbox (missing alignments added, inner rows fill the height so the
+  Button top-placement no longer biases glyphs up), every pill with
+  icon plus text centers the pair, trailing chevrons in the Discovery
+  link and Playlists toggle lift 1px for optical centering next to
+  descender-free labels, and the play triangle shifts +2 right at
+  runtime (verbatim asset untouched) so its visual mass sits centered
+  in the red circle.
 - Spanish queue wording uses "fila" (Añadir a la fila, Vaciar fila)
   instead of "cola".
 - Home Discovery link is now text plus a chevron icon: the Spanish

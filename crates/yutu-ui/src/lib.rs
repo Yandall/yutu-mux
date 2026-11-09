@@ -325,6 +325,21 @@ fn thicken_svg(bytes: &[u8]) -> Vec<u8> {
         .into_bytes()
 }
 
+/// Optical centering for the play triangle (runtime surgery, the asset
+/// stays verbatim): Lucide's play spans 5-19 (geometric center 12,
+/// like pause) but its centroid sits ~2.3px left (triangle mass is
+/// left-heavy), so it reads as shifted left in the red circle. Shifting
+/// the polygon +2 right puts the visual mass on center (centroid
+/// ~11.7, within 0.3 of 12). Same fill-flip pattern as [`heart_icon`].
+fn optical_play(bytes: Vec<u8>) -> Vec<u8> {
+    String::from_utf8_lossy(&bytes)
+        .replace(
+            "points=\"5 3 19 12 5 21 5 3\"",
+            "points=\"7 3 21 12 7 21 7 3\"",
+        )
+        .into_bytes()
+}
+
 /// Button icon: the verbatim Lucide glyph with a slightly heavier
 /// stroke (2 to 2.5), matching the bolder button labels. Runtime
 /// surgery like the heart fill-flip; thickened handles are cached
@@ -340,7 +355,15 @@ fn btn_icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'static,
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .entry(name.to_owned())
-        .or_insert_with_key(|key| svg::Handle::from_memory(thicken_svg(icon_bytes(key))))
+        .or_insert_with_key(|key| {
+            let thick = thicken_svg(icon_bytes(key));
+            let bytes = if key == "play" {
+                optical_play(thick)
+            } else {
+                thick
+            };
+            svg::Handle::from_memory(bytes)
+        })
         .clone();
     svg(handle)
         .width(size)
@@ -14982,6 +15005,7 @@ impl AppState {
                                     btn_text(self.language.play_label(), 13),
                                 ]
                                 .spacing(6)
+                                .align_y(iced::alignment::Vertical::Center)
                             )
                             .style(accent_button)
                             .on_press(Message::PlayNow(t.id.clone()))
@@ -17305,6 +17329,7 @@ impl AppState {
                                     btn_text(self.language.play_all(), 13)
                                 ]
                                 .spacing(6)
+                                .align_y(iced::alignment::Vertical::Center)
                             )
                             .style(accent_button)
                             .on_press(Message::PlayQuickPicks)
@@ -17420,7 +17445,11 @@ impl AppState {
                         button(
                             row![
                                 btn_text(self.language.discovery_link(), 12),
-                                btn_icon("chevron-right", 12.0, iced::Color::WHITE),
+                                container(btn_icon("chevron-right", 12.0, iced::Color::WHITE,))
+                                    .padding(iced::Padding {
+                                        bottom: 2.0,
+                                        ..Default::default()
+                                    }),
                             ]
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
@@ -17617,6 +17646,7 @@ impl AppState {
                                 btn_text(self.language.play_all(), 13)
                             ]
                             .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center)
                         )
                         .style(accent_button)
                         .on_press(Message::PlayWeeklyMix)
@@ -17632,6 +17662,7 @@ impl AppState {
                                 btn_text(self.language.play_all(), 13)
                             ]
                             .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center)
                         )
                         .style(accent_button)
                         .on_press(Message::PlayForgotten)
@@ -18117,6 +18148,7 @@ impl AppState {
                                     btn_text(self.language.play_all(), 13)
                                 ]
                                 .spacing(6)
+                                .align_y(iced::alignment::Vertical::Center)
                             )
                             .style(accent_button)
                             .on_press(Message::PlayAll)
@@ -18127,6 +18159,7 @@ impl AppState {
                                     btn_text(self.language.shuffle_label(), 13)
                                 ]
                                 .spacing(6)
+                                .align_y(iced::alignment::Vertical::Center)
                             )
                             .style(accent_button)
                             .on_press(Message::PlayAllShuffled)
@@ -18160,6 +18193,7 @@ impl AppState {
                                 btn_text(self.language.play_label(), 13)
                             ]
                             .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center)
                         )
                         .style(accent_button)
                         .on_press(Message::PlayNow(id.clone()))
@@ -18195,6 +18229,7 @@ impl AppState {
                             btn_text(self.language.start_radio(), 13)
                         ]
                         .spacing(6)
+                        .align_y(iced::alignment::Vertical::Center)
                     )
                     .style(accent_button)
                     .on_press(Message::StartRadio(seed.clone()))
@@ -18433,7 +18468,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::PlayNow(t.id.clone()))
@@ -18448,7 +18484,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::PlayNext(t.id.clone()))
@@ -18463,7 +18500,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::QueueTrack(t.id.clone()))
@@ -18478,7 +18516,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::StartRadio(t.id.clone()))
@@ -18493,7 +18532,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::OpenLyrics(t.id.clone()))
@@ -18507,7 +18547,9 @@ impl AppState {
                             btn_text(heart, 14)
                         ]
                         .spacing(8)
-                        .width(Fill),
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::Like(t.id.clone()))
@@ -18528,7 +18570,9 @@ impl AppState {
                                 btn_text(thumb_label, 14)
                             ]
                             .spacing(8)
-                            .width(Fill),
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill)
+                            .height(Fill),
                         )
                         .style(hover_row)
                         .on_press(Message::Dislike(t.id.clone()))
@@ -18544,7 +18588,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::OpenTrackAlbum(t.id.clone()))
@@ -18559,7 +18604,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
-                        .width(Fill),
+                        .width(Fill)
+                        .height(Fill),
                     )
                     .style(hover_row)
                     .on_press(Message::OpenTrackArtist(t.id.clone()))
@@ -18577,7 +18623,8 @@ impl AppState {
                             ]
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center)
-                            .width(Fill),
+                            .width(Fill)
+                            .height(Fill),
                         )
                         .style(hover_row)
                         .on_press(Message::RemoveFromQueue(t.id.clone()))
@@ -18596,7 +18643,8 @@ impl AppState {
                             ]
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center)
-                            .width(Fill),
+                            .width(Fill)
+                            .height(Fill),
                         )
                         .style(hover_row)
                         .on_press(Message::RemoveAutoplay(ai))
@@ -18633,11 +18681,17 @@ impl AppState {
                                 btn_icon("queue", 14.0, iced::Color::WHITE),
                                 btn_text(self.language.playlists_toggle(membership.len()), 14)
                                     .width(Fill),
-                                btn_icon("chevron-right", 14.0, MUTED),
+                                container(btn_icon("chevron-right", 14.0, MUTED)).padding(
+                                    iced::Padding {
+                                        bottom: 2.0,
+                                        ..Default::default()
+                                    },
+                                ),
                             ]
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center)
-                            .width(Fill),
+                            .width(Fill)
+                            .height(Fill),
                         )
                         .style(if sub_open { selected_row } else { hover_row })
                         .on_press(Message::TogglePlaylistSubmenu(sub_id))
@@ -25200,10 +25254,16 @@ mod tests {
         let thick = String::from_utf8_lossy(&raw);
         assert!(thick.contains("stroke-width=\"2.5\""));
         assert!(!thick.contains("stroke-width=\"2\""));
+        // The play triangle is optically centered at runtime (verbatim
+        // asset stays pinned): Lucide spans 5-19 (geometric center 12)
+        // but the centroid sits ~2.3 left, so +2 right puts visual mass
+        // on center without touching the file.
+        let optical = optical_play(thicken_svg(include_bytes!("../assets/icons/play.svg")));
+        assert!(String::from_utf8_lossy(&optical).contains("points=\"7 3 21 12 7 21 7 3\""));
         // Filled transport glyphs stay optically centered in their
-        // 18px boxes: the play triangle spans 5-21 (center 12, matching
-        // pause), and the skip bars are filled rects (a stroked line
-        // with stroke none paints nothing, leaving a one-sided
+        // 18px boxes: the play file spans 5-19 (geometric center 12,
+        // matching pause), and the skip bars are filled rects (a stroked
+        // line with stroke none paints nothing, leaving a one-sided
         // triangle that reads as off-center).
         let play = include_str!("../assets/icons/play.svg");
         assert!(play.contains("points=\"5 3 19 12 5 21 5 3\""));
