@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Removed the "Playing from ..." line in the right panel entirely, along
+  with the now-write-only `playing_from` field.
+- Restored queues no longer set a source line either ("Saved queue" gone,
+  same as click-to-play).
+- Removed `missing_track_ids` (full-library art sweep): live fetches are
+  scoped to the visible screenful, and its only caller was its own test.
+- Click-to-play no longer sets a source line: the "Playing from Single +
+  autoplay" label is gone (the line hides when empty; album/playlist
+  sources still show).
+- Removed dead queue messages (`QueueRemove`, `QueueUp`, `QueueDown`,
+  `QueueHover`) left over from the deleted Queue page; the right panel
+  uses `PanelHover`/`QueueExit` and id-based `RemoveFromQueue`.
+- Removed unreachable center pages: the Queue page (same content lives in
+  the right panel), the Library page (no entry point; delete-fallback now
+  lands on Home), and the NowPlaying route (same as the drawer overlay).
+  Also dropped the `AUTO_ROW_H` / `DIV_PITCH` constants and the
+  `text_input` import they stranded.
 - Queue rail stays visible when collapsed and empty: it keeps the 56px
   strip (same as with items) instead of reserving nothing.
 - Settings helper-text cleanup: dropped the Custom curve caption and the
