@@ -44,13 +44,39 @@ pub fn find_yt_dlp() -> Option<String> {
     None
 }
 
+/// yt-dlp player client tried first. Its URLs stream on the first
+/// request. Newer yt-dlp defaults (2026.10+) also query `tv_samsung`
+/// and prefer its `TVHTML5` URLs, which the edge answers with HTTP 403
+/// for roughly 1.5 to 3.5 s after minting: a player that opens them at
+/// once fails the load. Older defaults (visionos only) never hit it.
+pub const PREFERRED_PLAYER_CLIENT: &str = "visionos";
+
 /// Resolve `video_id` to a direct audio URL: `yt-dlp --get-url -f
 /// bestaudio/best`. Prefers AAC-in-M4A (itag 140 class): our pure-Rust
 /// decoder (symphonia) cannot do Opus-in-WebM, so Opus is last resort.
-/// Returns the first `https://` line of stdout.
+/// Asks [`PREFERRED_PLAYER_CLIENT`] first, then yt-dlp's own default
+/// client set when that fails (clients break independently, so a pin
+/// must never be the only path). Returns the first `https://` line of
+/// stdout; on double failure the default-set error wins (it is the
+/// configuration yt-dlp maintains).
 pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamError> {
+    match get_url(bin, video_id, Some(PREFERRED_PLAYER_CLIENT)) {
+        Ok(url) => Ok(url),
+        Err(_) => get_url(bin, video_id, None),
+    }
+}
+
+/// One `yt-dlp --get-url` run, optionally pinned to a player client.
+fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, StreamError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let output = Command::new(bin)
+    let mut cmd = Command::new(bin);
+    if let Some(client) = client {
+        cmd.args([
+            "--extractor-args",
+            &format!("youtube:player_client={client}"),
+        ]);
+    }
+    let output = cmd
         .args([
             "--get-url",
             "--quiet",
@@ -153,6 +179,56 @@ mod tests {
         perm.set_mode(0o755);
         std::fs::set_permissions(&path, perm).unwrap();
         path
+    }
+
+    /// Fake sidecar with an arbitrary shell body (unique per `tag`).
+    #[cfg(unix)]
+    fn write_fake_script(tag: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path =
+            std::env::temp_dir().join(format!("yutu-fake-ytdlp-{}-{tag}.sh", std::process::id()));
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut perm = std::fs::metadata(&path).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&path, perm).unwrap();
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn preferred_client_is_asked_first() {
+        // Answers only when pinned to the preferred client.
+        let bin = write_fake_script(
+            "pinned",
+            &format!(
+                r#"case "$*" in *player_client={PREFERRED_PLAYER_CLIENT}*) echo https://example.invalid/pinned ;; *) exit 1 ;; esac"#
+            ),
+        );
+        let url = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap();
+        assert_eq!(url, "https://example.invalid/pinned");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn falls_back_to_default_clients_when_pinned_fails() {
+        // A broken pinned client must never be the only path.
+        let bin = write_fake_script(
+            "fallback",
+            r#"case "$*" in *player_client=*) echo 'ERROR: page needs reload' >&2; exit 1 ;; *) echo https://example.invalid/default ;; esac"#,
+        );
+        let url = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap();
+        assert_eq!(url, "https://example.invalid/default");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn double_failure_reports_the_default_set_error() {
+        let bin = write_fake_script(
+            "both-fail",
+            r#"case "$*" in *player_client=*) echo 'ERROR: pinned broke' >&2 ;; *) echo 'ERROR: Video unavailable' >&2 ;; esac; exit 1"#,
+        );
+        let err = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap_err();
+        assert!(matches!(err, StreamError::NotFound { .. }), "{err:?}");
     }
 
     #[test]
