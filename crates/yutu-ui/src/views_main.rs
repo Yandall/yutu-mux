@@ -899,7 +899,7 @@ impl AppState {
             yutu_player::RepeatMode::All => "repeat",
             yutu_player::RepeatMode::One => "repeat-1",
         };
-        let repeat_badge = self.language.repeat_badge(self.queue.repeat);
+        let repeat_active = !matches!(self.queue.repeat, yutu_player::RepeatMode::Off);
         // Stacked minimal player: every control survives, reflowed into
         // rows so nothing clips below 500px.
         if mode == PlayerLayout::Minimal {
@@ -987,7 +987,7 @@ impl AppState {
                     .style(hover_row)
                     .on_press(Message::Next)
                     .padding(6),
-                repeat_button(repeat_icon, repeat_badge, 6),
+                repeat_button(repeat_icon, repeat_active, 6),
             ]
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center);
@@ -1092,7 +1092,7 @@ impl AppState {
                                 .style(hover_row)
                                 .on_press(Message::Next)
                                 .padding(pad_side),
-                            repeat_button(repeat_icon, repeat_badge, pad_side),
+                            repeat_button(repeat_icon, repeat_active, pad_side),
                         ]
                         .spacing(transport_gap)
                         .align_y(iced::alignment::Vertical::Center),
