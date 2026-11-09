@@ -5910,10 +5910,11 @@ fn button_helpers_build() {
     assert!(include_str!("../assets/icons/skip-forward.svg").contains("<rect"));
     assert!(!include_str!("../assets/icons/skip-back.svg").contains("<line"));
     assert!(!include_str!("../assets/icons/skip-forward.svg").contains("<line"));
-    // The repeat button collapses its badge box when Repeat is off,
-    // so the icon stays centered and Play stays on the row center.
-    let _ = repeat_button("repeat", "", 6);
-    let _ = repeat_button("repeat-1", "1", 6);
+    // The repeat button is icon-only (no text badge): Repeat Off
+    // renders the muted glyph, All/One render the white glyph on the
+    // red CTA, and One uses the repeat-1 asset (the 1 is in the icon).
+    let _ = repeat_button("repeat", false, 6);
+    let _ = repeat_button("repeat-1", true, 6);
     assert_eq!(iced::font::Weight::Medium, medium_font().weight);
 }
 

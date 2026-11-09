@@ -1310,22 +1310,6 @@ impl Language {
     pub fn ready_status(self) -> String {
         self.tr("ready-status")
     }
-    /// Repeat badge on the player bar icon (`All`/`1`, empty when off).
-    pub fn repeat_badge(self, mode: yutu_player::RepeatMode) -> &'static str {
-        use yutu_player::RepeatMode as R;
-        match self {
-            Self::English => match mode {
-                R::Off => "",
-                R::All => "All",
-                R::One => "1",
-            },
-            Self::Spanish => match mode {
-                R::Off => "",
-                R::All => "Todo",
-                R::One => "1",
-            },
-        }
-    }
     pub fn home_album_sub(self, artist: &str, n: usize) -> String {
         self.tr_args(
             "home-album-sub",
