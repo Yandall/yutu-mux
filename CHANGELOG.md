@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Player-bar transport is centered again: the repeat button no longer
+  keeps its 24px badge box when Repeat is off (the empty space pushed
+  the icon left of its frame and Play left of the row center), and the
+  skip icons got their bars back as filled rects (a stroked line with
+  no stroke paints nothing, leaving a one-sided triangle). The play
+  triangle shifted one unit left so it spans 5-19 like pause.
 - History page warms artwork while scrolling: it was missing scroll-sweep
   slots, so rows past the first screenful kept placeholders until played.
 - Removed the "Playing from ..." line in the right panel entirely, along
