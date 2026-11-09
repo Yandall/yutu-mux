@@ -7,7 +7,7 @@
 //! drag slides, release drops). Slider rows elsewhere are gone: presets
 //! are predefined curves for these same gains.
 
-use crate::{Message, MUTED, SPOT_GREEN};
+use crate::{Message, ACCENT, MUTED};
 use iced::advanced::text::Alignment;
 use iced::widget::canvas::{
     self, Action, Event, Frame, Geometry, LineCap, Path, Program, Stroke, Text,
@@ -340,13 +340,7 @@ impl Program<Message> for EqGraph {
         }
 
         // Wash under the curve.
-        frame.fill(
-            &area_path(&handles, bottom),
-            Color {
-                a: 0.15,
-                ..SPOT_GREEN
-            },
-        );
+        frame.fill(&area_path(&handles, bottom), Color { a: 0.15, ..ACCENT });
 
         // Track (full) + fill (handle to bottom) per column.
         for handle in &handles {
@@ -363,7 +357,7 @@ impl Program<Message> for EqGraph {
             frame.stroke(
                 &Path::line(*handle, Point::new(handle.x, bottom)),
                 Stroke::default()
-                    .with_color(SPOT_GREEN)
+                    .with_color(ACCENT)
                     .with_width(bar_w)
                     .with_line_cap(LineCap::Round),
             );
@@ -373,14 +367,14 @@ impl Program<Message> for EqGraph {
         frame.stroke(
             &curve_path(&handles),
             Stroke::default()
-                .with_color(SPOT_GREEN)
+                .with_color(ACCENT)
                 .with_width(2.0)
                 .with_line_cap(LineCap::Round),
         );
 
         // Handles on top of the curve.
         for handle in &handles {
-            frame.fill(&Path::circle(*handle, handle_r), SPOT_GREEN);
+            frame.fill(&Path::circle(*handle, handle_r), ACCENT);
             frame.stroke(
                 &Path::circle(*handle, handle_r),
                 Stroke::default().with_color(Color::WHITE).with_width(1.5),

@@ -24,8 +24,8 @@ use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GA
 // primary action, muted secondary text, text-buttons for row actions.
 // ---------------------------------------------------------------------------
 
-pub(crate) const SPOT_GREEN: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
-const SPOT_GREEN_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x33, 0x66);
+pub(crate) const ACCENT: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
+const ACCENT_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x33, 0x66);
 pub(crate) const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
 const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
 const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
@@ -74,7 +74,7 @@ fn rail_thumb_bg(current: bool) -> impl Fn(&iced::Theme) -> iced::widget::contai
         background: Some(iced::Background::Color(CARD_BG)),
         border: iced::Border {
             color: if current {
-                SPOT_GREEN
+                ACCENT
             } else {
                 iced::Color::TRANSPARENT
             },
@@ -177,7 +177,7 @@ fn search_inner_input(
         icon: MUTED,
         placeholder: MUTED,
         value: iced::Color::WHITE,
-        selection: SPOT_GREEN,
+        selection: ACCENT,
     }
 }
 
@@ -189,14 +189,14 @@ fn player_bg(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
-/// Green circular primary action (Spotify play button).
-fn green_play(
+/// Accent circular primary action (red CTA button).
+fn accent_button(
     _: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let bg = match status {
-        iced::widget::button::Status::Hovered => SPOT_GREEN_HOVER,
-        _ => SPOT_GREEN,
+        iced::widget::button::Status::Hovered => ACCENT_HOVER,
+        _ => ACCENT,
     };
     iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
@@ -657,7 +657,7 @@ fn rounded_input(
         icon: MUTED,
         placeholder: MUTED,
         value: iced::Color::WHITE,
-        selection: SPOT_GREEN,
+        selection: ACCENT,
     }
 }
 
@@ -703,7 +703,7 @@ fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widg
     iced::widget::slider::Style {
         rail: iced::widget::slider::Rail {
             backgrounds: (
-                iced::Background::Color(SPOT_GREEN),
+                iced::Background::Color(ACCENT),
                 iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
             ),
             width: 4.0,
@@ -732,7 +732,7 @@ fn red_toggle(
     };
     iced::widget::toggler::Style {
         background: iced::Background::Color(if on {
-            SPOT_GREEN
+            ACCENT
         } else {
             iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
         }),
@@ -752,7 +752,7 @@ fn red_toggle(
 fn import_bar(_: &iced::Theme) -> iced::widget::progress_bar::Style {
     iced::widget::progress_bar::Style {
         background: iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
-        bar: iced::Background::Color(SPOT_GREEN),
+        bar: iced::Background::Color(ACCENT),
         border: iced::Border::default().rounded(4),
     }
 }
@@ -815,7 +815,7 @@ fn card_button(
 /// Accent bar marking the armed insertion slot.
 fn drop_bar(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(SPOT_GREEN)),
+        background: Some(iced::Background::Color(ACCENT)),
         border: iced::Border::default().rounded(2),
         ..Default::default()
     }
@@ -6424,7 +6424,7 @@ impl AppState {
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center),
         )
-        .style(green_play)
+        .style(accent_button)
         .on_press(msg)
         .padding(9)
         .into()
@@ -6442,7 +6442,7 @@ impl AppState {
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center),
         )
-        .style(green_play)
+        .style(accent_button)
         .on_press(msg)
         .padding(9)
         .into()
@@ -6500,7 +6500,7 @@ impl AppState {
     ) -> (iced::Element<'_, Message>, iced::Element<'_, Message>) {
         use iced::widget::button;
         let liked = self.liked.contains(&t.id);
-        let heart_color = if liked { SPOT_GREEN } else { MUTED };
+        let heart_color = if liked { ACCENT } else { MUTED };
         let heart: iced::Element<'_, Message> = if hovered || liked {
             button(heart_icon(liked, 15.0, heart_color))
                 .style(hover_row)
@@ -7635,7 +7635,7 @@ impl AppState {
         use iced::Fill;
         if self.cookie_logged_in {
             return column![
-                text("Signed in with cookies").size(13).color(SPOT_GREEN),
+                text("Signed in with cookies").size(13).color(ACCENT),
                 // No separate import action: Sync now (below) is the one
                 // refresh, so the two buttons never coexist.
                 button(btn_text("Sign out", 12))
@@ -7699,7 +7699,7 @@ impl AppState {
         if cookie_pick_valid(&self.cookie_path) {
             row_items.push(
                 button(self.busy_content("Import", 12.0))
-                    .style(green_play)
+                    .style(accent_button)
                     .on_press(Message::CookieImport)
                     .padding(8)
                     .into(),
@@ -7782,7 +7782,7 @@ impl AppState {
                     .wrapping(Wrapping::WordOrGlyph),
                 iced::widget::row![
                     button(btn_text("Delete export", 12))
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::CookieCleanupDelete)
                         .padding(8),
                     button(btn_text("Keep file", 12))
@@ -7873,7 +7873,7 @@ impl AppState {
                     .secure(true)
                     .padding(10),
                 button(btn_text("Done", 12))
-                    .style(green_play)
+                    .style(accent_button)
                     .on_press(Message::CloseScrobbleModal)
                     .padding(8),
             ]
@@ -7905,7 +7905,7 @@ impl AppState {
             .color(MUTED),
             row![
                 button(self.busy_content("Sync now", 12.0))
-                    .style(green_play)
+                    .style(accent_button)
                     .on_press(Message::SyncNow)
                     .padding(8),
                 checkbox(self.auto_sync)
@@ -7974,7 +7974,7 @@ impl AppState {
     #[cfg(feature = "innertube")]
     fn sync_spinner(&self) -> iced::Element<'_, Message> {
         if self.syncing() {
-            Self::spinner_frame(self.spin_frame, 14.0, SPOT_GREEN)
+            Self::spinner_frame(self.spin_frame, 14.0, ACCENT)
         } else {
             iced::widget::Space::new()
                 .width(iced::Length::Fixed(14.0))
@@ -7991,7 +7991,7 @@ impl AppState {
         use iced::widget::row;
         if self.pipeline_busy() {
             // White like the label: these buttons sit on red
-            // (`green_play`), where the accent glyph would vanish.
+            // (`accent_button`), where the accent glyph would vanish.
             row![
                 btn_text(label, size),
                 Self::spinner_frame(self.spin_frame, 12.0, iced::Color::WHITE),
@@ -8082,7 +8082,7 @@ impl AppState {
                             .size(13)
                             .color(iced::Color::WHITE),
                         Space::new().width(Fill),
-                        text(pct_label).size(13).color(SPOT_GREEN),
+                        text(pct_label).size(13).color(ACCENT),
                     ]
                     .spacing(8)
                     .width(Fill)
@@ -14311,7 +14311,7 @@ impl AppState {
         use iced::widget::{button, container, mouse_area, row};
         use iced::Fill;
         let heart_color = if self.liked.contains(&t.id) {
-            SPOT_GREEN
+            ACCENT
         } else {
             MUTED
         };
@@ -14322,7 +14322,7 @@ impl AppState {
                 row![
                     self.thumb(t),
                     button(btn_icon("play", 13.0, iced::Color::WHITE))
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
@@ -14364,7 +14364,7 @@ impl AppState {
         use iced::widget::{button, container, mouse_area, row, text};
         use iced::Fill;
         let heart_color = if self.liked.contains(&t.id) {
-            SPOT_GREEN
+            ACCENT
         } else {
             MUTED
         };
@@ -14616,7 +14616,7 @@ impl AppState {
         use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let heart_color = if self.liked.contains(&t.id) {
-            SPOT_GREEN
+            ACCENT
         } else {
             MUTED
         };
@@ -14643,7 +14643,7 @@ impl AppState {
                                 ]
                                 .spacing(6)
                             )
-                            .style(green_play)
+                            .style(accent_button)
                             .on_press(Message::PlayNow(t.id.clone()))
                             .padding(8),
                             button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
@@ -15211,11 +15211,7 @@ impl AppState {
         let pin_btn: iced::Element<'_, Message> = button(btn_icon(
             "panel-left",
             16.0,
-            if self.sidebar_pinned {
-                SPOT_GREEN
-            } else {
-                MUTED
-            },
+            if self.sidebar_pinned { ACCENT } else { MUTED },
         ))
         .style(hover_row)
         .on_press(Message::ToggleSidebarPin)
@@ -15274,7 +15270,7 @@ impl AppState {
                     && !pl.tracks.is_empty();
                 let trailing: iced::Element<'_, Message> = if show_play {
                     button(btn_icon("play", 14.0, iced::Color::WHITE))
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::PlayPlaylist(pl.id.clone()))
                         .padding(8)
                         .into()
@@ -15389,7 +15385,7 @@ impl AppState {
                         .width(Fill)
                         .padding(10),
                     button(btn_icon("plus", 16.0, iced::Color::WHITE))
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::CreatePlaylist(new_name))
                         .padding(7),
                 ]
@@ -15469,7 +15465,7 @@ impl AppState {
                 &t.artist,
                 12,
                 if is_current {
-                    SPOT_GREEN
+                    ACCENT
                 } else {
                     iced::Color::WHITE
                 },
@@ -15816,7 +15812,7 @@ impl AppState {
         let pin_btn: iced::Element<'_, Message> = button(btn_icon(
             "panel-right",
             16.0,
-            if self.right_pinned { SPOT_GREEN } else { MUTED },
+            if self.right_pinned { ACCENT } else { MUTED },
         ))
         .style(hover_row)
         .on_press(Message::ToggleRightPin)
@@ -15956,7 +15952,7 @@ impl AppState {
         let like_button: iced::Element<'_, Message> = match &current {
             Some(t) => {
                 let heart_color = if self.liked.contains(&t.id) {
-                    SPOT_GREEN
+                    ACCENT
                 } else {
                     MUTED
                 };
@@ -15970,7 +15966,7 @@ impl AppState {
         };
         let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
             button(btn_icon("shuffle", 14.0, iced::Color::WHITE))
-                .style(green_play)
+                .style(accent_button)
                 .on_press(Message::ToggleShuffle)
                 .padding(pad_shuffle)
                 .into()
@@ -15999,7 +15995,7 @@ impl AppState {
             let info_like: iced::Element<'_, Message> = match &current {
                 Some(t) => {
                     let heart_color = if self.liked.contains(&t.id) {
-                        SPOT_GREEN
+                        ACCENT
                     } else {
                         MUTED
                     };
@@ -16041,7 +16037,7 @@ impl AppState {
                 {
                     let shuffle_btn: iced::Element<'_, Message> = if self.queue.shuffle {
                         button(btn_icon("shuffle", 14.0, iced::Color::WHITE))
-                            .style(green_play)
+                            .style(accent_button)
                             .on_press(Message::ToggleShuffle)
                             .padding(5)
                             .into()
@@ -16059,7 +16055,7 @@ impl AppState {
                     .on_press(Message::Prev)
                     .padding(6),
                 button(btn_icon(play_icon, 18.0, iced::Color::WHITE))
-                    .style(green_play)
+                    .style(accent_button)
                     .on_press(Message::TogglePause)
                     .padding(8),
                 button(btn_icon("skip-forward", 18.0, iced::Color::WHITE))
@@ -16166,7 +16162,7 @@ impl AppState {
                                 .on_press(Message::Prev)
                                 .padding(pad_side),
                             button(btn_icon(play_icon, 18.0, iced::Color::WHITE))
-                                .style(green_play)
+                                .style(accent_button)
                                 .on_press(Message::TogglePause)
                                 .padding(pad_play),
                             button(btn_icon("skip-forward", 18.0, iced::Color::WHITE))
@@ -16443,12 +16439,12 @@ impl AppState {
                     let ms = l.start_ms;
                     let line: iced::Element<'_, Message> = if is_current {
                         row![
-                            btn_icon("music", 15.0, SPOT_GREEN),
+                            btn_icon("music", 15.0, ACCENT),
                             text(l.text.clone())
                                 .size(19)
                                 .line_height(iced::widget::text::LineHeight::Relative(1.4),)
                                 .font(bold_font())
-                                .color(SPOT_GREEN),
+                                .color(ACCENT),
                         ]
                         .spacing(10)
                         .align_y(iced::alignment::Vertical::Center)
@@ -16560,7 +16556,7 @@ impl AppState {
                 self.liked.contains(&t.id),
                 16.0,
                 if self.liked.contains(&t.id) {
-                    SPOT_GREEN
+                    ACCENT
                 } else {
                     MUTED
                 }
@@ -16977,7 +16973,7 @@ impl AppState {
                                 ]
                                 .spacing(6)
                             )
-                            .style(green_play)
+                            .style(accent_button)
                             .on_press(Message::PlayQuickPicks)
                             .padding(7),
                         ]
@@ -17303,7 +17299,7 @@ impl AppState {
                                         &t.artist,
                                         14,
                                         if is_current {
-                                            SPOT_GREEN
+                                            ACCENT
                                         } else {
                                             iced::Color::WHITE
                                         },
@@ -17495,7 +17491,7 @@ impl AppState {
                             .width(Fill)
                             .padding(10),
                         button(btn_text("Create", 13))
-                            .style(green_play)
+                            .style(accent_button)
                             .on_press(Message::CreatePlaylist(new_name))
                             .padding(8),
                     ]
@@ -17540,7 +17536,7 @@ impl AppState {
                             ]
                             .spacing(6)
                         )
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::PlayWeeklyMix)
                         .padding(7),
                     ]
@@ -17555,7 +17551,7 @@ impl AppState {
                             ]
                             .spacing(6)
                         )
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::PlayForgotten)
                         .padding(7),
                     ]
@@ -17738,7 +17734,7 @@ impl AppState {
                     .spacing(4),
                     text("Scrobbling").size(17),
                     button(btn_text("Set up scrobbling", 12))
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::OpenScrobbleModal)
                         .padding(8),
                     text("Cookie import").size(17),
@@ -17998,7 +17994,7 @@ impl AppState {
                                 ]
                                 .spacing(6)
                             )
-                            .style(green_play)
+                            .style(accent_button)
                             .on_press(Message::PlayAll)
                             .padding(8),
                             button(
@@ -18008,7 +18004,7 @@ impl AppState {
                                 ]
                                 .spacing(6)
                             )
-                            .style(green_play)
+                            .style(accent_button)
                             .on_press(Message::PlayAllShuffled)
                             .padding(8),
                             button(btn_icon("ellipsis", 15.0, MUTED))
@@ -18041,7 +18037,7 @@ impl AppState {
                             ]
                             .spacing(6)
                         )
-                        .style(green_play)
+                        .style(accent_button)
                         .on_press(Message::PlayNow(id.clone()))
                         .padding(7),
                         button(btn_text("Radio", 13))
@@ -18077,7 +18073,7 @@ impl AppState {
                         ]
                         .spacing(6)
                     )
-                    .style(green_play)
+                    .style(accent_button)
                     .on_press(Message::StartRadio(seed.clone()))
                     .padding(8),
                     column(rows).spacing(2),
@@ -18170,7 +18166,7 @@ impl AppState {
                 })
                 .collect();
             let progress: iced::Element<'_, Message> = if self.searching {
-                text("Searching…").size(11).color(SPOT_GREEN).into()
+                text("Searching…").size(11).color(ACCENT).into()
             } else {
                 text("Top tracks: Enter for all results")
                     .size(11)
@@ -18302,7 +18298,7 @@ impl AppState {
         if let Some(menu_id) = self.context_menu.clone() {
             if let Some(t) = self.find_track(&menu_id) {
                 let (heart_color, heart) = if self.liked.contains(&t.id) {
-                    (SPOT_GREEN, "Remove from favorites")
+                    (ACCENT, "Remove from favorites")
                 } else {
                     (MUTED, "Add to favorites")
                 };
@@ -18399,7 +18395,7 @@ impl AppState {
                     {
                         let disliked = self.disliked.contains(&t.id);
                         let (thumb_color, thumb_label) = if disliked {
-                            (SPOT_GREEN, "Recommend again")
+                            (ACCENT, "Recommend again")
                         } else {
                             (MUTED, "Don't recommend")
                         };
@@ -18611,7 +18607,7 @@ impl AppState {
                                 })
                                 .size(11)
                                 .color(if *in_pl {
-                                    SPOT_GREEN
+                                    ACCENT
                                 } else {
                                     MUTED
                                 }),
