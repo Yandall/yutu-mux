@@ -11,6 +11,8 @@ pub const MPRIS_IDENTITY: &str = "yutu-mux";
 pub mod macos;
 pub mod macos_notes;
 pub mod mpris;
+#[cfg(test)]
+mod mpris_tests;
 pub mod tray;
 
 pub use mpris::{
