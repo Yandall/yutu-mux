@@ -698,6 +698,58 @@ fn settings_input(content: iced::Element<'_, Message>) -> iced::Element<'_, Mess
         .into()
 }
 
+/// Centered fixed box for control glyphs: iced buttons hug content
+/// (top-left placed, never centered), so uneven glyphs and badge text
+/// read as off-center hover frames. Every box is the same size, so a
+/// control row lines up instead of hugging each glyph.
+fn ctrl_box(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
+    use iced::widget::container;
+    container(content)
+        .width(iced::Length::Fixed(18.0))
+        .height(iced::Length::Fixed(18.0))
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
+}
+
+/// Short live-state caption for the preset group: builtin presets show
+/// their own active segment; only a hand-tweaked (Custom) curve matches
+/// nothing. Pure helper so tests pin the mapping.
+fn eq_state_caption(preset_live: bool) -> Option<&'static str> {
+    if preset_live {
+        None
+    } else {
+        Some("Custom curve.")
+    }
+}
+
+/// Flow preset names into rows that fit `body_w` (like flex-wrap):
+/// greedy fill per row, so a short preset joins the first row even when
+/// the full strip cannot. Every row holds at least one segment, and an
+/// empty input yields no rows. The page scrolls vertically only, so a
+/// strip must never clip.
+fn eq_flow_rows(names: &[String], body_w: f32) -> Vec<Vec<String>> {
+    const SEG_PAD: f32 = 16.0;
+    const GAP: f32 = 2.0;
+    const GROUP_PAD: f32 = 8.0;
+    const PX_PER_CHAR: f32 = 7.0;
+    let inner = (body_w - GROUP_PAD).max(0.0);
+    let mut rows: Vec<Vec<String>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for n in names {
+        let w = n.chars().count() as f32 * PX_PER_CHAR + SEG_PAD;
+        let cur_empty = rows.last().is_none_or(|r| r.is_empty());
+        if !cur_empty && used + GAP + w > inner {
+            rows.push(Vec::new());
+            used = 0.0;
+        }
+        // Trailing gap overcounts by 2px: conservative, breaks earlier.
+        used += w + GAP;
+        rows.last_mut().expect("at least one row").push(n.clone());
+    }
+    rows.into_iter().filter(|r| !r.is_empty()).collect()
+}
+
 /// Slider in theme red: red filled rail, pale track, white round handle.
 fn themed_slider(_: &iced::Theme, _: iced::widget::slider::Status) -> iced::widget::slider::Style {
     iced::widget::slider::Style {
@@ -780,6 +832,82 @@ fn hover_row(_: &iced::Theme, status: iced::widget::button::Status) -> iced::wid
         text_color: iced::Color::WHITE,
         border: iced::Border::default().rounded(8),
         ..Default::default()
+    }
+}
+
+/// Secondary button: visible dark fill + border at rest, so standalone
+/// text actions never read as plain text. The red `accent_button` stays
+/// the CTA; menus and rows keep `hover_row` (hover feedback only).
+fn ghost_button(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let hovered = matches!(
+        status,
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+    );
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(if hovered {
+            iced::Color::from_rgb8(0x33, 0x33, 0x33)
+        } else {
+            iced::Color::from_rgb8(0x22, 0x22, 0x22)
+        })),
+        text_color: iced::Color::WHITE,
+        border: iced::Border {
+            color: if hovered {
+                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+            } else {
+                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            },
+            width: 1.0,
+            radius: 20.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Segmented group box: one bordered shell holding the EQ preset
+/// segments, so the presets read as a single picker.
+fn seg_group(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(
+            0x16, 0x16, 0x16,
+        ))),
+        border: iced::Border {
+            color: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// One EQ preset segment: red fill when active, transparent otherwise
+/// (hover lifts inactive segments). Glyphs on red are always white.
+fn seg_button(
+    active: bool,
+) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    move |_: &iced::Theme, status: iced::widget::button::Status| {
+        let hovered = matches!(
+            status,
+            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+        );
+        iced::widget::button::Style {
+            background: if active {
+                Some(iced::Background::Color(if hovered {
+                    ACCENT_HOVER
+                } else {
+                    ACCENT
+                }))
+            } else if hovered {
+                Some(iced::Background::Color(CARD_BG_HOVER))
+            } else {
+                None
+            },
+            text_color: iced::Color::WHITE,
+            border: iced::Border::default().rounded(10),
+            ..Default::default()
+        }
     }
 }
 
@@ -7639,7 +7767,7 @@ impl AppState {
                 // No separate import action: Sync now (below) is the one
                 // refresh, so the two buttons never coexist.
                 button(btn_text("Sign out", 12))
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::CookieLogout)
                     .padding(8),
             ]
@@ -7786,7 +7914,7 @@ impl AppState {
                         .on_press(Message::CookieCleanupDelete)
                         .padding(8),
                     button(btn_text("Keep file", 12))
-                        .style(hover_row)
+                        .style(ghost_button)
                         .on_press(Message::CookieCleanupKeep)
                         .padding(8),
                 ]
@@ -14696,7 +14824,7 @@ impl AppState {
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(hover_row)
+                .style(ghost_button)
                 .on_press(Message::StartRadio(seed))
                 .padding(8),
             ]
@@ -14758,7 +14886,7 @@ impl AppState {
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(hover_row)
+                .style(ghost_button)
                 .on_press(Message::StartRadio(seed))
                 .padding(8),
             ]
@@ -15156,7 +15284,7 @@ impl AppState {
         if total > shown {
             body = body.push(
                 button(btn_text(format!("Show more ({} older)", total - shown), 12))
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::HistoryMore)
                     .padding(8),
             );
@@ -15720,9 +15848,9 @@ impl AppState {
             RightTab::Queue => column![
                 text("Up next").size(13).color(MUTED),
                 button(btn_text(format!("Clear queue ({})", self.queue.len()), 12))
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::QueueClear)
-                    .padding(4),
+                    .padding(8),
                 scrollable(
                     column![
                         column(if live {
@@ -15900,11 +16028,11 @@ impl AppState {
     /// when muted. Level untouched, so unmuting restores exactly.
     fn mute_button(&self) -> iced::Element<'_, Message> {
         use iced::widget::button;
-        button(btn_icon(
+        button(ctrl_box(btn_icon(
             if self.muted { "volume-x" } else { "volume" },
             14.0,
             MUTED,
-        ))
+        )))
         .style(hover_row)
         .on_press(Message::ToggleMute)
         .padding(6)
@@ -15946,7 +16074,6 @@ impl AppState {
         let transport_gap = if tight { 4.0 } else { 6.0 };
         let pad_side = if tight { 6 } else { 8 };
         let pad_play = if tight { 8 } else { 10 };
-        let pad_shuffle = if tight { 5 } else { 7 };
         let volume_w = if tight { 80 } else { 120 };
         let main_gap = if tight { 8.0 } else { 12.0 };
         let like_button: iced::Element<'_, Message> = match &current {
@@ -15956,25 +16083,29 @@ impl AppState {
                 } else {
                     MUTED
                 };
-                button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                    .style(hover_row)
-                    .on_press(Message::Like(t.id.clone()))
-                    .padding(6)
-                    .into()
+                button(ctrl_box(heart_icon(
+                    self.liked.contains(&t.id),
+                    15.0,
+                    heart_color,
+                )))
+                .style(hover_row)
+                .on_press(Message::Like(t.id.clone()))
+                .padding(6)
+                .into()
             }
             None => text("").size(1).into(),
         };
         let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
-            button(btn_icon("shuffle", 14.0, iced::Color::WHITE))
+            button(ctrl_box(btn_icon("shuffle", 14.0, iced::Color::WHITE)))
                 .style(accent_button)
                 .on_press(Message::ToggleShuffle)
-                .padding(pad_shuffle)
+                .padding(pad_side)
                 .into()
         } else {
-            button(btn_icon("shuffle", 14.0, MUTED))
+            button(ctrl_box(btn_icon("shuffle", 14.0, MUTED)))
                 .style(hover_row)
                 .on_press(Message::ToggleShuffle)
-                .padding(pad_shuffle)
+                .padding(pad_side)
                 .into()
         };
         let (repeat_icon, repeat_badge): (&str, &str) = match self.queue.repeat {
@@ -15999,15 +16130,19 @@ impl AppState {
                     } else {
                         MUTED
                     };
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6)
-                        .into()
+                    button(ctrl_box(heart_icon(
+                        self.liked.contains(&t.id),
+                        15.0,
+                        heart_color,
+                    )))
+                    .style(hover_row)
+                    .on_press(Message::Like(t.id.clone()))
+                    .padding(6)
+                    .into()
                 }
                 None => text("").size(1).into(),
             };
-            let drawer_btn: iced::Element<'_, Message> = button(btn_icon(
+            let drawer_btn: iced::Element<'_, Message> = button(ctrl_box(btn_icon(
                 if self.drawer_open {
                     "chevron-down"
                 } else {
@@ -16015,7 +16150,7 @@ impl AppState {
                 },
                 14.0,
                 iced::Color::WHITE,
-            ))
+            )))
             .style(hover_row)
             .on_press(Message::ToggleDrawer)
             .padding(7)
@@ -16036,36 +16171,38 @@ impl AppState {
             let transport = row![
                 {
                     let shuffle_btn: iced::Element<'_, Message> = if self.queue.shuffle {
-                        button(btn_icon("shuffle", 14.0, iced::Color::WHITE))
+                        button(ctrl_box(btn_icon("shuffle", 14.0, iced::Color::WHITE)))
                             .style(accent_button)
                             .on_press(Message::ToggleShuffle)
-                            .padding(5)
+                            .padding(6)
                             .into()
                     } else {
-                        button(btn_icon("shuffle", 14.0, MUTED))
+                        button(ctrl_box(btn_icon("shuffle", 14.0, MUTED)))
                             .style(hover_row)
                             .on_press(Message::ToggleShuffle)
-                            .padding(5)
+                            .padding(6)
                             .into()
                     };
                     shuffle_btn
                 },
-                button(btn_icon("skip-back", 18.0, iced::Color::WHITE))
+                button(ctrl_box(btn_icon("skip-back", 18.0, iced::Color::WHITE)))
                     .style(hover_row)
                     .on_press(Message::Prev)
                     .padding(6),
-                button(btn_icon(play_icon, 18.0, iced::Color::WHITE))
+                button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
                     .style(accent_button)
                     .on_press(Message::TogglePause)
                     .padding(8),
-                button(btn_icon("skip-forward", 18.0, iced::Color::WHITE))
+                button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
                     .style(hover_row)
                     .on_press(Message::Next)
                     .padding(6),
                 button(
                     row![
-                        btn_icon(repeat_icon, 14.0, iced::Color::WHITE),
-                        btn_text(repeat_badge, 11),
+                        ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)),
+                        container(btn_text(repeat_badge, 11))
+                            .width(iced::Length::Fixed(24.0))
+                            .align_x(iced::alignment::Horizontal::Center),
                     ]
                     .spacing(3)
                     .align_y(iced::alignment::Vertical::Center),
@@ -16157,22 +16294,24 @@ impl AppState {
                     column![
                         row![
                             shuffle_button,
-                            button(btn_icon("skip-back", 18.0, iced::Color::WHITE))
+                            button(ctrl_box(btn_icon("skip-back", 18.0, iced::Color::WHITE)))
                                 .style(hover_row)
                                 .on_press(Message::Prev)
                                 .padding(pad_side),
-                            button(btn_icon(play_icon, 18.0, iced::Color::WHITE))
+                            button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
                                 .style(accent_button)
                                 .on_press(Message::TogglePause)
                                 .padding(pad_play),
-                            button(btn_icon("skip-forward", 18.0, iced::Color::WHITE))
+                            button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
                                 .style(hover_row)
                                 .on_press(Message::Next)
                                 .padding(pad_side),
                             button(
                                 row![
-                                    btn_icon(repeat_icon, 14.0, iced::Color::WHITE),
-                                    btn_text(repeat_badge, 11),
+                                    ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)),
+                                    container(btn_text(repeat_badge, 11))
+                                        .width(iced::Length::Fixed(24.0))
+                                        .align_x(iced::alignment::Horizontal::Center),
                                 ]
                                 .spacing(3)
                                 .align_y(iced::alignment::Vertical::Center),
@@ -16211,7 +16350,7 @@ impl AppState {
                             tooltip::Position::Top,
                         )
                         .gap(8),
-                        button(btn_icon(
+                        button(ctrl_box(btn_icon(
                             if self.drawer_open {
                                 "chevron-down"
                             } else {
@@ -16219,7 +16358,7 @@ impl AppState {
                             },
                             14.0,
                             iced::Color::WHITE
-                        ))
+                        )))
                         .style(hover_row)
                         .on_press(Message::ToggleDrawer)
                         .padding(7),
@@ -17080,7 +17219,7 @@ impl AppState {
                     row![
                         text("Made for you").size(19).width(Fill),
                         button(btn_text("Discovery →", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::Navigate(Route::Discovery))
                             .padding(8),
                     ]
@@ -17406,9 +17545,9 @@ impl AppState {
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
                         )
-                        .style(hover_row)
+                        .style(ghost_button)
                         .on_press(Message::ToggleShuffle)
-                        .padding(6),
+                        .padding(8),
                         button(
                             row![
                                 btn_icon("repeat", 12.0, iced::Color::WHITE),
@@ -17417,11 +17556,11 @@ impl AppState {
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
                         )
-                        .style(hover_row)
+                        .style(ghost_button)
                         .on_press(Message::CycleRepeat)
-                        .padding(6),
+                        .padding(8),
                         button(btn_text("Clear", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::QueueClear)
                             .padding(8),
                     ]
@@ -17467,7 +17606,7 @@ impl AppState {
                             .spacing(2)
                             .width(Fill),
                             button(btn_text("Open", 12))
-                                .style(hover_row)
+                                .style(ghost_button)
                                 .on_press(Message::OpenPlaylist(p.id.clone()))
                                 .padding(8),
                         ]
@@ -17566,28 +17705,55 @@ impl AppState {
                     .into_iter()
                     .map(|p| p.name)
                     .collect();
-                let current_eq = if self.eq_enabled {
-                    self.eq_preset.clone()
-                } else {
-                    // Bypassed: the chain is flat, whatever the kept
-                    // curve (same honesty as the rodio note).
-                    format!("Off ({})", self.eq_preset)
+                // Segmented preset picker: one boxed group with the kept
+                // preset filled red even while bypassed (the toggle owns
+                // the on/off state). Rows flow like flex-wrap: greedy
+                // fill per row, so short presets join the first row even
+                // when the full strip cannot fit.
+                let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
+                let body_w =
+                    (win_w - self.sidebar_w - self.right_w - 32.0).min(CENTER_MAX_W) - 40.0;
+                let eq_group: iced::Element<'_, Message> = container(
+                    iced::widget::Column::with_children(
+                        eq_flow_rows(&eq_names, body_w)
+                            .into_iter()
+                            .map(|row_names| {
+                                iced::widget::Row::with_children(
+                                    row_names
+                                        .iter()
+                                        .map(|n| {
+                                            let active = *n == self.eq_preset;
+                                            button(btn_text(n.clone(), 12))
+                                                .style(seg_button(active))
+                                                .on_press(Message::SelectEqPreset(n.clone()))
+                                                .padding(8)
+                                                .into()
+                                        })
+                                        .collect::<Vec<iced::Element<'_, Message>>>(),
+                                )
+                                .spacing(2)
+                                .into()
+                            })
+                            .collect::<Vec<iced::Element<'_, Message>>>(),
+                    )
+                    .spacing(2),
+                )
+                .style(seg_group)
+                .padding(4)
+                .into();
+                // Backend honesty without the preset line: the group shows
+                // the pick, this note only appears when EQ cannot work.
+                let eq_warn: iced::Element<'_, Message> = match &self.audio {
+                    Some(a) if a.supports_eq() => text("").size(1).into(),
+                    _ => text(self.eq_note()).size(12).color(MUTED).into(),
                 };
-                let eq_buttons: Vec<iced::Element<'_, Message>> = eq_names
-                    .into_iter()
-                    .map(|n| {
-                        let label = if n == current_eq {
-                            format!("● {n}")
-                        } else {
-                            n.clone()
-                        };
-                        button(btn_text(label, 12))
-                            .style(hover_row)
-                            .on_press(Message::SelectEqPreset(n))
-                            .padding(5)
-                            .into()
-                    })
-                    .collect();
+                // Live-state caption: the group marks builtin presets, so
+                // only a hand-tweaked curve needs naming.
+                let preset_live = eq_names.contains(&self.eq_preset);
+                let eq_caption: iced::Element<'_, Message> = match eq_state_caption(preset_live) {
+                    Some(note) => text(note).size(12).color(MUTED).into(),
+                    None => text("").size(1).into(),
+                };
                 // Graphic EQ panel: bypass toggle top-right, canvas
                 // sliders + curve below. Presets above are predefined
                 // curves for the same gains.
@@ -17630,7 +17796,7 @@ impl AppState {
                 let relaunch_button: iced::Element<'_, Message> =
                     if font_pending(self.font_family, effective_font()) {
                         button(btn_text("Relaunch now to apply", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::RelaunchNow)
                             .padding(8)
                             .into()
@@ -17661,10 +17827,9 @@ impl AppState {
                         ),
                     ]
                     .spacing(4),
-                    row(eq_buttons).spacing(4),
-                    text(format!("EQ: {current_eq} · {}", self.eq_note()))
-                        .size(12)
-                        .color(MUTED),
+                    eq_group,
+                    eq_caption,
+                    eq_warn,
                     eq_panel,
                     text("Lyrics").size(17),
                     text("Default lyrics provider").size(13),
@@ -17796,14 +17961,14 @@ impl AppState {
                     let expanded = self.artist_expanded || songs.len() <= 5;
                     let more = if !expanded || (!full && !fetching_full) {
                         button(btn_text("Show more", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::ArtistTopExpand)
                             .padding(8)
                             .into()
                     } else if fetching_full {
                         row![
                             button(btn_text("Show more", 12))
-                                .style(hover_row)
+                                .style(ghost_button)
                                 .on_press(Message::ArtistTopExpand)
                                 .padding(8),
                             Self::spinner_frame(self.spin_frame, 12.0, MUTED),
@@ -17848,7 +18013,7 @@ impl AppState {
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::StartRadio(seed.id.clone()))
                     .padding(8)
                     .into(),
@@ -18041,7 +18206,7 @@ impl AppState {
                         .on_press(Message::PlayNow(id.clone()))
                         .padding(7),
                         button(btn_text("Radio", 13))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::StartRadio(id.clone()))
                             .padding(8),
                     ]
@@ -18995,7 +19160,7 @@ impl AppState {
         let sheet: iced::Element<'_, Message> = container(
             column![
                 row![
-                    button(btn_icon("chevron-down", 14.0, iced::Color::WHITE))
+                    button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
                         .style(hover_row)
                         .on_press(Message::ToggleDrawer)
                         .padding(7),
@@ -19034,7 +19199,7 @@ impl AppState {
         let sheet: iced::Element<'_, Message> = container(
             column![
                 row![
-                    button(btn_icon("chevron-down", 14.0, iced::Color::WHITE))
+                    button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
                         .style(hover_row)
                         .on_press(Message::ToggleDrawer)
                         .padding(7),
@@ -22201,6 +22366,63 @@ mod tests {
         assert!(again.scrobble_enabled);
         assert_eq!(again.scrobble_user, "alice");
         assert!(again.scrobble_lb_token.is_empty());
+    }
+
+    #[test]
+    fn seg_button_marks_active_preset() {
+        use iced::widget::button::Status;
+        let theme = iced::Theme::Dark;
+        let on = seg_button(true)(&theme, Status::Hovered);
+        let off = seg_button(false)(&theme, Status::Hovered);
+        assert_eq!(on.background, Some(iced::Background::Color(ACCENT_HOVER)));
+        assert_eq!(off.background, Some(iced::Background::Color(CARD_BG_HOVER)));
+        let idle_on = seg_button(true)(&theme, Status::Active);
+        let idle_off = seg_button(false)(&theme, Status::Active);
+        assert_eq!(idle_on.background, Some(iced::Background::Color(ACCENT)));
+        assert_eq!(idle_off.background, None);
+        // Pressed counts as hovered; disabled falls back to idle.
+        let pressed_on = seg_button(true)(&theme, Status::Pressed);
+        let disabled_off = seg_button(false)(&theme, Status::Disabled);
+        assert_eq!(
+            pressed_on.background,
+            Some(iced::Background::Color(ACCENT_HOVER))
+        );
+        assert_eq!(disabled_off.background, None);
+    }
+
+    #[test]
+    fn eq_state_caption_names_custom_only() {
+        assert_eq!(eq_state_caption(true), None);
+        assert_eq!(eq_state_caption(false), Some("Custom curve."));
+    }
+
+    #[test]
+    fn eq_flow_rows_fill_first_row_like_flex_wrap() {
+        let names: Vec<String> = [
+            "Flat",
+            "Bass Boost",
+            "Treble Boost",
+            "Vocal",
+            "Rock",
+            "Pop",
+            "Jazz",
+            "Classical",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // Wide body: one strip of 8.
+        let wide = eq_flow_rows(&names, 1200.0);
+        assert_eq!(wide.len(), 1);
+        assert_eq!(wide[0].len(), 8);
+        // Tight body: greedy fill beats fixed halves ([5, 3], not [4, 4]),
+        // order preserved, every row non-empty.
+        let narrow = eq_flow_rows(&names, 350.0);
+        assert_eq!(narrow.iter().map(Vec::len).collect::<Vec<_>>(), vec![5, 3]);
+        let flat: Vec<&String> = narrow.iter().flatten().collect();
+        assert_eq!(flat, names.iter().collect::<Vec<_>>());
+        // Empty input: no rows (never a panic, never an empty box row).
+        assert!(eq_flow_rows(&[], 1200.0).is_empty());
     }
 
     #[test]
