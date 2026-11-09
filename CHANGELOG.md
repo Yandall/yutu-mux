@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Language selector in Settings with full Spanish translation: every
+  user-facing string (nav, shelves, search, detail pages, rows, menus,
+  dialogs, settings, player bar, statuses) renders through a new
+  `Language` table (`English`/`Español`), persisted in SQLite and
+  applied instantly. Fresh installs default from the system locale
+  (`es*` starts Spanish). The release status filter keys on each
+  language's own failure words so both classify identically.
 - Destructive actions confirm first: Sign out (Settings) and playlist
   Delete (menu) now arm a confirm dialog instead of acting at once.
   The red CTA confirms, the ghost button plus scrim/Esc keeps things
