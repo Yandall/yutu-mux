@@ -7,8 +7,14 @@ pub mod discovery;
 pub mod history;
 #[cfg(feature = "innertube")]
 pub mod innertube;
+#[cfg(all(test, feature = "innertube"))]
+mod innertube_tests;
 pub mod library;
+#[cfg(test)]
+mod library_tests;
 pub mod lyrics_providers;
+#[cfg(test)]
+mod lyrics_tests;
 pub mod models;
 pub mod pot;
 #[cfg(feature = "innertube")]
@@ -17,6 +23,8 @@ pub mod raw_browse;
 pub mod raw_lyrics;
 #[cfg(feature = "innertube")]
 pub mod raw_search;
+#[cfg(all(test, feature = "innertube"))]
+mod raw_search_tests;
 pub mod scrobble;
 pub mod secure_store;
 pub mod stream;

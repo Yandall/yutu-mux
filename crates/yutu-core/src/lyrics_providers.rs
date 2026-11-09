@@ -298,7 +298,7 @@ pub struct LyricsResult {
 /// (milliseconds, 3 digits). The fraction separator may be `.` or `:`.
 /// Returns `None` for metadata tags (`ar:`, `ti:`, `length:`, ...) and any
 /// malformed input. Never panics.
-fn parse_timestamp(tag: &str) -> Option<u64> {
+pub(crate) fn parse_timestamp(tag: &str) -> Option<u64> {
     let tag = tag.trim();
     let (min_str, rest) = tag.split_once(':')?;
     if min_str.is_empty() || !min_str.bytes().all(|b| b.is_ascii_digit()) {
@@ -432,7 +432,7 @@ pub fn line_at(lines: &[LyricLine], position_ms: u64) -> Option<usize> {
 /// LRCLIB response shape (only the fields we need).
 #[cfg(feature = "lyrics")]
 #[derive(Debug, Deserialize)]
-struct LrclibResponse {
+pub(crate) struct LrclibResponse {
     #[serde(default, rename = "plainLyrics")]
     plain: Option<String>,
     #[serde(default, rename = "syncedLyrics")]
@@ -444,7 +444,7 @@ struct LrclibResponse {
 /// One `/api/search` record (full lyrics payload included).
 #[cfg(feature = "lyrics")]
 #[derive(Debug, Deserialize)]
-struct LrclibSearchRecord {
+pub(crate) struct LrclibSearchRecord {
     #[serde(default)]
     id: u64,
     #[serde(default, rename = "trackName")]
@@ -470,7 +470,7 @@ const LRCLIB_MAX_ATTEMPTS: u32 = 3;
 /// Backoff between LRCLIB retries when the server gives no `Retry-After`:
 /// 1 s after the first failure, 2 s after the second.
 #[cfg(feature = "lyrics")]
-fn lrclib_backoff_secs(failed_attempt: u32) -> u64 {
+pub(crate) fn lrclib_backoff_secs(failed_attempt: u32) -> u64 {
     match failed_attempt {
         0 => 1,
         _ => 2,
@@ -481,7 +481,7 @@ fn lrclib_backoff_secs(failed_attempt: u32) -> u64 {
 /// not stall the lyrics fetch). Non-numeric values (HTTP dates) fall back
 /// to `None` so the caller uses the regular backoff.
 #[cfg(feature = "lyrics")]
-fn retry_after_secs(response: &reqwest::Response) -> Option<u64> {
+pub(crate) fn retry_after_secs(response: &reqwest::Response) -> Option<u64> {
     response
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
@@ -535,7 +535,7 @@ async fn lrclib_get(client: &reqwest::Client, url: String) -> Result<reqwest::Re
 /// Turn a parsed LRCLIB body into a [`LyricsResult`], synthesizing plain
 /// text from synced lines when only synced lyrics exist.
 #[cfg(feature = "lyrics")]
-fn lrclib_body_to_result(
+pub(crate) fn lrclib_body_to_result(
     plain_opt: Option<String>,
     synced_opt: Option<String>,
     instrumental: bool,
@@ -581,7 +581,7 @@ fn lrclib_body_to_result(
 /// Build the LRCLIB `/api/search` URL. At least one of title/artist is
 /// sent; album narrows when non-empty.
 #[cfg(feature = "lyrics")]
-fn lrclib_search_url(artist: &str, title: &str, album: Option<&str>) -> String {
+pub(crate) fn lrclib_search_url(artist: &str, title: &str, album: Option<&str>) -> String {
     const SEARCH_URL: &str = "https://lrclib.net/api/search";
     let mut parts = Vec::new();
     if !title.is_empty() {
@@ -607,7 +607,7 @@ fn lrclib_search_url(artist: &str, title: &str, album: Option<&str>) -> String {
 /// record id plus its score. `None` when nothing scores above the noise
 /// floor (title must at least share a token with the request).
 #[cfg(feature = "lyrics")]
-fn pick_search_best(
+pub(crate) fn pick_search_best(
     records: &[LrclibSearchRecord],
     artist: &str,
     title: &str,
@@ -657,7 +657,7 @@ fn pick_search_best(
 /// crate deliberately does not enable (shared `reqwest` feature set with
 /// `innertube`/`submit`); encoding here keeps the dependency surface stable.
 #[cfg(feature = "lyrics")]
-fn percent_encode(value: &str) -> String {
+pub(crate) fn percent_encode(value: &str) -> String {
     const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
     let mut out = String::with_capacity(value.len());
     for b in value.as_bytes() {
@@ -673,7 +673,12 @@ fn percent_encode(value: &str) -> String {
 /// Build the LRCLIB `/api/get` URL. `album_name` is omitted when `None` or
 /// empty.
 #[cfg(feature = "lyrics")]
-fn lrclib_url(artist: &str, title: &str, album: Option<&str>, duration_secs: u32) -> String {
+pub(crate) fn lrclib_url(
+    artist: &str,
+    title: &str,
+    album: Option<&str>,
+    duration_secs: u32,
+) -> String {
     let mut url = format!(
         "{LRCLIB_API_URL}?artist_name={}&track_name={}&duration={duration_secs}",
         percent_encode(artist),
@@ -775,264 +780,4 @@ pub async fn fetch_lrclib(
         .await
         .map_err(|_| "lrclib response parse failed".to_string())?;
     lrclib_body_to_result(body.plain, body.synced, body.instrumental)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn parse_lrc_keeps_stanza_breaks_as_markers() {
-        let lines = parse_lrc("[00:01.00]one\n[00:05.00]two\n\n[00:09.00]three\n");
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[2].text, "");
-        assert_eq!(lines[2].start_ms, lines[3].start_ms);
-        // Markers never steal the highlight.
-        assert_eq!(line_at(&lines, 9_000), Some(3));
-        assert_eq!(line_at(&lines, 5_000), Some(1));
-    }
-
-    use super::*;
-
-    fn tagged(start_ms: u64, text: &str) -> LyricLine {
-        LyricLine {
-            start_ms,
-            text: text.to_owned(),
-        }
-    }
-
-    #[test]
-    fn lrc_single_line_basic() {
-        let lines = parse_lrc("[00:12.34]Hello\n");
-        assert_eq!(lines, vec![tagged(12_340, "Hello")]);
-    }
-
-    #[test]
-    fn lrc_multi_tag_line_emits_one_per_timestamp() {
-        let lines = parse_lrc("[00:01.00][00:02.00]Hello");
-        assert_eq!(lines, vec![tagged(1_000, "Hello"), tagged(2_000, "Hello")]);
-    }
-
-    #[test]
-    fn lrc_metadata_tags_skipped() {
-        let input = "[ar:Artist]\n[ti:Title]\n[al:Album]\n[length: 03:45]\n[by:someone]\n[00:10.00]Real line\n";
-        let lines = parse_lrc(input);
-        assert_eq!(lines, vec![tagged(10_000, "Real line")]);
-    }
-
-    #[test]
-    fn lrc_two_vs_three_digit_fractions() {
-        let lines = parse_lrc("[00:01.23]two\n[00:02.456]three\n");
-        assert_eq!(lines, vec![tagged(1_230, "two"), tagged(2_456, "three")]);
-    }
-
-    #[test]
-    fn lrc_bare_mm_ss_without_fraction() {
-        let lines = parse_lrc("[01:23]No fraction\n");
-        assert_eq!(lines, vec![tagged(83_000, "No fraction")]);
-    }
-
-    #[test]
-    fn lrc_unsorted_input_gets_sorted() {
-        let lines = parse_lrc("[00:30.00]third\n[00:10.00]first\n[00:20.00]second\n");
-        assert_eq!(
-            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
-            vec!["first", "second", "third"]
-        );
-        assert!(lines.windows(2).all(|w| w[0].start_ms <= w[1].start_ms));
-    }
-
-    #[test]
-    fn lrc_garbage_lines_skipped() {
-        let input = "no tags here\n[bad]nope\n[00:xx.yy]bad time\n[00:10.0]one digit frac\n[00:70.00]bad seconds\n[00:10.00]\n[00:11.00]   \n[00:12.00]Good\n";
-        let lines = parse_lrc(input);
-        assert_eq!(lines, vec![tagged(12_000, "Good")]);
-    }
-
-    #[test]
-    fn lrc_empty_input_gives_empty_vec() {
-        assert!(parse_lrc("").is_empty());
-        assert!(parse_lrc("\n   \n").is_empty());
-    }
-
-    #[test]
-    fn lrc_colon_fraction_separator_accepted() {
-        let lines = parse_lrc("[00:01:23]colon frac\n");
-        assert_eq!(lines, vec![tagged(1_230, "colon frac")]);
-    }
-
-    #[test]
-    fn line_at_before_first_is_none() {
-        let lines = vec![tagged(1_000, "a"), tagged(2_000, "b")];
-        assert_eq!(line_at(&lines, 0), None);
-        assert_eq!(line_at(&lines, 999), None);
-    }
-
-    #[test]
-    fn line_at_exact_hit() {
-        let lines = vec![tagged(1_000, "a"), tagged(2_000, "b")];
-        assert_eq!(line_at(&lines, 1_000), Some(0));
-        assert_eq!(line_at(&lines, 2_000), Some(1));
-    }
-
-    #[test]
-    fn line_at_between_lines() {
-        let lines = vec![tagged(1_000, "a"), tagged(2_000, "b"), tagged(3_000, "c")];
-        assert_eq!(line_at(&lines, 1_500), Some(0));
-        assert_eq!(line_at(&lines, 2_999), Some(1));
-    }
-
-    #[test]
-    fn line_at_past_end_gives_last() {
-        let lines = vec![tagged(1_000, "a"), tagged(2_000, "b")];
-        assert_eq!(line_at(&lines, 2_001), Some(1));
-        assert_eq!(line_at(&lines, u64::MAX), Some(1));
-    }
-
-    #[test]
-    fn line_at_empty_slice_is_none() {
-        assert_eq!(line_at(&[], 10_000), None);
-    }
-
-    #[test]
-    fn lyrics_result_offline_shape() {
-        let r = LyricsResult {
-            plain: "line one\nline two".to_owned(),
-            synced: vec![tagged(1_000, "line one"), tagged(2_000, "line two")],
-            instrumental: false,
-        };
-        assert!(!r.plain.is_empty());
-        assert_eq!(r.synced.len(), 2);
-        assert!(!r.instrumental);
-
-        let inst = LyricsResult {
-            plain: "[Instrumental]".to_owned(),
-            synced: Vec::new(),
-            instrumental: true,
-        };
-        assert_eq!(inst.plain, "[Instrumental]");
-        assert!(inst.synced.is_empty());
-        assert!(inst.instrumental);
-    }
-
-    #[cfg(feature = "lyrics")]
-    #[test]
-    fn lrclib_url_omits_empty_album() {
-        let with_album = lrclib_url("The Beatles", "Yesterday", Some("Help!"), 125);
-        assert!(with_album.contains("album_name=Help%21"));
-        assert!(with_album.contains("artist_name=The%20Beatles"));
-        let no_album = lrclib_url("A", "T", None, 200);
-        assert!(!no_album.contains("album_name"));
-        let empty_album = lrclib_url("A", "T", Some(""), 200);
-        assert!(!empty_album.contains("album_name"));
-    }
-
-    #[test]
-    fn lyrics_provider_labels_and_cycle() {
-        assert_eq!(LyricsProvider::Lrclib.label(), "LRCLIB");
-        assert_eq!(LyricsProvider::YouTubeMusic.label(), "YouTube Music");
-        assert_eq!(LyricsProvider::parse("lrclib"), LyricsProvider::Lrclib);
-        assert_eq!(LyricsProvider::parse("YTM"), LyricsProvider::YouTubeMusic);
-        assert_eq!(
-            LyricsProvider::parse("youtube music"),
-            LyricsProvider::YouTubeMusic
-        );
-        assert_eq!(LyricsProvider::parse("bogus"), LyricsProvider::Lrclib);
-        assert_eq!(LyricsProvider::Lrclib.next(), LyricsProvider::YouTubeMusic);
-        assert_eq!(LyricsProvider::YouTubeMusic.next(), LyricsProvider::Lrclib);
-        assert_eq!(LyricsProvider::Lrclib.prev(), LyricsProvider::YouTubeMusic);
-        assert_eq!(LyricsProvider::Lrclib.as_pref(), "lrclib");
-        assert_eq!(LyricsProvider::YouTubeMusic.as_pref(), "youtubemusic");
-    }
-
-    #[test]
-    fn normalize_strips_versions_and_credits() {
-        assert_eq!(
-            normalize_for_match("Bohemian Rhapsody (Remastered 2011)"),
-            "bohemian rhapsody"
-        );
-        assert_eq!(
-            normalize_for_match("Yesterday - Remastered 2009"),
-            "yesterday"
-        );
-        assert_eq!(
-            normalize_for_match("Blinding Lights feat. Rosalia"),
-            "blinding lights"
-        );
-        assert_eq!(
-            normalize_for_match("Dance With Somebody"),
-            "dance with somebody"
-        );
-        assert_eq!(normalize_for_match("  Hello,  World! "), "hello world");
-        assert_eq!(normalize_for_match(""), "");
-    }
-
-    #[test]
-    fn score_prefers_exact_then_duration() {
-        let query = MatchQuery {
-            artist: "The Beatles",
-            title: "Yesterday",
-            album: Some("Help!"),
-            duration: 125,
-        };
-        let score = |track_name: &str, artist_name: &str, album_name: &str, duration: u32| {
-            score_candidate(
-                &MatchCandidate {
-                    track_name,
-                    artist_name,
-                    album_name,
-                    duration,
-                },
-                &query,
-            )
-        };
-        let exact = score("Yesterday", "The Beatles", "Help!", 125);
-        let remaster = score("Yesterday - Remastered 2009", "The Beatles", "Help!", 125);
-        let wrong_artist = score("Yesterday", "Some Cover Band", "Covers", 125);
-        let wrong_song = score("Yellow Submarine", "The Beatles", "Help!", 125);
-        assert!(exact >= remaster);
-        assert!(remaster > wrong_artist);
-        assert!(wrong_artist > wrong_song);
-        // Duration distance still ranks: same title, closer duration wins.
-        let near = score("Yesterday", "The Beatles", "Help!", 126);
-        let far = score("Yesterday", "The Beatles", "Help!", 200);
-        assert!(near > far);
-    }
-
-    #[test]
-    fn ytm_lines_join_to_plain() {
-        let ok = ytm_lyrics_to_result(vec!["  hello ".into(), "".into(), "world".into()])
-            .expect("lines join");
-        assert_eq!(ok.plain, "hello\nworld");
-        assert!(ok.synced.is_empty());
-        assert!(!ok.instrumental);
-        assert!(ytm_lyrics_to_result(vec!["  ".into()]).is_err());
-    }
-
-    #[test]
-    fn ytm_timed_lines_keep_sync() {
-        let timed = vec![
-            tagged(5_000, "second"),
-            tagged(1_000, "first"),
-            tagged(2_000, "  "),
-        ];
-        let ok = ytm_timed_to_result(timed).expect("timed join");
-        assert_eq!(ok.plain, "first\nsecond");
-        assert_eq!(ok.synced.len(), 2);
-        assert_eq!(ok.synced[0].start_ms, 1_000);
-        assert!(!ok.instrumental);
-        assert!(ytm_timed_to_result(vec![]).is_err());
-    }
-
-    #[cfg(feature = "lyrics")]
-    #[tokio::test]
-    #[ignore]
-    async fn live_lrclib_beatles_yesterday() {
-        let res = fetch_lrclib("The Beatles", "Yesterday", Some("Help!"), 125).await;
-        match res {
-            Ok(lyrics) => assert!(
-                !lyrics.plain.trim().is_empty(),
-                "expected non-empty plain lyrics for LRCLIB lookup"
-            ),
-            Err(e) => panic!("live LRCLIB fetch failed: {e}"),
-        }
-    }
 }
