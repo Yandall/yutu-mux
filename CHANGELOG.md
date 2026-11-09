@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Restored queues no longer set a source line either ("Saved queue" gone,
+  same as click-to-play).
+- Removed `missing_track_ids` (full-library art sweep): live fetches are
+  scoped to the visible screenful, and its only caller was its own test.
 - Click-to-play no longer sets a source line: the "Playing from Single +
   autoplay" label is gone (the line hides when empty; album/playlist
   sources still show).

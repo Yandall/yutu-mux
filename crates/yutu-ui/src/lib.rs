@@ -3326,40 +3326,6 @@ impl AppState {
         }
     }
 
-    /// Full-library sweep (tests + one-off diagnostics). The live UI
-    /// never calls this on navigation: [`Self::ensure_visible_tasks`]
-    /// scopes every fetch to the visible screenful instead.
-    #[allow(dead_code)]
-    fn missing_track_ids(&self) -> Vec<String> {
-        use std::collections::HashSet;
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        let consider = |id: &str, seen: &mut HashSet<String>, out: &mut Vec<String>| {
-            if !seen.insert(id.to_string()) {
-                return;
-            }
-            let needs = match self.catalog.get(id) {
-                None => true,
-                Some(t) => t.thumbnail_url.is_none() && t.thumbnail_large_url.is_none(),
-            };
-            if needs {
-                out.push(id.to_string());
-            }
-        };
-        for id in &self.liked_order {
-            consider(id, &mut seen, &mut out);
-        }
-        for id in &self.history {
-            consider(id, &mut seen, &mut out);
-        }
-        for p in &self.user_playlists {
-            for t in &p.tracks {
-                consider(&t.id, &mut seen, &mut out);
-            }
-        }
-        out
-    }
-
     /// Background fetch for ids the catalog lacks. Small lazy batches
     /// only (callers cap to the visible screenful): never a library sweep.
     /// One concurrent probe per id (not one sequential task): covers on a
@@ -5538,7 +5504,7 @@ impl AppState {
         self.apply_volume();
         self.position_secs = snap.position_secs;
         self.paused = true;
-        self.playing_from = "Saved queue".into();
+        self.playing_from = String::new();
         self.queue_saved = Some(snap);
         // Mirror the forced shuffle-off so the first Tick does not see
         // a phantom identity change (one redundant rewrite per launch).
@@ -22366,50 +22332,6 @@ mod tests {
         let _ = s.register_tracks(vec![t]);
         let store = LibraryStore::open(&s.library_path).unwrap();
         assert!(store.cached_track("cache-me").unwrap().is_some());
-    }
-
-    #[test]
-    fn missing_ids_covers_bare_likes_and_artless_rows() {
-        let mut s = test_state();
-        // Bare like with no catalog entry at all.
-        s.like_id("ghost-like");
-        assert!(s.missing_track_ids().contains(&"ghost-like".to_string()));
-        // Catalog row with no art at all needs hydration for covers.
-        s.catalog.insert(
-            "artless".into(),
-            Track {
-                id: "artless".into(),
-                title: "Artless".into(),
-                artist: "Someone".into(),
-                album: None,
-                duration_secs: 200,
-                thumbnail_url: None,
-                thumbnail_large_url: None,
-                plays: None,
-                is_video: false,
-            },
-        );
-        s.liked_order.push("artless".into());
-        s.liked.insert("artless".into());
-        assert!(s.missing_track_ids().contains(&"artless".to_string()));
-        // Row with art needs nothing.
-        s.catalog.insert(
-            "artful".into(),
-            Track {
-                id: "artful".into(),
-                title: "Artful".into(),
-                artist: "Someone".into(),
-                album: None,
-                duration_secs: 200,
-                thumbnail_url: Some("https://example.invalid/s".into()),
-                thumbnail_large_url: None,
-                plays: None,
-                is_video: false,
-            },
-        );
-        s.liked_order.push("artful".into());
-        s.liked.insert("artful".into());
-        assert!(!s.missing_track_ids().contains(&"artful".to_string()));
     }
 
     #[test]
