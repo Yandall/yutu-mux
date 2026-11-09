@@ -108,6 +108,11 @@ impl MpvBackend {
             init.set_option("vo", "null")?;
             init.set_option("audio-display", "no")?;
             init.set_option("gapless-audio", "yes")?;
+            // We hand mpv resolved googlevideo URLs: its ytdl_hook
+            // fallback re-runs yt-dlp on those (which cannot work) after
+            // any open failure, delaying the error. Best-effort: builds
+            // without Lua lack the option and must still start.
+            let _ = init.set_option("ytdl", "no");
             Ok(())
         })
         .map_err(|e| PlayerError::NoDevice(format!("mpv init failed: {e}")))?;

@@ -10,7 +10,8 @@ pub mod mpv;
 pub mod queue;
 
 pub use backend::{
-    decode_bytes, fetch_bytes, AudioBackend, PlayerError, RodioBackend, StubBackend,
+    decode_bytes, fetch_bytes, warm_stream_url, AudioBackend, PlayerError, RodioBackend,
+    StubBackend,
 };
 pub use controller::{PlaybackState, Player};
 pub use eq::{EqBand, EqError, EqPreset, BAND_COUNT, EQ_FREQUENCIES, MAX_GAIN_DB, MIN_GAIN_DB};

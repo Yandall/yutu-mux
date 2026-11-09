@@ -5,6 +5,17 @@
 - Player-bar like button never shrinks: the title/artist column takes
   the remaining width and long titles wrap instead of squeezing the
   heart (full/compact and minimal layouts).
+- Songs start again with newer yt-dlp (2026.10+). Its default clients
+  hand out stream URLs that the server refuses (HTTP 403) for the
+  first few seconds, and mpv opened them instantly, so the load failed
+  silently and the player sat at 00:00 for minutes. The resolver now
+  asks yt-dlp's `visionos` client first (URLs stream at once) and
+  falls back to yt-dlp's defaults, each fresh URL is probed until the
+  server accepts it (up to 6s) before mpv opens it, a stream mpv
+  accepted but never opened is retried (then skipped) like any failed
+  load, and mpv's own yt-dlp fallback is off (it cannot resolve the
+  direct URLs we hand it and only delayed the error). yt-dlp now runs
+  off the async workers, so its timeout fires.
 - Icon centering pass: context-menu rows center icons in their fixed
   hitbox (missing alignments added, inner rows fill the height so the
   Button top-placement no longer biases glyphs up), every pill with
