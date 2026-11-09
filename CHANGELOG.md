@@ -6,8 +6,9 @@
   dark fill plus border at rest, pill like the red CTA, uniform padding
   8): Sign out, Keep file, Relaunch, queue Clear/Clear queue, Library
   Open, Show more expanders, Discovery link, and Radio secondaries.
-  EQ presets render as one segmented group (single strip when the body
-  fits, two rows when narrow) with the kept preset red-filled even while
+  EQ presets render as one segmented group that flows like flex-wrap
+  (greedy fill per row, so short presets join the first row; single
+  strip when the body fits) with the kept preset red-filled even while
   bypassed; a Custom caption names hand-tweaked curves and the backend
   warning shows only when EQ cannot work. Player transport glyphs sit
   in uniform centered boxes with a stable repeat badge slot, so hover

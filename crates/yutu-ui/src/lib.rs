@@ -723,19 +723,31 @@ fn eq_state_caption(preset_live: bool) -> Option<&'static str> {
     }
 }
 
-/// Estimated single-strip width of the EQ preset group: label text at
-/// ~7px a char plus segment padding, row spacing, and group chrome.
-/// Conservative: fonts vary, and overestimating only wraps earlier.
-fn eq_strip_width(names: &[String]) -> f32 {
-    let chars: usize = names.iter().map(|n| n.chars().count()).sum();
-    chars as f32 * 7.0 + names.len() as f32 * 16.0 + 22.0
-}
-
-/// True when the settings body fits every preset in one strip (with
-/// slack for font variance); otherwise the group wraps to two rows.
-/// The page scrolls vertically only, so a strip must never clip.
-fn eq_presets_fit(names: &[String], body_w: f32) -> bool {
-    body_w >= eq_strip_width(names) + 30.0
+/// Flow preset names into rows that fit `body_w` (like flex-wrap):
+/// greedy fill per row, so a short preset joins the first row even when
+/// the full strip cannot. Every row holds at least one segment, and an
+/// empty input yields no rows. The page scrolls vertically only, so a
+/// strip must never clip.
+fn eq_flow_rows(names: &[String], body_w: f32) -> Vec<Vec<String>> {
+    const SEG_PAD: f32 = 16.0;
+    const GAP: f32 = 2.0;
+    const GROUP_PAD: f32 = 8.0;
+    const PX_PER_CHAR: f32 = 7.0;
+    let inner = (body_w - GROUP_PAD).max(0.0);
+    let mut rows: Vec<Vec<String>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for n in names {
+        let w = n.chars().count() as f32 * PX_PER_CHAR + SEG_PAD;
+        let cur_empty = rows.last().is_none_or(|r| r.is_empty());
+        if !cur_empty && used + GAP + w > inner {
+            rows.push(Vec::new());
+            used = 0.0;
+        }
+        // Trailing gap overcounts by 2px: conservative, breaks earlier.
+        used += w + GAP;
+        rows.last_mut().expect("at least one row").push(n.clone());
+    }
+    rows.into_iter().filter(|r| !r.is_empty()).collect()
 }
 
 /// Slider in theme red: red filled rail, pale track, white round handle.
@@ -17695,22 +17707,16 @@ impl AppState {
                     .collect();
                 // Segmented preset picker: one boxed group with the kept
                 // preset filled red even while bypassed (the toggle owns
-                // the on/off state). One strip when the body fits it,
-                // two rows when narrow (the page scrolls vertically
-                // only, so a strip must never clip).
+                // the on/off state). Rows flow like flex-wrap: greedy
+                // fill per row, so short presets join the first row even
+                // when the full strip cannot fit.
                 let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
                 let body_w =
                     (win_w - self.sidebar_w - self.right_w - 32.0).min(CENTER_MAX_W) - 40.0;
-                let per_row = if eq_presets_fit(&eq_names, body_w) {
-                    eq_names.len()
-                } else {
-                    eq_names.len().div_ceil(2)
-                }
-                .max(1);
                 let eq_group: iced::Element<'_, Message> = container(
                     iced::widget::Column::with_children(
-                        eq_names
-                            .chunks(per_row)
+                        eq_flow_rows(&eq_names, body_w)
+                            .into_iter()
                             .map(|row_names| {
                                 iced::widget::Row::with_children(
                                     row_names
@@ -22391,7 +22397,7 @@ mod tests {
     }
 
     #[test]
-    fn eq_presets_fit_single_strip_when_roomy() {
+    fn eq_flow_rows_fill_first_row_like_flex_wrap() {
         let names: Vec<String> = [
             "Flat",
             "Bass Boost",
@@ -22405,10 +22411,18 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        assert!(eq_presets_fit(&names, 1200.0));
-        assert!(eq_presets_fit(&names, 600.0));
-        assert!(!eq_presets_fit(&names, 400.0));
-        assert!(!eq_presets_fit(&names, 0.0));
+        // Wide body: one strip of 8.
+        let wide = eq_flow_rows(&names, 1200.0);
+        assert_eq!(wide.len(), 1);
+        assert_eq!(wide[0].len(), 8);
+        // Tight body: greedy fill beats fixed halves ([5, 3], not [4, 4]),
+        // order preserved, every row non-empty.
+        let narrow = eq_flow_rows(&names, 350.0);
+        assert_eq!(narrow.iter().map(Vec::len).collect::<Vec<_>>(), vec![5, 3]);
+        let flat: Vec<&String> = narrow.iter().flatten().collect();
+        assert_eq!(flat, names.iter().collect::<Vec<_>>());
+        // Empty input: no rows (never a panic, never an empty box row).
+        assert!(eq_flow_rows(&[], 1200.0).is_empty());
     }
 
     #[test]
