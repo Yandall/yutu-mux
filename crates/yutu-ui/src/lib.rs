@@ -16282,7 +16282,9 @@ impl AppState {
     }
 
     fn player_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, mouse_area, row, text, tooltip};
+        use iced::widget::{
+            button, column, container, mouse_area, row, text, text::Wrapping, tooltip,
+        };
         use iced::Fill;
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let mode = player_layout_mode(ww);
@@ -16401,7 +16403,10 @@ impl AppState {
             let info = row![
                 info_art,
                 column![
-                    text(title.clone()).size(13),
+                    text(title.clone())
+                        .size(13)
+                        .width(Fill)
+                        .wrapping(Wrapping::WordOrGlyph),
                     text(artist.clone()).size(12).color(MUTED),
                 ]
                 .spacing(1)
@@ -16506,7 +16511,15 @@ impl AppState {
                         };
                         let left = row![
                             art,
-                            column![text(title).size(title_size), artist_el,].spacing(1),
+                            column![
+                                text(title)
+                                    .size(title_size)
+                                    .width(Fill)
+                                    .wrapping(Wrapping::WordOrGlyph),
+                                artist_el,
+                            ]
+                            .spacing(1)
+                            .width(Fill),
                             like_button,
                         ]
                         .spacing(8)

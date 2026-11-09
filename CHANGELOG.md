@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Player-bar like button never shrinks: the title/artist column takes
+  the remaining width and long titles wrap instead of squeezing the
+  heart (full/compact and minimal layouts).
 - Icon centering pass: context-menu rows center icons in their fixed
   hitbox (missing alignments added, inner rows fill the height so the
   Button top-placement no longer biases glyphs up), every pill with
