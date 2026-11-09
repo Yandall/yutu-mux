@@ -2699,8 +2699,6 @@ pub struct AppState {
     modal_anim: f32,
     /// Scrobbling credentials dialog open (Settings button).
     scrobble_modal_open: bool,
-    /// Where the queue is playing from (playlist/artist/radio label).
-    playing_from: String,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
     /// In-memory artwork handles with their fetch time: entries older
     /// than the TTL read as missing (see [`art_mem`]); the count cap
@@ -5050,7 +5048,6 @@ impl AppState {
             pending_cookie_source: None,
             modal_anim: 0.0,
             scrobble_modal_open: false,
-            playing_from: String::new(),
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
             artwork_failed: HashMap::new(),
@@ -5504,7 +5501,6 @@ impl AppState {
         self.apply_volume();
         self.position_secs = snap.position_secs;
         self.paused = true;
-        self.playing_from = String::new();
         self.queue_saved = Some(snap);
         // Mirror the forced shuffle-off so the first Tick does not see
         // a phantom identity change (one redundant rewrite per launch).
@@ -5756,7 +5752,6 @@ impl AppState {
     fn enqueue(&mut self, track: Track) -> iced::Task<Message> {
         let track = self.resolve_for_play(&track);
         self.absorb_autoplay(&track.id);
-        self.playing_from = "Single".into();
         self.queue.push(track);
         self.queue.jump_to(self.queue.len().saturating_sub(1));
         self.apply_volume();
@@ -6839,7 +6834,6 @@ impl AppState {
             self.queue.push(rt);
         }
         self.queue.jump_to(first_new);
-        self.playing_from = label.to_string();
         self.status = format!("{label}: queued {n} track(s).");
         self.apply_volume();
         let mut tasks = art_tasks;
@@ -10948,7 +10942,6 @@ impl AppState {
                         self.queue.clear();
                         self.queue.push(t);
                         self.queue.jump_to(0);
-                        self.playing_from = String::new();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
                         self.apply_volume();
@@ -15696,14 +15689,6 @@ impl AppState {
             .style(nav_style(self.right_tab == RightTab::Recent))
             .on_press(Message::SetRightTab(RightTab::Recent))
             .padding(8);
-        let from_line: iced::Element<'_, Message> = if self.playing_from.is_empty() {
-            text("").size(1).into()
-        } else {
-            text(format!("Playing from  {}", self.playing_from))
-                .size(12)
-                .color(MUTED)
-                .into()
-        };
         let auto_mini: Vec<iced::Element<'_, Message>> = self
             .autoplay
             .iter()
@@ -15921,20 +15906,12 @@ impl AppState {
             .height(Fill)
             .into();
         }
-        container(
-            column![
-                row![pin_btn, tab_queue, tab_recent].spacing(4),
-                from_line,
-                now,
-                list,
-            ]
-            .spacing(8),
-        )
-        .style(sidebar_bg)
-        .padding(12)
-        .width(iced::Length::Fixed(self.right_w))
-        .height(Fill)
-        .into()
+        container(column![row![pin_btn, tab_queue, tab_recent].spacing(4), now, list,].spacing(8))
+            .style(sidebar_bg)
+            .padding(12)
+            .width(iced::Length::Fixed(self.right_w))
+            .height(Fill)
+            .into()
     }
 
     /// Mute toggle beside the volume slider: speaker glyph, crossed
@@ -20124,7 +20101,6 @@ mod tests {
             vec!["t2".to_string(), "t3".to_string()]
         );
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("t2"));
-        assert!(s.playing_from.contains("Gym"));
         // Detail page renders the new rows with no panic.
         s.route = Route::PlaylistDetail("u1".into());
         let _ = s.view();
@@ -20230,7 +20206,6 @@ mod tests {
         });
         assert_eq!(s.queue.len(), 2);
         assert!(!s.queue.shuffle);
-        assert!(s.playing_from.contains("Beatles Mix"));
         // Shuffle variant turns shuffle on.
         let _ = s.update(Message::SearchPlaylistReady {
             id: "PL1".into(),
@@ -23552,7 +23527,6 @@ mod tests {
         assert_eq!(s.queue.len(), 1);
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m3"));
         assert_eq!(s.autoplay_for.as_deref(), Some("m3"));
-        assert!(s.playing_from.is_empty());
         // Unknown id: fetch kicked off, queue untouched.
         let _ = s.update(Message::PlayNow("ghost".into()));
         assert_eq!(s.queue.len(), 1);

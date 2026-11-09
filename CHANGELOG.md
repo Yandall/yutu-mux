@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Removed the "Playing from ..." line in the right panel entirely, along
+  with the now-write-only `playing_from` field.
 - Restored queues no longer set a source line either ("Saved queue" gone,
   same as click-to-play).
 - Removed `missing_track_ids` (full-library art sweep): live fetches are
