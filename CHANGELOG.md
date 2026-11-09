@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Queue rail stays visible when collapsed and empty: it keeps the 56px
+  strip (same as with items) instead of reserving nothing.
 - Settings helper-text cleanup: dropped the Custom curve caption and the
   Both-providers / Submit-listens / Sign-in-above lines (sync shows only
   when logged in), trimmed the scale/animations hints, renamed Sync to

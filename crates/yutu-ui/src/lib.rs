@@ -8364,20 +8364,13 @@ impl AppState {
     }
 
     /// Animated right-panel target width (collapsed keeps a rail with
-    /// queue/autoplay thumbnails; an empty rail reserves nothing).
+    /// queue/autoplay thumbnails; the rail stays visible even when empty).
     fn right_target(&self) -> f32 {
         if self.right_open() {
             285.0
-        } else if self.right_rail_empty() {
-            0.0
         } else {
             RIGHT_RAIL_W
         }
-    }
-
-    /// No queue and no autoplay: the collapsed rail would show nothing.
-    fn right_rail_empty(&self) -> bool {
-        self.queue.is_empty() && self.autoplay.is_empty()
     }
 
     /// Collapsed rail thumb capacity: how many 32px thumbs fill the
@@ -15751,14 +15744,6 @@ impl AppState {
     fn right_panel_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
         use iced::Fill;
-        // Empty and collapsed: reserve nothing (gate on the target so the
-        // panel does not flash mid-ease).
-        if self.right_target() == 0.0 {
-            return iced::widget::Space::new()
-                .width(iced::Length::Fixed(0.0))
-                .height(Fill)
-                .into();
-        }
         let current = self.queue.current().cloned();
         let now: iced::Element<'_, Message> = match &current {
             Some(t) => column![
@@ -18411,11 +18396,8 @@ impl AppState {
         };
         let center: iced::Element<'_, Message> =
             container(center_body).width(Fill).height(Fill).into();
-        // An empty collapsed rail reserves nothing: not even row spacing.
-        let mut main_children = vec![self.sidebar_view(), center];
-        if self.right_target() != 0.0 {
-            main_children.push(self.right_panel_view());
-        }
+        // The collapsed rail always reserves its strip, even when empty.
+        let main_children = vec![self.sidebar_view(), center, self.right_panel_view()];
         let main = Row::with_children(main_children).spacing(8).height(Fill);
         // Import banner first (in-flow, pushes content down): `None`
         // when idle, so the layout is untouched outside imports.
@@ -25296,17 +25278,16 @@ mod tests {
     }
 
     #[test]
-    fn empty_collapsed_rail_reserves_nothing() {
+    fn empty_collapsed_rail_stays_visible() {
         let mut s = test_state();
-        assert!(s.right_rail_empty());
         let _ = s.update(Message::ToggleRightPin);
         let _ = s.update(Message::CursorMoved(iced::Point::new(640.0, 400.0)));
         let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
-        assert_eq!(s.right_target(), 0.0);
-        // One queued song brings the rail back while still collapsed.
+        assert!(!s.right_open());
+        assert_eq!(s.right_target(), RIGHT_RAIL_W);
+        // One queued song keeps the same rail while still collapsed.
         let _ = s.update(Message::EnqueueTrack("m1".into()));
-        assert!(!s.right_rail_empty());
-        assert_eq!(s.right_target(), 56.0);
+        assert_eq!(s.right_target(), RIGHT_RAIL_W);
         assert!(!s.right_open());
     }
 
