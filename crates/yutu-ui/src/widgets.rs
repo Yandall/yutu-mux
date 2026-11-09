@@ -165,40 +165,27 @@ pub(crate) fn ctrl_box(content: iced::Element<'_, Message>) -> iced::Element<'_,
         .into()
 }
 
-/// Repeat transport button: icon only when `badge` is empty (Repeat
-/// Off), icon plus badge text otherwise. An empty badge must not keep
-/// its fixed-width box: the reserved space pushed the icon left of the
-/// button center and widened the whole transport row, so Play sat left
-/// of center. Collapsing the box when empty keeps every transport
-/// button the same 18px content width and Play truly centered.
+/// Repeat transport button: icon only, never a text badge. Repeat Off
+/// renders the muted glyph on the transparent row hover; All renders
+/// the white repeat glyph on the red CTA (active); One renders the
+/// white `repeat-1` glyph (the 1 lives inside the icon) on the red CTA.
+/// Keeping every transport button the same 18px content width keeps
+/// Play truly centered (a badge box widened the row and pushed Play
+/// left of center).
 pub(crate) fn repeat_button<'a>(
     repeat_icon: &'a str,
-    badge: &'a str,
+    active: bool,
     pad: impl Into<iced::Padding>,
 ) -> iced::Element<'a, Message> {
-    use iced::widget::{button, container, row};
-    if badge.is_empty() {
-        button(ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)))
-            .style(hover_row)
-            .on_press(Message::CycleRepeat)
-            .padding(pad)
-            .into()
-    } else {
-        button(
-            row![
-                ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)),
-                container(btn_text(badge, 11))
-                    .width(iced::Length::Fixed(24.0))
-                    .align_x(iced::alignment::Horizontal::Center),
-            ]
-            .spacing(3)
-            .align_y(iced::alignment::Vertical::Center),
-        )
-        .style(hover_row)
+    use iced::widget::button;
+    let style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style =
+        if active { accent_button } else { hover_row };
+    let color = if active { iced::Color::WHITE } else { MUTED };
+    button(ctrl_box(btn_icon(repeat_icon, 14.0, color)))
+        .style(style)
         .on_press(Message::CycleRepeat)
         .padding(pad)
         .into()
-    }
 }
 
 /// Flow preset names into rows that fit `body_w` (like flex-wrap):

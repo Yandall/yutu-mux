@@ -173,7 +173,6 @@ volume-muted = Volume { $pct }% (muted)
 repeat-off = off
 repeat-all = all
 repeat-one = one
-repeat-badge-all = All
 
 ## Dialogs
 
