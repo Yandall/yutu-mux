@@ -1,10 +1,59 @@
 //! App language: English with system-locale detection, Spanish opt-in
-//! from Settings. Every user-facing string renders through
-//! [`Language`] methods (one method per string, grouped by screen
-//! area below) so both languages stay complete by construction: adding
-//! UI text means adding a method here with both versions. Proper nouns
-//! (app feature names owned by third parties, EQ preset names, font
+//! from Settings. User-facing strings live in Fluent catalogs
+//! (`assets/locales/<lang>/app.ftl`, one message per [`Language`]
+//! method below); the UI resolves them through [`Language::tr`]
+//! with an English fallback, so a missing key in a new language can
+//! never blank the UI. Translators only edit `.ftl` files.
+//!
+//! Adding a language: copy `en/app.ftl`, translate the values (keep
+//! `{ $placeables }` verbatim), add a [`Language`] variant, wire it
+//! into [`Language::label`], [`Language::stored`],
+//! [`Language::parse`], [`Language::from_locale_value`], the
+//! `tr`/`tr_args` bundle pick, and extend the `is_failure_line`
+//! markers if the language's failure words differ. A test pins that
+//! every English key exists in every other catalog. A handful of tiny
+//! glue matches stay in Rust on purpose (picker labels, repeat badge,
+//! failure markers, import-kind heads): everything else is data.
+//!
+//! Proper nouns (third-party feature names, EQ preset names, font
 //! names) stay untranslated at the call site. Log output stays English.
+
+use fluent_bundle::{FluentArgs, FluentBundle, FluentResource, FluentValue};
+use unic_langid::{langid, LanguageIdentifier};
+
+/// Parsed English catalog (fallback for every language).
+fn en_source() -> &'static str {
+    include_str!("../assets/locales/en/app.ftl")
+}
+
+/// Parsed Spanish catalog.
+fn es_source() -> &'static str {
+    include_str!("../assets/locales/es/app.ftl")
+}
+
+// Per-thread bundle pair, built once on first use: `FluentBundle`
+// is deliberately `!Send` (memoized formatters), and every lookup
+// here runs on the calling thread, so thread-locals are the honest
+// home for them (no lock, no rebuild per string).
+thread_local! {
+    static BUNDLES: (FluentBundle<FluentResource>, FluentBundle<FluentResource>) = {
+        (load_bundle(langid!("en"), en_source()), load_bundle(langid!("es"), es_source()))
+    };
+}
+
+/// Parse one catalog; a broken `.ftl` file is a programming error and
+/// fails fast at first use (tests render views in both languages).
+fn load_bundle(locale: LanguageIdentifier, src: &'static str) -> FluentBundle<FluentResource> {
+    let resource = FluentResource::try_new(src.to_string()).expect("valid app.ftl catalog");
+    let mut bundle = FluentBundle::new(vec![locale]);
+    // No bidi isolation: the extra markers would leak into labels and
+    // break width-sensitive truncation.
+    bundle.set_use_isolating(false);
+    bundle
+        .add_resource(resource)
+        .expect("no duplicate message ids");
+    bundle
+}
 
 /// UI language: persisted in SQLite (`language` pref), defaulting to
 /// the system locale on first launch. Applies instantly (views read it
@@ -17,6 +66,61 @@ pub enum Language {
 }
 
 impl Language {
+    /// Format one message from one bundle (`None` when the id is
+    /// missing there).
+    fn format_one(
+        bundle: &FluentBundle<FluentResource>,
+        id: &str,
+        args: Option<&FluentArgs<'_>>,
+    ) -> Option<String> {
+        let message = bundle.get_message(id)?;
+        let pattern = message.value()?;
+        let mut errors = Vec::new();
+        let value = bundle.format_pattern(pattern, args, &mut errors);
+        // Tests render views in both languages, so a bad placeable or
+        // a missing arg fails there, not in a user's face.
+        debug_assert!(errors.is_empty(), "fluent {id}: {errors:?}");
+        Some(value.into_owned())
+    }
+
+    /// Look up `id` in `primary`, falling back to `fallback`.
+    fn resolve_in(
+        primary: &FluentBundle<FluentResource>,
+        fallback: &FluentBundle<FluentResource>,
+        id: &str,
+        args: Option<&FluentArgs<'_>>,
+    ) -> Option<String> {
+        Self::format_one(primary, id, args).or_else(|| Self::format_one(fallback, id, args))
+    }
+
+    /// Resolve a plain message id, falling back to English and then
+    /// to the id itself (a missing key degrades to English, never to
+    /// blank).
+    fn tr(&self, id: &str) -> String {
+        BUNDLES.with(|both| {
+            let (primary, fallback) = match self {
+                Self::English => (&both.0, &both.0),
+                Self::Spanish => (&both.1, &both.0),
+            };
+            Self::resolve_in(primary, fallback, id, None).unwrap_or_else(|| id.to_string())
+        })
+    }
+
+    /// Resolve a message with `$placeable` arguments (same fallback).
+    fn tr_args(&self, id: &str, args: &[(&str, &str)]) -> String {
+        let mut map = FluentArgs::new();
+        for (key, value) in args {
+            map.set(*key, FluentValue::from(*value));
+        }
+        BUNDLES.with(|both| {
+            let (primary, fallback) = match self {
+                Self::English => (&both.0, &both.0),
+                Self::Spanish => (&both.1, &both.0),
+            };
+            Self::resolve_in(primary, fallback, id, Some(&map)).unwrap_or_else(|| id.to_string())
+        })
+    }
+
     /// Picker rows: native names, shared by the Settings picker.
     pub const ALL_LABELS: [&'static str; 2] = ["English", "Español"];
     /// Picker label: language names stay in their own language, same
@@ -82,36 +186,22 @@ impl Language {
     }
 
     // Settings: language section.
-    pub fn language_section(self) -> &'static str {
-        match self {
-            Self::English => "Language",
-            Self::Spanish => "Idioma",
-        }
+    pub fn language_section(self) -> String {
+        self.tr("language-section")
     }
 
     // Settings page title.
-    pub fn settings_title(self) -> &'static str {
-        match self {
-            Self::English => "Settings",
-            Self::Spanish => "Ajustes",
-        }
+    pub fn settings_title(self) -> String {
+        self.tr("settings-title")
     }
 
     // Home greeting for a 24h local hour (same 5/12/18 bounds as before).
-    pub fn greeting(self, hour: u8) -> &'static str {
-        match self {
-            Self::English => match hour {
-                5..12 => "Good morning",
-                12..18 => "Good afternoon",
-                18..23 => "Good evening",
-                _ => "Good night",
-            },
-            Self::Spanish => match hour {
-                5..12 => "Buenos días",
-                12..18 => "Buenas tardes",
-                18..23 => "Buenas noches",
-                _ => "Buenas noches",
-            },
+    pub fn greeting(self, hour: u8) -> String {
+        match hour {
+            5..12 => self.tr("greeting-morning"),
+            12..18 => self.tr("greeting-day"),
+            18..23 => self.tr("greeting-evening"),
+            _ => self.tr("greeting-night"),
         }
     }
 
@@ -130,32 +220,17 @@ impl Language {
     /// Relative sync time (`never`, `just now`, `5m ago` ...).
     pub fn sync_ago(self, last_sync_unix: Option<i64>, now_unix: i64) -> String {
         match last_sync_unix {
-            None => match self {
-                Self::English => "never".into(),
-                Self::Spanish => "nunca".into(),
-            },
+            None => self.tr("sync-never"),
             Some(t) => {
                 let ago = now_unix.saturating_sub(t);
                 if ago < 60 {
-                    match self {
-                        Self::English => "just now".into(),
-                        Self::Spanish => "ahora mismo".into(),
-                    }
+                    self.tr("sync-just-now")
                 } else if ago < 3_600 {
-                    match self {
-                        Self::English => format!("{}m ago", ago / 60),
-                        Self::Spanish => format!("hace {} min", ago / 60),
-                    }
+                    self.tr_args("sync-m", &[("n", &(ago / 60).to_string())])
                 } else if ago < 86_400 {
-                    match self {
-                        Self::English => format!("{}h ago", ago / 3_600),
-                        Self::Spanish => format!("hace {} h", ago / 3_600),
-                    }
+                    self.tr_args("sync-h", &[("n", &(ago / 3_600).to_string())])
                 } else {
-                    match self {
-                        Self::English => format!("{}d ago", ago / 86_400),
-                        Self::Spanish => format!("hace {} d", ago / 86_400),
-                    }
+                    self.tr_args("sync-d", &[("n", &(ago / 86_400).to_string())])
                 }
             }
         }
@@ -165,84 +240,30 @@ impl Language {
     /// `septiembre de 2026` in Spanish).
     pub fn history_section(self, section: &yutu_core::HistorySection) -> String {
         use yutu_core::HistorySection as S;
-        match self {
-            Self::English => match section {
-                S::Today => "Today".into(),
-                S::Yesterday => "Yesterday".into(),
-                S::ThisWeek => "This week".into(),
-                S::ThisMonth => "This month".into(),
-                S::Older { year, month } => {
-                    format!("{} {year}", Self::month_name_en(*month))
-                }
-            },
-            Self::Spanish => match section {
-                S::Today => "Hoy".into(),
-                S::Yesterday => "Ayer".into(),
-                S::ThisWeek => "Esta semana".into(),
-                S::ThisMonth => "Este mes".into(),
-                S::Older { year, month } => {
-                    format!("{} de {year}", Self::month_name_es(*month))
-                }
-            },
-        }
-    }
-
-    /// English month names (mirrors core for the English UI copy).
-    fn month_name_en(month: u32) -> &'static str {
-        match month {
-            1 => "January",
-            2 => "February",
-            3 => "March",
-            4 => "April",
-            5 => "May",
-            6 => "June",
-            7 => "July",
-            8 => "August",
-            9 => "September",
-            10 => "October",
-            11 => "November",
-            12 => "December",
-            _ => "?",
-        }
-    }
-
-    /// Spanish month names (lowercase, as running text requires).
-    fn month_name_es(month: u32) -> &'static str {
-        match month {
-            1 => "enero",
-            2 => "febrero",
-            3 => "marzo",
-            4 => "abril",
-            5 => "mayo",
-            6 => "junio",
-            7 => "julio",
-            8 => "agosto",
-            9 => "septiembre",
-            10 => "octubre",
-            11 => "noviembre",
-            12 => "diciembre",
-            _ => "?",
+        match section {
+            S::Today => self.tr("history-today"),
+            S::Yesterday => self.tr("history-yesterday"),
+            S::ThisWeek => self.tr("history-this-week"),
+            S::ThisMonth => self.tr("history-this-month"),
+            S::Older { year, month } => {
+                let name = self.tr(&format!("month-{month}"));
+                self.tr_args(
+                    "history-older",
+                    &[("month", &name), ("year", &year.to_string())],
+                )
+            }
         }
     }
 
     // Sidebar + header nav.
-    pub fn nav_home(self) -> &'static str {
-        match self {
-            Self::English => "Home",
-            Self::Spanish => "Inicio",
-        }
+    pub fn nav_home(self) -> String {
+        self.tr("nav-home")
     }
-    pub fn nav_search(self) -> &'static str {
-        match self {
-            Self::English => "Search",
-            Self::Spanish => "Buscar",
-        }
+    pub fn nav_search(self) -> String {
+        self.tr("nav-search")
     }
-    pub fn nav_history(self) -> &'static str {
-        match self {
-            Self::English => "History",
-            Self::Spanish => "Historial",
-        }
+    pub fn nav_history(self) -> String {
+        self.tr("nav-history")
     }
     pub fn search_placeholder(self) -> &'static str {
         match self {
@@ -268,742 +289,387 @@ impl Language {
             Self::Spanish => "Nueva lista…",
         }
     }
-    pub fn history_title(self) -> &'static str {
-        match self {
-            Self::English => "History",
-            Self::Spanish => "Historial",
-        }
+    pub fn history_title(self) -> String {
+        self.tr("history-title")
     }
     pub fn history_plays(self, total: usize) -> String {
-        match self {
-            Self::English => format!("{total} plays"),
-            Self::Spanish => format!("{total} reproducciones"),
-        }
+        self.tr_args("history-plays", &[("total", &total.to_string())])
     }
     pub fn history_matches(self, total: usize) -> String {
-        match self {
-            Self::English => format!("{total} matches"),
-            Self::Spanish => format!("{total} coincidencias"),
-        }
+        self.tr_args("history-matches", &[("total", &total.to_string())])
     }
-    pub fn no_playlists_sidebar(self) -> &'static str {
-        match self {
-            Self::English => "No playlists yet: create one in the sidebar.",
-            Self::Spanish => "Sin listas todavía: crea una en la barra lateral.",
-        }
+    pub fn no_playlists_sidebar(self) -> String {
+        self.tr("no-playlists-sidebar")
     }
-    pub fn no_playlists_below(self) -> &'static str {
-        match self {
-            Self::English => "No playlists yet: create one below.",
-            Self::Spanish => "Sin listas todavía: crea una abajo.",
-        }
+    pub fn no_playlists_below(self) -> String {
+        self.tr("no-playlists-below")
     }
-    pub fn no_playlists_match(self) -> &'static str {
-        match self {
-            Self::English => "No playlists match.",
-            Self::Spanish => "Ninguna lista coincide.",
-        }
+    pub fn no_playlists_match(self) -> String {
+        self.tr("no-playlists-match")
     }
     // Queue panel tabs + headers.
-    pub fn queue_tab(self) -> &'static str {
-        match self {
-            Self::English => "Queue",
-            Self::Spanish => "Cola",
-        }
+    pub fn queue_tab(self) -> String {
+        self.tr("queue-tab")
     }
-    pub fn recent_tab(self) -> &'static str {
-        match self {
-            Self::English => "Recent",
-            Self::Spanish => "Recientes",
-        }
+    pub fn recent_tab(self) -> String {
+        self.tr("recent-tab")
     }
-    pub fn now_playing(self) -> &'static str {
-        match self {
-            Self::English => "Now playing",
-            Self::Spanish => "Reproduciendo ahora",
-        }
+    pub fn now_playing(self) -> String {
+        self.tr("now-playing")
     }
-    pub fn nothing_queued(self) -> &'static str {
-        match self {
-            Self::English => "Nothing queued",
-            Self::Spanish => "Nada en cola",
-        }
+    pub fn nothing_queued(self) -> String {
+        self.tr("nothing-queued")
     }
-    pub fn up_next(self) -> &'static str {
-        match self {
-            Self::English => "Up next",
-            Self::Spanish => "A continuación",
-        }
+    pub fn up_next(self) -> String {
+        self.tr("up-next")
     }
-    pub fn autoplay(self) -> &'static str {
-        match self {
-            Self::English => "Autoplay",
-            Self::Spanish => "Reproducción automática",
-        }
+    pub fn autoplay(self) -> String {
+        self.tr("autoplay")
     }
-    pub fn no_recent_plays(self) -> &'static str {
-        match self {
-            Self::English => "No recent plays yet.",
-            Self::Spanish => "Sin reproducciones recientes todavía.",
-        }
+    pub fn no_recent_plays(self) -> String {
+        self.tr("no-recent-plays")
     }
     pub fn clear_queue(self, n: usize) -> String {
-        match self {
-            Self::English => format!("Clear queue ({n})"),
-            Self::Spanish => format!("Vaciar cola ({n})"),
-        }
+        self.tr_args("clear-queue", &[("n", &n.to_string())])
     }
-    pub fn nothing_playing(self) -> &'static str {
-        match self {
-            Self::English => "Nothing playing",
-            Self::Spanish => "Nada en reproducción",
-        }
+    pub fn nothing_playing(self) -> String {
+        self.tr("nothing-playing")
     }
-    pub fn loading_ellipsis(self) -> &'static str {
-        match self {
-            Self::English => "Loading…",
-            Self::Spanish => "Cargando…",
-        }
+    pub fn loading_ellipsis(self) -> String {
+        self.tr("loading-ellipsis")
     }
     // Home shelves.
-    pub fn quick_picks(self) -> &'static str {
-        match self {
-            Self::English => "Quick picks",
-            Self::Spanish => "Selección rápida",
-        }
+    pub fn quick_picks(self) -> String {
+        self.tr("quick-picks")
     }
-    pub fn play_all(self) -> &'static str {
-        match self {
-            Self::English => "Play all",
-            Self::Spanish => "Reproducir todo",
-        }
+    pub fn play_all(self) -> String {
+        self.tr("play-all")
     }
-    pub fn from_library(self) -> &'static str {
-        match self {
-            Self::English => "From your library",
-            Self::Spanish => "De tu biblioteca",
-        }
+    pub fn from_library(self) -> String {
+        self.tr("from-library")
     }
-    pub fn recommended_albums(self) -> &'static str {
-        match self {
-            Self::English => "Recommended albums",
-            Self::Spanish => "Álbumes recomendados",
-        }
+    pub fn recommended_albums(self) -> String {
+        self.tr("recommended-albums")
     }
     pub fn more_from(self, artist: &str) -> String {
-        match self {
-            Self::English => format!("More from {artist}"),
-            Self::Spanish => format!("Más de {artist}"),
-        }
+        self.tr_args("more-from", &[("artist", artist)])
     }
-    pub fn jump_back_in(self) -> &'static str {
-        match self {
-            Self::English => "Jump back in",
-            Self::Spanish => "Volver a escuchar",
-        }
+    pub fn jump_back_in(self) -> String {
+        self.tr("jump-back-in")
     }
-    pub fn home_empty_hint(self) -> &'static str {
-        match self {
-            Self::English => "Your recent plays will appear here.",
-            Self::Spanish => "Tus reproducciones recientes aparecerán aquí.",
-        }
+    pub fn home_empty_hint(self) -> String {
+        self.tr("home-empty-hint")
     }
-    pub fn home_empty_hint2(self) -> &'static str {
-        match self {
-            Self::English => "Type in the search bar above: results land as you type.",
-            Self::Spanish => "Escribe en la barra de búsqueda de arriba: los resultados aparecen mientras escribes.",
-        }
+    pub fn home_empty_hint2(self) -> String {
+        self.tr("home-empty-hint2")
     }
-    pub fn made_for_you(self) -> &'static str {
-        match self {
-            Self::English => "Made for you",
-            Self::Spanish => "Hecho para ti",
-        }
+    pub fn made_for_you(self) -> String {
+        self.tr("made-for-you")
     }
-    pub fn discovery_arrow(self) -> &'static str {
-        match self {
-            Self::English => "Discovery →",
-            Self::Spanish => "Descubrimiento →",
-        }
+    pub fn discovery_arrow(self) -> String {
+        self.tr("discovery-arrow")
     }
-    pub fn weekly_mix(self) -> &'static str {
-        match self {
-            Self::English => "Weekly Mix",
-            Self::Spanish => "Mezcla semanal",
-        }
+    pub fn weekly_mix(self) -> String {
+        self.tr("weekly-mix")
     }
-    pub fn forgotten(self) -> &'static str {
-        match self {
-            Self::English => "Forgotten Favorites",
-            Self::Spanish => "Favoritos olvidados",
-        }
+    pub fn forgotten(self) -> String {
+        self.tr("forgotten")
     }
     pub fn track_count(self, n: usize) -> String {
-        match self {
-            Self::English => format!("{n} tracks"),
-            Self::Spanish => format!("{n} canciones"),
-        }
+        self.tr_args("track-count", &[("n", &n.to_string())])
     }
     pub fn playlist_sub(self, n: usize) -> String {
-        match self {
-            Self::English => format!("Playlist · {n} songs"),
-            Self::Spanish => format!("Lista · {n} canciones"),
-        }
+        self.tr_args("playlist-sub", &[("n", &n.to_string())])
     }
     // Search page.
-    pub fn search_hint_empty(self) -> &'static str {
-        match self {
-            Self::English => "Write something in the search bar to find music.",
-            Self::Spanish => "Escribe algo en la barra de búsqueda para encontrar música.",
-        }
+    pub fn search_hint_empty(self) -> String {
+        self.tr("search-hint-empty")
     }
-    pub fn search_hint_short(self) -> &'static str {
-        match self {
-            Self::English => "Write something in the search bar above: results land as you type.",
-            Self::Spanish => "Escribe algo en la barra de búsqueda de arriba: los resultados aparecen mientras escribes.",
-        }
+    pub fn search_hint_short(self) -> String {
+        self.tr("search-hint-short")
     }
-    pub fn no_results(self) -> &'static str {
-        match self {
-            Self::English => "No results found",
-            Self::Spanish => "Sin resultados",
-        }
+    pub fn no_results(self) -> String {
+        self.tr("no-results")
     }
     pub fn searching(self, dots: usize) -> String {
-        match self {
-            Self::English => format!("Searching YouTube Music{}", ".".repeat(dots)),
-            Self::Spanish => format!("Buscando en YouTube Music{}", ".".repeat(dots)),
-        }
+        self.tr_args("searching", &[("dots", &".".repeat(dots))])
     }
-    pub fn suggest_hint(self) -> &'static str {
-        match self {
-            Self::English => "Top tracks: Enter for all results",
-            Self::Spanish => "Canciones populares: Enter para ver todos los resultados",
-        }
+    pub fn suggest_hint(self) -> String {
+        self.tr("suggest-hint")
     }
     pub fn searching_for(self, q: &str) -> String {
-        match self {
-            Self::English => format!("Searching YouTube Music “{q}”…"),
-            Self::Spanish => format!("Buscando en YouTube Music “{q}”…"),
-        }
+        self.tr_args("searching-for", &[("q", q)])
     }
-    pub fn type_to_search(self) -> &'static str {
-        match self {
-            Self::English => "Type something to search YouTube Music.",
-            Self::Spanish => "Escribe algo para buscar en YouTube Music.",
-        }
+    pub fn type_to_search(self) -> String {
+        self.tr("type-to-search")
     }
-    pub fn top_result(self) -> &'static str {
-        match self {
-            Self::English => "Top result",
-            Self::Spanish => "Mejor resultado",
-        }
+    pub fn top_result(self) -> String {
+        self.tr("top-result")
     }
-    pub fn artist_label(self) -> &'static str {
-        match self {
-            Self::English => "Artist",
-            Self::Spanish => "Artista",
-        }
+    pub fn artist_label(self) -> String {
+        self.tr("artist-label")
     }
-    pub fn album_label(self) -> &'static str {
-        match self {
-            Self::English => "Album",
-            Self::Spanish => "Álbum",
-        }
-    }
-    pub fn song_label(self) -> &'static str {
-        match self {
-            Self::English => "Song",
-            Self::Spanish => "Canción",
-        }
-    }
-    pub fn video_label(self) -> &'static str {
-        match self {
-            Self::English => "Video",
-            Self::Spanish => "Vídeo",
-        }
+    pub fn album_label(self) -> String {
+        self.tr("album-label")
     }
     /// Song vs video kind tag for rows (same separator as Playing status).
-    pub fn track_kind(self, is_video: bool) -> &'static str {
+    pub fn track_kind(self, is_video: bool) -> String {
         if is_video {
-            self.video_label()
+            self.tr("track-video")
         } else {
-            self.song_label()
+            self.tr("track-song")
         }
     }
-    pub fn filter_all(self) -> &'static str {
-        match self {
-            Self::English => "All",
-            Self::Spanish => "Todo",
-        }
+    pub fn filter_all(self) -> String {
+        self.tr("filter-all")
     }
-    pub fn filter_songs(self) -> &'static str {
-        match self {
-            Self::English => "Songs",
-            Self::Spanish => "Canciones",
-        }
+    pub fn filter_songs(self) -> String {
+        self.tr("filter-songs")
     }
-    pub fn filter_albums(self) -> &'static str {
-        match self {
-            Self::English => "Albums",
-            Self::Spanish => "Álbumes",
-        }
+    pub fn filter_albums(self) -> String {
+        self.tr("filter-albums")
     }
-    pub fn filter_artists(self) -> &'static str {
-        match self {
-            Self::English => "Artists",
-            Self::Spanish => "Artistas",
-        }
+    pub fn filter_artists(self) -> String {
+        self.tr("filter-artists")
     }
-    pub fn filter_playlists(self) -> &'static str {
-        match self {
-            Self::English => "Playlists",
-            Self::Spanish => "Listas",
-        }
+    pub fn filter_playlists(self) -> String {
+        self.tr("filter-playlists")
     }
     pub fn no_songs_for(self, q: &str) -> String {
-        match self {
-            Self::English => format!("No songs for “{q}”."),
-            Self::Spanish => format!("Sin canciones para «{q}»."),
-        }
+        self.tr_args("no-songs-for", &[("q", q)])
     }
     pub fn no_albums_for(self, q: &str) -> String {
-        match self {
-            Self::English => format!("No albums for “{q}”."),
-            Self::Spanish => format!("Sin álbumes para «{q}»."),
-        }
+        self.tr_args("no-albums-for", &[("q", q)])
     }
     pub fn no_artists_for(self, q: &str) -> String {
-        match self {
-            Self::English => format!("No artists for “{q}”."),
-            Self::Spanish => format!("Sin artistas para «{q}»."),
-        }
+        self.tr_args("no-artists-for", &[("q", q)])
     }
     pub fn no_playlists_for(self, q: &str) -> String {
-        match self {
-            Self::English => format!("No playlists for “{q}”."),
-            Self::Spanish => format!("Sin listas para «{q}»."),
-        }
+        self.tr_args("no-playlists-for", &[("q", q)])
     }
     pub fn album_sub_year(self, artist: &str, year: u16) -> String {
-        match self {
-            Self::English => format!("Album · {artist} · {year}"),
-            Self::Spanish => format!("Álbum · {artist} · {year}"),
-        }
+        self.tr_args(
+            "album-sub-year",
+            &[("artist", artist), ("year", &year.to_string())],
+        )
     }
     pub fn album_sub(self, artist: &str) -> String {
-        match self {
-            Self::English => format!("Album · {artist}"),
-            Self::Spanish => format!("Álbum · {artist}"),
-        }
+        self.tr_args("album-sub", &[("artist", artist)])
     }
     pub fn playlist_sub_full(self, author: &str, detail: &str) -> String {
-        match self {
-            Self::English => format!("Playlist · {author} · {detail}"),
-            Self::Spanish => format!("Lista · {author} · {detail}"),
-        }
+        self.tr_args(
+            "playlist-sub-full",
+            &[("author", author), ("detail", detail)],
+        )
     }
     // Detail pages (artist / album / playlist / lyrics / radio).
-    pub fn popular(self) -> &'static str {
-        match self {
-            Self::English => "Popular",
-            Self::Spanish => "Populares",
-        }
+    pub fn popular(self) -> String {
+        self.tr("popular")
     }
-    pub fn albums_section(self) -> &'static str {
-        match self {
-            Self::English => "Albums",
-            Self::Spanish => "Álbumes",
-        }
+    pub fn albums_section(self) -> String {
+        self.tr("albums-section")
     }
-    pub fn loading_top_songs(self) -> &'static str {
-        match self {
-            Self::English => "Loading top songs…",
-            Self::Spanish => "Cargando canciones populares…",
-        }
+    pub fn loading_top_songs(self) -> String {
+        self.tr("loading-top-songs")
     }
-    pub fn loading_album_songs(self) -> &'static str {
-        match self {
-            Self::English => "Loading album songs…",
-            Self::Spanish => "Cargando canciones del álbum…",
-        }
+    pub fn loading_album_songs(self) -> String {
+        self.tr("loading-album-songs")
     }
     pub fn loading_playlist(self, label: &str) -> String {
-        match self {
-            Self::English => format!("Loading playlist {label}…"),
-            Self::Spanish => format!("Cargando lista {label}…"),
-        }
+        self.tr_args("loading-playlist", &[("label", label)])
     }
-    pub fn show_more(self) -> &'static str {
-        match self {
-            Self::English => "Show more",
-            Self::Spanish => "Mostrar más",
-        }
+    pub fn show_more(self) -> String {
+        self.tr("show-more")
     }
     pub fn show_more_older(self, n: usize) -> String {
-        match self {
-            Self::English => format!("Show more ({n} older)"),
-            Self::Spanish => format!("Mostrar más ({n} anteriores)"),
-        }
+        self.tr_args("show-more-older", &[("n", &n.to_string())])
     }
-    pub fn play_label(self) -> &'static str {
-        match self {
-            Self::English => "Play",
-            Self::Spanish => "Reproducir",
-        }
+    pub fn play_label(self) -> String {
+        self.tr("play-label")
     }
-    pub fn shuffle_label(self) -> &'static str {
-        match self {
-            Self::English => "Shuffle",
-            Self::Spanish => "Aleatorio",
-        }
+    pub fn shuffle_label(self) -> String {
+        self.tr("shuffle-label")
     }
-    pub fn radio_label(self) -> &'static str {
-        match self {
-            Self::English => "Radio",
-            Self::Spanish => "Radio",
-        }
+    pub fn radio_label(self) -> String {
+        self.tr("radio-label")
     }
-    pub fn start_radio(self) -> &'static str {
-        match self {
-            Self::English => "Start radio",
-            Self::Spanish => "Iniciar radio",
-        }
+    pub fn start_radio(self) -> String {
+        self.tr("start-radio")
     }
     pub fn artist_songs_albums(self, songs: usize, albums: usize, total: &str) -> String {
-        match self {
-            Self::English => format!("{songs} songs · {albums} albums · {total}"),
-            Self::Spanish => format!("{songs} canciones · {albums} álbumes · {total}"),
-        }
+        self.tr_args(
+            "artist-songs-albums",
+            &[
+                ("songs", &songs.to_string()),
+                ("albums", &albums.to_string()),
+                ("total", total),
+            ],
+        )
     }
     pub fn playlist_not_found(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Playlist not found: {id}"),
-            Self::Spanish => format!("Lista no encontrada: {id}"),
-        }
+        self.tr_args("playlist-not-found", &[("id", id)])
     }
-    pub fn playlist_not_found_plain(self) -> &'static str {
-        match self {
-            Self::English => "Playlist not found.",
-            Self::Spanish => "Lista no encontrada.",
-        }
+    pub fn playlist_not_found_plain(self) -> String {
+        self.tr("playlist-not-found-plain")
     }
     pub fn lyrics_for(self, title: &str) -> String {
-        match self {
-            Self::English => format!("{title} · lyrics"),
-            Self::Spanish => format!("{title} · letra"),
-        }
+        self.tr_args("lyrics-for", &[("title", title)])
     }
-    pub fn instrumental(self) -> &'static str {
-        match self {
-            Self::English => "[Instrumental]",
-            Self::Spanish => "[Instrumental]",
-        }
+    pub fn instrumental(self) -> String {
+        self.tr("instrumental")
     }
-    pub fn no_lyrics(self) -> &'static str {
-        match self {
-            Self::English => "No lyrics for this track yet.",
-            Self::Spanish => "Sin letra para esta pista todavía.",
-        }
+    pub fn no_lyrics(self) -> String {
+        self.tr("no-lyrics")
     }
     pub fn loading_lyrics(self, provider: &str) -> String {
-        match self {
-            Self::English => format!("Loading lyrics ({provider})"),
-            Self::Spanish => format!("Cargando letra ({provider})"),
-        }
+        self.tr_args("loading-lyrics", &[("provider", provider)])
     }
     pub fn fetching_lyrics(self, provider: &str) -> String {
-        match self {
-            Self::English => format!("Fetching lyrics ({provider})."),
-            Self::Spanish => format!("Obteniendo letra ({provider})."),
-        }
+        self.tr_args("fetching-lyrics", &[("provider", provider)])
     }
-    pub fn no_track_selected(self) -> &'static str {
-        match self {
-            Self::English => "Nothing selected: pick a song to see its lyrics.",
-            Self::Spanish => "Nada seleccionado: elige una canción para ver su letra.",
-        }
+    pub fn no_track_selected(self) -> String {
+        self.tr("no-track-selected")
     }
     // Context menu rows.
-    pub fn play_now(self) -> &'static str {
-        match self {
-            Self::English => "Play now",
-            Self::Spanish => "Reproducir ahora",
-        }
+    pub fn play_now(self) -> String {
+        self.tr("play-now")
     }
-    pub fn play_next(self) -> &'static str {
-        match self {
-            Self::English => "Play next",
-            Self::Spanish => "Reproducir a continuación",
-        }
+    pub fn play_next(self) -> String {
+        self.tr("play-next")
     }
-    pub fn add_to_queue(self) -> &'static str {
-        match self {
-            Self::English => "Add to queue",
-            Self::Spanish => "Añadir a la cola",
-        }
+    pub fn add_to_queue(self) -> String {
+        self.tr("add-to-queue")
     }
-    pub fn start_mix(self) -> &'static str {
-        match self {
-            Self::English => "Start mix",
-            Self::Spanish => "Iniciar mezcla",
-        }
+    pub fn start_mix(self) -> String {
+        self.tr("start-mix")
     }
-    pub fn lyrics_menu(self) -> &'static str {
-        match self {
-            Self::English => "Lyrics",
-            Self::Spanish => "Letra",
-        }
+    pub fn lyrics_menu(self) -> String {
+        self.tr("lyrics-menu")
     }
-    pub fn add_to_favorites(self) -> &'static str {
-        match self {
-            Self::English => "Add to favorites",
-            Self::Spanish => "Añadir a favoritos",
-        }
+    pub fn add_to_favorites(self) -> String {
+        self.tr("add-to-favorites")
     }
-    pub fn remove_from_favorites(self) -> &'static str {
-        match self {
-            Self::English => "Remove from favorites",
-            Self::Spanish => "Quitar de favoritos",
-        }
+    pub fn remove_from_favorites(self) -> String {
+        self.tr("remove-from-favorites")
     }
-    pub fn dont_recommend(self) -> &'static str {
-        match self {
-            Self::English => "Don't recommend",
-            Self::Spanish => "No recomendar",
-        }
+    pub fn dont_recommend(self) -> String {
+        self.tr("dont-recommend")
     }
-    pub fn recommend_again(self) -> &'static str {
-        match self {
-            Self::English => "Recommend again",
-            Self::Spanish => "Recomendar de nuevo",
-        }
+    pub fn recommend_again(self) -> String {
+        self.tr("recommend-again")
     }
-    pub fn go_to_album(self) -> &'static str {
-        match self {
-            Self::English => "Go to album",
-            Self::Spanish => "Ir al álbum",
-        }
+    pub fn go_to_album(self) -> String {
+        self.tr("go-to-album")
     }
-    pub fn go_to_artist(self) -> &'static str {
-        match self {
-            Self::English => "Go to artist",
-            Self::Spanish => "Ir al artista",
-        }
+    pub fn go_to_artist(self) -> String {
+        self.tr("go-to-artist")
     }
-    pub fn remove_from_queue(self) -> &'static str {
-        match self {
-            Self::English => "Remove from queue",
-            Self::Spanish => "Quitar de la cola",
-        }
+    pub fn remove_from_queue(self) -> String {
+        self.tr("remove-from-queue")
     }
-    pub fn remove_from_autoplay(self) -> &'static str {
-        match self {
-            Self::English => "Remove from autoplay",
-            Self::Spanish => "Quitar de la reproducción automática",
-        }
+    pub fn remove_from_autoplay(self) -> String {
+        self.tr("remove-from-autoplay")
     }
-    pub fn shuffle_play(self) -> &'static str {
-        match self {
-            Self::English => "Shuffle play",
-            Self::Spanish => "Reproducción aleatoria",
-        }
+    pub fn shuffle_play(self) -> String {
+        self.tr("shuffle-play")
     }
-    pub fn delete_playlist(self) -> &'static str {
-        match self {
-            Self::English => "Delete playlist",
-            Self::Spanish => "Eliminar lista",
-        }
+    pub fn delete_playlist(self) -> String {
+        self.tr("delete-playlist")
     }
     pub fn playlists_toggle(self, n: usize) -> String {
-        match self {
-            Self::English => format!("Playlists ({n})"),
-            Self::Spanish => format!("Listas ({n})"),
-        }
+        self.tr_args("playlists-toggle", &[("n", &n.to_string())])
     }
-    pub fn no_playlists_menu(self) -> &'static str {
-        match self {
-            Self::English => "No playlists yet: create one in the sidebar.",
-            Self::Spanish => "Sin listas todavía: crea una en la barra lateral.",
-        }
+    pub fn no_playlists_menu(self) -> String {
+        self.tr("no-playlists-menu")
     }
     // Confirm dialogs.
-    pub fn signout_title(self) -> &'static str {
-        match self {
-            Self::English => "Sign out?",
-            Self::Spanish => "¿Cerrar sesión?",
-        }
+    pub fn signout_title(self) -> String {
+        self.tr("signout-title")
     }
-    pub fn signout_body(self) -> &'static str {
-        match self {
-            Self::English => {
-                "Clears the saved session on this device. Your local library stays put."
-            }
-            Self::Spanish => {
-                "Borra la sesión guardada en este dispositivo. Tu biblioteca local se conserva."
-            }
-        }
+    pub fn signout_body(self) -> String {
+        self.tr("signout-body")
     }
-    pub fn sign_out(self) -> &'static str {
-        match self {
-            Self::English => "Sign out",
-            Self::Spanish => "Cerrar sesión",
-        }
+    pub fn sign_out(self) -> String {
+        self.tr("sign-out")
     }
-    pub fn stay_signed_in(self) -> &'static str {
-        match self {
-            Self::English => "Stay signed in",
-            Self::Spanish => "Mantener la sesión",
-        }
+    pub fn stay_signed_in(self) -> String {
+        self.tr("stay-signed-in")
     }
-    pub fn delete_playlist_title(self) -> &'static str {
-        match self {
-            Self::English => "Delete this playlist?",
-            Self::Spanish => "¿Eliminar esta lista?",
-        }
+    pub fn delete_playlist_title(self) -> String {
+        self.tr("delete-playlist-title")
     }
     pub fn delete_playlist_body(self, title: &str, n: usize) -> String {
-        match self {
-            Self::English => {
-                format!("{title} ({n} songs) will leave your library. This cannot be undone.")
-            }
-            Self::Spanish => format!(
-                "{title} ({n} canciones) saldrá de tu biblioteca. Esto no se puede deshacer."
-            ),
-        }
+        self.tr_args(
+            "delete-playlist-body",
+            &[("title", title), ("n", &n.to_string())],
+        )
     }
-    pub fn keep_playlist(self) -> &'static str {
-        match self {
-            Self::English => "Keep playlist",
-            Self::Spanish => "Conservar lista",
-        }
+    pub fn keep_playlist(self) -> String {
+        self.tr("keep-playlist")
     }
-    pub fn cleanup_title(self) -> &'static str {
-        match self {
-            Self::English => "Signed in. Delete the export file?",
-            Self::Spanish => "Sesión iniciada. ¿Eliminar el archivo exportado?",
-        }
+    pub fn cleanup_title(self) -> String {
+        self.tr("cleanup-title")
     }
-    pub fn cleanup_body(self) -> &'static str {
-        match self {
-            Self::English => "Your session is saved in the app securely. The export is plaintext and no longer needed.",
-            Self::Spanish => "Tu sesión está guardada en la aplicación de forma segura. La exportación es texto sin formato y ya no es necesaria.",
-        }
+    pub fn cleanup_body(self) -> String {
+        self.tr("cleanup-body")
     }
-    pub fn delete_export(self) -> &'static str {
-        match self {
-            Self::English => "Delete export",
-            Self::Spanish => "Eliminar exportación",
-        }
+    pub fn delete_export(self) -> String {
+        self.tr("delete-export")
     }
-    pub fn keep_file(self) -> &'static str {
-        match self {
-            Self::English => "Keep file",
-            Self::Spanish => "Conservar archivo",
-        }
+    pub fn keep_file(self) -> String {
+        self.tr("keep-file")
     }
     // Settings sections.
-    pub fn playback_section(self) -> &'static str {
-        match self {
-            Self::English => "Playback",
-            Self::Spanish => "Reproducción",
-        }
+    pub fn playback_section(self) -> String {
+        self.tr("playback-section")
     }
     pub fn volume_muted(self, pct: f32) -> String {
-        match self {
-            Self::English => format!("Volume {pct:.0}% (muted)"),
-            Self::Spanish => format!("Volumen {pct:.0}% (silenciado)"),
-        }
+        self.tr_args("volume-muted", &[("pct", &format!("{pct:.0}"))])
     }
     pub fn volume(self, pct: f32) -> String {
-        match self {
-            Self::English => format!("Volume {pct:.0}%"),
-            Self::Spanish => format!("Volumen {pct:.0}%"),
-        }
+        self.tr_args("volume", &[("pct", &format!("{pct:.0}"))])
     }
-    pub fn lyrics_section(self) -> &'static str {
-        match self {
-            Self::English => "Lyrics",
-            Self::Spanish => "Letra",
-        }
+    pub fn lyrics_section(self) -> String {
+        self.tr("lyrics-section")
     }
-    pub fn default_lyrics_provider(self) -> &'static str {
-        match self {
-            Self::English => "Default lyrics provider",
-            Self::Spanish => "Proveedor de letras predeterminado",
-        }
+    pub fn default_lyrics_provider(self) -> String {
+        self.tr("default-lyrics-provider")
     }
-    pub fn appearance_section(self) -> &'static str {
-        match self {
-            Self::English => "Appearance",
-            Self::Spanish => "Apariencia",
-        }
+    pub fn appearance_section(self) -> String {
+        self.tr("appearance-section")
     }
-    pub fn display_font(self) -> &'static str {
-        match self {
-            Self::English => "Display font (takes effect on relaunch)",
-            Self::Spanish => "Fuente de pantalla (se aplica al reiniciar)",
-        }
+    pub fn display_font(self) -> String {
+        self.tr("display-font")
     }
-    pub fn stale_font_note(self) -> &'static str {
-        match self {
-            Self::English => "That family is no longer installed: text falls back until you pick another.",
-            Self::Spanish => "Esa familia ya no está instalada: el texto usa la opción alternativa hasta que elijas otra.",
-        }
+    pub fn stale_font_note(self) -> String {
+        self.tr("stale-font-note")
     }
-    pub fn relaunch_to_apply(self) -> &'static str {
-        match self {
-            Self::English => "Relaunch now to apply",
-            Self::Spanish => "Reiniciar ahora para aplicar",
-        }
+    pub fn relaunch_to_apply(self) -> String {
+        self.tr("relaunch-to-apply")
     }
     pub fn interface_scale(self, pct: f32) -> String {
-        match self {
-            Self::English => format!("Interface scale: {pct:.0}%"),
-            Self::Spanish => format!("Escala de la interfaz: {pct:.0}%"),
-        }
+        self.tr_args("interface-scale", &[("pct", &format!("{pct:.0}"))])
     }
-    pub fn scale_hint(self) -> &'static str {
-        match self {
-            Self::English => "Scales text and controls together.",
-            Self::Spanish => "Escala el texto y los controles juntos.",
-        }
+    pub fn scale_hint(self) -> String {
+        self.tr("scale-hint")
     }
-    pub fn animations_section(self) -> &'static str {
-        match self {
-            Self::English => "Animations",
-            Self::Spanish => "Animaciones",
-        }
+    pub fn animations_section(self) -> String {
+        self.tr("animations-section")
     }
-    pub fn enable_animations(self) -> &'static str {
-        match self {
-            Self::English => "Enable animations",
-            Self::Spanish => "Activar animaciones",
-        }
+    pub fn enable_animations(self) -> String {
+        self.tr("enable-animations")
     }
     pub fn animation_duration(self, ms: u64) -> String {
-        match self {
-            Self::English => format!("Animation duration: {ms} ms"),
-            Self::Spanish => format!("Duración de la animación: {ms} ms"),
-        }
+        self.tr_args("animation-duration", &[("ms", &ms.to_string())])
     }
-    pub fn scrobbling_section(self) -> &'static str {
-        match self {
-            Self::English => "Scrobbling",
-            Self::Spanish => "Scrobble",
-        }
+    pub fn scrobbling_section(self) -> String {
+        self.tr("scrobbling-section")
     }
-    pub fn setup_scrobbling(self) -> &'static str {
-        match self {
-            Self::English => "Set up scrobbling",
-            Self::Spanish => "Configurar scrobbling",
-        }
+    pub fn setup_scrobbling(self) -> String {
+        self.tr("setup-scrobbling")
     }
-    pub fn enable_scrobbling(self) -> &'static str {
-        match self {
-            Self::English => "Enable scrobbling",
-            Self::Spanish => "Activar scrobbling",
-        }
+    pub fn enable_scrobbling(self) -> String {
+        self.tr("enable-scrobbling")
     }
     pub fn scrobble_user_placeholder(self) -> &'static str {
         match self {
@@ -1035,224 +701,131 @@ impl Language {
             Self::Spanish => "Clave de sesión de Last.fm…",
         }
     }
-    pub fn done_button(self) -> &'static str {
-        match self {
-            Self::English => "Done",
-            Self::Spanish => "Listo",
-        }
+    pub fn done_button(self) -> String {
+        self.tr("done-button")
     }
-    pub fn cookie_section_title(self) -> &'static str {
-        match self {
-            Self::English => "Cookie import",
-            Self::Spanish => "Importación de cookies",
-        }
+    pub fn cookie_section_title(self) -> String {
+        self.tr("cookie-section-title")
     }
-    pub fn signed_in_cookies(self) -> &'static str {
-        match self {
-            Self::English => "Signed in with cookies",
-            Self::Spanish => "Sesión iniciada con cookies",
-        }
+    pub fn signed_in_cookies(self) -> String {
+        self.tr("signed-in-cookies")
     }
-    pub fn cookie_explainer(self) -> &'static str {
-        match self {
-            Self::English => "Log into music.youtube.com in your browser, export your cookies with the Get cookies.txt extension, then choose the file and press Import.",
-            Self::Spanish => "Inicia sesión en music.youtube.com en tu navegador, exporta tus cookies con la extensión Get cookies.txt, luego elige el archivo y pulsa Importar.",
-        }
+    pub fn cookie_explainer(self) -> String {
+        self.tr("cookie-explainer")
     }
-    pub fn choose_cookies_file(self) -> &'static str {
-        match self {
-            Self::English => "Choose cookies.txt file…",
-            Self::Spanish => "Elige el archivo cookies.txt…",
-        }
+    pub fn choose_cookies_file(self) -> String {
+        self.tr("choose-cookies-file")
     }
-    pub fn import_button(self) -> &'static str {
-        match self {
-            Self::English => "Import",
-            Self::Spanish => "Importar",
-        }
+    pub fn import_button(self) -> String {
+        self.tr("import-button")
     }
-    pub fn sync_section_title(self) -> &'static str {
-        match self {
-            Self::English => "Sync web changes",
-            Self::Spanish => "Sincronizar cambios web",
-        }
+    pub fn sync_section_title(self) -> String {
+        self.tr("sync-section-title")
     }
-    pub fn sync_now(self) -> &'static str {
-        match self {
-            Self::English => "Sync now",
-            Self::Spanish => "Sincronizar ahora",
-        }
+    pub fn sync_now(self) -> String {
+        self.tr("sync-now")
     }
-    pub fn auto_sync_label(self) -> &'static str {
-        match self {
-            Self::English => "Auto-sync every 15 min",
-            Self::Spanish => "Sincronizar cada 15 min",
-        }
+    pub fn auto_sync_label(self) -> String {
+        self.tr("auto-sync-label")
     }
     pub fn last_sync(self, ago: &str) -> String {
-        match self {
-            Self::English => format!("Last sync: {ago}"),
-            Self::Spanish => format!("Última sincronización: {ago}"),
-        }
+        self.tr_args("last-sync", &[("ago", ago)])
     }
-    pub fn error_section_title(self) -> &'static str {
-        match self {
-            Self::English => "Recent playback errors",
-            Self::Spanish => "Errores recientes de reproducción",
-        }
+    pub fn error_section_title(self) -> String {
+        self.tr("error-section-title")
     }
-    pub fn no_errors(self) -> &'static str {
-        match self {
-            Self::English => "No errors recorded.",
-            Self::Spanish => "Sin errores registrados.",
-        }
+    pub fn no_errors(self) -> String {
+        self.tr("no-errors")
     }
-    pub fn cache_section_title(self) -> &'static str {
-        match self {
-            Self::English => "Memory caches (all capped)",
-            Self::Spanish => "Cachés en memoria (todas limitadas)",
-        }
+    pub fn cache_section_title(self) -> String {
+        self.tr("cache-section-title")
     }
-    pub fn shortcuts_hint(self) -> &'static str {
-        match self {
-            Self::English => "Shortcuts: Space play/pause · n next · p prev · / search",
-            Self::Spanish => {
-                "Atajos: Espacio reproducir/pausar · n siguiente · p anterior · / buscar"
-            }
-        }
+    pub fn shortcuts_hint(self) -> String {
+        self.tr("shortcuts-hint")
     }
-    pub fn enable_custom_eq(self) -> &'static str {
-        match self {
-            Self::English => "Enable custom EQ",
-            Self::Spanish => "Activar EQ personalizado",
-        }
+    pub fn enable_custom_eq(self) -> String {
+        self.tr("enable-custom-eq")
     }
-    pub fn eq_needs_mpv(self) -> &'static str {
-        match self {
-            Self::English => {
-                "EQ needs the mpv backend: install libmpv / rebuild with --features mpv."
-            }
-            Self::Spanish => {
-                "El EQ necesita el motor mpv: instala libmpv o recompila con --features mpv."
-            }
-        }
+    pub fn eq_needs_mpv(self) -> String {
+        self.tr("eq-needs-mpv")
     }
-    pub fn eq_no_device(self) -> &'static str {
-        match self {
-            Self::English => "EQ: no audio device.",
-            Self::Spanish => "EQ: sin dispositivo de audio.",
-        }
+    pub fn eq_no_device(self) -> String {
+        self.tr("eq-no-device")
     }
     /// Repeat mode tag for the desktop status line.
     pub fn repeat_mode(self, mode: yutu_player::RepeatMode) -> String {
         use yutu_player::RepeatMode as R;
-        match self {
-            Self::English => match mode {
-                R::Off => "off".into(),
-                R::All => "all".into(),
-                R::One => "one".into(),
-            },
-            Self::Spanish => match mode {
-                R::Off => "no".into(),
-                R::All => "todo".into(),
-                R::One => "una".into(),
-            },
+        match mode {
+            R::Off => self.tr("repeat-off"),
+            R::All => self.tr("repeat-all"),
+            R::One => self.tr("repeat-one"),
         }
     }
     // Discovery page.
-    pub fn discovery_hint_play(self) -> &'static str {
-        match self {
-            Self::English => "Play and like some music first.",
-            Self::Spanish => "Reproduce y añade favoritos primero.",
-        }
+    pub fn discovery_hint_play(self) -> String {
+        self.tr("discovery-hint-play")
     }
-    pub fn discovery_hint_like(self) -> &'static str {
-        match self {
-            Self::English => "Like some music to fill this.",
-            Self::Spanish => "Marca música como favorita para llenar esto.",
-        }
+    pub fn discovery_hint_like(self) -> String {
+        self.tr("discovery-hint-like")
     }
-    pub fn needs_innertube_sync(self) -> &'static str {
-        match self {
-            Self::English => "Sync needs `--features innertube`.",
-            Self::Spanish => "La sincronización necesita `--features innertube`.",
-        }
+    pub fn needs_innertube_sync(self) -> String {
+        self.tr("needs-innertube-sync")
     }
-    pub fn needs_innertube_import(self) -> &'static str {
-        match self {
-            Self::English => "Cookie import needs `--features innertube`.",
-            Self::Spanish => "La importación de cookies necesita `--features innertube`.",
-        }
+    pub fn needs_innertube_import(self) -> String {
+        self.tr("needs-innertube-import")
     }
-    pub fn needs_innertube_import_offline(self) -> &'static str {
-        match self {
-            Self::English => "Cookie import needs `--features innertube` (offline build).",
-            Self::Spanish => {
-                "La importación de cookies necesita `--features innertube` (versión sin conexión)."
-            }
-        }
+    pub fn needs_innertube_import_offline(self) -> String {
+        self.tr("needs-innertube-import-offline")
     }
-    pub fn needs_innertube_search_offline(self) -> &'static str {
-        match self {
-            Self::English => "Real search needs `--features innertube` (offline build).",
-            Self::Spanish => {
-                "La búsqueda real necesita `--features innertube` (versión sin conexión)."
-            }
-        }
+    pub fn needs_innertube_search_offline(self) -> String {
+        self.tr("needs-innertube-search-offline")
     }
-    pub fn needs_innertube_playlists(self) -> &'static str {
-        match self {
-            Self::English => "Playlists need `--features innertube`.",
-            Self::Spanish => "Las listas necesitan `--features innertube`.",
-        }
+    pub fn needs_innertube_playlists(self) -> String {
+        self.tr("needs-innertube-playlists")
     }
-    pub fn needs_innertube_radio(self) -> &'static str {
-        match self {
-            Self::English => "Radio needs `--features innertube`.",
-            Self::Spanish => "La radio necesita `--features innertube`.",
-        }
+    pub fn needs_innertube_radio(self) -> String {
+        self.tr("needs-innertube-radio")
     }
-    pub fn searching_short(self) -> &'static str {
-        match self {
-            Self::English => "Searching…",
-            Self::Spanish => "Buscando…",
-        }
+    pub fn searching_short(self) -> String {
+        self.tr("searching-short")
     }
-    pub fn section_empty(self) -> &'static str {
-        match self {
-            Self::English => "Nothing here yet.",
-            Self::Spanish => "Nada aquí todavía.",
-        }
+    pub fn section_empty(self) -> String {
+        self.tr("section-empty")
     }
     pub fn album_song_meta(self, artist: &str, n: usize, time: &str) -> String {
-        match self {
-            Self::English => format!("{artist} · {n} songs · {time}"),
-            Self::Spanish => format!("{artist} · {n} canciones · {time}"),
-        }
+        self.tr_args(
+            "album-song-meta",
+            &[("artist", artist), ("n", &n.to_string()), ("time", time)],
+        )
     }
     pub fn album_song_meta_year(self, artist: &str, year: &str, n: usize, time: &str) -> String {
-        match self {
-            Self::English => format!("{artist} · {year} · {n} songs · {time}"),
-            Self::Spanish => format!("{artist} · {year} · {n} canciones · {time}"),
-        }
+        self.tr_args(
+            "album-song-meta-year",
+            &[
+                ("artist", artist),
+                ("year", year),
+                ("n", &n.to_string()),
+                ("time", time),
+            ],
+        )
     }
-    pub fn importing_title(self) -> &'static str {
-        match self {
-            Self::English => "Importing your library",
-            Self::Spanish => "Importando tu biblioteca",
-        }
+    pub fn importing_title(self) -> String {
+        self.tr("importing-title")
     }
     pub fn import_progress_songs(self, shown: usize, expected: usize) -> String {
-        match self {
-            Self::English => format!("{shown}/{expected} songs"),
-            Self::Spanish => format!("{shown}/{expected} canciones"),
-        }
+        self.tr_args(
+            "import-progress-songs",
+            &[
+                ("shown", &shown.to_string()),
+                ("expected", &expected.to_string()),
+            ],
+        )
     }
     pub fn import_progress_songs_simple(self, shown: usize) -> String {
-        match self {
-            Self::English => format!("{shown} songs"),
-            Self::Spanish => format!("{shown} canciones"),
-        }
+        self.tr_args(
+            "import-progress-songs-simple",
+            &[("shown", &shown.to_string())],
+        )
     }
     pub fn import_progress_detail(
         self,
@@ -1261,18 +834,21 @@ impl Language {
         done: usize,
         total: usize,
     ) -> String {
-        match self {
-            Self::English => format!("{songs} · {liked} liked · {done}/{total} playlists"),
-            Self::Spanish => format!("{songs} · {liked} en favoritos · {done}/{total} listas"),
-        }
+        self.tr_args(
+            "import-progress-detail",
+            &[
+                ("songs", songs),
+                ("liked", &liked.to_string()),
+                ("done", &done.to_string()),
+                ("total", &total.to_string()),
+            ],
+        )
     }
     pub fn import_progress_reading(self, shown: usize, liked: usize) -> String {
-        match self {
-            Self::English => format!("{shown} songs · {liked} liked · reading library…"),
-            Self::Spanish => {
-                format!("{shown} canciones · {liked} en favoritos · leyendo biblioteca…")
-            }
-        }
+        self.tr_args(
+            "import-progress-reading",
+            &[("shown", &shown.to_string()), ("liked", &liked.to_string())],
+        )
     }
     pub fn cache_census(
         self,
@@ -1283,96 +859,70 @@ impl Language {
         history: usize,
         searches: usize,
     ) -> String {
-        match self {
-            Self::English => format!(
-                "art mem {art} · catalog {catalog} · lyrics {lyrics} · stream urls {urls} · history {history} · searches {searches}"
-            ),
-            Self::Spanish => format!(
-                "arte {art} · catálogo {catalog} · letras {lyrics} · urls {urls} · historial {history} · búsquedas {searches}"
-            ),
-        }
+        self.tr_args(
+            "cache-census",
+            &[
+                ("art", &art.to_string()),
+                ("catalog", &catalog.to_string()),
+                ("lyrics", &lyrics.to_string()),
+                ("urls", &urls.to_string()),
+                ("history", &history.to_string()),
+                ("searches", &searches.to_string()),
+            ],
+        )
     }
-    pub fn file_picker_title(self) -> &'static str {
-        match self {
-            Self::English => "Choose cookies.txt export",
-            Self::Spanish => "Elige el archivo cookies.txt",
-        }
+    pub fn file_picker_title(self) -> String {
+        self.tr("file-picker-title")
     }
     /// Hero play pill (uppercase like the design).
-    pub fn play_pill_label(self) -> &'static str {
-        match self {
-            Self::English => "PLAY",
-            Self::Spanish => "REPRODUCIR",
-        }
+    pub fn play_pill_label(self) -> String {
+        self.tr("play-pill-label")
     }
     /// Hero shuffle pill (uppercase like the design).
-    pub fn shuffle_pill_label(self) -> &'static str {
-        match self {
-            Self::English => "SHUFFLE",
-            Self::Spanish => "ALEATORIO",
-        }
+    pub fn shuffle_pill_label(self) -> String {
+        self.tr("shuffle-pill-label")
     }
     // Queue action labels (doubled as status heads).
-    pub fn search_results_label(self) -> &'static str {
-        match self {
-            Self::English => "Search results",
-            Self::Spanish => "Resultados de búsqueda",
-        }
+    pub fn search_results_label(self) -> String {
+        self.tr("search-results-label")
     }
     pub fn artist_queue_label(self, name: &str) -> String {
-        match self {
-            Self::English => format!("Artist {name}"),
-            Self::Spanish => format!("Artista {name}"),
-        }
+        self.tr_args("artist-queue-label", &[("name", name)])
     }
     pub fn album_queue_label(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Album {title}"),
-            Self::Spanish => format!("Álbum {title}"),
-        }
+        self.tr_args("album-queue-label", &[("title", title)])
     }
     pub fn playlist_queue_label(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Playlist {title}"),
-            Self::Spanish => format!("Lista {title}"),
-        }
+        self.tr_args("playlist-queue-label", &[("title", title)])
     }
     // Import heads per kind (the noun itself translates).
     #[cfg(feature = "innertube")]
-    pub fn import_head(self, kind: crate::ImportKind) -> &'static str {
-        use crate::ImportKind as K;
-        match self {
-            Self::English => kind.done_label(),
-            Self::Spanish => match kind {
-                K::Cookie => "Importación de cookies",
-                K::Library => "Importación",
-                K::Sync => "Sincronización",
-            },
+    pub fn import_head(self, kind: crate::ImportKind) -> String {
+        match kind {
+            crate::ImportKind::Cookie => self.tr("import-head-cookie"),
+            crate::ImportKind::Library => self.tr("import-head-library"),
+            crate::ImportKind::Sync => self.tr("import-head-sync"),
         }
     }
     #[cfg(feature = "innertube")]
     pub fn import_failed(self, kind: crate::ImportKind) -> String {
-        use crate::ImportKind as K;
-        match self {
-            Self::English => format!("{} import failed", kind.label()),
-            Self::Spanish => match kind {
-                K::Cookie => "Falló la importación de cookies".into(),
-                K::Library => "Falló la importación de la biblioteca".into(),
-                K::Sync => "Falló la sincronización".into(),
-            },
+        match kind {
+            crate::ImportKind::Cookie => self.tr("import-failed-cookie"),
+            crate::ImportKind::Library => self.tr("import-failed-library"),
+            crate::ImportKind::Sync => self.tr("import-failed-sync"),
         }
     }
     #[cfg(feature = "innertube")]
     pub fn import_done_line(self, kind: crate::ImportKind, n: usize, m: usize) -> String {
-        match self {
-            Self::English => format!("{}: {n} library tracks ({m} liked).", kind.done_label()),
-            Self::Spanish => {
-                format!(
-                    "{}: {n} pistas de la biblioteca ({m} en favoritos).",
-                    self.import_head(kind)
-                )
-            }
-        }
+        let head = self.import_head(kind);
+        self.tr_args(
+            "import-done-line",
+            &[
+                ("head", &head),
+                ("n", &n.to_string()),
+                ("m", &m.to_string()),
+            ],
+        )
     }
     #[cfg(feature = "innertube")]
     pub fn import_fetching_line(
@@ -1382,18 +932,16 @@ impl Language {
         m: usize,
         total: usize,
     ) -> String {
-        match self {
-            Self::English => {
-                format!(
-                    "{}: {n} songs ({m} liked), fetching {total} playlists…",
-                    kind.done_label()
-                )
-            }
-            Self::Spanish => format!(
-                "{}: {n} canciones ({m} en favoritos), obteniendo {total} listas…",
-                self.import_head(kind)
-            ),
-        }
+        let head = self.import_head(kind);
+        self.tr_args(
+            "import-fetching-line",
+            &[
+                ("head", &head),
+                ("n", &n.to_string()),
+                ("m", &m.to_string()),
+                ("total", &total.to_string()),
+            ],
+        )
     }
     #[cfg(feature = "innertube")]
     pub fn import_done_lists(
@@ -1403,16 +951,16 @@ impl Language {
         liked: usize,
         total: usize,
     ) -> String {
-        match self {
-            Self::English => format!(
-                "{} complete: {songs} songs ({liked} liked), {total} playlists.",
-                kind.done_label()
-            ),
-            Self::Spanish => format!(
-                "{} completa: {songs} canciones ({liked} en favoritos), {total} listas.",
-                self.import_head(kind)
-            ),
-        }
+        let head = self.import_head(kind);
+        self.tr_args(
+            "import-done-lists",
+            &[
+                ("head", &head),
+                ("songs", &songs.to_string()),
+                ("liked", &liked.to_string()),
+                ("total", &total.to_string()),
+            ],
+        )
     }
     #[cfg(feature = "innertube")]
     pub fn import_done_lists_errors(
@@ -1423,16 +971,17 @@ impl Language {
         done: usize,
         total: usize,
     ) -> String {
-        match self {
-            Self::English => format!(
-                "{} complete with failures: {songs} songs ({liked} liked), {done}/{total} playlists.",
-                kind.done_label()
-            ),
-            Self::Spanish => format!(
-                "{} completa con errores: {songs} canciones ({liked} en favoritos), {done}/{total} listas.",
-                self.import_head(kind)
-            ),
-        }
+        let head = self.import_head(kind);
+        self.tr_args(
+            "import-done-lists-errors",
+            &[
+                ("head", &head),
+                ("songs", &songs.to_string()),
+                ("liked", &liked.to_string()),
+                ("done", &done.to_string()),
+                ("total", &total.to_string()),
+            ],
+        )
     }
     #[cfg(feature = "innertube")]
     pub fn playlist_fetch_progress(
@@ -1442,585 +991,324 @@ impl Language {
         done: usize,
         total: usize,
     ) -> String {
-        match self {
-            Self::English => format!("Playlist '{title}' done ({n} tracks) - {done}/{total}."),
-            Self::Spanish => format!("Lista «{title}» lista ({n} canciones): {done}/{total}."),
-        }
+        self.tr_args(
+            "playlist-fetch-progress",
+            &[
+                ("title", title),
+                ("n", &n.to_string()),
+                ("done", &done.to_string()),
+                ("total", &total.to_string()),
+            ],
+        )
     }
     // Playback + queue statuses.
     pub fn loading_track(self, title: &str, artist: &str) -> String {
-        match self {
-            Self::English => format!("Loading {title} · {artist}…"),
-            Self::Spanish => format!("Cargando {title} · {artist}…"),
-        }
+        self.tr_args("loading-track", &[("title", title), ("artist", artist)])
     }
     pub fn stream_retrying(self, attempt: u8, max: u8) -> String {
-        match self {
-            Self::English => format!("Stream failed, retrying ({attempt}/{max})…"),
-            Self::Spanish => format!("Transmisión fallida, reintentando ({attempt}/{max})…"),
-        }
+        self.tr_args(
+            "stream-retrying",
+            &[("attempt", &attempt.to_string()), ("max", &max.to_string())],
+        )
     }
     pub fn stream_skipped(self, title: &str, max: u8) -> String {
-        match self {
-            Self::English => format!("Skipped {title}: stream failed {max} times."),
-            Self::Spanish => format!("Omitido {title}: la transmisión falló {max} veces."),
-        }
+        self.tr_args(
+            "stream-skipped",
+            &[("title", title), ("max", &max.to_string())],
+        )
     }
     pub fn playing_line(self, title: &str, artist: &str) -> String {
-        match self {
-            Self::English => format!("Playing: {title} · {artist}."),
-            Self::Spanish => format!("Reproduciendo: {title} · {artist}."),
-        }
+        self.tr_args("playing-line", &[("title", title), ("artist", artist)])
     }
     pub fn paused_line(self, title: &str, artist: &str) -> String {
-        match self {
-            Self::English => format!("Paused: {title} · {artist}."),
-            Self::Spanish => format!("En pausa: {title} · {artist}."),
-        }
+        self.tr_args("paused-line", &[("title", title), ("artist", artist)])
     }
-    pub fn stream_no_device(self) -> &'static str {
-        match self {
-            Self::English => "Stream ready, but no audio device.",
-            Self::Spanish => "Transmisión lista, pero sin dispositivo de audio.",
-        }
+    pub fn stream_no_device(self) -> String {
+        self.tr("stream-no-device")
     }
     pub fn stream_fetched_no_device(self, video_id: &str) -> String {
-        match self {
-            Self::English => format!("Stream {video_id} fetched, but no audio device."),
-            Self::Spanish => {
-                format!("Transmisión {video_id} obtenida, pero sin dispositivo de audio.")
-            }
-        }
+        self.tr_args("stream-fetched-no-device", &[("video_id", video_id)])
     }
     pub fn queued_tracks(self, label: &str, n: usize) -> String {
-        match self {
-            Self::English => format!("{label}: {n} tracks queued."),
-            Self::Spanish => format!("{label}: {n} pistas en cola."),
-        }
+        self.tr_args("queued-tracks", &[("label", label), ("n", &n.to_string())])
     }
     pub fn nothing_to_queue(self, label: &str) -> String {
-        match self {
-            Self::English => format!("{label}: nothing to queue."),
-            Self::Spanish => format!("{label}: nada para la cola."),
-        }
+        self.tr_args("nothing-to-queue", &[("label", label)])
     }
     pub fn nothing_to_play_yet(self, label: &str) -> String {
-        match self {
-            Self::English => format!("{label}: nothing to play yet."),
-            Self::Spanish => format!("{label}: nada para reproducir aún."),
-        }
+        self.tr_args("nothing-to-play-yet", &[("label", label)])
     }
     pub fn nothing_to_play(self, label: &str) -> String {
-        match self {
-            Self::English => format!("{label}: nothing to play."),
-            Self::Spanish => format!("{label}: nada para reproducir."),
-        }
+        self.tr_args("nothing-to-play", &[("label", label)])
     }
     pub fn no_track_at(self, i: usize) -> String {
-        match self {
-            Self::English => format!("No track at index {i}."),
-            Self::Spanish => format!("No hay pista en el índice {i}."),
-        }
+        self.tr_args("no-track-at", &[("i", &i.to_string())])
     }
     pub fn album_not_cached(self, album: &str) -> String {
-        match self {
-            Self::English => format!("Album {album} is not cached anymore."),
-            Self::Spanish => format!("El álbum {album} ya no está en caché."),
-        }
+        self.tr_args("album-not-cached", &[("album", album)])
     }
-    pub fn album_gone(self) -> &'static str {
-        match self {
-            Self::English => "That album is not cached anymore.",
-            Self::Spanish => "Ese álbum ya no está en caché.",
-        }
+    pub fn album_gone(self) -> String {
+        self.tr("album-gone")
     }
-    pub fn result_gone(self) -> &'static str {
-        match self {
-            Self::English => "That result is gone: search again.",
-            Self::Spanish => "Ese resultado ya no existe: busca de nuevo.",
-        }
+    pub fn result_gone(self) -> String {
+        self.tr("result-gone")
     }
-    pub fn no_audio_device(self) -> &'static str {
-        match self {
-            Self::English => "No audio device.",
-            Self::Spanish => "Sin dispositivo de audio.",
-        }
+    pub fn no_audio_device(self) -> String {
+        self.tr("no-audio-device")
     }
-    pub fn paused_word(self) -> &'static str {
-        match self {
-            Self::English => "Paused.",
-            Self::Spanish => "En pausa.",
-        }
+    pub fn paused_word(self) -> String {
+        self.tr("paused-word")
     }
-    pub fn resumed_word(self) -> &'static str {
-        match self {
-            Self::English => "Resumed.",
-            Self::Spanish => "Reanudado.",
-        }
+    pub fn resumed_word(self) -> String {
+        self.tr("resumed-word")
     }
-    pub fn stopped_word(self) -> &'static str {
-        match self {
-            Self::English => "Stopped.",
-            Self::Spanish => "Detenido.",
-        }
+    pub fn stopped_word(self) -> String {
+        self.tr("stopped-word")
     }
-    pub fn desktop_paused(self) -> &'static str {
-        match self {
-            Self::English => "Paused (desktop).",
-            Self::Spanish => "En pausa (escritorio).",
-        }
+    pub fn desktop_paused(self) -> String {
+        self.tr("desktop-paused")
     }
-    pub fn desktop_resumed(self) -> &'static str {
-        match self {
-            Self::English => "Resumed (desktop).",
-            Self::Spanish => "Reanudado (escritorio).",
-        }
+    pub fn desktop_resumed(self) -> String {
+        self.tr("desktop-resumed")
     }
-    pub fn desktop_stopped(self) -> &'static str {
-        match self {
-            Self::English => "Stopped (desktop).",
-            Self::Spanish => "Detenido (escritorio).",
-        }
+    pub fn desktop_stopped(self) -> String {
+        self.tr("desktop-stopped")
     }
     pub fn desktop_repeat(self, mode: yutu_player::RepeatMode) -> String {
-        match self {
-            Self::English => format!("Repeat: {mode:?} (desktop)."),
-            Self::Spanish => format!("Repetición: {mode:?} (escritorio)."),
-        }
+        self.tr_args("desktop-repeat", &[("mode", &format!("{mode:?}"))])
     }
     pub fn repeat_line(self, mode: yutu_player::RepeatMode) -> String {
-        match self {
-            Self::English => format!("Repeat: {mode:?}."),
-            Self::Spanish => format!("Repetición: {mode:?}."),
-        }
+        self.tr_args("repeat-line", &[("mode", &format!("{mode:?}"))])
     }
     // EQ statuses.
     pub fn eq_saved(self, name: &str) -> String {
-        match self {
-            Self::English => format!("EQ: {name} (kept; toggle EQ on to hear it)"),
-            Self::Spanish => format!("EQ: {name} (guardado; activa el EQ para escucharlo)"),
-        }
+        self.tr_args("eq-saved", &[("name", name)])
     }
     pub fn eq_preset_invalid(self, e: impl std::fmt::Display) -> String {
-        match self {
-            Self::English => format!("EQ preset invalid: {e}."),
-            Self::Spanish => format!("Preajuste de EQ no válido: {e}."),
-        }
+        self.tr_args("eq-preset-invalid", &[("e", &e.to_string())])
     }
     pub fn eq_preset_unknown(self, name: &str) -> String {
-        match self {
-            Self::English => format!("Unknown EQ preset: {name}."),
-            Self::Spanish => format!("Preajuste de EQ desconocido: {name}."),
-        }
+        self.tr_args("eq-preset-unknown", &[("name", name)])
     }
     pub fn eq_adjusting(self, name: &str) -> String {
-        match self {
-            Self::English => format!("EQ: {name} (tuning…)"),
-            Self::Spanish => format!("EQ: {name} (ajustando…)"),
-        }
+        self.tr_args("eq-adjusting", &[("name", name)])
     }
     pub fn eq_no_device_name(self, name: &str) -> String {
-        match self {
-            Self::English => format!("EQ: {name} (no audio device)"),
-            Self::Spanish => format!("EQ: {name} (sin dispositivo de audio)"),
-        }
+        self.tr_args("eq-no-device-name", &[("name", name)])
     }
     pub fn eq_active(self, name: &str, backend: &str) -> String {
-        match self {
-            Self::English => format!("EQ: {name} (live on {backend})"),
-            Self::Spanish => format!("EQ: {name} (activo en {backend})"),
-        }
+        self.tr_args("eq-active", &[("name", name), ("backend", backend)])
     }
     pub fn eq_failed(self, name: &str, e: &str) -> String {
-        match self {
-            Self::English => format!("EQ: {name} (saved; {e})"),
-            Self::Spanish => format!("EQ: {name} (guardado; {e})"),
-        }
+        self.tr_args("eq-failed", &[("name", name), ("e", e)])
     }
-    pub fn eq_off_no_device(self) -> &'static str {
-        match self {
-            Self::English => "EQ off (no audio device)",
-            Self::Spanish => "EQ desactivado (sin dispositivo de audio)",
-        }
+    pub fn eq_off_no_device(self) -> String {
+        self.tr("eq-off-no-device")
     }
     pub fn eq_off_skipped(self, backend: &str) -> String {
-        match self {
-            Self::English => format!("EQ off (bypassed on {backend})"),
-            Self::Spanish => format!("EQ desactivado (omitido en {backend})"),
-        }
+        self.tr_args("eq-off-skipped", &[("backend", backend)])
     }
     pub fn eq_off_failed(self, e: &str) -> String {
-        match self {
-            Self::English => format!("EQ off (saved; {e})"),
-            Self::Spanish => format!("EQ desactivado (guardado; {e})"),
-        }
+        self.tr_args("eq-off-failed", &[("e", e)])
     }
     // Likes, radio, playlists.
     pub fn removed_favorite(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Removed from favorites: {id}."),
-            Self::Spanish => format!("Eliminado de favoritos: {id}."),
-        }
+        self.tr_args("removed-favorite", &[("id", id)])
     }
     pub fn added_favorite(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Added to favorites: {id}."),
-            Self::Spanish => format!("Añadido a favoritos: {id}."),
-        }
+        self.tr_args("added-favorite", &[("id", id)])
     }
     pub fn added_favorite_fetching(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Added to favorites: {id} (fetching info…)."),
-            Self::Spanish => format!("Añadido a favoritos: {id} (obteniendo información…)."),
-        }
+        self.tr_args("added-favorite-fetching", &[("id", id)])
     }
     pub fn undislike_removed(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Removed don't-recommend for {id}."),
-            Self::Spanish => format!("«No recomendar» eliminado para {id}."),
-        }
+        self.tr_args("undislike-removed", &[("id", id)])
     }
     pub fn disliked(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Won't recommend {id} again."),
-            Self::Spanish => format!("Ya no se recomendará {id}."),
-        }
+        self.tr_args("disliked", &[("id", id)])
     }
     pub fn fetching_info(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Fetching info for {id}…"),
-            Self::Spanish => format!("Obteniendo información de {id}…"),
-        }
+        self.tr_args("fetching-info", &[("id", id)])
     }
     pub fn lyrics_failed(self, e: &str) -> String {
-        match self {
-            Self::English => format!("Lyrics failed: {e}"),
-            Self::Spanish => format!("Letra fallida: {e}"),
-        }
+        self.tr_args("lyrics-failed", &[("e", e)])
     }
     pub fn starting_radio(self, title: &str, artist: &str) -> String {
-        match self {
-            Self::English => format!("Starting radio for {title} · {artist}…"),
-            Self::Spanish => format!("Iniciando radio para {title} · {artist}…"),
-        }
+        self.tr_args("starting-radio", &[("title", title), ("artist", artist)])
     }
     pub fn radio_no_results(self, seed: &str) -> String {
-        match self {
-            Self::English => format!("Radio (seed {seed}): nothing found."),
-            Self::Spanish => format!("Radio (semilla {seed}): nada encontrado."),
-        }
+        self.tr_args("radio-no-results", &[("seed", seed)])
     }
     pub fn playlist_nothing_playable(self, label: &str) -> String {
-        match self {
-            Self::English => format!("Playlist {label}: nothing playable."),
-            Self::Spanish => format!("Lista {label}: nada reproducible."),
-        }
+        self.tr_args("playlist-nothing-playable", &[("label", label)])
     }
     pub fn playlist_detail_error(self, label: &str, id: &str, e: &str) -> String {
-        match self {
-            Self::English => format!("Playlist {label} ({id}): {e}."),
-            Self::Spanish => format!("Lista {label} ({id}): {e}."),
-        }
+        self.tr_args(
+            "playlist-detail-error",
+            &[("label", label), ("id", id), ("e", e)],
+        )
     }
-    pub fn playlist_name_empty(self) -> &'static str {
-        match self {
-            Self::English => "Playlist name is empty.",
-            Self::Spanish => "El nombre de la lista está vacío.",
-        }
+    pub fn playlist_name_empty(self) -> String {
+        self.tr("playlist-name-empty")
     }
     pub fn playlist_created(self, title: &str, id: &str) -> String {
-        match self {
-            Self::English => format!("Created playlist {title} ({id})."),
-            Self::Spanish => format!("Lista {title} creada ({id})."),
-        }
+        self.tr_args("playlist-created", &[("title", title), ("id", id)])
     }
     pub fn already_in_favorites(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Already in Favorites: {title}."),
-            Self::Spanish => format!("Ya está en Favoritos: {title}."),
-        }
+        self.tr_args("already-in-favorites", &[("title", title)])
     }
     pub fn added_to_favorites(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Added {title} to Favorites."),
-            Self::Spanish => format!("Añadido {title} a Favoritos."),
-        }
+        self.tr_args("added-to-favorites", &[("title", title)])
     }
     pub fn playlist_readonly(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Playlist {id} is built-in (read-only) or missing."),
-            Self::Spanish => format!("La lista {id} es integrada (solo lectura) o no existe."),
-        }
+        self.tr_args("playlist-readonly", &[("id", id)])
     }
     pub fn already_in_playlist(self, title: &str, list: &str) -> String {
-        match self {
-            Self::English => format!("Already in {list}: {title}."),
-            Self::Spanish => format!("Ya está en {list}: {title}."),
-        }
+        self.tr_args("already-in-playlist", &[("list", list), ("title", title)])
     }
     pub fn added_to_playlist(self, title: &str, list: &str) -> String {
-        match self {
-            Self::English => format!("Added {title} to {list}."),
-            Self::Spanish => format!("Añadido {title} a {list}."),
-        }
+        self.tr_args("added-to-playlist", &[("title", title), ("list", list)])
     }
     pub fn track_not_in_favorites(self, id: &str) -> String {
-        match self {
-            Self::English => format!("{id} is not in Favorites."),
-            Self::Spanish => format!("{id} no está en Favoritos."),
-        }
+        self.tr_args("track-not-in-favorites", &[("id", id)])
     }
     pub fn removed_track_favorites(self, id: &str) -> String {
-        match self {
-            Self::English => format!("{id} removed from Favorites."),
-            Self::Spanish => format!("{id} eliminado de Favoritos."),
-        }
+        self.tr_args("removed-track-favorites", &[("id", id)])
     }
     pub fn removed_track_playlist(self, id: &str, title: &str) -> String {
-        match self {
-            Self::English => format!("Removed {id} from {title}."),
-            Self::Spanish => format!("{id} eliminado de {title}."),
-        }
+        self.tr_args("removed-track-playlist", &[("id", id), ("title", title)])
     }
-    pub fn favorites_locked(self) -> &'static str {
-        match self {
-            Self::English => "Favorites is built-in and can't be deleted.",
-            Self::Spanish => "Favoritos es una lista integrada y no se puede eliminar.",
-        }
+    pub fn favorites_locked(self) -> String {
+        self.tr("favorites-locked")
     }
     pub fn playlist_locked(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Playlist {id} is built-in and can't be deleted."),
-            Self::Spanish => format!("La lista {id} es integrada y no se puede eliminar."),
-        }
+        self.tr_args("playlist-locked", &[("id", id)])
     }
     pub fn deleted_playlist(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Deleted playlist {id}."),
-            Self::Spanish => format!("Lista {id} eliminada."),
-        }
+        self.tr_args("deleted-playlist", &[("id", id)])
     }
-    pub fn weekly_empty(self) -> &'static str {
-        match self {
-            Self::English => "Weekly Mix: nothing to queue.",
-            Self::Spanish => "Mezcla semanal: nada para la cola.",
-        }
+    pub fn weekly_empty(self) -> String {
+        self.tr("weekly-empty")
     }
-    pub fn forgotten_empty(self) -> &'static str {
-        match self {
-            Self::English => "Forgotten Favorites: nothing to queue.",
-            Self::Spanish => "Favoritos olvidados: nada para la cola.",
-        }
+    pub fn forgotten_empty(self) -> String {
+        self.tr("forgotten-empty")
     }
-    pub fn quick_empty(self) -> &'static str {
-        match self {
-            Self::English => "Quick picks: nothing to queue yet.",
-            Self::Spanish => "Selección rápida: nada para la cola aún.",
-        }
+    pub fn quick_empty(self) -> String {
+        self.tr("quick-empty")
     }
     pub fn queue_next(self, title: &str, artist: &str) -> String {
-        match self {
-            Self::English => format!("Queued next: {title} · {artist}."),
-            Self::Spanish => format!("Siguiente en cola: {title} · {artist}."),
-        }
+        self.tr_args("queue-next", &[("title", title), ("artist", artist)])
     }
     pub fn queued_confirm(self, title: &str, artist: &str, press_play: bool) -> String {
-        match self {
-            Self::English => {
-                if press_play {
-                    format!("Added to queue: {title} · {artist} (press play).")
-                } else {
-                    format!("Added to queue: {title} · {artist}.")
-                }
-            }
-            Self::Spanish => {
-                if press_play {
-                    format!("Añadido a la cola: {title} · {artist} (pulsa reproducir).")
-                } else {
-                    format!("Añadido a la cola: {title} · {artist}.")
-                }
-            }
+        if press_play {
+            self.tr_args(
+                "queued-confirm-press",
+                &[("title", title), ("artist", artist)],
+            )
+        } else {
+            self.tr_args("queued-confirm", &[("title", title), ("artist", artist)])
         }
     }
     pub fn no_autoplay_at(self, i: usize) -> String {
-        match self {
-            Self::English => format!("Nothing at autoplay index {i}."),
-            Self::Spanish => format!("Nada en el índice {i} de reproducción automática."),
-        }
+        self.tr_args("no-autoplay-at", &[("i", &i.to_string())])
     }
     pub fn removed_from_queue(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Removed {id} from the queue."),
-            Self::Spanish => format!("{id} eliminado de la cola."),
-        }
+        self.tr_args("removed-from-queue", &[("id", id)])
     }
     pub fn not_in_queue(self, id: &str) -> String {
-        match self {
-            Self::English => format!("Not in queue: {id}."),
-            Self::Spanish => format!("No está en la cola: {id}."),
-        }
+        self.tr_args("not-in-queue", &[("id", id)])
     }
     pub fn removed_from_autoplay(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Removed {title} from autoplay."),
-            Self::Spanish => format!("{title} eliminado de la reproducción automática."),
-        }
+        self.tr_args("removed-from-autoplay", &[("title", title)])
     }
-    pub fn queue_reordered(self) -> &'static str {
-        match self {
-            Self::English => "Queue reordered.",
-            Self::Spanish => "Cola reordenada.",
-        }
+    pub fn queue_reordered(self) -> String {
+        self.tr("queue-reordered")
     }
     pub fn playlist_nothing_to_queue(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Playlist {title}: nothing to queue."),
-            Self::Spanish => format!("Lista {title}: nada para la cola."),
-        }
+        self.tr_args("playlist-nothing-to-queue", &[("title", title)])
     }
     pub fn playlist_queued(self, title: &str, n: usize) -> String {
-        match self {
-            Self::English => format!("Playlist {title}: queued {n} track(s)."),
-            Self::Spanish => format!("Lista {title}: {n} pistas en cola."),
-        }
+        self.tr_args(
+            "playlist-queued",
+            &[("title", title), ("n", &n.to_string())],
+        )
     }
     pub fn no_album_for(self, title: &str, artist: &str) -> String {
-        match self {
-            Self::English => format!("No album for {title} · {artist}."),
-            Self::Spanish => format!("Sin álbum para {title} · {artist}."),
-        }
+        self.tr_args("no-album-for", &[("title", title), ("artist", artist)])
     }
-    pub fn relaunch_cancelled(self) -> &'static str {
-        match self {
-            Self::English => "Relaunch cancelled: could not save the session.",
-            Self::Spanish => "Reinicio cancelado: no se pudo guardar la sesión.",
-        }
+    pub fn relaunch_cancelled(self) -> String {
+        self.tr("relaunch-cancelled")
     }
-    pub fn reading_cookies(self) -> &'static str {
-        match self {
-            Self::English => "Reading cookies + contacting YouTube Music…",
-            Self::Spanish => "Leyendo cookies y contactando YouTube Music…",
-        }
+    pub fn reading_cookies(self) -> String {
+        self.tr("reading-cookies")
     }
-    pub fn cookie_session_lost(self) -> &'static str {
-        match self {
-            Self::English => "Cookie session is gone: import your cookies file again.",
-            Self::Spanish => {
-                "La sesión de cookies se perdió: importa tu archivo de cookies de nuevo."
-            }
-        }
+    pub fn cookie_session_lost(self) -> String {
+        self.tr("cookie-session-lost")
     }
-    pub fn importing_library(self) -> &'static str {
-        match self {
-            Self::English => "Importing your library…",
-            Self::Spanish => "Importando tu biblioteca…",
-        }
+    pub fn importing_library(self) -> String {
+        self.tr("importing-library")
     }
-    pub fn importing_tracks(self) -> &'static str {
-        match self {
-            Self::English => "Importing your library…",
-            Self::Spanish => "Importando tu biblioteca…",
-        }
+    pub fn importing_tracks(self) -> String {
+        self.tr("importing-tracks")
     }
-    pub fn cookie_cleared(self) -> &'static str {
-        match self {
-            Self::English => "Cookie session cleared.",
-            Self::Spanish => "Sesión de cookies eliminada.",
-        }
+    pub fn cookie_cleared(self) -> String {
+        self.tr("cookie-cleared")
     }
-    pub fn export_deleted(self) -> &'static str {
-        match self {
-            Self::English => "Signed in. Export file deleted.",
-            Self::Spanish => "Sesión iniciada. Archivo exportado eliminado.",
-        }
+    pub fn export_deleted(self) -> String {
+        self.tr("export-deleted")
     }
-    pub fn export_already_gone(self) -> &'static str {
-        match self {
-            Self::English => "Signed in. Export file is already gone.",
-            Self::Spanish => "Sesión iniciada. El archivo exportado ya no existe.",
-        }
+    pub fn export_already_gone(self) -> String {
+        self.tr("export-already-gone")
     }
     pub fn created_on_youtube(self, title: &str, server_id: &str) -> String {
-        match self {
-            Self::English => {
-                format!("{title} created on YouTube ({server_id}): local list removed.")
-            }
-            Self::Spanish => {
-                format!("{title} creada en YouTube ({server_id}): la lista local se eliminó.")
-            }
-        }
+        self.tr_args(
+            "created-on-youtube",
+            &[("title", title), ("server_id", server_id)],
+        )
     }
     pub fn created_synced(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Created playlist {title} (synced to YouTube)."),
-            Self::Spanish => format!("Lista {title} creada (sincronizada con YouTube)."),
-        }
+        self.tr_args("created-synced", &[("title", title)])
     }
-    pub fn google_device_code(self) -> &'static str {
-        match self {
-            Self::English => "Contacting Google for a device code…",
-            Self::Spanish => "Contactando con Google para obtener un código de dispositivo…",
-        }
+    pub fn google_device_code(self) -> String {
+        self.tr("google-device-code")
     }
-    pub fn google_signin_first(self) -> &'static str {
-        match self {
-            Self::English => "Press “Sign in with Google” first.",
-            Self::Spanish => "Pulsa «Sign in with Google» primero.",
-        }
+    pub fn google_signin_first(self) -> String {
+        self.tr("google-signin-first")
     }
-    pub fn checking_approval(self) -> &'static str {
-        match self {
-            Self::English => "Checking approval…",
-            Self::Spanish => "Comprobando aprobación…",
-        }
+    pub fn checking_approval(self) -> String {
+        self.tr("checking-approval")
     }
-    pub fn signed_in_importing(self) -> &'static str {
-        match self {
-            Self::English => "Signed in: importing your library…",
-            Self::Spanish => "Sesión iniciada: importando tu biblioteca…",
-        }
+    pub fn signed_in_importing(self) -> String {
+        self.tr("signed-in-importing")
     }
-    pub fn signed_out_token(self) -> &'static str {
-        match self {
-            Self::English => "Signed out (token file removed).",
-            Self::Spanish => "Sesión cerrada (archivo de token eliminado).",
-        }
+    pub fn signed_out_token(self) -> String {
+        self.tr("signed-out-token")
     }
-    pub fn google_signin_needed(self) -> &'static str {
-        match self {
-            Self::English => "Sign in with Google first.",
-            Self::Spanish => "Inicia sesión con Google primero.",
-        }
+    pub fn google_signin_needed(self) -> String {
+        self.tr("google-signin-needed")
     }
-    pub fn reading_library(self) -> &'static str {
-        match self {
-            Self::English => "Reading library + contacting YouTube Music…",
-            Self::Spanish => "Leyendo la biblioteca y contactando YouTube Music…",
-        }
+    pub fn reading_library(self) -> String {
+        self.tr("reading-library")
     }
     pub fn radio_seed_label(self, seed: &str) -> String {
-        match self {
-            Self::English => format!("Radio (seed {seed})"),
-            Self::Spanish => format!("Radio (semilla {seed})"),
-        }
+        self.tr_args("radio-seed-label", &[("seed", seed)])
     }
     pub fn playlist_fetch_failed(self, title: &str, e: &str, done: usize, total: usize) -> String {
-        match self {
-            Self::English => format!("Playlist '{title}' failed ({e}) - {done}/{total}."),
-            Self::Spanish => format!("Lista «{title}» falló ({e}): {done}/{total}."),
-        }
+        self.tr_args(
+            "playlist-fetch-failed",
+            &[
+                ("title", title),
+                ("e", e),
+                ("done", &done.to_string()),
+                ("total", &total.to_string()),
+            ],
+        )
     }
     pub fn restored_songs(self, n: usize) -> String {
-        match self {
-            Self::English => format!("Restored {n} saved song(s)."),
-            Self::Spanish => format!("Restauradas {n} canciones guardadas."),
-        }
+        self.tr_args("restored-songs", &[("n", &n.to_string())])
     }
-    pub fn ready_status(self) -> &'static str {
-        match self {
-            Self::English => "Ready: search for music.",
-            Self::Spanish => "Listo: busca música.",
-        }
+    pub fn ready_status(self) -> String {
+        self.tr("ready-status")
     }
     /// Repeat badge on the player bar icon (`All`/`1`, empty when off).
     pub fn repeat_badge(self, mode: yutu_player::RepeatMode) -> &'static str {
@@ -2039,144 +1327,171 @@ impl Language {
         }
     }
     pub fn home_album_sub(self, artist: &str, n: usize) -> String {
-        match self {
-            Self::English => format!("Album · {artist} · {n} tracks"),
-            Self::Spanish => format!("Álbum · {artist} · {n} canciones"),
-        }
+        self.tr_args(
+            "home-album-sub",
+            &[("artist", artist), ("n", &n.to_string())],
+        )
     }
-    pub fn sync_needs_signin(self) -> &'static str {
-        match self {
-            Self::English => "Sync needs sign-in (cookies or Google).",
-            Self::Spanish => "La sincronización necesita inicio de sesión (cookies o Google).",
-        }
+    pub fn sync_needs_signin(self) -> String {
+        self.tr("sync-needs-signin")
     }
     // `failure_status` human labels (never provider internals).
-    pub fn fail_search(self) -> &'static str {
-        match self {
-            Self::English => "Search failed",
-            Self::Spanish => "Búsqueda fallida",
-        }
+    pub fn fail_search(self) -> String {
+        self.tr("fail-search")
     }
-    pub fn fail_radio(self) -> &'static str {
-        match self {
-            Self::English => "Radio failed",
-            Self::Spanish => "Error de radio",
-        }
+    pub fn fail_radio(self) -> String {
+        self.tr("fail-radio")
     }
-    pub fn fail_sync(self) -> &'static str {
-        match self {
-            Self::English => "Sync failed",
-            Self::Spanish => "Error de sincronización",
-        }
+    pub fn fail_sync(self) -> String {
+        self.tr("fail-sync")
     }
-    pub fn fail_signout(self) -> &'static str {
-        match self {
-            Self::English => "Sign-out failed",
-            Self::Spanish => "Error al cerrar sesión",
-        }
+    pub fn fail_signout(self) -> String {
+        self.tr("fail-signout")
     }
-    pub fn fail_signin(self) -> &'static str {
-        match self {
-            Self::English => "Sign-in failed",
-            Self::Spanish => "Error al iniciar sesión",
-        }
+    pub fn fail_signin(self) -> String {
+        self.tr("fail-signin")
     }
-    pub fn fail_check(self) -> &'static str {
-        match self {
-            Self::English => "Check failed",
-            Self::Spanish => "Error de comprobación",
-        }
+    pub fn fail_check(self) -> String {
+        self.tr("fail-check")
     }
-    pub fn fail_live_top(self) -> &'static str {
-        match self {
-            Self::English => "Live top songs failed",
-            Self::Spanish => "Error al cargar populares",
-        }
+    pub fn fail_live_top(self) -> String {
+        self.tr("fail-live-top")
     }
-    pub fn fail_live_album(self) -> &'static str {
-        match self {
-            Self::English => "Live album songs failed",
-            Self::Spanish => "Error al cargar canciones del álbum",
-        }
+    pub fn fail_live_album(self) -> String {
+        self.tr("fail-live-album")
     }
-    pub fn fail_artist_lookup(self) -> &'static str {
-        match self {
-            Self::English => "Artist lookup failed",
-            Self::Spanish => "Error al buscar artista",
-        }
+    pub fn fail_artist_lookup(self) -> String {
+        self.tr("fail-artist-lookup")
     }
-    pub fn fail_album_lookup(self) -> &'static str {
-        match self {
-            Self::English => "Album lookup failed",
-            Self::Spanish => "Error al buscar álbum",
-        }
+    pub fn fail_album_lookup(self) -> String {
+        self.tr("fail-album-lookup")
     }
-    pub fn fail_scrobble_save(self) -> &'static str {
-        match self {
-            Self::English => "Scrobble credentials save failed",
-            Self::Spanish => "Error al guardar credenciales de scrobble",
-        }
+    pub fn fail_scrobble_save(self) -> String {
+        self.tr("fail-scrobble-save")
     }
     pub fn fail_scrobble_target(self, target: &str) -> String {
-        match self {
-            Self::English => format!("Scrobble to {target} failed"),
-            Self::Spanish => format!("Error de scrobble a {target}"),
-        }
+        self.tr_args("fail-scrobble-target", &[("target", target)])
     }
     pub fn scrobbled_to(self, target: &str) -> String {
-        match self {
-            Self::English => format!("Scrobbled to {target}."),
-            Self::Spanish => format!("Scrobble enviado a {target}."),
-        }
+        self.tr_args("scrobbled-to", &[("target", target)])
     }
     pub fn fail_playback(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Playback failed for {title}"),
-            Self::Spanish => format!("Error de reproducción: {title}"),
-        }
+        self.tr_args("fail-playback", &[("title", title)])
     }
-    pub fn fail_export_delete(self) -> &'static str {
-        match self {
-            Self::English => "Could not delete export file",
-            Self::Spanish => "No se pudo eliminar el archivo exportado",
-        }
+    pub fn fail_export_delete(self) -> String {
+        self.tr("fail-export-delete")
     }
     pub fn fail_playback_tail(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Playback failed for {title} (end of queue)"),
-            Self::Spanish => format!("Error de reproducción: {title} (fin de la cola)"),
-        }
+        self.tr_args("fail-playback-tail", &[("title", title)])
     }
     /// Server like/dislike push that failed locally-kept (verb is the
     /// pending-op name: like, unlike, don't-recommend, clear-dislike).
     pub fn fail_youtube_op(self, verb: &str, track_id: &str) -> String {
-        match self {
-            Self::English => format!("YouTube {verb} of {track_id} failed (kept locally)"),
-            Self::Spanish => {
-                let what = match verb {
-                    "like" => "«me gusta»",
-                    "unlike" => "«no me gusta»",
-                    "don't-recommend" => "«no recomendar»",
-                    "clear-dislike" => "quitar «no recomendar»",
-                    _ => verb,
-                };
-                format!("Falló {what} de {track_id} en YouTube (se conserva local)")
-            }
-        }
+        let what = match verb {
+            "like" => self.tr("verb-like"),
+            "unlike" => self.tr("verb-unlike"),
+            "don't-recommend" => self.tr("verb-dont-recommend"),
+            "clear-dislike" => self.tr("verb-clear-dislike"),
+            _ => verb.to_string(),
+        };
+        self.tr_args("fail-youtube-op", &[("what", &what), ("track", track_id)])
     }
     pub fn fail_created_local(self, title: &str) -> String {
-        match self {
-            Self::English => format!("Created {title} locally (YouTube sync failed)"),
-            Self::Spanish => {
-                format!("{title} creado localmente (falló la sincronización con YouTube)")
-            }
-        }
+        self.tr_args("fail-created-local", &[("title", title)])
     }
     /// Sync-op detail stays technical; only the kept-locally note translates.
     pub fn fail_kept_locally(self, detail: &str) -> String {
-        match self {
-            Self::English => format!("{detail} (kept locally)"),
-            Self::Spanish => format!("{detail} (se conserva local)"),
+        self.tr_args("fail-kept-locally", &[("detail", detail)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Message ids declared in a catalog source (top-level `id =` lines).
+    fn catalog_ids(src: &str) -> Vec<String> {
+        src.lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                if l.is_empty() || l.starts_with('#') {
+                    return None;
+                }
+                l.split_once(" = ").map(|(id, _)| id.trim().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn catalogs_parse_without_duplicates() {
+        for src in [en_source(), es_source()] {
+            let ids = catalog_ids(src);
+            let mut seen = std::collections::HashSet::new();
+            for id in &ids {
+                assert!(seen.insert(id.clone()), "duplicate message id: {id}");
+            }
+            assert!(!ids.is_empty());
         }
+    }
+
+    #[test]
+    fn every_english_key_exists_in_spanish() {
+        let en = catalog_ids(en_source());
+        let es: std::collections::HashSet<String> = catalog_ids(es_source()).into_iter().collect();
+        let mut missing = vec![];
+        for id in &en {
+            if !es.contains(id) {
+                // A missing key degrades to English at runtime; the
+                // test keeps the catalogs in lockstep instead.
+                missing.push(id.clone());
+            }
+        }
+        assert!(missing.is_empty(), "missing in es/app.ftl: {missing:?}");
+        // No strays either: translators work from the English file.
+        assert_eq!(es.len(), en.len(), "es catalog has extra keys");
+    }
+
+    #[test]
+    fn missing_keys_fall_back_to_english() {
+        fn bundle(locale: &str, src: &str) -> FluentBundle<FluentResource> {
+            let mut b = FluentBundle::new(vec![locale.parse().unwrap()]);
+            b.set_use_isolating(false);
+            b.add_resource(FluentResource::try_new(src.to_string()).unwrap())
+                .unwrap();
+            b
+        }
+        let en = bundle("en-US", "only-here = English value\nshared = en { $n }");
+        let es = bundle("es", "shared = es { $n }");
+        // Present in Spanish: Spanish wins.
+        let mut args = FluentArgs::new();
+        args.set("n", FluentValue::from(3i64));
+        assert_eq!(
+            Language::resolve_in(&es, &en, "shared", Some(&args)),
+            Some("es 3".to_string())
+        );
+        // Missing in Spanish: English fallback, same args.
+        assert_eq!(
+            Language::resolve_in(&es, &en, "only-here", Some(&args)),
+            Some("English value".to_string())
+        );
+        // Missing everywhere: no value (callers show the id).
+        assert_eq!(Language::resolve_in(&es, &en, "ghost-key", None), None);
+    }
+
+    #[test]
+    fn formatted_messages_render_in_both_languages() {
+        assert_eq!(Language::English.track_count(3), "3 tracks");
+        assert_eq!(Language::Spanish.track_count(3), "3 canciones");
+        assert_eq!(
+            Language::English.queued_tracks("Mezcla semanal", 2),
+            "Mezcla semanal: 2 tracks queued."
+        );
+        assert_eq!(
+            Language::Spanish.history_section(&yutu_core::HistorySection::Older {
+                year: 2026,
+                month: 9
+            }),
+            "septiembre de 2026"
+        );
     }
 }

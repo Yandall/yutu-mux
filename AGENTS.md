@@ -258,6 +258,10 @@ cargo test -p yutu-ui --no-default-features
 - `crates/yutu-core/src/ytdlp.rs`: yt-dlp resolver flags.
 - `crates/yutu-core/src/lyrics_providers.rs`: `parse_lrc`, `line_at`,
   LRCLIB fetch.
+- `crates/yutu-ui/src/i18n.rs`: app `Language`, Fluent lookup with
+  English fallback, per-language failure markers.
+- `crates/yutu-ui/assets/locales/<lang>/app.ftl`: UI strings per
+  language (translators edit these, never Rust; tests pin parity).
 - `crates/yutu-ui/assets/icons/`: Lucide SVGs + attribution README.
 - `src/main.rs`: MPRIS serve + watch loop wiring, log init, panic hook.
 

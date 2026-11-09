@@ -3,12 +3,14 @@
 ## Unreleased
 
 - Language selector in Settings with full Spanish translation: every
-  user-facing string (nav, shelves, search, detail pages, rows, menus,
-  dialogs, settings, player bar, statuses) renders through a new
-  `Language` table (`English`/`Español`), persisted in SQLite and
-  applied instantly. Fresh installs default from the system locale
-  (`es*` starts Spanish). The release status filter keys on each
-  language's own failure words so both classify identically.
+  user-facing string renders through the `Language` table
+  (`crates/yutu-ui/src/i18n.rs`), persisted in SQLite and applied
+  instantly. Fresh installs default from the system locale (`es*`
+  starts Spanish). Strings live in Project Fluent catalogs
+  (`crates/yutu-ui/assets/locales/<lang>/app.ftl`): translators only
+  edit text files, a missing key falls back to English, and tests pin
+  catalog parity. The release status filter keys on each language's
+  own failure words so both classify identically.
 - Destructive actions confirm first: Sign out (Settings) and playlist
   Delete (menu) now arm a confirm dialog instead of acting at once.
   The red CTA confirms, the ghost button plus scrim/Esc keeps things

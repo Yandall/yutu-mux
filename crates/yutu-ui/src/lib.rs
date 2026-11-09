@@ -1282,15 +1282,6 @@ impl ImportKind {
             ImportKind::Sync => "Sync",
         }
     }
-
-    /// Completion headline ("Cookie import complete").
-    fn done_label(self) -> &'static str {
-        match self {
-            ImportKind::Cookie => "Cookie import",
-            ImportKind::Library => "Import",
-            ImportKind::Sync => "Sync",
-        }
-    }
 }
 
 /// Base pull payload: the staged import plus the flags sync needs to
@@ -4979,7 +4970,7 @@ impl AppState {
             history_limit: HISTORY_PAGE_SIZE,
             volume: 0.8,
             muted: false,
-            status: Language::system_default().ready_status().into(),
+            status: Language::system_default().ready_status(),
             user_playlists,
             new_playlist_name: String::new(),
             playlist_seq,
@@ -6080,7 +6071,7 @@ impl AppState {
             None => {
                 self.pending_resume = None;
                 self.pending_seek = None;
-                self.status = self.language.stream_no_device().into();
+                self.status = self.language.stream_no_device();
                 false
             }
         }
@@ -6860,10 +6851,11 @@ impl AppState {
         self.autoplay.retain(|t| t.id != id);
     }
 
-    fn queue_many(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
+    fn queue_many(&mut self, tracks: Vec<Track>, label: impl Into<String>) -> iced::Task<Message> {
+        let label = label.into();
         let n = tracks.len();
         if n == 0 {
-            self.status = self.language.nothing_to_queue(label);
+            self.status = self.language.nothing_to_queue(&label);
             return iced::Task::none();
         }
         // A bulk queue (radio/play-all) absorbs matching autoplay ids so
@@ -6887,7 +6879,7 @@ impl AppState {
             self.queue.push(rt);
         }
         self.queue.jump_to(first_new);
-        self.status = self.language.queued_tracks(label, n);
+        self.status = self.language.queued_tracks(&label, n);
         self.apply_volume();
         let mut tasks = art_tasks;
         tasks.push(self.fetch_current_task());
@@ -6918,7 +6910,7 @@ impl AppState {
                     p.tracks.clone(),
                     self.language.playlist_queue_label(&p.title),
                 ),
-                None => (Vec::new(), self.language.playlist_not_found_plain().into()),
+                None => (Vec::new(), self.language.playlist_not_found_plain()),
             },
             Route::Radio(_) => (
                 self.radio_tracks.clone(),
@@ -6945,12 +6937,17 @@ impl AppState {
 
     /// Shuffle-play a known track list (search hero actions): same fresh
     /// context as play-all, always shuffled, honest empty status.
-    fn shuffle_tracks(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
+    fn shuffle_tracks(
+        &mut self,
+        tracks: Vec<Track>,
+        label: impl Into<String>,
+    ) -> iced::Task<Message> {
+        let label = label.into();
         if tracks.is_empty() {
-            self.status = self.language.nothing_to_play_yet(label);
+            self.status = self.language.nothing_to_play_yet(&label);
             return iced::Task::none();
         }
-        self.play_fresh(tracks, label, true)
+        self.play_fresh(tracks, &label, true)
     }
 
     fn play_index(&mut self, i: usize) -> iced::Task<Message> {
@@ -8084,7 +8081,7 @@ impl AppState {
         }
         if let Some(e) = first_err {
             yutu_core::app_log::warn("yutu-scrobble", format!("keychain save failed: {e}"));
-            self.status = Self::failure_status(self.language.fail_scrobble_save().into(), e);
+            self.status = Self::failure_status(self.language.fail_scrobble_save(), e);
         }
     }
 
@@ -8255,8 +8252,9 @@ impl AppState {
     /// (nothing reserved, so the text centers exactly), the label plus
     /// a spinner on its right while the pipeline runs.
     #[cfg(feature = "innertube")]
-    fn busy_content<'b>(&self, label: &'b str, size: f32) -> iced::Element<'b, Message> {
+    fn busy_content(&self, label: impl Into<String>, size: f32) -> iced::Element<'static, Message> {
         use iced::widget::row;
+        let label: String = label.into();
         if self.pipeline_busy() {
             // White like the label: these buttons sit on red
             // (`accent_button`), where the accent glyph would vanish.
@@ -8639,9 +8637,9 @@ impl AppState {
             self.show_suggest = false;
             self.open_coll_menu(menu);
         } else if matches!(menu, CollectionMenu::HomeAlbum { .. }) {
-            self.status = self.language.album_gone().into();
+            self.status = self.language.album_gone();
         } else {
-            self.status = self.language.result_gone().into();
+            self.status = self.language.result_gone();
         }
     }
 
@@ -8806,7 +8804,7 @@ impl AppState {
         }
         match &self.audio {
             None => {
-                self.status = self.language.no_audio_device().into();
+                self.status = self.language.no_audio_device();
             }
             Some(audio) => match audio.seek_secs(pos) {
                 Ok(()) => {
@@ -8968,7 +8966,7 @@ impl AppState {
                     }
                     self.paused = false;
                     self.paused_seek = false;
-                    self.status = self.language.desktop_resumed().into();
+                    self.status = self.language.desktop_resumed();
                 }
             }
             C::Pause => {
@@ -8981,7 +8979,7 @@ impl AppState {
                 if self.seek_drag.is_some() {
                     self.seek_paused = false;
                 }
-                self.status = self.language.desktop_paused().into();
+                self.status = self.language.desktop_paused();
             }
             C::PlayPause => {
                 // Explicit transport takes over any startup autoload.
@@ -8995,13 +8993,13 @@ impl AppState {
                     }
                     self.paused = false;
                     self.paused_seek = false;
-                    self.status = self.language.desktop_resumed().into();
+                    self.status = self.language.desktop_resumed();
                 } else {
                     if let Some(a) = &self.audio {
                         a.pause();
                     }
                     self.paused = true;
-                    self.status = self.language.desktop_paused().into();
+                    self.status = self.language.desktop_paused();
                 }
             }
             C::Stop => {
@@ -9013,7 +9011,7 @@ impl AppState {
                 self.heard_audio = false;
                 self.autoload = false;
                 self.paused = true;
-                self.status = self.language.desktop_stopped().into();
+                self.status = self.language.desktop_stopped();
             }
             C::Next => {
                 if self.advance_queue_manual() {
@@ -9319,7 +9317,7 @@ impl AppState {
             let flat = EqPreset::flat();
             match &self.audio {
                 None => {
-                    self.status = self.language.eq_off_no_device().into();
+                    self.status = self.language.eq_off_no_device();
                 }
                 Some(audio) => match audio.apply_eq(&flat) {
                     Ok(()) => {
@@ -10047,7 +10045,7 @@ impl AppState {
         #[cfg(not(feature = "innertube"))]
         {
             let _ = (id, shuffle);
-            self.status = self.language.needs_innertube_playlists().into();
+            self.status = self.language.needs_innertube_playlists();
             self.publish_mpris();
             iced::Task::none()
         }
@@ -10210,7 +10208,7 @@ impl AppState {
                     if let Some(task) = self.search_cache_hit_task(&q) {
                         return task;
                     }
-                    self.status = self.language.needs_innertube_search_offline().into();
+                    self.status = self.language.needs_innertube_search_offline();
                 }
             }
             Message::SearchStay => {
@@ -10224,7 +10222,7 @@ impl AppState {
                 #[cfg(feature = "innertube")]
                 {
                     if q.is_empty() {
-                        self.status = self.language.type_to_search().into();
+                        self.status = self.language.type_to_search();
                     } else {
                         self.status = self.language.searching_for(&q);
                         self.searching = true;
@@ -10240,7 +10238,7 @@ impl AppState {
                     if let Some(task) = self.search_cache_hit_task(&q) {
                         return task;
                     }
-                    self.status = self.language.needs_innertube_search_offline().into();
+                    self.status = self.language.needs_innertube_search_offline();
                 }
             }
             Message::SearchChanged(q) => {
@@ -10256,7 +10254,7 @@ impl AppState {
                 #[cfg(feature = "innertube")]
                 {
                     if q.is_empty() {
-                        self.status = self.language.type_to_search().into();
+                        self.status = self.language.type_to_search();
                     } else {
                         self.status = self.language.searching_for(&q);
                         self.searching = true;
@@ -10272,7 +10270,7 @@ impl AppState {
                     if let Some(task) = self.search_cache_hit_task(&q) {
                         return task;
                     }
-                    self.status = self.language.needs_innertube_search_offline().into();
+                    self.status = self.language.needs_innertube_search_offline();
                     self.go(Route::Search);
                 }
             }
@@ -10296,8 +10294,7 @@ impl AppState {
                         // Stale-query errors stay silent; current ones report.
                         if query.trim() == self.search_query.trim() {
                             yutu_core::app_log::warn("yutu-search", format!("{query}: {e}"));
-                            self.status =
-                                Self::failure_status(self.language.fail_search().into(), &e);
+                            self.status = Self::failure_status(self.language.fail_search(), &e);
                         }
                     }
                 }
@@ -10309,7 +10306,7 @@ impl AppState {
                 if let Some(a) = &self.audio {
                     a.pause();
                     self.paused = true;
-                    self.status = self.language.paused_word().into();
+                    self.status = self.language.paused_word();
                 }
             }
             Message::TogglePause => {
@@ -10324,15 +10321,15 @@ impl AppState {
                         a.resume();
                         self.paused = false;
                         self.paused_seek = false;
-                        self.status = self.language.resumed_word().into();
+                        self.status = self.language.resumed_word();
                     } else {
                         a.pause();
                         self.paused = true;
-                        self.status = self.language.paused_word().into();
+                        self.status = self.language.paused_word();
                     }
                 } else {
                     self.paused = !self.paused;
-                    self.status = self.language.no_audio_device().into();
+                    self.status = self.language.no_audio_device();
                 }
             }
             Message::Stop => {
@@ -10348,7 +10345,7 @@ impl AppState {
                 if let Some(a) = &self.audio {
                     a.stop();
                     self.paused = false;
-                    self.status = self.language.stopped_word().into();
+                    self.status = self.language.stopped_word();
                 }
             }
             Message::Next => {
@@ -10654,7 +10651,7 @@ impl AppState {
                         #[cfg(not(feature = "innertube"))]
                         {
                             let _ = artist;
-                            self.status = self.language.needs_innertube_radio().into();
+                            self.status = self.language.needs_innertube_radio();
                         }
                     }
                 }
@@ -10670,7 +10667,7 @@ impl AppState {
                     self.radio_tracks = tracks.clone();
                     self.go(Route::Radio(seed.clone()));
                     let mut tasks = self.artwork_tasks(&tracks);
-                    tasks.push(self.queue_many(tracks, &self.language.radio_seed_label(&seed)));
+                    tasks.push(self.queue_many(tracks, self.language.radio_seed_label(&seed)));
                     tasks.push(self.sweep_visible_art("body", true));
                     if n == 0 {
                         self.status = self.language.radio_no_results(&seed);
@@ -10680,7 +10677,7 @@ impl AppState {
                 }
                 Err(e) => {
                     yutu_core::app_log::warn("yutu-radio", format!("{seed}: {e}"));
-                    self.status = Self::failure_status(self.language.fail_radio().into(), &e);
+                    self.status = Self::failure_status(self.language.fail_radio(), &e);
                 }
             },
             Message::QueueTrack(id) => {
@@ -10737,7 +10734,7 @@ impl AppState {
             Message::PlayAllShuffled => return self.play_all_tracks(true),
             Message::PlayPlaylistAt { playlist_id, index } => {
                 let Some(p) = self.find_playlist(&playlist_id) else {
-                    self.status = self.language.playlist_not_found_plain().into();
+                    self.status = self.language.playlist_not_found_plain();
                     return iced::Task::none();
                 };
                 let label = self.language.playlist_queue_label(&p.title);
@@ -10829,13 +10826,13 @@ impl AppState {
                 self.close_menu();
                 // Same list as the page shows (live rank when fetched).
                 let tracks = self.artist_display_tracks(&name);
-                return self.shuffle_tracks(tracks, &self.language.artist_queue_label(&name));
+                return self.shuffle_tracks(tracks, self.language.artist_queue_label(&name));
             }
             Message::PlayAlbumShuffled(id) => {
                 self.close_menu();
                 let title = self.resolve_album_title(&id);
                 let tracks = self.album_display_tracks(&id);
-                return self.shuffle_tracks(tracks, &self.language.album_queue_label(&title));
+                return self.shuffle_tracks(tracks, self.language.album_queue_label(&title));
             }
             Message::PlaySearchPlaylist(id) => {
                 return self.play_search_playlist(id, false);
@@ -10868,7 +10865,7 @@ impl AppState {
             Message::CreatePlaylist(title) => {
                 let title = title.trim().to_string();
                 if title.is_empty() {
-                    self.status = self.language.playlist_name_empty().into();
+                    self.status = self.language.playlist_name_empty();
                 } else {
                     self.playlist_seq += 1;
                     let id = format!("u{}", self.playlist_seq);
@@ -10998,7 +10995,7 @@ impl AppState {
                 // Same either-form rule as adds (see AddToPlaylist).
                 let id = yutu_core::canonical_playlist_id(&id);
                 if id == Self::FAVORITES_ID {
-                    self.status = self.language.favorites_locked().into();
+                    self.status = self.language.favorites_locked();
                     return iced::Task::none();
                 }
                 if self.find_playlist(&id).is_none() {
@@ -11022,7 +11019,7 @@ impl AppState {
                 // Same either-form rule as adds (see AddToPlaylist).
                 let id = yutu_core::canonical_playlist_id(&id);
                 if id == Self::FAVORITES_ID {
-                    self.status = self.language.favorites_locked().into();
+                    self.status = self.language.favorites_locked();
                     self.publish_mpris();
                     return iced::Task::none();
                 }
@@ -11096,7 +11093,7 @@ impl AppState {
             Message::PlayWeeklyMix => {
                 let tracks = self.weekly_mix_tracks();
                 if tracks.is_empty() {
-                    self.status = self.language.weekly_empty().into();
+                    self.status = self.language.weekly_empty();
                 } else {
                     let task = self.queue_many(tracks, self.language.weekly_mix());
                     self.publish_mpris();
@@ -11106,7 +11103,7 @@ impl AppState {
             Message::PlayForgotten => {
                 let tracks = self.forgotten_tracks();
                 if tracks.is_empty() {
-                    self.status = self.language.forgotten_empty().into();
+                    self.status = self.language.forgotten_empty();
                 } else {
                     let task = self.queue_many(tracks, self.language.forgotten());
                     self.publish_mpris();
@@ -11116,7 +11113,7 @@ impl AppState {
             Message::PlayQuickPicks => {
                 let tracks = self.quick_pick_tracks(8);
                 if tracks.is_empty() {
-                    self.status = self.language.quick_empty().into();
+                    self.status = self.language.quick_empty();
                 } else {
                     let task = self.queue_many(tracks, self.language.quick_picks());
                     self.publish_mpris();
@@ -11128,7 +11125,7 @@ impl AppState {
                 if tracks.is_empty() {
                     self.status = self.language.album_not_cached(&album);
                 } else {
-                    let task = self.queue_many(tracks, &self.language.album_queue_label(&album));
+                    let task = self.queue_many(tracks, self.language.album_queue_label(&album));
                     self.publish_mpris();
                     return task;
                 }
@@ -11643,7 +11640,7 @@ impl AppState {
                         if let Some(slot) = drag.slot {
                             if let Some(to) = slot_commit(self.queue.len(), drag.from, slot) {
                                 if self.queue.move_to(drag.from, to) {
-                                    self.status = self.language.queue_reordered().into();
+                                    self.status = self.language.queue_reordered();
                                     self.just_reordered_at = Some(std::time::Instant::now());
                                     committed = true;
                                 }
@@ -11898,10 +11895,8 @@ impl AppState {
                 self.cancel_drag();
                 let title = p.title.clone();
                 // queue_many resolves each row against the catalog itself.
-                let task = self.queue_many(
-                    p.tracks.clone(),
-                    &self.language.playlist_queue_label(&title),
-                );
+                let task =
+                    self.queue_many(p.tracks.clone(), self.language.playlist_queue_label(&title));
                 self.publish_mpris();
                 return task;
             }
@@ -12221,8 +12216,7 @@ impl AppState {
                             format_args!("artist top failed: {channel_id} ({e})"),
                         );
                         if watching && self.route_shows_browse(&channel_id, true) {
-                            self.status =
-                                Self::failure_status(self.language.fail_live_top().into(), &e);
+                            self.status = Self::failure_status(self.language.fail_live_top(), &e);
                         }
                     }
                 }
@@ -12262,8 +12256,7 @@ impl AppState {
                             format_args!("artist full failed: {channel_id} ({e})"),
                         );
                         if watching && self.route_shows_browse(&channel_id, true) {
-                            self.status =
-                                Self::failure_status(self.language.fail_live_top().into(), &e);
+                            self.status = Self::failure_status(self.language.fail_live_top(), &e);
                         }
                     }
                 }
@@ -12298,8 +12291,7 @@ impl AppState {
                             format_args!("album tracklist failed: {album_id} ({e})"),
                         );
                         if watching && self.route_shows_browse(&album_id, false) {
-                            self.status =
-                                Self::failure_status(self.language.fail_live_album().into(), &e);
+                            self.status = Self::failure_status(self.language.fail_live_album(), &e);
                         }
                     }
                 }
@@ -12338,7 +12330,7 @@ impl AppState {
                         );
                         if watching && showing {
                             self.status =
-                                Self::failure_status(self.language.fail_artist_lookup().into(), &e);
+                                Self::failure_status(self.language.fail_artist_lookup(), &e);
                         }
                     }
                 }
@@ -12376,7 +12368,7 @@ impl AppState {
                         );
                         if watching && showing {
                             self.status =
-                                Self::failure_status(self.language.fail_album_lookup().into(), &e);
+                                Self::failure_status(self.language.fail_album_lookup(), &e);
                         }
                     }
                 }
@@ -12415,7 +12407,7 @@ impl AppState {
                 // exiting into a lost session. Deliberately untestable
                 // (the success path diverges).
                 if !(self.persist_eq() && self.persist_queue()) {
-                    self.status = self.language.relaunch_cancelled().into();
+                    self.status = self.language.relaunch_cancelled();
                     yutu_core::app_log::warn(
                         "relaunch",
                         format_args!("session save failed, staying put"),
@@ -12484,7 +12476,7 @@ impl AppState {
                         self.login_busy = true;
                         self.import_active = true;
                         self.sync_active = false;
-                        self.status = self.language.reading_cookies().into();
+                        self.status = self.language.reading_cookies();
                         // Capture the source now: the modal decision later
                         // must name the file actually imported, not
                         // whatever the field holds when stages finish.
@@ -12497,7 +12489,7 @@ impl AppState {
                 #[cfg(not(feature = "innertube"))]
                 {
                     let _ = path;
-                    self.status = self.language.needs_innertube_import_offline().into();
+                    self.status = self.language.needs_innertube_import_offline();
                 }
             }
             #[cfg(feature = "innertube")]
@@ -12530,7 +12522,7 @@ impl AppState {
                     }
                     self.status = if kind == ImportKind::Sync {
                         yutu_core::app_log::warn("yutu-import", format!("sync: {e}"));
-                        Self::failure_status(self.language.fail_sync().into(), &e)
+                        Self::failure_status(self.language.fail_sync(), &e)
                     } else {
                         yutu_core::app_log::warn("yutu-import", format!("{}: {e}", kind.label()));
                         Self::failure_status(self.language.import_failed(kind), &e)
@@ -12662,12 +12654,12 @@ impl AppState {
             #[cfg(feature = "innertube")]
             Message::CookieSessionImport => {
                 if !cookie_session_exists() {
-                    self.status = self.language.cookie_session_lost().into();
+                    self.status = self.language.cookie_session_lost();
                 } else {
                     self.login_busy = true;
                     self.import_active = true;
                     self.sync_active = false;
-                    self.status = self.language.importing_library().into();
+                    self.status = self.language.importing_library();
                     self.publish_mpris();
                     return Self::cookie_session_import_task(self.library_path.clone());
                 }
@@ -12705,17 +12697,16 @@ impl AppState {
                     match delete_cookie_session_secure() {
                         Ok(()) => {
                             self.cookie_logged_in = false;
-                            self.status = self.language.cookie_cleared().into();
+                            self.status = self.language.cookie_cleared();
                         }
                         Err(e) => {
                             yutu_core::app_log::warn("yutu-auth", format!("sign-out: {e}"));
-                            self.status =
-                                Self::failure_status(self.language.fail_signout().into(), &e);
+                            self.status = Self::failure_status(self.language.fail_signout(), &e);
                         }
                     }
                 } else {
                     self.cookie_logged_in = false;
-                    self.status = self.language.cookie_cleared().into();
+                    self.status = self.language.cookie_cleared();
                 }
             }
             #[cfg(feature = "innertube")]
@@ -12731,12 +12722,12 @@ impl AppState {
                             // Progress owns the status while playlists
                             // load; confirm only once idle.
                             if !self.import_active {
-                                self.status = self.language.export_deleted().into();
+                                self.status = self.language.export_deleted();
                             }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                             if !self.import_active {
-                                self.status = self.language.export_already_gone().into();
+                                self.status = self.language.export_already_gone();
                             }
                         }
                         Err(e) => {
@@ -12745,7 +12736,7 @@ impl AppState {
                                 format!("export delete failed: {e}"),
                             );
                             self.status =
-                                Self::failure_status(self.language.fail_export_delete().into(), e);
+                                Self::failure_status(self.language.fail_export_delete(), e);
                             // Re-arm so the user can retry (file kept).
                             self.pending_cookie_cleanup = Some(src);
                         }
@@ -12901,7 +12892,7 @@ impl AppState {
             #[cfg(feature = "innertube")]
             Message::GoogleLoginStart => {
                 self.login_busy = true;
-                self.status = self.language.google_device_code().into();
+                self.status = self.language.google_device_code();
                 self.publish_mpris();
                 return Self::google_begin_task();
             }
@@ -12925,18 +12916,18 @@ impl AppState {
                     }
                     Err(e) => {
                         yutu_core::app_log::warn("yutu-login", format!("begin: {e}"));
-                        self.status = Self::failure_status(self.language.fail_signin().into(), &e);
+                        self.status = Self::failure_status(self.language.fail_signin(), &e);
                     }
                 }
             }
             #[cfg(feature = "innertube")]
             Message::GoogleLoginPoll => match self.google_login.clone() {
                 None => {
-                    self.status = self.language.google_signin_first().into();
+                    self.status = self.language.google_signin_first();
                 }
                 Some(login) => {
                     self.login_busy = true;
-                    self.status = self.language.checking_approval().into();
+                    self.status = self.language.checking_approval();
                     self.publish_mpris();
                     return Self::google_poll_task(login);
                 }
@@ -12953,7 +12944,7 @@ impl AppState {
                                 self.login_busy = true;
                                 self.import_active = true;
                                 self.sync_active = false;
-                                self.status = self.language.signed_in_importing().into();
+                                self.status = self.language.signed_in_importing();
                                 self.publish_mpris();
                                 return Self::library_import_task(self.library_path.clone());
                             }
@@ -12962,8 +12953,7 @@ impl AppState {
                                     "yutu-login",
                                     format!("save session: {e}"),
                                 );
-                                self.status =
-                                    Self::failure_status(self.language.fail_signin().into(), &e);
+                                self.status = Self::failure_status(self.language.fail_signin(), &e);
                             }
                         }
                     }
@@ -12979,8 +12969,7 @@ impl AppState {
                                 "Code expired: press “Sign in with Google” to restart.".into();
                         } else {
                             yutu_core::app_log::warn("yutu-login", format!("poll: {e}"));
-                            self.status =
-                                Self::failure_status(self.language.fail_check().into(), &e);
+                            self.status = Self::failure_status(self.language.fail_check(), &e);
                         }
                     }
                 }
@@ -13000,17 +12989,17 @@ impl AppState {
                 self.import_finished.clear();
                 self.logged_in = false;
                 self.google_login = None;
-                self.status = self.language.signed_out_token().into();
+                self.status = self.language.signed_out_token();
             }
             #[cfg(feature = "innertube")]
             Message::LibraryImport => {
                 if !self.logged_in {
-                    self.status = self.language.google_signin_needed().into();
+                    self.status = self.language.google_signin_needed();
                 } else {
                     self.login_busy = true;
                     self.import_active = true;
                     self.sync_active = false;
-                    self.status = self.language.reading_library().into();
+                    self.status = self.language.reading_library();
                     self.publish_mpris();
                     return Self::library_import_task(self.library_path.clone());
                 }
@@ -14099,7 +14088,7 @@ impl AppState {
             None
         };
         let Some(pull) = pull else {
-            self.status = self.language.sync_needs_signin().into();
+            self.status = self.language.sync_needs_signin();
             self.publish_mpris();
             return iced::Task::none();
         };
@@ -14834,7 +14823,7 @@ impl AppState {
 
     fn section<'a>(
         lang: Language,
-        title: &'a str,
+        title: String,
         rows: Vec<iced::Element<'a, Message>>,
     ) -> iced::Element<'a, Message> {
         use iced::widget::{column, text};
@@ -14866,7 +14855,7 @@ impl AppState {
         use iced::widget::button;
         use iced::Fill;
         fn chip(
-            label: &'static str,
+            label: String,
             f: SearchFilter,
             active: SearchFilter,
         ) -> iced::Element<'static, Message> {
@@ -15039,7 +15028,7 @@ impl AppState {
             let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
             row![
                 Self::shuffle_pill(
-                    self.language.shuffle_pill_label().into(),
+                    self.language.shuffle_pill_label(),
                     Message::PlayAlbumShuffled(a.id.clone())
                 ),
                 button(
@@ -15349,7 +15338,7 @@ impl AppState {
                     text(sub).size(13).color(MUTED),
                     row![
                         Self::play_pill(
-                            self.language.play_pill_label().into(),
+                            self.language.play_pill_label(),
                             Message::PlaySearchPlaylist(p.id.clone())
                         ),
                         Self::shuffle_pill(
@@ -16276,7 +16265,7 @@ impl AppState {
         let current = self.queue.current().cloned();
         let loading = self.loading_track.is_some();
         let title: String = if loading {
-            self.language.loading_ellipsis().into()
+            self.language.loading_ellipsis()
         } else {
             current
                 .as_ref()
@@ -17992,12 +17981,9 @@ impl AppState {
                             .size(12)
                             .color(MUTED),
                             row![
-                                Self::play_pill(
-                                    self.language.play_pill_label().into(),
-                                    Message::PlayAll
-                                ),
+                                Self::play_pill(self.language.play_pill_label(), Message::PlayAll),
                                 Self::shuffle_pill(
-                                    self.language.shuffle_pill_label().into(),
+                                    self.language.shuffle_pill_label(),
                                     Message::PlayAllShuffled
                                 ),
                                 radio_btn,
@@ -18081,12 +18067,9 @@ impl AppState {
                             text(title.clone()).size(28),
                             text(meta).size(12).color(MUTED),
                             row![
-                                Self::play_pill(
-                                    self.language.play_pill_label().into(),
-                                    Message::PlayAll
-                                ),
+                                Self::play_pill(self.language.play_pill_label(), Message::PlayAll),
                                 Self::shuffle_pill(
-                                    self.language.shuffle_pill_label().into(),
+                                    self.language.shuffle_pill_label(),
                                     Message::PlayAllShuffled
                                 ),
                             ]
@@ -22040,8 +22023,8 @@ mod tests {
         // `mut` only when the innertube-only import case below compiles in.
         #[cfg_attr(not(feature = "innertube"), allow(unused_mut))]
         let mut cases: Vec<(String, String, bool)> = vec![
-            (en.fail_search().into(), es.fail_search().into(), true),
-            (en.fail_sync().into(), es.fail_sync().into(), true),
+            (en.fail_search(), es.fail_search(), true),
+            (en.fail_sync(), es.fail_sync(), true),
             (
                 en.fail_youtube_op("like", "v1"),
                 es.fail_youtube_op("like", "v1"),
@@ -22059,34 +22042,18 @@ mod tests {
             ),
             // Honest non-failures stay silent in both.
             (en.album_not_cached("A"), es.album_not_cached("A"), false),
-            (en.result_gone().into(), es.result_gone().into(), false),
-            (
-                en.favorites_locked().into(),
-                es.favorites_locked().into(),
-                false,
-            ),
+            (en.result_gone(), es.result_gone(), false),
+            (en.favorites_locked(), es.favorites_locked(), false),
             (en.playlist_locked("u1"), es.playlist_locked("u1"), false),
-            (
-                en.cookie_cleared().into(),
-                es.cookie_cleared().into(),
-                false,
-            ),
-            (en.no_lyrics().into(), es.no_lyrics().into(), false),
-            (
-                en.no_audio_device().into(),
-                es.no_audio_device().into(),
-                false,
-            ),
+            (en.cookie_cleared(), es.cookie_cleared(), false),
+            (en.no_lyrics(), es.no_lyrics(), false),
+            (en.no_audio_device(), es.no_audio_device(), false),
             (
                 en.fail_kept_locally("add x"),
                 es.fail_kept_locally("add x"),
                 false,
             ),
-            (
-                en.fail_export_delete().into(),
-                es.fail_export_delete().into(),
-                false,
-            ),
+            (en.fail_export_delete(), es.fail_export_delete(), false),
             (en.queued_tracks("Q", 2), es.queued_tracks("Q", 2), false),
             (
                 en.history_section(&S::Older {
