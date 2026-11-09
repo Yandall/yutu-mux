@@ -712,17 +712,6 @@ fn ctrl_box(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
         .into()
 }
 
-/// Short live-state caption for the preset group: builtin presets show
-/// their own active segment; only a hand-tweaked (Custom) curve matches
-/// nothing. Pure helper so tests pin the mapping.
-fn eq_state_caption(preset_live: bool) -> Option<&'static str> {
-    if preset_live {
-        None
-    } else {
-        Some("Custom curve.")
-    }
-}
-
 /// Flow preset names into rows that fit `body_w` (like flex-wrap):
 /// greedy fill per row, so a short preset joins the first row even when
 /// the full strip cannot. Every row holds at least one segment, and an
@@ -748,6 +737,50 @@ fn eq_flow_rows(names: &[String], body_w: f32) -> Vec<Vec<String>> {
         rows.last_mut().expect("at least one row").push(n.clone());
     }
     rows.into_iter().filter(|r| !r.is_empty()).collect()
+}
+
+/// Home greeting for a 24h local hour: morning 5-12, afternoon 12-18,
+/// evening 18-23, night otherwise. Pure so tests pin the boundaries.
+fn greeting_for_hour(hour: u8) -> &'static str {
+    match hour {
+        5..12 => "Good morning",
+        12..18 => "Good afternoon",
+        18..23 => "Good evening",
+        _ => "Good night",
+    }
+}
+
+/// Current local hour via `localtime_r` (libc, always present on Linux
+/// and macOS): std only, no chrono. Falls back to 12 (afternoon) when the
+/// clock is unreadable.
+fn local_hour() -> u8 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as std::os::raw::c_long)
+        .unwrap_or(0);
+    #[repr(C, align(8))]
+    struct LocalTm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        _rest: [u8; 64],
+    }
+    extern "C" {
+        fn localtime_r(timep: *const std::os::raw::c_long, result: *mut LocalTm) -> *mut LocalTm;
+    }
+    let mut tm = LocalTm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 12,
+        _rest: [0; 64],
+    };
+    let ok = unsafe { !localtime_r(&secs, &mut tm).is_null() };
+    if ok {
+        tm.tm_hour.clamp(0, 23) as u8
+    } else {
+        12
+    }
 }
 
 /// Slider in theme red: red filled rail, pale track, white round handle.
@@ -7898,7 +7931,7 @@ impl AppState {
         let card: iced::Element<'_, Message> = container(
             column![
                 text("Signed in. Delete the export file?").size(16),
-                text("Your session is saved in the OS keychain and survives restarts and updates. The export is plaintext and no longer needed.")
+                text("Your session is saved in the app securely. The export is plaintext and no longer needed.")
                     .size(12)
                     .color(MUTED),
                 // Glyph wrapping: a long path wraps mid-name and grows
@@ -7971,9 +8004,6 @@ impl AppState {
         let card: iced::Element<'_, Message> = container(
             column![
                 text("Scrobbling").size(16),
-                text("Submit listens while playing. Tokens live in your OS keychain, the rest with your local library.")
-                    .size(12)
-                    .color(MUTED),
                 checkbox(self.scrobble_enabled)
                     .label("Enable scrobbling")
                     .on_toggle(Message::ScrobbleToggled),
@@ -8022,7 +8052,7 @@ impl AppState {
     fn sync_section(&self) -> iced::Element<'_, Message> {
         use iced::widget::{button, checkbox, column, row, text};
         if !self.logged_in && !self.cookie_logged_in {
-            return text("Sign in above to sync.").size(12).color(MUTED).into();
+            return text("").size(1).into();
         }
         column![
             text(format!(
@@ -9213,21 +9243,22 @@ impl AppState {
         ok
     }
 
-    /// Persist the default lyrics provider pref (best effort, same as EQ).
-    fn persist_lyrics_provider(&self) {
-        if let Ok(store) = LibraryStore::open(&self.library_path) {
-            let _ = store.set_pref("lyrics_provider", self.lyrics_provider.as_pref());
-        }
-    }
-
-    /// One-line EQ backend note for Settings (honest on rodio builds).
+    /// One-line EQ backend note for Settings (rodio/no-device only: mpv
+    /// builds show nothing, so the capped layout stays clean there).
     fn eq_note(&self) -> String {
         match &self.audio {
-            Some(a) if a.supports_eq() => "EQ is live on mpv.".into(),
+            Some(a) if a.supports_eq() => String::new(),
             Some(_) => {
                 "EQ needs the mpv backend: install libmpv / rebuild with --features mpv.".into()
             }
             None => "EQ: no audio device.".into(),
+        }
+    }
+
+    /// Persist the default lyrics provider pref (best effort, same as EQ).
+    fn persist_lyrics_provider(&self) {
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref("lyrics_provider", self.lyrics_provider.as_pref());
         }
     }
 
@@ -16046,18 +16077,18 @@ impl AppState {
         let mode = player_layout_mode(ww);
         let current = self.queue.current().cloned();
         let loading = self.loading_track.is_some();
-        let title = if loading {
+        let title: String = if loading {
             "Loading…".into()
         } else {
             current
                 .as_ref()
                 .map(|t| t.title.clone())
-                .unwrap_or_else(|| "Nothing playing".into())
+                .unwrap_or_default()
         };
-        let artist = current
+        let artist: String = current
             .as_ref()
             .map(|t| t.artist.clone())
-            .unwrap_or_else(|| "Search for music, then click a song".into());
+            .unwrap_or_default();
         let play_icon = if self.paused { "play" } else { "pause" };
         let duration = self.audio_duration();
         let slider_max = duration.max(1.0);
@@ -16673,15 +16704,9 @@ impl AppState {
         use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
         use iced::Fill;
         let Some(t) = self.queue.current().cloned() else {
-            return container(
-                column![
-                    text("Nothing playing").size(22),
-                    text("Search above, click a song, hear it.").color(MUTED),
-                ]
-                .spacing(8),
-            )
-            .padding(24)
-            .into();
+            return container(column![text("Nothing playing").size(22),])
+                .padding(24)
+                .into();
         };
         let art_url = self.hero_art_for(&t);
         let hero: iced::Element<'_, Message> = column![
@@ -17209,7 +17234,7 @@ impl AppState {
                         None => text("").size(1).into(),
                     };
                 column![
-                    text("Good evening").size(24),
+                    text(greeting_for_hour(local_hour())).size(24),
                     quick_section,
                     library_section,
                     albums_section,
@@ -17272,7 +17297,7 @@ impl AppState {
                 {
                     Self::search_loading()
                 } else if results_empty(&self.results) && all_empty(&self.all_results) {
-                    column![text("No results found: try another spelling.").color(MUTED),]
+                    column![text("No results found").color(MUTED),]
                         .spacing(10)
                         .into()
                 } else {
@@ -17713,9 +17738,10 @@ impl AppState {
                 let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
                 let body_w =
                     (win_w - self.sidebar_w - self.right_w - 32.0).min(CENTER_MAX_W) - 40.0;
+                let eq_body_w = body_w.min(SETTINGS_INPUT_W);
                 let eq_group: iced::Element<'_, Message> = container(
                     iced::widget::Column::with_children(
-                        eq_flow_rows(&eq_names, body_w)
+                        eq_flow_rows(&eq_names, eq_body_w)
                             .into_iter()
                             .map(|row_names| {
                                 iced::widget::Row::with_children(
@@ -17741,18 +17767,15 @@ impl AppState {
                 .style(seg_group)
                 .padding(4)
                 .into();
-                // Backend honesty without the preset line: the group shows
-                // the pick, this note only appears when EQ cannot work.
-                let eq_warn: iced::Element<'_, Message> = match &self.audio {
-                    Some(a) if a.supports_eq() => text("").size(1).into(),
-                    _ => text(self.eq_note()).size(12).color(MUTED).into(),
-                };
-                // Live-state caption: the group marks builtin presets, so
-                // only a hand-tweaked curve needs naming.
-                let preset_live = eq_names.contains(&self.eq_preset);
-                let eq_caption: iced::Element<'_, Message> = match eq_state_caption(preset_live) {
-                    Some(note) => text(note).size(12).color(MUTED).into(),
-                    None => text("").size(1).into(),
+                // Rodio/no-device honesty note only (mpv shows nothing, so
+                // the capped layout stays clean on the real app).
+                let eq_warn: iced::Element<'_, Message> = {
+                    let note = self.eq_note();
+                    if note.is_empty() {
+                        text("").size(1).into()
+                    } else {
+                        text(note).size(12).color(MUTED).into()
+                    }
                 };
                 // Graphic EQ panel: bypass toggle top-right, canvas
                 // sliders + curve below. Presets above are predefined
@@ -17827,10 +17850,9 @@ impl AppState {
                         ),
                     ]
                     .spacing(4),
-                    eq_group,
-                    eq_caption,
-                    eq_warn,
-                    eq_panel,
+                    settings_input(eq_group),
+                    settings_input(eq_warn),
+                    settings_input(eq_panel),
                     text("Lyrics").size(17),
                     text("Default lyrics provider").size(13),
                     settings_input(
@@ -17842,9 +17864,6 @@ impl AppState {
                         .width(Fill)
                         .into(),
                     ),
-                    text("Both providers carry synced lines when available.")
-                        .size(12)
-                        .color(MUTED),
                     text("Appearance").size(17),
                     text("Display font (takes effect on relaunch)").size(13),
                     settings_input(
@@ -17873,14 +17892,14 @@ impl AppState {
                             .width(Fill)
                             .into(),
                         ),
-                        text("Scales text and controls together, applies instantly.")
+                        text("Scales text and controls together.")
                             .size(12)
                             .color(MUTED),
                     ]
                     .spacing(4),
                     text("Animations").size(17),
                     checkbox(self.animations_enabled)
-                        .label("Enable animations (off = panels snap instantly)")
+                        .label("Enable animations")
                         .on_toggle(Message::AnimationsToggled),
                     column![
                         text(format!("Animation duration: {} ms", self.anim_ms)).size(13),
@@ -17904,8 +17923,20 @@ impl AppState {
                         .padding(8),
                     text("Cookie import").size(17),
                     self.cookie_section(),
-                    text("Sync (web changes into the app)").size(17),
-                    self.sync_section(),
+                    {
+                        #[cfg(feature = "innertube")]
+                        let show_sync = self.logged_in || self.cookie_logged_in;
+                        #[cfg(not(feature = "innertube"))]
+                        let show_sync = false;
+                        if show_sync {
+                            iced::Element::from(
+                                column![text("Sync web changes").size(17), self.sync_section(),]
+                                    .spacing(10),
+                            )
+                        } else {
+                            iced::Element::from(text("").size(1))
+                        }
+                    },
                     self.error_section(),
                     self.cache_section(),
                     text("Shortcuts: Space play/pause · n next · p prev · / search")
@@ -22391,9 +22422,15 @@ mod tests {
     }
 
     #[test]
-    fn eq_state_caption_names_custom_only() {
-        assert_eq!(eq_state_caption(true), None);
-        assert_eq!(eq_state_caption(false), Some("Custom curve."));
+    fn home_greeting_follows_local_hour() {
+        assert_eq!(greeting_for_hour(4), "Good night");
+        assert_eq!(greeting_for_hour(5), "Good morning");
+        assert_eq!(greeting_for_hour(11), "Good morning");
+        assert_eq!(greeting_for_hour(12), "Good afternoon");
+        assert_eq!(greeting_for_hour(17), "Good afternoon");
+        assert_eq!(greeting_for_hour(18), "Good evening");
+        assert_eq!(greeting_for_hour(22), "Good evening");
+        assert_eq!(greeting_for_hour(23), "Good night");
     }
 
     #[test]

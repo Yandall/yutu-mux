@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Settings helper-text cleanup: dropped the Custom curve caption and the
+  Both-providers / Submit-listens / Sign-in-above lines (sync shows only
+  when logged in), trimmed the scale/animations hints, renamed Sync to
+  Sync web changes, reworded the export-cleanup note, and shortened the
+  Nothing-playing and No-results empties; the player bar stays text-free
+  until something plays. EQ preset group plus graph panel now cap at the
+  shared 560px settings width (preset wrap uses the capped width), and
+  the Home greeting follows local time (morning/afternoon/evening/night
+  via `localtime_r`, std only).
 - Standalone text buttons get a visible secondary style (`ghost_button`:
   dark fill plus border at rest, pill like the red CTA, uniform padding
   8): Sign out, Keep file, Relaunch, queue Clear/Clear queue, Library
@@ -9,8 +18,7 @@
   EQ presets render as one segmented group that flows like flex-wrap
   (greedy fill per row, so short presets join the first row; single
   strip when the body fits) with the kept preset red-filled even while
-  bypassed; a Custom caption names hand-tweaked curves and the backend
-  warning shows only when EQ cannot work. Player transport glyphs sit
+  bypassed; the backend warning shows only when EQ cannot work. Player transport glyphs sit
   in uniform centered boxes with a stable repeat badge slot, so hover
   frames line up. Menus, icon buttons, and row titles keep hover-only
   feedback.
