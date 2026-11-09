@@ -783,6 +783,37 @@ fn hover_row(_: &iced::Theme, status: iced::widget::button::Status) -> iced::wid
     }
 }
 
+/// Secondary button: visible dark fill + border at rest, so standalone
+/// text actions never read as plain text. The red `accent_button` stays
+/// the CTA; menus and rows keep `hover_row` (hover feedback only).
+fn ghost_button(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let hovered = matches!(
+        status,
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+    );
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(if hovered {
+            iced::Color::from_rgb8(0x33, 0x33, 0x33)
+        } else {
+            iced::Color::from_rgb8(0x22, 0x22, 0x22)
+        })),
+        text_color: iced::Color::WHITE,
+        border: iced::Border {
+            color: if hovered {
+                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+            } else {
+                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            },
+            width: 1.0,
+            radius: 20.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 /// Latched-selected row (flyout toggle while its submenu is open).
 fn selected_row(_: &iced::Theme, _: iced::widget::button::Status) -> iced::widget::button::Style {
     iced::widget::button::Style {
@@ -7639,7 +7670,7 @@ impl AppState {
                 // No separate import action: Sync now (below) is the one
                 // refresh, so the two buttons never coexist.
                 button(btn_text("Sign out", 12))
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::CookieLogout)
                     .padding(8),
             ]
@@ -7786,7 +7817,7 @@ impl AppState {
                         .on_press(Message::CookieCleanupDelete)
                         .padding(8),
                     button(btn_text("Keep file", 12))
-                        .style(hover_row)
+                        .style(ghost_button)
                         .on_press(Message::CookieCleanupKeep)
                         .padding(8),
                 ]
@@ -14696,7 +14727,7 @@ impl AppState {
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(hover_row)
+                .style(ghost_button)
                 .on_press(Message::StartRadio(seed))
                 .padding(8),
             ]
@@ -14758,7 +14789,7 @@ impl AppState {
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center),
                 )
-                .style(hover_row)
+                .style(ghost_button)
                 .on_press(Message::StartRadio(seed))
                 .padding(8),
             ]
@@ -15156,7 +15187,7 @@ impl AppState {
         if total > shown {
             body = body.push(
                 button(btn_text(format!("Show more ({} older)", total - shown), 12))
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::HistoryMore)
                     .padding(8),
             );
@@ -15720,7 +15751,7 @@ impl AppState {
             RightTab::Queue => column![
                 text("Up next").size(13).color(MUTED),
                 button(btn_text(format!("Clear queue ({})", self.queue.len()), 12))
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::QueueClear)
                     .padding(4),
                 scrollable(
@@ -17080,7 +17111,7 @@ impl AppState {
                     row![
                         text("Made for you").size(19).width(Fill),
                         button(btn_text("Discovery →", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::Navigate(Route::Discovery))
                             .padding(8),
                     ]
@@ -17406,7 +17437,7 @@ impl AppState {
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
                         )
-                        .style(hover_row)
+                        .style(ghost_button)
                         .on_press(Message::ToggleShuffle)
                         .padding(6),
                         button(
@@ -17417,11 +17448,11 @@ impl AppState {
                             .spacing(4)
                             .align_y(iced::alignment::Vertical::Center),
                         )
-                        .style(hover_row)
+                        .style(ghost_button)
                         .on_press(Message::CycleRepeat)
                         .padding(6),
                         button(btn_text("Clear", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::QueueClear)
                             .padding(8),
                     ]
@@ -17467,7 +17498,7 @@ impl AppState {
                             .spacing(2)
                             .width(Fill),
                             button(btn_text("Open", 12))
-                                .style(hover_row)
+                                .style(ghost_button)
                                 .on_press(Message::OpenPlaylist(p.id.clone()))
                                 .padding(8),
                         ]
@@ -17582,7 +17613,7 @@ impl AppState {
                             n.clone()
                         };
                         button(btn_text(label, 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::SelectEqPreset(n))
                             .padding(5)
                             .into()
@@ -17630,7 +17661,7 @@ impl AppState {
                 let relaunch_button: iced::Element<'_, Message> =
                     if font_pending(self.font_family, effective_font()) {
                         button(btn_text("Relaunch now to apply", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::RelaunchNow)
                             .padding(8)
                             .into()
@@ -17796,14 +17827,14 @@ impl AppState {
                     let expanded = self.artist_expanded || songs.len() <= 5;
                     let more = if !expanded || (!full && !fetching_full) {
                         button(btn_text("Show more", 12))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::ArtistTopExpand)
                             .padding(8)
                             .into()
                     } else if fetching_full {
                         row![
                             button(btn_text("Show more", 12))
-                                .style(hover_row)
+                                .style(ghost_button)
                                 .on_press(Message::ArtistTopExpand)
                                 .padding(8),
                             Self::spinner_frame(self.spin_frame, 12.0, MUTED),
@@ -17848,7 +17879,7 @@ impl AppState {
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .style(hover_row)
+                    .style(ghost_button)
                     .on_press(Message::StartRadio(seed.id.clone()))
                     .padding(8)
                     .into(),
@@ -18041,7 +18072,7 @@ impl AppState {
                         .on_press(Message::PlayNow(id.clone()))
                         .padding(7),
                         button(btn_text("Radio", 13))
-                            .style(hover_row)
+                            .style(ghost_button)
                             .on_press(Message::StartRadio(id.clone()))
                             .padding(8),
                     ]

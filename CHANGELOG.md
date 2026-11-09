@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Standalone text buttons get a visible secondary style (`ghost_button`:
+  dark fill plus border at rest, pill like the red CTA): Sign out, Keep
+  file, Relaunch, EQ presets, queue Clear/Clear queue, Library Open,
+  Show more expanders, Discovery link, and Radio secondaries. Menus,
+  icon buttons, and row titles keep hover-only feedback.
 - Scrobbling credentials persist securely: the ListenBrainz token and
   Last.fm key/secret/session key live in the OS keychain like the cookie
   session (one entry each, empties delete their entries, no plaintext
