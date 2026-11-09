@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Destructive actions confirm first: Sign out (Settings) and playlist
+  Delete (menu) now arm a confirm dialog instead of acting at once.
+  The red CTA confirms, the ghost button plus scrim/Esc keeps things
+  (stay signed in, keep playlist); Favorites and unknown ids never arm
+  the dialog.
 - Home shelf cards answer right-click: library cards open the playlist
   menu (Play, Add to queue, Shuffle play, Delete) and recommended-album
   cards open an album menu (Play, Add to queue, Shuffle play, Start mix,
