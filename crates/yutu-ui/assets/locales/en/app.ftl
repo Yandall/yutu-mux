@@ -255,7 +255,7 @@ no-errors = No errors recorded.
 cache-section-title = Memory caches (all capped)
 cache-census = art mem { $art } · catalog { $catalog } · lyrics { $lyrics } · stream urls { $urls } · history { $history } · searches { $searches }
 
-## Statuses - playback
+## Statuses - playback (status bar, debug-panel builds only)
 
 playing-line = Playing: { $title } · { $artist }.
 paused-line = Paused: { $title } · { $artist }.
@@ -263,12 +263,9 @@ paused-word = Paused.
 resumed-word = Resumed.
 stopped-word = Stopped.
 loading-track = Loading { $title } · { $artist }…
-stream-retrying = Stream failed, retrying ({ $attempt }/{ $max })…
-stream-skipped = Skipped { $title }: stream failed { $max } times.
 stream-no-device = Stream ready, but no audio device.
 stream-fetched-no-device = Stream { $video_id } fetched, but no audio device.
 fetching-lyrics = Fetching lyrics ({ $provider }).
-lyrics-failed = Lyrics failed: { $e }
 fetching-info = Fetching info for { $id }…
 no-audio-device = No audio device.
 repeat-line = Repeat: { $mode }.
@@ -277,7 +274,7 @@ desktop-paused = Paused (desktop).
 desktop-resumed = Resumed (desktop).
 desktop-stopped = Stopped (desktop).
 
-## Statuses - queue & playlists
+## Statuses - queue & playlists (status bar, debug-panel builds only)
 
 queued-tracks = { $label }: { $n } tracks queued.
 nothing-to-queue = { $label }: nothing to queue.
@@ -318,8 +315,9 @@ disliked = Won't recommend { $id } again.
 starting-radio = Starting radio for { $title } · { $artist }…
 radio-no-results = Radio (seed { $seed }): nothing found.
 scrobbled-to = Scrobbled to { $target }.
+restored-songs = Restored { $n } saved song(s).
 
-## Statuses - import & sync
+## Statuses - import & sync (status bar, debug-panel builds only)
 
 importing-title = Importing your library
 importing-library = Importing your library…
@@ -331,9 +329,7 @@ import-progress-reading = { $shown } songs · { $liked } liked · reading librar
 import-done-line = { $head }: { $n } library tracks ({ $m } liked).
 import-fetching-line = { $head }: { $n } songs ({ $m } liked), fetching { $total } playlists…
 import-done-lists = { $head } complete: { $songs } songs ({ $liked } liked), { $total } playlists.
-import-done-lists-errors = { $head } complete with failures: { $songs } songs ({ $liked } liked), { $done }/{ $total } playlists.
 playlist-fetch-progress = Playlist '{ $title }' done ({ $n } tracks) - { $done }/{ $total }.
-playlist-fetch-failed = Playlist '{ $title }' failed ({ $e }) - { $done }/{ $total }.
 reading-cookies = Reading cookies + contacting YouTube Music…
 cookie-session-lost = Cookie session is gone: import your cookies file again.
 cookie-cleared = Cookie session cleared.
@@ -347,7 +343,7 @@ import-head-sync = Sync
 sync-needs-signin = Sync needs sign-in (cookies or Google).
 relaunch-cancelled = Relaunch cancelled: could not save the session.
 
-## Statuses - sign-in & misc
+## Statuses - sign-in & misc (status bar, debug-panel builds only)
 
 google-device-code = Contacting Google for a device code…
 google-signin-first = Press “Sign in with Google” first.
@@ -356,9 +352,8 @@ signed-in-importing = Signed in: importing your library…
 signed-out-token = Signed out (token file removed).
 google-signin-needed = Sign in with Google first.
 reading-library = Reading library + contacting YouTube Music…
-restored-songs = Restored { $n } saved song(s).
 
-## Failures (failure_status labels - release builds only surface these)
+## Errors (status bar, shown in all builds)
 
 fail-search = Search failed
 fail-radio = Radio failed
@@ -385,3 +380,9 @@ verb-like = like
 verb-unlike = unlike
 verb-dont-recommend = don't-recommend
 verb-clear-dislike = clear-dislike
+stream-retrying = Stream failed, retrying ({ $attempt }/{ $max })…
+stream-skipped = Skipped { $title }: stream failed { $max } times.
+lyrics-failed = Lyrics failed: { $e }
+import-done-lists-errors = { $head } complete with failures: { $songs } songs ({ $liked } liked), { $done }/{ $total } playlists.
+playlist-fetch-failed = Playlist '{ $title }' failed ({ $e }) - { $done }/{ $total }.
+

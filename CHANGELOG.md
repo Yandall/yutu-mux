@@ -12,9 +12,10 @@
   instantly. Fresh installs default from the system locale (`es*`
   starts Spanish). Strings live in Project Fluent catalogs
   (`crates/yutu-ui/assets/locales/<lang>/app.ftl`): translators only
-  edit text files (grouped with `##` section comments, debug-only
-  strings under their own header), a missing key falls back to English,
-  and tests pin catalog parity. The release status filter keys on each language's
+  edit text files (grouped with `##` section comments: screens,
+  statuses, debug-only strings and errors each under their own
+  header), a missing key falls back to English, and tests pin catalog
+  parity. The release status filter keys on each language's
   own failure words so both classify identically.
 - Destructive actions confirm first: Sign out (Settings) and playlist
   Delete (menu) now arm a confirm dialog instead of acting at once.

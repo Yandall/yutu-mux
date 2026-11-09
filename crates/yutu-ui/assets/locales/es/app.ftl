@@ -255,7 +255,7 @@ no-errors = Sin errores registrados.
 cache-section-title = Cachés en memoria (todas limitadas)
 cache-census = arte { $art } · catálogo { $catalog } · letras { $lyrics } · urls { $urls } · historial { $history } · búsquedas { $searches }
 
-## Statuses - playback
+## Statuses - playback (status bar, debug-panel builds only)
 
 playing-line = Reproduciendo: { $title } · { $artist }.
 paused-line = En pausa: { $title } · { $artist }.
@@ -263,12 +263,9 @@ paused-word = En pausa.
 resumed-word = Reanudado.
 stopped-word = Detenido.
 loading-track = Cargando { $title } · { $artist }…
-stream-retrying = Transmisión fallida, reintentando ({ $attempt }/{ $max })…
-stream-skipped = Omitido { $title }: la transmisión falló { $max } veces.
 stream-no-device = Transmisión lista, pero sin dispositivo de audio.
 stream-fetched-no-device = Transmisión { $video_id } obtenida, pero sin dispositivo de audio.
 fetching-lyrics = Obteniendo letra ({ $provider }).
-lyrics-failed = Letra fallida: { $e }
 fetching-info = Obteniendo información de { $id }…
 no-audio-device = Sin dispositivo de audio.
 repeat-line = Repetición: { $mode }.
@@ -277,7 +274,7 @@ desktop-paused = En pausa (escritorio).
 desktop-resumed = Reanudado (escritorio).
 desktop-stopped = Detenido (escritorio).
 
-## Statuses - queue & playlists
+## Statuses - queue & playlists (status bar, debug-panel builds only)
 
 queued-tracks = { $label }: { $n } pistas en fila.
 nothing-to-queue = { $label }: nada para la fila.
@@ -318,8 +315,9 @@ disliked = Ya no se recomendará { $id }.
 starting-radio = Iniciando radio para { $title } · { $artist }…
 radio-no-results = Radio (semilla { $seed }): nada encontrado.
 scrobbled-to = Scrobble enviado a { $target }.
+restored-songs = Restauradas { $n } canciones guardadas.
 
-## Statuses - import & sync
+## Statuses - import & sync (status bar, debug-panel builds only)
 
 importing-title = Importando tu biblioteca
 importing-library = Importando tu biblioteca…
@@ -331,9 +329,7 @@ import-progress-reading = { $shown } canciones · { $liked } en favoritos · ley
 import-done-line = { $head }: { $n } pistas de la biblioteca ({ $m } en favoritos).
 import-fetching-line = { $head }: { $n } canciones ({ $m } en favoritos), obteniendo { $total } listas…
 import-done-lists = { $head } completa: { $songs } canciones ({ $liked } en favoritos), { $total } listas.
-import-done-lists-errors = { $head } completa con errores: { $songs } canciones ({ $liked } en favoritos), { $done }/{ $total } listas.
 playlist-fetch-progress = Lista «{ $title }» lista ({ $n } canciones): { $done }/{ $total }.
-playlist-fetch-failed = Lista «{ $title }» falló ({ $e }): { $done }/{ $total }.
 reading-cookies = Leyendo cookies y contactando YouTube Music…
 cookie-session-lost = La sesión de cookies se perdió: importa tu archivo de cookies de nuevo.
 cookie-cleared = Sesión de cookies eliminada.
@@ -347,7 +343,7 @@ import-head-sync = Sincronización
 sync-needs-signin = La sincronización necesita inicio de sesión (cookies o Google).
 relaunch-cancelled = Reinicio cancelado: no se pudo guardar la sesión.
 
-## Statuses - sign-in & misc
+## Statuses - sign-in & misc (status bar, debug-panel builds only)
 
 google-device-code = Contactando con Google para obtener un código de dispositivo…
 google-signin-first = Pulsa «Sign in with Google» primero.
@@ -356,9 +352,8 @@ signed-in-importing = Sesión iniciada: importando tu biblioteca…
 signed-out-token = Sesión cerrada (archivo de token eliminado).
 google-signin-needed = Inicia sesión con Google primero.
 reading-library = Leyendo la biblioteca y contactando YouTube Music…
-restored-songs = Restauradas { $n } canciones guardadas.
 
-## Failures (failure_status labels - release builds only surface these)
+## Errors (status bar, shown in all builds)
 
 fail-search = Búsqueda fallida
 fail-radio = Error de radio
@@ -385,3 +380,9 @@ verb-like = «me gusta»
 verb-unlike = «no me gusta»
 verb-dont-recommend = «no recomendar»
 verb-clear-dislike = quitar «no recomendar»
+stream-retrying = Transmisión fallida, reintentando ({ $attempt }/{ $max })…
+stream-skipped = Omitido { $title }: la transmisión falló { $max } veces.
+lyrics-failed = Letra fallida: { $e }
+import-done-lists-errors = { $head } completa con errores: { $songs } canciones ({ $liked } en favoritos), { $done }/{ $total } listas.
+playlist-fetch-failed = Lista «{ $title }» falló ({ $e }): { $done }/{ $total }.
+
