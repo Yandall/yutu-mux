@@ -1328,9 +1328,6 @@ pub enum Message {
     Dislike(String),
     SetVolume(f32),
     ToggleMute,
-    QueueRemove(usize),
-    QueueUp(usize),
-    QueueDown(usize),
     QueueClear,
     OpenArtist(String),
     OpenAlbum(String),
@@ -1446,8 +1443,6 @@ pub enum Message {
     RemoveFromQueue(String),
     /// Drop an autoplay-tail item by index.
     RemoveAutoplay(usize),
-    /// Queue-page hover tracking (reveals the row remove).
-    QueueHover(Option<usize>),
     /// Row-leave: clears the hover only when it still names this row.
     /// Iced publishes enter/exit in tree order per event, so a fast
     /// multi-row jump emits enter(new) before exit(old): a blind clear
@@ -2636,7 +2631,7 @@ pub struct AppState {
     /// Spotify-style split: manual queue (user picks) plays first, then
     /// this radio-picked tail ("Next up"). Never persisted.
     autoplay: Vec<Track>,
-    /// Queue-page row under the cursor (hover reveals its remove).
+    /// Queue row under the cursor (right panel hover reveals its remove).
     hovered_queue: Option<usize>,
     /// History-page row under the cursor (per-row index, like the
     /// queue: repeat plays share a track id).
@@ -10294,18 +10289,6 @@ impl AppState {
                 self.apply_volume();
                 self.publish_mpris();
             }
-            Message::QueueRemove(i) => {
-                self.cancel_drag();
-                self.queue.remove_at(i);
-            }
-            Message::QueueUp(i) => {
-                self.cancel_drag();
-                self.queue.move_up(i);
-            }
-            Message::QueueDown(i) => {
-                self.cancel_drag();
-                self.queue.move_down(i);
-            }
             Message::QueueClear => {
                 self.cancel_drag();
                 self.queue.clear();
@@ -10999,7 +10982,7 @@ impl AppState {
                         self.queue.clear();
                         self.queue.push(t);
                         self.queue.jump_to(0);
-                        self.playing_from = "Single + autoplay".into();
+                        self.playing_from = String::new();
                         self.autoplay_for = Some(id.clone());
                         self.autoplay.clear();
                         self.apply_volume();
@@ -11127,23 +11110,6 @@ impl AppState {
                 } else {
                     self.status = format!("Nothing at autoplay index {i}.");
                 }
-            }
-            Message::QueueHover(h) => {
-                // Modal open: rows behind scrims never highlight.
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.show_suggest
-                {
-                    self.hovered_queue = None;
-                } else {
-                    self.hovered_queue = h;
-                }
-                self.hovered_auto = None;
-                self.hovered_album = None;
-                self.hovered_artist = None;
-                self.hovered_search_playlist = None;
-                self.hovered_recent = None;
             }
             Message::QueueExit(i) => {
                 // Match-guarded: a stale exit (enter(new) already
@@ -11388,7 +11354,7 @@ impl AppState {
             Message::GlobalPress => {
                 // Arm from the hovered queue row: one press path for text,
                 // art, and gaps (only the remove button owns its press).
-                // Queue-page buttons coexist order-independently (a shared
+                // Row buttons coexist order-independently (a shared
                 // release either jumps once or no-ops). Armed, not live:
                 // no layout change until the cursor actually moves.
                 if self.drag.is_none() && self.queue.len() >= 2 {
@@ -16647,7 +16613,7 @@ impl AppState {
             .into()
     }
 
-    /// Now Playing drawer content (also the NowPlaying route): big art,
+    /// Now Playing drawer content: big art,
     /// centered song info, then the synced lyrics home. No queue lists
     /// (the sidebar owns those), no Lyrics/Radio buttons, no timings.
     fn drawer_view(&self) -> iced::Element<'_, Message> {
@@ -23659,12 +23625,12 @@ mod tests {
         let _ = s.update(Message::EnqueueTrack("m1".into()));
         let _ = s.update(Message::EnqueueTrack("m2".into()));
         assert_eq!(s.queue.len(), 2);
-        // Click-to-play: queue replaced by the single + autoplay follows.
+        // Click-to-play: queue replaced by the single, no source line.
         let _ = s.update(Message::PlayNow("m3".into()));
         assert_eq!(s.queue.len(), 1);
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m3"));
         assert_eq!(s.autoplay_for.as_deref(), Some("m3"));
-        assert_eq!(s.playing_from, "Single + autoplay");
+        assert!(s.playing_from.is_empty());
         // Unknown id: fetch kicked off, queue untouched.
         let _ = s.update(Message::PlayNow("ghost".into()));
         assert_eq!(s.queue.len(), 1);
@@ -25512,7 +25478,7 @@ mod tests {
         let mut s = test_state();
         let _ = s.update(Message::TrackHover(Some("m1".into())));
         let _ = s.update(Message::PlaylistHover(Some("u1".into())));
-        let _ = s.update(Message::QueueHover(Some(2)));
+        let _ = s.update(Message::PanelHover(2));
         // Queue and autoplay hovers are mutually exclusive by design
         // (entering one list drops the other, so presses never arm off
         // stale state).
@@ -26280,12 +26246,12 @@ mod tests {
     }
 
     #[test]
-    fn queue_hover_tracks_cursor() {
+    fn panel_hover_tracks_cursor() {
         let mut s = test_state();
         assert!(s.hovered_queue.is_none());
-        let _ = s.update(Message::QueueHover(Some(2)));
+        let _ = s.update(Message::PanelHover(2));
         assert_eq!(s.hovered_queue, Some(2));
-        let _ = s.update(Message::QueueHover(None));
+        let _ = s.update(Message::QueueExit(2));
         assert!(s.hovered_queue.is_none());
         // Id-keyed row hover for non-index lists.
         assert!(s.hovered_track.is_none());

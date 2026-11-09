@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Click-to-play no longer sets a source line: the "Playing from Single +
+  autoplay" label is gone (the line hides when empty; album/playlist
+  sources still show).
+- Removed dead queue messages (`QueueRemove`, `QueueUp`, `QueueDown`,
+  `QueueHover`) left over from the deleted Queue page; the right panel
+  uses `PanelHover`/`QueueExit` and id-based `RemoveFromQueue`.
 - Removed unreachable center pages: the Queue page (same content lives in
   the right panel), the Library page (no entry point; delete-fallback now
   lands on Home), and the NowPlaying route (same as the drawer overlay).
