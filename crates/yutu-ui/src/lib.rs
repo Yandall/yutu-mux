@@ -712,18 +712,30 @@ fn ctrl_box(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
         .into()
 }
 
-/// Short live-state caption for the preset group: presets show their
-/// own active segment, but a bypassed or hand-tweaked (Custom) curve
-/// matches no segment, so the name would vanish with the old status
-/// line. Pure helper so tests pin the mapping.
-fn eq_state_caption(eq_enabled: bool, preset_live: bool) -> Option<&'static str> {
-    if !eq_enabled {
-        Some("Bypassed: the chain is flat.")
-    } else if !preset_live {
-        Some("Custom curve.")
-    } else {
+/// Short live-state caption for the preset group: builtin presets show
+/// their own active segment; only a hand-tweaked (Custom) curve matches
+/// nothing. Pure helper so tests pin the mapping.
+fn eq_state_caption(preset_live: bool) -> Option<&'static str> {
+    if preset_live {
         None
+    } else {
+        Some("Custom curve.")
     }
+}
+
+/// Estimated single-strip width of the EQ preset group: label text at
+/// ~7px a char plus segment padding, row spacing, and group chrome.
+/// Conservative: fonts vary, and overestimating only wraps earlier.
+fn eq_strip_width(names: &[String]) -> f32 {
+    let chars: usize = names.iter().map(|n| n.chars().count()).sum();
+    chars as f32 * 7.0 + names.len() as f32 * 16.0 + 22.0
+}
+
+/// True when the settings body fits every preset in one strip (with
+/// slack for font variance); otherwise the group wraps to two rows.
+/// The page scrolls vertically only, so a strip must never clip.
+fn eq_presets_fit(names: &[String], body_w: f32) -> bool {
+    body_w >= eq_strip_width(names) + 30.0
 }
 
 /// Slider in theme red: red filled rail, pale track, white round handle.
@@ -17681,28 +17693,30 @@ impl AppState {
                     .into_iter()
                     .map(|p| p.name)
                     .collect();
-                let current_eq = if self.eq_enabled {
-                    self.eq_preset.clone()
+                // Segmented preset picker: one boxed group with the kept
+                // preset filled red even while bypassed (the toggle owns
+                // the on/off state). One strip when the body fits it,
+                // two rows when narrow (the page scrolls vertically
+                // only, so a strip must never clip).
+                let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
+                let body_w =
+                    (win_w - self.sidebar_w - self.right_w - 32.0).min(CENTER_MAX_W) - 40.0;
+                let per_row = if eq_presets_fit(&eq_names, body_w) {
+                    eq_names.len()
                 } else {
-                    // Bypassed: the chain is flat, whatever the kept
-                    // curve (same honesty as the rodio note).
-                    format!("Off ({})", self.eq_preset)
-                };
-                // Segmented preset picker: one boxed group with the live
-                // preset filled red, so the group itself shows the pick
-                // (no separate status line). Bypassed matches nothing.
-                // Two rows of four: a single strip would clip on narrow
-                // windows (the page scrolls vertically only).
+                    eq_names.len().div_ceil(2)
+                }
+                .max(1);
                 let eq_group: iced::Element<'_, Message> = container(
                     iced::widget::Column::with_children(
                         eq_names
-                            .chunks(4)
+                            .chunks(per_row)
                             .map(|row_names| {
                                 iced::widget::Row::with_children(
                                     row_names
                                         .iter()
                                         .map(|n| {
-                                            let active = *n == current_eq;
+                                            let active = *n == self.eq_preset;
                                             button(btn_text(n.clone(), 12))
                                                 .style(seg_button(active))
                                                 .on_press(Message::SelectEqPreset(n.clone()))
@@ -17727,14 +17741,13 @@ impl AppState {
                     Some(a) if a.supports_eq() => text("").size(1).into(),
                     _ => text(self.eq_note()).size(12).color(MUTED).into(),
                 };
-                // Live-state caption: the group marks builtin presets, but
-                // a bypassed or Custom curve matches no segment.
-                let preset_live = eq_names.contains(&current_eq);
-                let eq_caption: iced::Element<'_, Message> =
-                    match eq_state_caption(self.eq_enabled, preset_live) {
-                        Some(note) => text(note).size(12).color(MUTED).into(),
-                        None => text("").size(1).into(),
-                    };
+                // Live-state caption: the group marks builtin presets, so
+                // only a hand-tweaked curve needs naming.
+                let preset_live = eq_names.contains(&self.eq_preset);
+                let eq_caption: iced::Element<'_, Message> = match eq_state_caption(preset_live) {
+                    Some(note) => text(note).size(12).color(MUTED).into(),
+                    None => text("").size(1).into(),
+                };
                 // Graphic EQ panel: bypass toggle top-right, canvas
                 // sliders + curve below. Presets above are predefined
                 // curves for the same gains.
@@ -22372,17 +22385,30 @@ mod tests {
     }
 
     #[test]
-    fn eq_state_caption_names_non_preset_states() {
-        assert_eq!(eq_state_caption(true, true), None);
-        assert_eq!(eq_state_caption(true, false), Some("Custom curve."));
-        assert_eq!(
-            eq_state_caption(false, true),
-            Some("Bypassed: the chain is flat.")
-        );
-        assert_eq!(
-            eq_state_caption(false, false),
-            Some("Bypassed: the chain is flat.")
-        );
+    fn eq_state_caption_names_custom_only() {
+        assert_eq!(eq_state_caption(true), None);
+        assert_eq!(eq_state_caption(false), Some("Custom curve."));
+    }
+
+    #[test]
+    fn eq_presets_fit_single_strip_when_roomy() {
+        let names: Vec<String> = [
+            "Flat",
+            "Bass Boost",
+            "Treble Boost",
+            "Vocal",
+            "Rock",
+            "Pop",
+            "Jazz",
+            "Classical",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(eq_presets_fit(&names, 1200.0));
+        assert!(eq_presets_fit(&names, 600.0));
+        assert!(!eq_presets_fit(&names, 400.0));
+        assert!(!eq_presets_fit(&names, 0.0));
     }
 
     #[test]

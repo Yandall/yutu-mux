@@ -6,12 +6,13 @@
   dark fill plus border at rest, pill like the red CTA, uniform padding
   8): Sign out, Keep file, Relaunch, queue Clear/Clear queue, Library
   Open, Show more expanders, Discovery link, and Radio secondaries.
-  EQ presets render as one segmented group (two rows of four, live
-  preset red-filled, Bypassed/Custom caption when no segment matches);
-  the backend warning shows only when EQ cannot work. Player transport
-  glyphs sit in uniform centered boxes with a stable repeat badge slot,
-  so hover frames line up. Menus, icon buttons, and row titles keep
-  hover-only feedback.
+  EQ presets render as one segmented group (single strip when the body
+  fits, two rows when narrow) with the kept preset red-filled even while
+  bypassed; a Custom caption names hand-tweaked curves and the backend
+  warning shows only when EQ cannot work. Player transport glyphs sit
+  in uniform centered boxes with a stable repeat badge slot, so hover
+  frames line up. Menus, icon buttons, and row titles keep hover-only
+  feedback.
 - Scrobbling credentials persist securely: the ListenBrainz token and
   Last.fm key/secret/session key live in the OS keychain like the cookie
   session (one entry each, empties delete their entries, no plaintext
