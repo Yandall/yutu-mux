@@ -7548,6 +7548,27 @@ impl AppState {
                 BODY_PAD + Self::text_h(24.0) + 10.0 + Self::text_h(12.0) + 10.0 + 32.0 + 10.0,
                 ROW_PITCH,
             ),
+            Route::History => {
+                // Mirrors `history_view`: title + count + filter input,
+                // then one section column per month (header + uniform
+                // rows). Overscan absorbs the input-height estimate.
+                const FILTER_H: f32 = 42.0;
+                let mut y = BODY_PAD
+                    + Self::text_h(22.0)
+                    + 10.0
+                    + Self::text_h(12.0)
+                    + 10.0
+                    + FILTER_H
+                    + 10.0;
+                let mut slots = Vec::new();
+                let (groups, _) = self.history_groups(now_unix(), self.history_limit);
+                for (_, rows) in &groups {
+                    y += Self::text_h(19.0) + 6.0;
+                    slots.extend(Self::track_row_slots(rows, y, ROW_PITCH));
+                    y += rows.len() as f32 * ROW_PITCH + 10.0;
+                }
+                slots
+            }
             _ => Vec::new(),
         }
     }
@@ -22691,6 +22712,39 @@ mod tests {
             s.scroll_offsets.get("body").copied().unwrap_or(-1.0),
             1320.0
         );
+    }
+
+    #[test]
+    fn history_row_slots_cover_scrolled_tail() {
+        redirect_art_cache();
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+        for i in 0..30 {
+            let id = format!("hh{i}");
+            s.catalog.insert(id.clone(), art_track(&id));
+            s.history_full.push(HistoryEntry {
+                track_id: id,
+                played_at_unix: now_unix() - i as i64 * 60,
+            });
+        }
+        s.route = Route::History;
+        let slots = s.art_slots("body");
+        // Tail rows get slots too, not just the nav-time head (12).
+        assert!(slots.len() > 12, "slots: {}", slots.len());
+        assert!(slots.iter().any(|(u, _)| u.contains("hh0.jpg")));
+        assert!(slots.iter().any(|(u, _)| u.contains("hh29.jpg")));
+        // Deep scroll fetches the window head first (12-task batches);
+        // completing it chains the tail, same as the search sweep.
+        let _ = s.update(Message::Scrolled("body", 1200.0));
+        assert!(s.artwork_loading.iter().any(|u| u.contains("hh10.jpg")));
+        for url in s.artwork_loading.clone() {
+            let _ = s.update(Message::ArtworkReady {
+                url,
+                result: Ok(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x00, 0x10]),
+            });
+        }
+        let _ = s.update(Message::Scrolled("body", 1320.0));
+        assert!(s.artwork_loading.iter().any(|u| u.contains("hh29.jpg")));
     }
 
     #[test]
