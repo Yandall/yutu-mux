@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Home Discovery link is now text plus a chevron icon: the Spanish
+  label reads "Descubrir" (no trailing arrow character).
 - Language selector in Settings with full Spanish translation: every
   user-facing string renders through the `Language` table
   (`crates/yutu-ui/src/i18n.rs`), persisted in SQLite and applied

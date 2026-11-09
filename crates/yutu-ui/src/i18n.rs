@@ -366,8 +366,8 @@ impl Language {
     pub fn made_for_you(self) -> String {
         self.tr("made-for-you")
     }
-    pub fn discovery_arrow(self) -> String {
-        self.tr("discovery-arrow")
+    pub fn discovery_link(self) -> String {
+        self.tr("discovery-link")
     }
     pub fn weekly_mix(self) -> String {
         self.tr("weekly-mix")

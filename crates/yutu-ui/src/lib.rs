@@ -17417,10 +17417,17 @@ impl AppState {
                     grid,
                     row![
                         text(self.language.made_for_you()).size(19).width(Fill),
-                        button(btn_text(self.language.discovery_arrow(), 12))
-                            .style(ghost_button)
-                            .on_press(Message::Navigate(Route::Discovery))
-                            .padding(8),
+                        button(
+                            row![
+                                btn_text(self.language.discovery_link(), 12),
+                                btn_icon("chevron-right", 12.0, iced::Color::WHITE),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(ghost_button)
+                        .on_press(Message::Navigate(Route::Discovery))
+                        .padding(8),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row![
