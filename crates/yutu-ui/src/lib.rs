@@ -1388,7 +1388,13 @@ pub enum Message {
         playlist_id: String,
         track_id: String,
     },
+    /// Delete the playlist, from its confirm dialog (the menu row only
+    /// arms the dialog via [`Message::RequestDeletePlaylist`]).
     DeletePlaylist(String),
+    /// Arm the playlist-delete confirm dialog (menu row).
+    RequestDeletePlaylist(String),
+    /// Dismiss the playlist-delete confirm (scrim/Esc/keep: safe default).
+    CancelDeletePlaylist,
     SelectEqPreset(String),
     SetEqBand(usize, f32),
     EqToggled(bool),
@@ -1761,8 +1767,16 @@ pub enum Message {
     #[cfg(feature = "innertube")]
     CookieSessionImport,
     /// Delete the saved cookie session (stays out of the account).
+    /// Fires from the sign-out confirm dialog (the Settings row only
+    /// arms it via [`Message::RequestSignOut`]).
     #[cfg(feature = "innertube")]
     CookieLogout,
+    /// Arm the sign-out confirm dialog (Settings row).
+    #[cfg(feature = "innertube")]
+    RequestSignOut,
+    /// Dismiss the sign-out confirm (scrim/Esc/stay: safe default).
+    #[cfg(feature = "innertube")]
+    CancelSignOut,
     /// Delete the just-imported `cookies.txt` export (secure session kept).
     #[cfg(feature = "innertube")]
     CookieCleanupDelete,
@@ -2750,6 +2764,12 @@ pub struct AppState {
     /// ticker runs, snaps when animations are off). Shared by every
     /// modal dialog.
     modal_anim: f32,
+    /// Playlist awaiting a delete/keep decision (modal). `None` hides
+    /// the dialog; the menu row arms it, the dialog confirms it.
+    pending_playlist_delete: Option<String>,
+    /// Sign-out confirm dialog open (Settings row arms it).
+    #[cfg(feature = "innertube")]
+    pending_signout: bool,
     /// Scrobbling credentials dialog open (Settings button).
     scrobble_modal_open: bool,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.
@@ -3587,6 +3607,13 @@ impl AppState {
             return 1.0;
         }
         if self.scrobble_modal_open {
+            return 1.0;
+        }
+        #[cfg(feature = "innertube")]
+        if self.pending_signout {
+            return 1.0;
+        }
+        if self.pending_playlist_delete.is_some() {
             1.0
         } else {
             0.0
@@ -5100,6 +5127,9 @@ impl AppState {
             #[cfg(feature = "innertube")]
             pending_cookie_source: None,
             modal_anim: 0.0,
+            pending_playlist_delete: None,
+            #[cfg(feature = "innertube")]
+            pending_signout: false,
             scrobble_modal_open: false,
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
@@ -7806,7 +7836,7 @@ impl AppState {
                 // refresh, so the two buttons never coexist.
                 button(btn_text("Sign out", 12))
                     .style(ghost_button)
-                    .on_press(Message::CookieLogout)
+                    .on_press(Message::RequestSignOut)
                     .padding(8),
             ]
             .spacing(4)
@@ -7965,6 +7995,82 @@ impl AppState {
         .width(400)
         .into();
         Some(self.modal_frame(card, Message::CookieCleanupKeep))
+    }
+
+    /// Sign-out confirm: clearing the session is one tap in Settings,
+    /// so the destructive step gets an explicit dialog. Delete is the
+    /// CTA; scrim/Esc stays signed in (safe default).
+    #[cfg(feature = "innertube")]
+    fn signout_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, text};
+        if !self.pending_signout {
+            return None;
+        }
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text("Sign out?").size(16),
+                text("Clears the saved session on this device. Your local library stays put.")
+                    .size(12)
+                    .color(MUTED),
+                iced::widget::row![
+                    button(btn_text("Sign out", 12))
+                        .style(accent_button)
+                        .on_press(Message::CookieLogout)
+                        .padding(8),
+                    button(btn_text("Stay signed in", 12))
+                        .style(ghost_button)
+                        .on_press(Message::CancelSignOut)
+                        .padding(8),
+                ]
+                .spacing(8),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(400)
+        .into();
+        Some(self.modal_frame(card, Message::CancelSignOut))
+    }
+
+    /// Playlist-delete confirm: the menu row is one tap from wiping a
+    /// whole list (mirrored to YouTube Music while signed in), so the
+    /// destructive step gets an explicit dialog. Delete is the CTA;
+    /// scrim/Esc keeps the playlist (safe default).
+    fn playlist_delete_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, text};
+        let id = self.pending_playlist_delete.clone()?;
+        let (title, n) = self
+            .find_playlist(&id)
+            .map(|p| (p.title.clone(), p.tracks.len()))
+            .unwrap_or((id.clone(), 0));
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text("Delete this playlist?").size(16),
+                text(format!(
+                    "{title} ({n} songs) leaves your library. This cannot be undone."
+                ))
+                .size(12)
+                .color(MUTED),
+                iced::widget::row![
+                    button(btn_text("Delete playlist", 12))
+                        .style(accent_button)
+                        .on_press(Message::DeletePlaylist(id))
+                        .padding(8),
+                    button(btn_text("Keep playlist", 12))
+                        .style(ghost_button)
+                        .on_press(Message::CancelDeletePlaylist)
+                        .padding(8),
+                ]
+                .spacing(8),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(400)
+        .into();
+        Some(self.modal_frame(card, Message::CancelDeletePlaylist))
     }
 
     /// Persist scrobble secrets to the OS keychain, one write per field
@@ -10897,8 +11003,32 @@ impl AppState {
                     }
                 }
             }
+            Message::RequestDeletePlaylist(id) => {
+                self.close_menu();
+                // Same either-form rule as adds (see AddToPlaylist).
+                let id = yutu_core::canonical_playlist_id(&id);
+                if id == Self::FAVORITES_ID {
+                    self.status = "Favorites is built-in and can't be deleted.".into();
+                    return iced::Task::none();
+                }
+                if self.find_playlist(&id).is_none() {
+                    self.status = format!("Playlist {id} is built-in and can't be deleted.");
+                    return iced::Task::none();
+                }
+                // Restart the entrance only when nothing is open: the
+                // ticker is shared, so resetting under a settled dialog
+                // would make its card jump down and re-rise.
+                if self.modal_target() == 0.0 {
+                    self.modal_anim = 0.0;
+                }
+                self.pending_playlist_delete = Some(id);
+            }
+            Message::CancelDeletePlaylist => {
+                self.pending_playlist_delete = None;
+            }
             Message::DeletePlaylist(id) => {
                 self.close_menu();
+                self.pending_playlist_delete = None;
                 // Same either-form rule as adds (see AddToPlaylist).
                 let id = yutu_core::canonical_playlist_id(&id);
                 if id == Self::FAVORITES_ID {
@@ -11897,6 +12027,18 @@ impl AppState {
                 return iced::Task::none();
             }
             Message::CloseContext => {
+                // Topmost first: the confirm dialogs render above the
+                // credentials dialog, so Esc dismisses them first.
+                // Scrim/Esc keeps the playlist / stays signed in.
+                if self.pending_playlist_delete.is_some() {
+                    self.pending_playlist_delete = None;
+                    return iced::Task::none();
+                }
+                #[cfg(feature = "innertube")]
+                if self.pending_signout {
+                    self.pending_signout = false;
+                    return iced::Task::none();
+                }
                 // Topmost first: the scrobbling dialog renders above the
                 // cookie modal (pushed later), so Esc closes it first.
                 // Scrim/Esc closes it with edits kept.
@@ -12523,7 +12665,22 @@ impl AppState {
                 }
             }
             #[cfg(feature = "innertube")]
+            Message::RequestSignOut => {
+                // Restart the entrance only when nothing is open: the
+                // ticker is shared, so resetting under a settled dialog
+                // would make its card jump down and re-rise.
+                if self.modal_target() == 0.0 {
+                    self.modal_anim = 0.0;
+                }
+                self.pending_signout = true;
+            }
+            #[cfg(feature = "innertube")]
+            Message::CancelSignOut => {
+                self.pending_signout = false;
+            }
+            #[cfg(feature = "innertube")]
             Message::CookieLogout => {
+                self.pending_signout = false;
                 // Orphan in-flight playlist arrivals (generation bump).
                 self.import_gen += 1;
                 self.import_done = 0;
@@ -18680,7 +18837,7 @@ impl AppState {
                             .width(Fill),
                         )
                         .style(hover_row)
-                        .on_press(Message::DeletePlaylist(pid4))
+                        .on_press(Message::RequestDeletePlaylist(pid4))
                         .padding(8)
                         .width(Fill)
                         .into(),
@@ -18961,6 +19118,17 @@ impl AppState {
         // Scrobbling dialog above everything else: same dimmed frame,
         // scrim/Esc closes it with edits kept.
         if let Some(dialog) = self.scrobble_dialog() {
+            layers.push(dialog);
+        }
+        // Playlist-delete confirm above everything else: same dimmed
+        // frame, scrim/Esc keeps the playlist (safe default).
+        if let Some(dialog) = self.playlist_delete_dialog() {
+            layers.push(dialog);
+        }
+        // Sign-out confirm above everything else: same dimmed frame,
+        // scrim/Esc stays signed in (safe default).
+        #[cfg(feature = "innertube")]
+        if let Some(dialog) = self.signout_dialog() {
             layers.push(dialog);
         }
         // Always a Stack (even with one layer): flipping between bare
@@ -20039,6 +20207,69 @@ mod tests {
         let before = s.status.clone();
         let _ = s.update(Message::SyncNow);
         assert_eq!(s.status, before);
+    }
+
+    #[test]
+    fn playlist_delete_confirms_first() {
+        let mut s = test_state();
+        let _ = s.update(Message::CreatePlaylist("Gym".into()));
+        let pid = s.user_playlists[0].id.clone();
+        // The menu row only arms the dialog: nothing is deleted yet.
+        let _ = s.update(Message::OpenPlaylistMenu(pid.clone()));
+        let _ = s.update(Message::RequestDeletePlaylist(pid.clone()));
+        assert!(s.pl_menu.is_none());
+        assert_eq!(s.pending_playlist_delete.as_deref(), Some(pid.as_str()));
+        assert_eq!(s.user_playlists.len(), 1);
+        let _ = s.view();
+        // Cancel keeps the playlist; Esc dismisses too.
+        let _ = s.update(Message::CancelDeletePlaylist);
+        assert!(s.pending_playlist_delete.is_none());
+        assert_eq!(s.user_playlists.len(), 1);
+        let _ = s.update(Message::RequestDeletePlaylist(pid.clone()));
+        let _ = s.update(Message::CloseContext);
+        assert!(s.pending_playlist_delete.is_none());
+        assert_eq!(s.user_playlists.len(), 1);
+        // Confirm deletes and lands home from the detail page.
+        let _ = s.update(Message::OpenPlaylist(pid.clone()));
+        let _ = s.update(Message::RequestDeletePlaylist(pid.clone()));
+        let _ = s.update(Message::DeletePlaylist(pid.clone()));
+        assert!(s.user_playlists.is_empty());
+        assert!(s.pending_playlist_delete.is_none());
+        assert_eq!(s.route, Route::Home);
+        // Unknown ids never arm the dialog.
+        let _ = s.update(Message::RequestDeletePlaylist("nope".into()));
+        assert!(s.pending_playlist_delete.is_none());
+        // Favorites never arms the dialog either.
+        let _ = s.update(Message::RequestDeletePlaylist("__favorites".into()));
+        assert!(s.pending_playlist_delete.is_none());
+        assert!(s.status.contains("can't be deleted"));
+    }
+
+    #[cfg(feature = "innertube")]
+    #[test]
+    fn signout_confirms_first() {
+        let mut s = test_state();
+        s.cookie_logged_in = true;
+        // The Settings row only arms the dialog: still signed in.
+        let _ = s.update(Message::RequestSignOut);
+        assert!(s.pending_signout);
+        assert!(s.cookie_logged_in);
+        assert!(s.signout_dialog().is_some());
+        let _ = s.view();
+        // Cancel and Esc stay signed in.
+        let _ = s.update(Message::CancelSignOut);
+        assert!(!s.pending_signout);
+        assert!(s.cookie_logged_in);
+        let _ = s.update(Message::RequestSignOut);
+        let _ = s.update(Message::CloseContext);
+        assert!(!s.pending_signout);
+        assert!(s.cookie_logged_in);
+        // Confirm signs out.
+        let _ = s.update(Message::RequestSignOut);
+        let _ = s.update(Message::CookieLogout);
+        assert!(!s.pending_signout);
+        assert!(!s.cookie_logged_in);
+        assert!(s.status.contains("cleared"));
     }
 
     #[test]
