@@ -1095,8 +1095,6 @@ pub enum Route {
     #[default]
     Home,
     Search,
-    Queue,
-    Library,
     History,
     Discovery,
     Settings,
@@ -1105,7 +1103,6 @@ pub enum Route {
     PlaylistDetail(String),
     Lyrics(String),
     Radio(String),
-    NowPlaying,
 }
 
 /// In-progress right-panel drag: source index + insertion slot.
@@ -2111,7 +2108,6 @@ const SUGGEST_ROW_H: f32 = 44.0;
 /// 16px row padding = 61.75px, rounded up). Anything shorter clips
 /// the artist on long titles (the row clips instead of growing).
 const QUEUE_ROW_H: f32 = 64.0;
-const AUTO_ROW_H: f32 = 48.0;
 /// Lazy art sweep: viewport overscan each side (absorbs header-height
 /// estimates and fast scrolls), scroll buckets plus minimum gap (scroll
 /// storms collapse), fetch cap per sweep.
@@ -3084,10 +3080,10 @@ impl AppState {
     }
 
     /// First screenful of track ids for the current route (lazy scope).
-    /// Home shows the recent grid (or Favorites fallback); Library shows
-    /// the head of Favorites; detail routes show the head of their list;
-    /// the sidebar covers come from the head of each playlist's first
-    /// track. Everything is capped: never a whole-library sweep.
+    /// Home shows the recent grid (or Favorites fallback); detail routes
+    /// show the head of their list; the sidebar covers come from the head
+    /// of each playlist's first track. Everything is capped: never a
+    /// whole-library sweep.
     fn visible_ids(&self) -> Vec<String> {
         const CAP: usize = 12;
         match &self.route {
@@ -3107,7 +3103,6 @@ impl AppState {
                 }
                 ids
             }
-            Route::Library => self.liked_order.iter().take(CAP).cloned().collect(),
             Route::History => self
                 .history_full
                 .iter()
@@ -3146,17 +3141,6 @@ impl AppState {
                 }
                 ids
             }
-            Route::Queue => {
-                let mut ids: Vec<String> = self
-                    .queue
-                    .items()
-                    .iter()
-                    .take(CAP)
-                    .map(|t| t.id.clone())
-                    .collect();
-                ids.extend(self.autoplay.iter().take(4).map(|t| t.id.clone()));
-                ids
-            }
             Route::Radio(_) => self
                 .radio_tracks
                 .iter()
@@ -3164,11 +3148,6 @@ impl AppState {
                 .map(|t| t.id.clone())
                 .collect(),
             Route::Lyrics(id) => vec![id.clone()],
-            Route::NowPlaying => self
-                .queue
-                .current()
-                .map(|t| vec![t.id.clone()])
-                .unwrap_or_default(),
             Route::Settings => Vec::new(),
         }
     }
@@ -3201,7 +3180,6 @@ impl AppState {
                 }
                 out
             }
-            Route::Library => self.favorite_tracks().into_iter().take(CAP).collect(),
             _ => self
                 .visible_ids()
                 .into_iter()
@@ -3735,7 +3713,7 @@ impl AppState {
                 self.user_playlists.retain(|p| !pruned.contains(&p.id));
                 if let Route::PlaylistDetail(id) = &self.route {
                     if pruned.contains(id) {
-                        self.go(Route::Library);
+                        self.go(Route::Home);
                     }
                 }
             }
@@ -7378,7 +7356,6 @@ impl AppState {
         const CHIPS_H: f32 = 34.0;
         const HERO_H: f32 = 124.0;
         const SECTION_H: f32 = 32.0;
-        const DIV_PITCH: f32 = TRACK_ROW_H + DIVIDER_PX;
         match &self.route {
             Route::Home => {
                 // Vertical page scrolls under the "body" key (the "home"
@@ -7590,18 +7567,6 @@ impl AppState {
             Route::Album(id) => {
                 let rows = self.album_display_tracks(id);
                 Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)
-            }
-            Route::Library => {
-                let mut y = BODY_PAD + Self::text_h(22.0) + 10.0 + Self::text_h(19.0) + 6.0;
-                let liked = self.favorite_tracks();
-                if self.liked.len() > liked.len() {
-                    y += Self::text_h(12.0);
-                }
-                Self::track_row_slots(&liked, y, ROW_PITCH)
-            }
-            Route::Queue => {
-                let y0 = BODY_PAD + 30.0 + 10.0 + 45.0 + 10.0 + Self::text_h(13.0) + 10.0;
-                Self::track_row_slots(self.queue.items(), y0, DIV_PITCH)
             }
             Route::Discovery => {
                 let weekly = &self.home_shelves.weekly;
@@ -10913,7 +10878,7 @@ impl AppState {
                         self.record_pending("delete", Some(&id), None, None);
                     }
                     if self.route == Route::PlaylistDetail(id.clone()) {
-                        self.go(Route::Library);
+                        self.go(Route::Home);
                     }
                     self.status = format!("Deleted playlist {id}.");
                     self.publish_mpris();
@@ -17015,7 +16980,7 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{
             button, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
-            text_input, toggler,
+            toggler,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -17382,273 +17347,6 @@ impl AppState {
                     }
                 };
                 content
-            }
-            Route::Queue => {
-                let pos = self.queue.position();
-                let header: iced::Element<'_, Message> = match self.queue.current() {
-                    Some(t) => column![
-                        text("Now playing").size(12).color(MUTED),
-                        text(format!("{} · {}", t.title, t.artist)).size(17),
-                        text(format!(
-                            "Track {} of {} · {} autoplay · Shuffle {} · Repeat {:?}",
-                            pos.map(|p| p + 1).unwrap_or(0),
-                            self.queue.len(),
-                            self.autoplay.len(),
-                            if self.queue.shuffle { "on" } else { "off" },
-                            self.queue.repeat,
-                        ))
-                        .size(12)
-                        .color(MUTED),
-                    ]
-                    .spacing(2)
-                    .into(),
-                    None => text("Queue is empty: search for music first.")
-                        .color(MUTED)
-                        .into(),
-                };
-                let rows: Vec<iced::Element<'_, Message>> = self
-                    .queue
-                    .items()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        use iced::widget::{button, mouse_area, row};
-                        use iced::Fill;
-                        let is_current = Some(i) == pos;
-                        let marker = if is_current { "● " } else { "" };
-                        let jump = t.id.clone();
-                        let remove_id = t.id.clone();
-                        // The remove button only exists on hover (placeholder holds
-                        // the layout so rows never jump).
-                        let remove_btn: iced::Element<'_, Message> =
-                            if self.hovered_queue == Some(i) {
-                                button(btn_icon("x", 12.0, iced::Color::WHITE))
-                                    .style(hover_row)
-                                    .on_press(Message::RemoveFromQueue(remove_id))
-                                    .padding(5)
-                                    .into()
-                            } else {
-                                iced::widget::Space::new()
-                                    .width(iced::Length::Fixed(24.0))
-                                    .into()
-                            };
-                        mouse_area(
-                            container(
-                                row![
-                                    row_button(self.thumb(t))
-                                        .style(row_click)
-                                        .on_press(Message::QueueJump(i))
-                                        .padding(2),
-                                    row_button(Self::btn_track_text_single(
-                                        &format!(
-                                            "{marker}{}. {}",
-                                            i + 1,
-                                            truncate_title(&t.title, 55)
-                                        ),
-                                        &t.artist,
-                                        14,
-                                        if is_current {
-                                            ACCENT
-                                        } else {
-                                            iced::Color::WHITE
-                                        },
-                                    ))
-                                    .style(row_click)
-                                    .on_press(Message::QueueJump(i))
-                                    .padding(4)
-                                    .width(Fill),
-                                    button(btn_icon("arrow-up", 12.0, MUTED))
-                                        .style(hover_row)
-                                        .on_press(Message::QueueUp(i))
-                                        .padding(5),
-                                    button(btn_icon("arrow-down", 12.0, MUTED))
-                                        .style(hover_row)
-                                        .on_press(Message::QueueDown(i))
-                                        .padding(5),
-                                    row_button(
-                                        btn_text(fmt_time(t.duration_secs as f64), 12).color(MUTED),
-                                    )
-                                    .style(row_click)
-                                    .on_press(Message::QueueJump(i))
-                                    .padding(5),
-                                    remove_btn,
-                                ]
-                                .spacing(4)
-                                .align_y(iced::alignment::Vertical::Center)
-                                .padding(8),
-                            )
-                            .style(row_bg(self.hovered_queue == Some(i)))
-                            .width(Fill)
-                            .height(iced::Length::Fixed(TRACK_ROW_H))
-                            .clip(true)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .on_right_press(Message::OpenContext(jump))
-                        .on_enter(Message::QueueHover(Some(i)))
-                        .on_exit(Message::QueueExit(i))
-                        .into()
-                    })
-                    .collect();
-                let auto_rows: Vec<iced::Element<'_, Message>> = self
-                    .autoplay
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        use iced::widget::{button, container, mouse_area, row, text};
-                        use iced::Fill;
-                        let menu_id = t.id.clone();
-                        mouse_area(
-                            container(
-                                row![
-                                    row_button(Self::btn_track_text_single(
-                                        &format!("{}. {}", i + 1, truncate_title(&t.title, 55)),
-                                        &t.artist,
-                                        13,
-                                        iced::Color::WHITE
-                                    ))
-                                    .style(row_click)
-                                    .on_press(Message::PlayAutoplay(i))
-                                    .padding(4)
-                                    .width(Fill),
-                                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
-                                    button(btn_icon("x", 12.0, iced::Color::WHITE))
-                                        .style(hover_row)
-                                        .on_press(Message::RemoveAutoplay(i))
-                                        .padding(5),
-                                ]
-                                .spacing(4)
-                                .align_y(iced::alignment::Vertical::Center)
-                                .padding(8),
-                            )
-                            .style(row_bg(self.hovered_auto == Some(i)))
-                            .width(Fill)
-                            .height(iced::Length::Fixed(AUTO_ROW_H))
-                            .clip(true)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .on_right_press(Message::OpenContext(menu_id))
-                        .on_enter(Message::AutoHover(Some(i)))
-                        .on_exit(Message::AutoExit(i))
-                        .into()
-                    })
-                    .collect();
-                let auto_section: iced::Element<'_, Message> = if auto_rows.is_empty() {
-                    text("").size(1).into()
-                } else {
-                    column![
-                        text("Autoplay: similar, plays after your queue")
-                            .size(13)
-                            .color(MUTED),
-                        column(auto_rows).spacing(2),
-                    ]
-                    .spacing(4)
-                    .into()
-                };
-                column![
-                    row![
-                        text("Up Next").size(22).width(Fill),
-                        button(
-                            row![
-                                btn_icon("shuffle", 12.0, iced::Color::WHITE),
-                                btn_text(if self.queue.shuffle { "On" } else { "Off" }, 12),
-                            ]
-                            .spacing(4)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .style(ghost_button)
-                        .on_press(Message::ToggleShuffle)
-                        .padding(8),
-                        button(
-                            row![
-                                btn_icon("repeat", 12.0, iced::Color::WHITE),
-                                btn_text(format!("{:?}", self.queue.repeat), 12),
-                            ]
-                            .spacing(4)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .style(ghost_button)
-                        .on_press(Message::CycleRepeat)
-                        .padding(8),
-                        button(btn_text("Clear", 12))
-                            .style(ghost_button)
-                            .on_press(Message::QueueClear)
-                            .padding(8),
-                    ]
-                    .spacing(4)
-                    .align_y(iced::alignment::Vertical::Center),
-                    header,
-                    text("Queue: your picks").size(13).color(MUTED),
-                    column(with_dividers(rows)).spacing(0),
-                    auto_section,
-                ]
-                .spacing(10)
-                .into()
-            }
-            Route::Library => {
-                // Add order like Favorites so both orders match.
-                let liked_tracks: Vec<Track> = self.favorite_tracks();
-                let liked_missing = self.liked.len().saturating_sub(liked_tracks.len());
-                let liked: Vec<iced::Element<'_, Message>> =
-                    liked_tracks.iter().map(|t| self.track_row(t)).collect();
-                let liked_note: iced::Element<'_, Message> = if liked_missing > 0 {
-                    text(format!(
-                        "{liked_missing} liked song(s) not in cache: search for them."
-                    ))
-                    .size(12)
-                    .color(MUTED)
-                    .into()
-                } else {
-                    text("").size(1).into()
-                };
-                let playlists: Vec<iced::Element<'_, Message>> = self
-                    .all_playlists()
-                    .into_iter()
-                    .map(|p| {
-                        use iced::widget::{button, row, text};
-                        use iced::Fill;
-                        row![
-                            column![
-                                text(p.title.clone()).size(14),
-                                text(format!("{} tracks", p.tracks.len()))
-                                    .size(12)
-                                    .color(MUTED),
-                            ]
-                            .spacing(2)
-                            .width(Fill),
-                            button(btn_text("Open", 12))
-                                .style(ghost_button)
-                                .on_press(Message::OpenPlaylist(p.id.clone()))
-                                .padding(8),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .padding(6)
-                        .into()
-                    })
-                    .collect();
-                let new_name = self.new_playlist_name.clone();
-                column![
-                    text("Your Library").size(22),
-                    text("Liked").size(19),
-                    liked_note,
-                    column(liked).spacing(2),
-                    Self::section("Playlists", playlists),
-                    row![
-                        text_input("New playlist name…", &self.new_playlist_name)
-                            .style(rounded_input)
-                            .on_input(Message::NewPlaylistNameChanged)
-                            .width(Fill)
-                            .padding(10),
-                        button(btn_text("Create", 13))
-                            .style(accent_button)
-                            .on_press(Message::CreatePlaylist(new_name))
-                            .padding(8),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
-                ]
-                .spacing(10)
-                .into()
             }
             Route::History => self.history_view(),
             Route::Discovery => {
@@ -18233,7 +17931,6 @@ impl AppState {
                 .spacing(10)
                 .into()
             }
-            Route::NowPlaying => self.drawer_view(),
             Route::Radio(seed) => {
                 let rows: Vec<iced::Element<'_, Message>> = self
                     .radio_tracks
@@ -20269,7 +19966,7 @@ mod tests {
         let _ = s.update(Message::OpenPlaylist(pid.clone()));
         let _ = s.update(Message::DeletePlaylist(pid.clone()));
         assert!(s.user_playlists.is_empty());
-        assert_eq!(s.route, Route::Library);
+        assert_eq!(s.route, Route::Home);
         // Deleting an unknown playlist is a no-op with a message.
         let _ = s.update(Message::DeletePlaylist("nope".into()));
         assert!(s.user_playlists.is_empty());
@@ -22874,7 +22571,7 @@ mod tests {
         for i in 0..30 {
             s.like_id(&format!("v-{i}"));
         }
-        s.route = Route::Library;
+        s.route = Route::Discovery;
         assert!(s.visible_ids().len() <= 12);
         s.route = Route::Home;
         // Home fallback grid shows at most 8 favorites.
@@ -22893,7 +22590,7 @@ mod tests {
         // Unresolvable ids cool down: an immediate re-scan (art arrival
         // chaining) must not re-probe at once.
         s.like_id("retry-me");
-        s.route = Route::Library;
+        s.route = Route::Discovery;
         let _ = s.ensure_visible_tasks();
         assert!(!s.hydrating.contains("retry-me"));
     }
@@ -23820,8 +23517,8 @@ mod tests {
         let _ = s.update(Message::NavBack);
         assert_eq!(s.route, Route::Home);
         let _ = s.update(Message::Navigate(Route::Search));
-        let _ = s.update(Message::Navigate(Route::Queue));
-        assert_eq!(s.route, Route::Queue);
+        let _ = s.update(Message::Navigate(Route::Discovery));
+        assert_eq!(s.route, Route::Discovery);
         let _ = s.update(Message::NavBack);
         assert_eq!(s.route, Route::Search);
         let _ = s.update(Message::NavBack);
@@ -23832,9 +23529,9 @@ mod tests {
         let _ = s.update(Message::NavForward);
         assert_eq!(s.route, Route::Search);
         // New navigation clears the forward stack.
-        let _ = s.update(Message::Navigate(Route::Library));
+        let _ = s.update(Message::Navigate(Route::Settings));
         let _ = s.update(Message::NavForward);
-        assert_eq!(s.route, Route::Library);
+        assert_eq!(s.route, Route::Settings);
     }
 
     #[test]
@@ -25117,14 +24814,6 @@ mod tests {
     }
 
     #[test]
-    fn now_playing_route_opens() {
-        let mut s = test_state();
-        let _ = s.update(Message::EnqueueTrack("m1".into()));
-        let _ = s.update(Message::Navigate(Route::NowPlaying));
-        assert_eq!(s.route, Route::NowPlaying);
-    }
-
-    #[test]
     fn menu_pos_anchors_at_cursor_and_clamps() {
         let win = Some(iced::Size::new(1280.0, 800.0));
         // Free space: origin == cursor.
@@ -26033,12 +25722,12 @@ mod tests {
     fn mouse_backdismisses_menu_before_navigating() {
         let mut s = test_state();
         s.navigate(Route::Search);
-        s.navigate(Route::Queue);
+        s.navigate(Route::Discovery);
         let _ = s.update(Message::OpenContext("m1".into()));
         assert!(s.context_menu.is_some());
         let _ = s.update(Message::NavBack);
         assert!(s.context_menu.is_none());
-        assert_eq!(s.route, Route::Queue);
+        assert_eq!(s.route, Route::Discovery);
         let _ = s.update(Message::NavBack);
         assert_eq!(s.route, Route::Search);
     }
