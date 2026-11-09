@@ -327,39 +327,14 @@ impl AppState {
         .into()
     }
 
-    /// Held origin while live-dragging: a full-height chip (same art +
-    /// title as the row, no handlers) so the song stays visible while
-    /// held and siblings never shift, since only the thin bar opens at
-    /// the armed slot. Armed-but-unmoved presses render the normal row,
-    /// so a click never flickers the layout.
+    /// Queue row (plain visuals only): while live-dragging the origin is
+    /// held by the floating ghost and the list shows a gap instead, so the
+    /// row itself never renders a held state and siblings only shift for
+    /// the gap. Armed-but-unmoved presses render the normal row, so a
+    /// click never flickers the layout.
     pub(crate) fn queue_row(&self, i: usize) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
-        if self.drag.is_some_and(|d| d.live && d.from == i) {
-            // Origin keeps a full-size held chip (same art + title as the
-            // row, no red border, no handlers): the song stays visible
-            // while held and siblings never shift, since only the thin
-            // bar opens at the armed slot.
-            if let Some(t) = self.queue.items().get(i) {
-                return container(
-                    row![
-                        self.thumb(t),
-                        Self::track_text(&t.title, &t.artist, 12, iced::Color::WHITE),
-                    ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .padding(6),
-                )
-                .style(card_bg)
-                .padding(0)
-                .width(Fill)
-                .height(iced::Length::Fixed(QUEUE_ROW_H))
-                .clip(true)
-                .align_y(iced::alignment::Vertical::Center)
-                .into();
-            }
-            return iced::widget::Space::new().width(Fill).into();
-        }
         let items = self.queue.items();
         let Some(t) = items.get(i) else {
             return iced::widget::Space::new().width(Fill).into();
@@ -431,88 +406,144 @@ impl AppState {
     }
 
     /// Edge insertion lane: slot 0 before the first row or slot len
-    /// after the last. Only the two edges use a 10px lane (easy to hit);
-    /// middles reuse the 5px divider (see `drop_divider`), so a live drag
-    /// adds a constant 20px instead of O(n) slot height on long queues.
-    /// The armed slot shows a single red insertion bar instead.
+    /// after the last. Transparent hover strips only, never a visible bar:
+    /// the armed lane collapses to zero (the full-row gap marks the target
+    /// instead) and idle lanes stay thin and invisible, so rows never
+    /// restyle mid-drag.
     pub(crate) fn drop_slot(&self, k: usize) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area};
         use iced::Fill;
-        // Only an armed slot that commits to a real move shows the bar.
-        let active = self.effective_drag_slot() == Some(k);
-        let bar_h = 2.0 + 6.0 * self.drag_gap;
-        let inner: iced::Element<'_, Message> = if active {
-            container(
-                iced::widget::Space::new()
-                    .height(iced::Length::Fixed(bar_h))
-                    .width(Fill),
-            )
-            .style(drop_bar)
-            .into()
-        } else {
+        let armed = self.effective_drag_slot() == Some(k);
+        let h = if armed { 0.0 } else { 10.0 };
+        mouse_area(container(
             iced::widget::Space::new()
-                .height(iced::Length::Fixed(10.0))
-                .width(Fill)
-                .into()
-        };
-        // The bar reads as an insertion line by sitting slightly narrower
-        // than the full rows around it.
-        let padded = if active {
-            container(inner).padding(iced::Padding {
-                left: 10.0,
-                right: 10.0,
-                top: 2.0,
-                bottom: 2.0,
-            })
-        } else {
-            container(inner).padding(0)
-        };
-        mouse_area(padded).on_enter(Message::DragSlot(k)).into()
+                .height(iced::Length::Fixed(h))
+                .width(Fill),
+        ))
+        .on_enter(Message::DragSlot(k))
+        .into()
     }
 
-    /// Middle insertion lane: slot `k` (1..=len-1) rendered as the same
-    /// 5px hairline the rest layout uses, so rows never shift while
-    /// live-dragging except for the one armed bar (6..12px). Hovering
-    /// the hairline arms it; at rest it reads as a plain divider.
+    /// Middle insertion lane: slot `k` (1..=len-1) as a transparent 4px
+    /// hover strip. The armed lane collapses to zero since the gap box
+    /// already marks the target; at rest there are no lanes at all.
     pub(crate) fn drop_divider(&self, k: usize) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area};
         use iced::Fill;
-        let active = self.effective_drag_slot() == Some(k);
-        if active {
-            let bar_h = 2.0 + 6.0 * self.drag_gap;
-            let inner: iced::Element<'_, Message> = container(
-                iced::widget::Space::new()
-                    .height(iced::Length::Fixed(bar_h))
-                    .width(Fill),
-            )
-            .style(drop_bar)
-            .into();
-            // Slightly narrower than the rows, like the edge bar.
-            let padded = container(inner).padding(iced::Padding {
-                left: 10.0,
-                right: 10.0,
-                top: 2.0,
-                bottom: 2.0,
-            });
-            mouse_area(padded).on_enter(Message::DragSlot(k)).into()
-        } else {
-            // Byte-for-byte the rest divider (1px line + 2px breathing
-            // room each side): same 5px so switching layouts cannot move
-            // rows. Wrapped in a hover lane so it still arms the slot.
-            let line = container(
-                iced::widget::Space::new()
-                    .height(iced::Length::Fixed(1.0))
-                    .width(Fill),
-            )
-            .style(hairline);
-            let padded = container(line).padding(iced::Padding {
-                top: 2.0,
-                bottom: 2.0,
-                left: 0.0,
-                right: 0.0,
-            });
-            mouse_area(padded).on_enter(Message::DragSlot(k)).into()
+        let armed = self.effective_drag_slot() == Some(k);
+        let h = if armed { 0.0 } else { 4.0 };
+        mouse_area(container(
+            iced::widget::Space::new()
+                .height(iced::Length::Fixed(h))
+                .width(Fill),
+        ))
+        .on_enter(Message::DragSlot(k))
+        .into()
+    }
+
+    /// Floating held row while live-dragging (YouTube-style): the dragged
+    /// song as art + text on the elevated card, gliding per-pixel at the
+    /// cursor (Space-offset idiom shared with the context menu, grab offset
+    /// preserved from the press so it never jumps on grab). No handlers
+    /// anywhere inside, so lane hovers and release-anywhere still land on
+    /// the list underneath. Sits right above the base (modal layers cover
+    /// it) and hides whenever a menu or the suggest popup is open.
+    pub(crate) fn drag_ghost_layer(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{column, container, row, text};
+        use iced::Fill;
+        if self.context_menu.is_some()
+            || self.pl_menu.is_some()
+            || self.coll_menu.is_some()
+            || self.show_suggest
+        {
+            return None;
         }
+        // Only one drag is ever live; the queue panel survives navigation
+        // while playlist drags are scoped to one list.
+        let (ghost, gx, gy): (iced::Element<'_, Message>, f32, f32) =
+            if let Some(drag) = self.drag.filter(|d| d.live) {
+                let t = self.queue.items().get(drag.from)?.clone();
+                let gw = (self.right_w - 20.0).clamp(160.0, 600.0);
+                let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+                let press_x = self.press_snap.as_ref().and_then(|s| s.pos.map(|p| p.x));
+                let (gx, gy) = drag_ghost_pos(
+                    self.cursor,
+                    self.window,
+                    gw,
+                    QUEUE_ROW_H,
+                    press_x,
+                    ww - self.right_w + 10.0,
+                )?;
+                let ghost: iced::Element<'_, Message> = container(
+                    row![
+                        self.thumb(&t),
+                        Self::track_text(&t.title, &t.artist, 12, iced::Color::WHITE),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .padding(6),
+                )
+                .style(card_bg)
+                .width(iced::Length::Fixed(gw))
+                .height(iced::Length::Fixed(QUEUE_ROW_H))
+                .clip(true)
+                .align_y(iced::alignment::Vertical::Center)
+                .into();
+                (ghost, gx, gy)
+            } else {
+                let drag = self.pl_drag.filter(|d| d.live)?;
+                let pid = self.pl_drag_id.clone()?;
+                let p = self.find_playlist(&pid)?;
+                let ordered = self.playlist_ordered_tracks(&p);
+                let t = ordered.get(drag.from)?.clone();
+                let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+                let gw = (ww - self.sidebar_w - self.right_w - 64.0).clamp(240.0, 760.0);
+                let press_x = self.pl_press_snap.as_ref().and_then(|s| s.pos.map(|p| p.x));
+                let (gx, gy) = drag_ghost_pos(
+                    self.cursor,
+                    self.window,
+                    gw,
+                    TRACK_ROW_H,
+                    press_x,
+                    self.sidebar_w + 24.0,
+                )?;
+                let ghost: iced::Element<'_, Message> = container(
+                    row![
+                        container(self.thumb(&t)).padding(2),
+                        container(Self::track_text_single(
+                            &t.title,
+                            &t.artist,
+                            14,
+                            iced::Color::WHITE
+                        ))
+                        .padding(3)
+                        .width(Fill),
+                        text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .padding(8),
+                )
+                .style(card_bg)
+                .width(iced::Length::Fixed(gw))
+                .height(iced::Length::Fixed(TRACK_ROW_H))
+                .clip(true)
+                .align_y(iced::alignment::Vertical::Center)
+                .into();
+                (ghost, gx, gy)
+            };
+        Some(
+            container(column![
+                iced::widget::Space::new().height(iced::Length::Fixed(gy)),
+                row![
+                    iced::widget::Space::new().width(iced::Length::Fixed(gx)),
+                    ghost,
+                ],
+            ])
+            .width(Fill)
+            .height(Fill)
+            .into(),
+        )
     }
 
     pub(crate) fn right_panel_view(&self) -> iced::Element<'_, Message> {
@@ -543,26 +574,40 @@ impl AppState {
             .spacing(4)
             .into(),
         };
-        // Live-drag manual list: middle slots reuse the 5px divider so
-        // rows sit exactly where they do at rest; only the two 10px edge
-        // lanes are extra (constant 20px, never O(n)). Armed-but-unmoved
-        // presses render the rest layout, so clicks never shift rows.
-        // At rest rows render plain with dividers.
+        // Live-drag YouTube-style list: the origin row is held by the
+        // floating ghost, so the list shows every other row plus one
+        // full-row gap at the commit target (siblings shift to make room).
+        // Armed-but-unmoved presses render the rest layout, so clicks never
+        // shift rows. At rest rows render plain with dividers.
         let n = self.queue.len();
-        let live = self.dragging();
+        let from = self.drag.map(|d| d.from).unwrap_or(0);
+        let live = self.dragging() && from < n;
         let mut upcoming: Vec<iced::Element<'_, Message>> =
             Vec::with_capacity(if live { 2 * n + 1 } else { n });
         if live {
-            upcoming.push(self.drop_slot(0));
-        }
-        for k in 0..n {
-            upcoming.push(self.queue_row(k));
-            if live {
-                if k + 1 < n {
-                    upcoming.push(self.drop_divider(k + 1));
-                } else {
-                    upcoming.push(self.drop_slot(k + 1));
+            let slot = self.effective_drag_slot();
+            let to = slot.and_then(|s| slot_commit(n, from, s)).unwrap_or(from);
+            let (seq, lanes) = drag_display_order(n, from, to);
+            // Constant full-row gap while live: teleporting the gap must
+            // never change the list height (an eased grow/shrink here
+            // collapses the rows below on every latch around the origin).
+            // Only the position snaps, one row at a time.
+            let gap_h = QUEUE_ROW_H;
+            upcoming.push(self.drop_slot(lanes[0]));
+            for (p, item) in seq.iter().enumerate() {
+                match item {
+                    Some(k) => upcoming.push(self.queue_row(*k)),
+                    None => upcoming.push(drag_gap_box(gap_h)),
                 }
+                if p + 1 < n {
+                    upcoming.push(self.drop_divider(lanes[p + 1]));
+                } else {
+                    upcoming.push(self.drop_slot(lanes[p + 1]));
+                }
+            }
+        } else {
+            for k in 0..n {
+                upcoming.push(self.queue_row(k));
             }
         }
         let tab_queue = button(btn_text(self.language.queue_tab(), 12))
@@ -2685,12 +2730,105 @@ impl AppState {
                     .into(),
                 Some(p) => {
                     let pid = p.id.clone();
-                    let rows: Vec<iced::Element<'_, Message>> = p
-                        .tracks
-                        .iter()
-                        .enumerate()
-                        .map(|(i, t)| self.playlist_track_row(&pid, t, i))
-                        .collect();
+                    let is_fav = pid == Self::FAVORITES_ID;
+                    let sort = self.playlist_sort_cached(&pid);
+                    let ordered = self.playlist_ordered_tracks(&p);
+                    // Sort picker for own playlists only (Favorites keeps
+                    // its liked-order view with no picker, like before).
+                    let sort_row: iced::Element<'_, Message> = if is_fav {
+                        text("").size(1).into()
+                    } else {
+                        use iced::widget::pick_list;
+                        const SORT_OPTS: [&str; 7] = [
+                            "Newest first",
+                            "Oldest first",
+                            "Title",
+                            "Artist",
+                            "Album",
+                            "Liked first",
+                            "Manual",
+                        ];
+                        let pid_pick = pid.clone();
+                        row![
+                            text(self.language.playlist_sort_label())
+                                .size(12)
+                                .color(MUTED),
+                            pick_list(&SORT_OPTS[..], Some(sort.label()), move |name: &str| {
+                                Message::PlaylistSortSelected {
+                                    playlist_id: pid_pick.clone(),
+                                    sort: match name {
+                                        "Newest first" => PlaylistSort::NewestFirst,
+                                        "Oldest first" => PlaylistSort::OldestFirst,
+                                        "Title" => PlaylistSort::Title,
+                                        "Artist" => PlaylistSort::Artist,
+                                        "Album" => PlaylistSort::Album,
+                                        "Liked first" => PlaylistSort::LikedFirst,
+                                        _ => PlaylistSort::Manual,
+                                    },
+                                }
+                            })
+                            .width(iced::Length::Fixed(160.0)),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .into()
+                    };
+                    // Rows: Manual reuses the exact same row visuals as
+                    // every other pick at rest (same spacing, no grip,
+                    // no dividers); drag arming is invisible. A live drag
+                    // holds the origin in the floating ghost and opens one
+                    // full-row gap at the commit target (siblings shift to
+                    // make room); only the transparent slot lanes appear
+                    // on top of that.
+                    let list: iced::Element<'_, Message> = if !is_fav
+                        && sort == PlaylistSort::Manual
+                        && ordered.len() >= 2
+                    {
+                        let len = ordered.len();
+                        let from = self.pl_drag.map(|d| d.from).unwrap_or(0);
+                        let live = self.pl_dragging()
+                            && self.pl_drag_id.as_deref() == Some(pid.as_str())
+                            && from < len;
+                        if live {
+                            let slot = self.pl_effective_slot(len);
+                            let to = slot.and_then(|s| slot_commit(len, from, s)).unwrap_or(from);
+                            let (seq, lanes) = drag_display_order(len, from, to);
+                            // Constant full-row gap like the queue: a
+                            // teleporting gap must never resize the list.
+                            let gap_h = TRACK_ROW_H;
+                            let mut items: Vec<iced::Element<'_, Message>> =
+                                Vec::with_capacity(2 * len + 1);
+                            items.push(self.pl_drop_slot(len, lanes[0]));
+                            for (p, item) in seq.iter().enumerate() {
+                                match item {
+                                    Some(k) => {
+                                        items.push(self.playlist_manual_row(&pid, &ordered[*k], *k))
+                                    }
+                                    None => items.push(drag_gap_box(gap_h)),
+                                }
+                                if p + 1 < len {
+                                    items.push(self.pl_drop_divider(len, lanes[p + 1]));
+                                } else {
+                                    items.push(self.pl_drop_slot(len, lanes[p + 1]));
+                                }
+                            }
+                            iced::widget::Column::with_children(items).spacing(0).into()
+                        } else {
+                            let rows: Vec<iced::Element<'_, Message>> = ordered
+                                .iter()
+                                .enumerate()
+                                .map(|(i, t)| self.playlist_manual_row(&pid, t, i))
+                                .collect();
+                            column(rows).spacing(2).into()
+                        }
+                    } else {
+                        let rows: Vec<iced::Element<'_, Message>> = ordered
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| self.playlist_track_row(&pid, t, i))
+                            .collect();
+                        column(rows).spacing(2).into()
+                    };
                     column![
                         text(p.title.clone()).size(24),
                         text(self.language.playlist_sub(p.tracks.len()))
@@ -2726,7 +2864,8 @@ impl AppState {
                         ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
-                        column(rows).spacing(2),
+                        sort_row,
+                        list,
                     ]
                     .spacing(10)
                     .into()
@@ -2962,6 +3101,11 @@ impl AppState {
         })
         .into();
         let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
+        // Floating drag ghost right above the base (modal layers cover it):
+        // `None` unless a drag is live with a known cursor.
+        if let Some(ghost) = self.drag_ghost_layer() {
+            layers.push(ghost);
+        }
         // Search popup above everything in the center (including the
         // drawer), below the context menu. The scrim wraps a hole the
         // exact size of the input pill (shared geometry, so only the

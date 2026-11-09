@@ -100,6 +100,63 @@ pub(crate) fn drag_slot_preview(len: usize, from: usize, slot: Option<usize>) ->
     order
 }
 
+/// Display assembly for a live YouTube-style drag: the origin row is held
+/// by the floating ghost, so the list shows every other row plus one gap
+/// at the commit target `to` (resolved with [`slot_commit`], own spot
+/// falls back to `from`). Returns the display sequence (`Some(row)` or
+/// `None` for the gap) plus the slot each lane arms: the lane before
+/// display position `p` (and the trailing lane) always commits to the
+/// post-removal index at that visual spot, so hovering a lane opens the
+/// gap exactly where the item would land.
+pub(crate) fn drag_display_order(
+    len: usize,
+    from: usize,
+    to: usize,
+) -> (Vec<Option<usize>>, Vec<usize>) {
+    let to = to.min(len.saturating_sub(1));
+    let mut seq: Vec<Option<usize>> = (0..len).filter(|&k| k != from).map(Some).collect();
+    seq.insert(to.min(seq.len()), None);
+    let mut lanes = Vec::with_capacity(len + 1);
+    for p in 0..=seq.len() {
+        let q = if p <= to { p } else { p.saturating_sub(1) };
+        lanes.push(if q <= from { q } else { q + 1 });
+    }
+    (seq, lanes)
+}
+
+/// Grab offset of the floating ghost from the press point: the held row
+/// keeps the exact grab offset it was picked up with, so it never jumps
+/// on grab and then glides per-pixel with the cursor.
+pub(crate) const GHOST_GRAB_DX_FALLBACK: f32 = 28.0;
+
+/// Floating ghost origin from the live cursor, clamped to the window
+/// (same Space-offset idiom as [`menu_pos`]): the held row glides
+/// per-pixel under the pointer while the list snaps discretely beneath
+/// it (Iced never reports widget geometry, so the slot itself stays
+/// lane-discrete). `None` while the cursor is still unknown (no ghost
+/// until it can be placed).
+pub(crate) fn drag_ghost_pos(
+    cursor: Option<iced::Point>,
+    window: Option<iced::Size>,
+    w: f32,
+    h: f32,
+    press_x: Option<f32>,
+    list_left: f32,
+) -> Option<(f32, f32)> {
+    let c = cursor?;
+    let (ww, hh) = window
+        .map(|s| (s.width, s.height))
+        .unwrap_or((1280.0, 800.0));
+    let grab = press_x
+        .map(|px| px - list_left)
+        .unwrap_or(GHOST_GRAB_DX_FALLBACK)
+        .clamp(0.0, w);
+    Some((
+        (c.x - grab).clamp(0.0, (ww - w).max(0.0)),
+        (c.y - h / 2.0).clamp(0.0, (hh - h).max(0.0)),
+    ))
+}
+
 /// Search cache TTL (s) and cap (queries, evict-all when full).
 pub(crate) const SEARCH_CACHE_TTL_SECS: u64 = 300;
 pub(crate) const SEARCH_CACHE_CAP: usize = 30;

@@ -51,6 +51,7 @@ impl AppState {
             user_playlists,
             playlist_seq,
             cached,
+            playlist_added,
         ) = load_persisted(&library_path);
         let mut state = Self {
             route: Route::Home,
@@ -182,6 +183,13 @@ impl AppState {
             hovered_playlist: None,
             just_reordered_at: None,
             drag_gap: 0.0,
+            playlist_sorts: HashMap::new(),
+            playlist_added,
+            pl_drag: None,
+            pl_press_snap: None,
+            pl_hover: None,
+            pl_action_hover: None,
+            pl_drag_id: None,
             error_log: Vec::new(),
             seek_hold_until: None,
             paused_seek: false,
@@ -428,9 +436,16 @@ impl AppState {
 
     pub(crate) fn go(&mut self, route: Route) {
         // Navigation always drops the drawer (it glides shut) and the
-        // search popup (results take the page).
+        // search popup (results take the page). Playlist manual drags
+        // are scoped to one detail list, so any navigation drops them
+        // (the queue drag lives in the global panel and survives).
         self.drawer_open = false;
         self.show_suggest = false;
+        self.pl_drag = None;
+        self.pl_press_snap = None;
+        self.pl_drag_id = None;
+        self.pl_hover = None;
+        self.pl_action_hover = None;
         if route != self.route {
             self.nav_back.push(self.route.clone());
             if self.nav_back.len() > 50 {
@@ -444,6 +459,11 @@ impl AppState {
     pub(crate) fn go_back(&mut self) {
         self.drawer_open = false;
         self.show_suggest = false;
+        self.pl_drag = None;
+        self.pl_press_snap = None;
+        self.pl_drag_id = None;
+        self.pl_hover = None;
+        self.pl_action_hover = None;
         if let Some(prev) = self.nav_back.pop() {
             self.nav_forward.push(self.route.clone());
             self.route = prev;
@@ -453,6 +473,11 @@ impl AppState {
     pub(crate) fn go_forward(&mut self) {
         self.drawer_open = false;
         self.show_suggest = false;
+        self.pl_drag = None;
+        self.pl_press_snap = None;
+        self.pl_drag_id = None;
+        self.pl_hover = None;
+        self.pl_action_hover = None;
         if let Some(next) = self.nav_forward.pop() {
             self.nav_back.push(self.route.clone());
             self.route = next;

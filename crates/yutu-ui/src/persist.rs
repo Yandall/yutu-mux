@@ -226,6 +226,24 @@ impl AppState {
         let _ = store.remove_from_playlist(playlist_id, track_id);
     }
 
+    /// Persist a manual reorder (positions only, `added_at` untouched).
+    pub(crate) fn persist_playlist_reordered(&self, playlist_id: &str, ordered_ids: &[String]) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.reorder_playlist(playlist_id, ordered_ids);
+    }
+
+    /// Refresh the cached insertion times for one playlist after an
+    /// add/remove/sync (single-row query, no full rescan).
+    pub(crate) fn refresh_playlist_added(&mut self, playlist_id: &str) {
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            if let Ok(map) = store.playlist_added_map(playlist_id) {
+                self.playlist_added.insert(playlist_id.to_string(), map);
+            }
+        }
+    }
+
     /// Cache fetched lyrics, capped: entries are KBs of text, but a
     /// very long session must not pin every verse ever viewed. A dropped
     /// half refetches on demand, never in a loop (plays fetch once per

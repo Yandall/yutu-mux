@@ -399,6 +399,12 @@ impl AppState {
             Message::OpenPlaylist(id) => {
                 // Canonicalise: pre-migration sessions may hand a browse id.
                 let id = yutu_core::canonical_playlist_id(&id);
+                // Preload the sort pick so the view (immutable) sees it
+                // on first frame (the ordered helper reads the cache).
+                let _ = self.playlist_sort(&id);
+                self.cancel_pl_drag();
+                self.pl_hover = None;
+                self.pl_action_hover = None;
                 self.go(Route::PlaylistDetail(id));
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
@@ -669,13 +675,34 @@ impl AppState {
             }
             Message::PlayAll => return self.play_all_tracks(false),
             Message::PlayAllShuffled => return self.play_all_tracks(true),
-            Message::PlayPlaylistAt { playlist_id, index } => {
+            Message::PlayPlaylistAt {
+                playlist_id,
+                index,
+                track_id,
+            } => {
+                self.close_menu();
+                // Same-song no-op (app contract): clicking the live
+                // track's own row never restarts audio.
+                if self.queue.current().is_some_and(|t| t.id == track_id) {
+                    return iced::Task::none();
+                }
+                self.cancel_drag();
+                self.cancel_pl_drag();
                 let Some(p) = self.find_playlist(&playlist_id) else {
                     self.status = self.language.playlist_not_found_plain();
                     return iced::Task::none();
                 };
+                // Same suffix rule as artist/album pages: the displayed
+                // (sorted) list plays from the clicked song on. The
+                // clicked id anchors the head: adds/reorders between
+                // render and click fall back to the index.
+                let display = self.playlist_ordered_tracks(&p);
+                let start = display
+                    .iter()
+                    .position(|t| t.id == track_id)
+                    .unwrap_or(index.min(display.len()));
                 let label = self.language.playlist_queue_label(&p.title);
-                let tracks: Vec<Track> = p.tracks.into_iter().skip(index).collect();
+                let tracks: Vec<Track> = display.into_iter().skip(start).collect();
                 if tracks.is_empty() {
                     self.status = self.language.nothing_to_play(&label);
                     return iced::Task::none();
@@ -864,6 +891,7 @@ impl AppState {
                                 let title = self.user_playlists[i].title.clone();
                                 self.user_playlists[i].tracks.push(track.clone());
                                 self.persist_playlist_added(&playlist_id, &track);
+                                self.refresh_playlist_added(&playlist_id);
                                 if Self::is_server_playlist(&playlist_id) {
                                     self.record_pending(
                                         "add",
@@ -910,6 +938,7 @@ impl AppState {
                         let title = self.user_playlists[i].title.clone();
                         self.user_playlists[i].tracks.retain(|t| t.id != track_id);
                         self.persist_playlist_removed(&playlist_id, &track_id);
+                        self.refresh_playlist_added(&playlist_id);
                         if Self::is_server_playlist(&playlist_id) {
                             self.record_pending(
                                 "remove",
@@ -964,6 +993,14 @@ impl AppState {
                 self.user_playlists.retain(|p| p.id != id);
                 if self.user_playlists.len() < before {
                     self.persist_playlist_deleted(&id);
+                    self.playlist_sorts.remove(&id);
+                    self.playlist_added.remove(&id);
+                    if let Ok(store) = LibraryStore::open(&self.library_path) {
+                        let _ = store.set_pref(&Self::playlist_sort_key(&id), "");
+                    }
+                    self.cancel_pl_drag();
+                    self.pl_hover = None;
+                    self.pl_action_hover = None;
                     if Self::is_server_playlist(&id) {
                         self.record_pending("delete", Some(&id), None, None);
                     }
@@ -1317,8 +1354,23 @@ impl AppState {
                     || self.show_suggest
                 {
                     self.hovered_track = None;
+                    self.pl_hover = None;
+                    self.pl_action_hover = None;
                 } else {
-                    self.hovered_track = h;
+                    self.hovered_track = h.clone();
+                    // Playlist detail highlight follows the same hover:
+                    // derive the ordered index so manual rows light up
+                    // without a second enter message.
+                    if let (Some(id), Route::PlaylistDetail(pid)) = (h.as_deref(), &self.route) {
+                        if let Some(p) = self.find_playlist(pid) {
+                            let ordered = self.playlist_ordered_tracks(&p);
+                            self.pl_hover = ordered.iter().position(|t| t.id == id);
+                        } else {
+                            self.pl_hover = None;
+                        }
+                    } else {
+                        self.pl_hover = None;
+                    }
                 }
                 // Entering a non-queue row drops stale queue hovers so a
                 // press there never arms a drag off old state.
@@ -1333,6 +1385,23 @@ impl AppState {
             Message::TrackExit(id) => {
                 if self.hovered_track.as_deref() == Some(id.as_str()) {
                     self.hovered_track = None;
+                }
+                // Clear the derived playlist hover when its row exits.
+                if let Route::PlaylistDetail(pid) = &self.route {
+                    if let Some(p) = self.find_playlist(pid) {
+                        let ordered = self.playlist_ordered_tracks(&p);
+                        if self
+                            .pl_hover
+                            .and_then(|i| ordered.get(i))
+                            .is_some_and(|t| t.id == id)
+                        {
+                            self.pl_hover = None;
+                        }
+                    } else {
+                        self.pl_hover = None;
+                    }
+                } else if self.pl_hover.is_some() {
+                    self.pl_hover = None;
                 }
             }
             Message::RecentHover(h) => {
@@ -1422,6 +1491,8 @@ impl AppState {
                 self.hovered_history = None;
                 self.hovered_auto = None;
                 self.hover_remove = None;
+                self.pl_hover = None;
+                self.pl_action_hover = None;
             }
             Message::RemoveHover(h) => {
                 self.hover_remove = h;
@@ -1429,6 +1500,14 @@ impl AppState {
             Message::RemoveExit(i) => {
                 if self.hover_remove == Some(i) {
                     self.hover_remove = None;
+                }
+            }
+            Message::PlActionHover(h) => {
+                self.pl_action_hover = h;
+            }
+            Message::PlActionExit(i) => {
+                if self.pl_action_hover == Some(i) {
+                    self.pl_action_hover = None;
                 }
             }
             Message::PlaylistHover(h) => {
@@ -1612,6 +1691,98 @@ impl AppState {
                         }
                     }
                 }
+                // Release-anywhere also settles a manual playlist press
+                // (the subscription only sends DragEnd): a move to a
+                // slot reorders, a clean press/release plays the row.
+                if self.pl_drag.is_some() {
+                    return self.pl_release_task();
+                }
+            }
+            Message::PlaylistSortSelected { playlist_id, sort } => {
+                self.persist_playlist_sort(&playlist_id, sort);
+                self.cancel_pl_drag();
+                self.pl_hover = None;
+                self.pl_action_hover = None;
+            }
+            Message::PlRowHover(i) => {
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.show_suggest
+                {
+                    self.pl_hover = None;
+                } else {
+                    self.pl_hover = Some(i);
+                }
+            }
+            Message::PlRowExit(i) => {
+                if self.pl_hover == Some(i) {
+                    self.pl_hover = None;
+                }
+            }
+            Message::PlDragStart { playlist_id, index } => {
+                // Manual mode only, two rows and up (single rows have no
+                // order to change). Never from an action button: slipping
+                // off like/menu must not reorder. Arming is invisible:
+                // lanes appear only after the cursor moves past click
+                // slop, so a plain click never shifts rows.
+                if self.pl_action_hover == Some(index) {
+                    return iced::Task::none();
+                }
+                let sort = self
+                    .playlist_sorts
+                    .get(&playlist_id)
+                    .copied()
+                    .unwrap_or_default();
+                if sort != PlaylistSort::Manual {
+                    return iced::Task::none();
+                }
+                let len = self
+                    .find_playlist(&playlist_id)
+                    .map(|p| p.tracks.len())
+                    .unwrap_or(0);
+                if index >= len || len < 2 {
+                    return iced::Task::none();
+                }
+                let id = self
+                    .find_playlist(&playlist_id)
+                    .and_then(|p| {
+                        self.playlist_ordered_tracks(&p)
+                            .get(index)
+                            .map(|t| t.id.clone())
+                    })
+                    .unwrap_or_default();
+                self.pl_drag = Some(DragState {
+                    from: index,
+                    slot: None,
+                    live: false,
+                });
+                self.pl_drag_id = Some(playlist_id);
+                self.pl_press_snap = Some(PressSnap {
+                    from: index,
+                    pos: self.cursor,
+                    id,
+                    len,
+                });
+            }
+            Message::PlDragSlot(k) => {
+                // Length from the drag's own playlist (navigating away
+                // changes the detail page, stale slots never latch).
+                let len = self
+                    .pl_drag_id
+                    .as_deref()
+                    .and_then(|id| self.find_playlist(id))
+                    .map(|p| p.tracks.len())
+                    .unwrap_or(0);
+                if let Some(drag) = self.pl_drag.as_mut() {
+                    if k <= len {
+                        drag.slot = Some(k);
+                        drag.live = true;
+                    }
+                }
+            }
+            Message::PlDragEnd => {
+                return self.pl_release_task();
             }
             Message::Animate => {
                 if !self.animations_enabled {
@@ -1834,10 +2005,11 @@ impl AppState {
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 self.cancel_drag();
+                self.cancel_pl_drag();
                 let title = p.title.clone();
+                let ordered = self.playlist_ordered_tracks(&p);
                 // queue_many resolves each row against the catalog itself.
-                let task =
-                    self.queue_many(p.tracks.clone(), self.language.playlist_queue_label(&title));
+                let task = self.queue_many(ordered, self.language.playlist_queue_label(&title));
                 self.publish_mpris();
                 return task;
             }
@@ -1853,15 +2025,15 @@ impl AppState {
                     return iced::Task::none();
                 }
                 let title = p.title.clone();
-                let n = p.tracks.len();
+                let ordered = self.playlist_ordered_tracks(&p);
+                let n = ordered.len();
                 let was_empty = self.queue.is_empty();
                 let incoming: std::collections::HashSet<&str> =
-                    p.tracks.iter().map(|t| t.id.as_str()).collect();
+                    ordered.iter().map(|t| t.id.as_str()).collect();
                 self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
                 // Resolve in memory first, persist once: per-track SQLite
                 // traffic freezes the GUI on long playlists.
-                let resolved: Vec<Track> = p
-                    .tracks
+                let resolved: Vec<Track> = ordered
                     .iter()
                     .map(|t| self.resolve_for_play_mem(t))
                     .collect();
@@ -1893,6 +2065,8 @@ impl AppState {
                 // Same path as the page Shuffle pill: fully shuffled with
                 // a random head, always reshuffled.
                 self.cancel_drag();
+                self.cancel_pl_drag();
+                // Shuffle ignores display order (always reshuffled).
                 return self.play_fresh(
                     p.tracks.clone(),
                     &self.language.playlist_queue_label(&title),
@@ -1915,6 +2089,21 @@ impl AppState {
                             }
                             // No press position (cursor never tracked):
                             // any motion counts as a drag.
+                            None => true,
+                        };
+                        if moved {
+                            drag.live = true;
+                        }
+                    }
+                }
+                if let Some(drag) = self.pl_drag.as_mut() {
+                    if !drag.live {
+                        let moved = match self.pl_press_snap.as_ref().and_then(|s| s.pos) {
+                            Some(a) => {
+                                let dx = a.x - p.x;
+                                let dy = a.y - p.y;
+                                dx * dx + dy * dy >= CLICK_SLOP_PX * CLICK_SLOP_PX
+                            }
                             None => true,
                         };
                         if moved {
@@ -2004,6 +2193,8 @@ impl AppState {
                     // Esc cancels an in-progress drag first (it owns the
                     // pointer); the drawer goes on the next Esc.
                     self.cancel_drag();
+                } else if self.pl_drag.is_some() {
+                    self.cancel_pl_drag();
                 } else if self.drawer_open {
                     self.drawer_open = false;
                 }
@@ -2521,8 +2712,10 @@ impl AppState {
                 match result {
                     Ok(playlist) => {
                         let n = playlist.tracks.len();
+                        let pid = playlist.id.clone();
                         self.import_songs += n;
                         let tasks = self.merge_imported(Vec::new(), Vec::new(), vec![playlist]);
+                        self.refresh_playlist_added(&pid);
                         if done >= total {
                             finish(self);
                             self.status = self.language.import_done_lists(
@@ -2776,6 +2969,24 @@ impl AppState {
                             store.sync_server_playlist(&server_id, &merged.title, &merged.tracks);
                         let _ = store.delete_playlist(&local_id);
                     }
+                    // Carry the sort pick + insertion times to the server
+                    // id (the shell id dies here): existing server picks
+                    // win on import races, otherwise the shell pick moves.
+                    if let Some(sort) = self.playlist_sorts.remove(&local_id) {
+                        if !self.playlist_sorts.contains_key(&server_id) {
+                            self.persist_playlist_sort(&server_id, sort);
+                        }
+                        if let Ok(store) = LibraryStore::open(&self.library_path) {
+                            let _ = store.set_pref(&Self::playlist_sort_key(&local_id), "");
+                        }
+                    }
+                    self.playlist_added.remove(&local_id);
+                    self.refresh_playlist_added(&server_id);
+                    if self.pl_drag_id.as_deref() == Some(local_id.as_str()) {
+                        self.cancel_pl_drag();
+                    }
+                    self.pl_hover = None;
+                    self.pl_action_hover = None;
                     match self.user_playlists.iter().position(|p| p.id == server_id) {
                         Some(i) => self.user_playlists[i] = merged.clone(),
                         None => self

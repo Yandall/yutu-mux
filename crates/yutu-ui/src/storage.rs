@@ -382,6 +382,7 @@ pub(crate) fn load_persisted(
     Vec<Playlist>,
     u64,
     Vec<Track>,
+    HashMap<String, HashMap<String, i64>>,
 ) {
     let empty = (
         HashSet::new(),
@@ -392,6 +393,7 @@ pub(crate) fn load_persisted(
         Vec::new(),
         0,
         Vec::new(),
+        HashMap::new(),
     );
     let store = match LibraryStore::open(path) {
         Ok(s) => s,
@@ -452,6 +454,7 @@ pub(crate) fn load_persisted(
     // launch with no search (offline-friendly). Missing rows simply
     // mean an older install: the caller hydrates them from the network.
     let cached = store.all_cached_tracks().unwrap_or_default();
+    let playlist_added = store.playlist_added_all().unwrap_or_default();
     // Legacy cleanup: pre-release installs may hold an offline audio
     // cache dir plus a `downloads` table; both are unused now.
     let _ = std::fs::remove_dir_all(format!("{}/offline_cache", data_dir()));
@@ -464,6 +467,7 @@ pub(crate) fn load_persisted(
         user_playlists,
         seq,
         cached,
+        playlist_added,
     )
 }
 

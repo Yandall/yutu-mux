@@ -1277,6 +1277,7 @@ fn playlist_click_plays_from_clicked_row() {
     let _ = s.update(Message::PlayPlaylistAt {
         playlist_id: "u1".into(),
         index: 2,
+        track_id: "t2".into(),
     });
     // Clicked song plus the rest from that point replace the queue.
     assert_eq!(
@@ -1295,6 +1296,7 @@ fn playlist_click_plays_from_clicked_row() {
     let _ = s.update(Message::PlayPlaylistAt {
         playlist_id: "u1".into(),
         index: 9,
+        track_id: "missing".into(),
     });
     assert_eq!(s.queue.len(), 2);
     assert!(s.status.contains("nothing to play"));
@@ -1302,8 +1304,228 @@ fn playlist_click_plays_from_clicked_row() {
     let _ = s.update(Message::PlayPlaylistAt {
         playlist_id: "nope".into(),
         index: 0,
+        track_id: "t0".into(),
     });
     assert!(s.status.contains("not found"));
+}
+
+#[test]
+fn playlist_sort_orders_tracks_all_picks() {
+    let mut s = test_state();
+    let mut t1 = mk_track("t1", "Banana", "Zebra");
+    t1.album = Some("Zulu".into());
+    let mut t2 = mk_track("t2", "Apple", "Alpha");
+    t2.album = Some("Alpha".into());
+    let mut t3 = mk_track("t3", "Cherry", "Mike");
+    t3.album = Some("Mike".into());
+    for t in [&t1, &t2, &t3] {
+        s.catalog.insert(t.id.clone(), t.clone());
+    }
+    s.user_playlists.push(Playlist {
+        id: "u1".into(),
+        title: "Gym".into(),
+        tracks: vec![t1.clone(), t2.clone(), t3.clone()],
+    });
+    s.playlist_added.insert(
+        "u1".into(),
+        [
+            ("t1".to_string(), 10),
+            ("t2".to_string(), 20),
+            ("t3".to_string(), 30),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let p = s.find_playlist("u1").expect("playlist");
+    let ids = |v: Vec<Track>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::Manual)),
+        vec!["t1", "t2", "t3"]
+    );
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::OldestFirst)),
+        vec!["t1", "t2", "t3"]
+    );
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::NewestFirst)),
+        vec!["t3", "t2", "t1"]
+    );
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::Title)),
+        vec!["t2", "t1", "t3"]
+    );
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::Artist)),
+        vec!["t2", "t3", "t1"]
+    );
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::Album)),
+        vec!["t2", "t3", "t1"]
+    );
+    s.like_id("t3");
+    assert_eq!(
+        ids(s.playlist_ordered_tracks_with(&p, PlaylistSort::LikedFirst)),
+        vec!["t3", "t2", "t1"]
+    );
+    // Detail page renders every pick with no panic (picker + rows).
+    s.route = Route::PlaylistDetail("u1".into());
+    for sort in PlaylistSort::ALL {
+        s.playlist_sorts.insert("u1".into(), sort);
+        let _ = s.view();
+    }
+}
+
+#[test]
+fn playlist_sort_pick_persists_and_play_follows_it() {
+    let mut s = test_state();
+    let t1 = mk_track("t1", "Banana", "Zebra");
+    let t2 = mk_track("t2", "Apple", "Alpha");
+    for t in [&t1, &t2] {
+        s.catalog.insert(t.id.clone(), t.clone());
+    }
+    s.user_playlists.push(Playlist {
+        id: "u1".into(),
+        title: "Gym".into(),
+        tracks: vec![t1.clone(), t2.clone()],
+    });
+    s.playlist_added.insert(
+        "u1".into(),
+        [("t1".to_string(), 1), ("t2".to_string(), 2)]
+            .into_iter()
+            .collect(),
+    );
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: "u1".into(),
+        sort: PlaylistSort::Title,
+    });
+    assert_eq!(s.playlist_sort_cached("u1"), PlaylistSort::Title);
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    assert_eq!(
+        store.get_pref(&AppState::playlist_sort_key("u1")).unwrap(),
+        Some("title".to_string())
+    );
+    s.route = Route::PlaylistDetail("u1".into());
+    let _ = s.update(Message::PlayAll);
+    assert_eq!(
+        s.queue
+            .items()
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["t2", "t1"]
+    );
+    let _ = s.update(Message::PlayPlaylistAt {
+        playlist_id: "u1".into(),
+        index: 1,
+        track_id: "t1".into(),
+    });
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("t1"));
+}
+
+#[test]
+fn playlist_manual_drag_reorders_and_persists() {
+    let mut s = test_state();
+    for t in ["t0", "t1", "t2"].iter().map(|id| mk_track(id, id, "A")) {
+        s.catalog.insert(t.id.clone(), t.clone());
+    }
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    let pid = "u1".to_string();
+    for tid in ["t0", "t1", "t2"] {
+        let _ = s.update(Message::AddToPlaylist {
+            playlist_id: pid.clone(),
+            track_id: tid.into(),
+        });
+    }
+    assert_eq!(s.playlist_sort_cached(&pid), PlaylistSort::Manual);
+    let _ = s.update(Message::PlDragStart {
+        playlist_id: pid.clone(),
+        index: 0,
+    });
+    let _ = s.update(Message::PlDragSlot(3));
+    let _ = s.update(Message::DragEnd);
+    assert!(s.status.contains("reordered"));
+    assert_eq!(
+        s.find_playlist(&pid)
+            .unwrap()
+            .tracks
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["t1", "t2", "t0"]
+    );
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    let stored = store.user_playlists().unwrap();
+    let stored_ids = stored
+        .iter()
+        .find(|p| p.id == pid)
+        .unwrap()
+        .tracks
+        .iter()
+        .map(|t| t.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(stored_ids, vec!["t1", "t2", "t0"]);
+    let added = store.playlist_added_map(&pid).unwrap();
+    assert!(added["t0"] < added["t1"] && added["t1"] < added["t2"]);
+    let p = s.find_playlist(&pid).unwrap();
+    let oldest = s.playlist_ordered_tracks_with(&p, PlaylistSort::OldestFirst);
+    assert_eq!(oldest.first().map(|t| t.id.as_str()), Some("t0"));
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: pid.clone(),
+        sort: PlaylistSort::Title,
+    });
+    let _ = s.update(Message::PlDragStart {
+        playlist_id: pid.clone(),
+        index: 0,
+    });
+    assert!(s.pl_drag.is_none());
+}
+
+#[test]
+fn playlist_manual_drag_needs_a_move_and_ignores_action_presses() {
+    let mut s = test_state();
+    for t in ["t0", "t1", "t2"].iter().map(|id| mk_track(id, id, "A")) {
+        s.catalog.insert(t.id.clone(), t.clone());
+    }
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    let pid = "u1".to_string();
+    for tid in ["t0", "t1", "t2"] {
+        let _ = s.update(Message::AddToPlaylist {
+            playlist_id: pid.clone(),
+            track_id: tid.into(),
+        });
+    }
+    let order_of = |s: &AppState| {
+        s.find_playlist(&pid)
+            .unwrap()
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>()
+    };
+    // Presses on the heart/ellipsis never arm (slipping off an action
+    // must not become a reorder).
+    let _ = s.update(Message::PlActionHover(Some(0)));
+    let _ = s.update(Message::PlDragStart {
+        playlist_id: pid.clone(),
+        index: 0,
+    });
+    assert!(s.pl_drag.is_none());
+    let _ = s.update(Message::PlActionExit(0));
+    // A press released with no move never reorders (no slot latched,
+    // drag never went live): the row click just plays instead.
+    let before = order_of(&s);
+    s.route = Route::PlaylistDetail(pid.clone());
+    let _ = s.update(Message::TrackHover(Some("t0".into())));
+    let _ = s.update(Message::PlDragStart {
+        playlist_id: pid.clone(),
+        index: 0,
+    });
+    assert!(s.pl_drag.is_some());
+    assert!(!s.pl_dragging());
+    let _ = s.update(Message::DragEnd);
+    assert_eq!(order_of(&s), before);
+    assert!(!s.status.contains("reordered"));
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("t0"));
 }
 
 #[test]
@@ -6236,6 +6458,97 @@ fn drag_slot_commit_maps_and_previews() {
     // Two-row lists reorder via the trailing edge slot.
     assert_eq!(drag_slot_preview(2, 0, Some(1)), vec![0, 1]);
     assert_eq!(drag_slot_preview(2, 0, Some(2)), vec![1, 0]);
+}
+
+#[test]
+fn drag_display_order_opens_gap_at_commit_target() {
+    // Origin held by the ghost: the list shows the other rows plus one
+    // gap (None) at the commit target.
+    assert_eq!(
+        drag_display_order(5, 1, 3),
+        (
+            vec![Some(0), Some(2), Some(3), None, Some(4)],
+            vec![0, 1, 3, 4, 4, 5],
+        )
+    );
+    // Own spot: gap sits where the origin was (rest layout, content held).
+    assert_eq!(
+        drag_display_order(3, 0, 0),
+        (vec![None, Some(1), Some(2)], vec![0, 0, 2, 3])
+    );
+    // Dragging the last row to the top.
+    assert_eq!(
+        drag_display_order(4, 3, 0),
+        (vec![None, Some(0), Some(1), Some(2)], vec![0, 0, 1, 2, 3],)
+    );
+    // Every lane id is a valid slot for its list length.
+    for len in 2..=6 {
+        for from in 0..len {
+            for to in 0..len {
+                let (seq, lanes) = drag_display_order(len, from, to);
+                assert_eq!(seq.len(), len);
+                assert_eq!(lanes.len(), len + 1);
+                assert_eq!(seq.iter().filter(|s| s.is_none()).count(), 1);
+                assert!(lanes.iter().all(|&s| s <= len));
+            }
+        }
+    }
+}
+
+#[test]
+fn drag_ghost_follows_cursor_and_clamps() {
+    use iced::Size;
+    let win = Some(Size::new(1280.0, 800.0));
+    // Grab offset preserved: pressing 30px into the row keeps the cursor
+    // 30px into the ghost (no jump on grab).
+    assert_eq!(
+        drag_ghost_pos(
+            Some(iced::Point::new(500.0, 400.0)),
+            win,
+            300.0,
+            64.0,
+            Some(130.0),
+            100.0,
+        ),
+        Some((470.0, 368.0))
+    );
+    // Unknown press: centered under the cursor.
+    assert_eq!(
+        drag_ghost_pos(
+            Some(iced::Point::new(500.0, 400.0)),
+            win,
+            300.0,
+            64.0,
+            None,
+            100.0
+        ),
+        Some((472.0, 368.0))
+    );
+    // Clamped to the window on every edge.
+    assert_eq!(
+        drag_ghost_pos(
+            Some(iced::Point::new(10.0, 10.0)),
+            win,
+            300.0,
+            64.0,
+            Some(0.0),
+            0.0
+        ),
+        Some((10.0, 0.0))
+    );
+    assert_eq!(
+        drag_ghost_pos(
+            Some(iced::Point::new(1270.0, 790.0)),
+            win,
+            300.0,
+            64.0,
+            Some(290.0),
+            900.0,
+        ),
+        Some((980.0, 736.0))
+    );
+    // No cursor, no ghost.
+    assert_eq!(drag_ghost_pos(None, win, 300.0, 64.0, None, 100.0), None);
 }
 
 #[test]

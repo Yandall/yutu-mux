@@ -771,13 +771,25 @@ impl AppState {
     }
 
     /// Eased drop-slot gap target: open while an armed slot commits to a
-    /// real move, else shut. Own-spot hovers never open the gap.
+    /// real move, else shut. Own-spot hovers never open the gap. Covers
+    /// both the queue drag and the manual playlist drag (the latter
+    /// resolves its length from the drag's own playlist).
     pub(crate) fn drag_gap_target(&self) -> f32 {
         if self.effective_drag_slot().is_some() {
-            1.0
-        } else {
-            0.0
+            return 1.0;
         }
+        if let (Some(drag), Some(pid)) = (self.pl_drag, self.pl_drag_id.as_deref()) {
+            if drag.live {
+                let len = self.find_playlist(pid).map(|p| p.tracks.len()).unwrap_or(0);
+                if drag
+                    .slot
+                    .is_some_and(|s| slot_commit(len, drag.from, s).is_some())
+                {
+                    return 1.0;
+                }
+            }
+        }
+        0.0
     }
 
     /// True once the press has moved past click slop and the slot lanes
