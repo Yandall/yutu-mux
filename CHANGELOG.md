@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Spanish queue wording uses "fila" (Añadir a la fila, Vaciar fila)
+  instead of "cola".
 - Home Discovery link is now text plus a chevron icon: the Spanish
   label reads "Descubrir" (no trailing arrow character).
 - Language selector in Settings with full Spanish translation: every
