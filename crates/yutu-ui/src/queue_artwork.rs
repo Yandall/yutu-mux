@@ -81,7 +81,7 @@ impl AppState {
             }
             Route::PlaylistDetail(id) => match self.find_playlist(id) {
                 Some(p) => (
-                    p.tracks.clone(),
+                    self.playlist_ordered_tracks(&p),
                     self.language.playlist_queue_label(&p.title),
                 ),
                 None => (Vec::new(), self.language.playlist_not_found_plain()),
@@ -740,8 +740,8 @@ impl AppState {
                 match self.find_playlist(id) {
                     None => Vec::new(),
                     Some(p) => {
-                        let tracks: Vec<Track> = p
-                            .tracks
+                        let ordered = self.playlist_ordered_tracks(&p);
+                        let tracks: Vec<Track> = ordered
                             .iter()
                             .map(|t| self.find_track(&t.id).unwrap_or_else(|| t.clone()))
                             .collect();

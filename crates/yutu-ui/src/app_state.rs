@@ -502,4 +502,29 @@ pub struct AppState {
     pub(crate) radio_tracks: Vec<Track>,
     /// MPRIS handle for live desktop propagation (`None` in tests/headless).
     pub(crate) mpris: Option<yutu_desktop::SharedPlayer>,
+    /// Per-playlist sort pick (own playlists): display-only except Manual,
+    /// which is the stored order and the only draggable mode. Persisted
+    /// via `playlist_sort_<id>` prefs, default Manual.
+    pub(crate) playlist_sorts: HashMap<String, PlaylistSort>,
+    /// Insertion times per playlist (track id to added_at): loaded once
+    /// at startup, kept in step on add/remove/sync/reorder. Manual
+    /// reorders move positions but never touch these, so oldest/newest
+    /// stay on add time.
+    pub(crate) playlist_added: HashMap<String, HashMap<String, i64>>,
+    /// Manual playlist reorder drag: same slot model as the queue drag
+    /// (grip press, slot hover, release anywhere), but scoped to the
+    /// open PlaylistDetail list. Only Manual mode arms it.
+    pub(crate) pl_drag: Option<DragState>,
+    pub(crate) pl_press_snap: Option<PressSnap>,
+    /// Playlist detail row under the cursor (index into the ordered view):
+    /// arms the manual drag and renders the hover highlight.
+    pub(crate) pl_hover: Option<usize>,
+    /// Cursor over a playlist row action button (heart or ellipsis):
+    /// presses there must never arm a manual drag (slipping off like or
+    /// menu must not become a reorder, same contract as the queue
+    /// remove guard). Index into the ordered view, like `pl_hover`.
+    pub(crate) pl_action_hover: Option<usize>,
+    /// Which playlist the in-flight manual drag belongs to (stale drags
+    /// from a navigated-away list never commit).
+    pub(crate) pl_drag_id: Option<String>,
 }

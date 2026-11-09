@@ -109,6 +109,270 @@ impl AppState {
         self.all_playlists().into_iter().find(|p| p.id == id)
     }
 
+    /// Sort key for the pref store.
+    pub(crate) fn playlist_sort_key(playlist_id: &str) -> String {
+        format!("playlist_sort_{playlist_id}")
+    }
+
+    /// Current sort for an own playlist (cached, lazy-loaded from prefs,
+    /// default Manual so existing installs keep stored order).
+    pub(crate) fn playlist_sort(&mut self, playlist_id: &str) -> PlaylistSort {
+        if let Some(s) = self.playlist_sorts.get(playlist_id) {
+            return *s;
+        }
+        let sort = LibraryStore::open(&self.library_path)
+            .ok()
+            .and_then(|store| store.get_pref(&Self::playlist_sort_key(playlist_id)).ok())
+            .flatten()
+            .map(|raw| PlaylistSort::parse(&raw))
+            .unwrap_or_default();
+        self.playlist_sorts.insert(playlist_id.to_string(), sort);
+        sort
+    }
+
+    /// Cached sort for immutable views (default Manual when not loaded
+    /// yet; `OpenPlaylist` preloads, so first frames already agree).
+    pub(crate) fn playlist_sort_cached(&self, playlist_id: &str) -> PlaylistSort {
+        self.playlist_sorts
+            .get(playlist_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Persist a sort pick (cache plus pref write-through).
+    pub(crate) fn persist_playlist_sort(&mut self, playlist_id: &str, sort: PlaylistSort) {
+        self.playlist_sorts.insert(playlist_id.to_string(), sort);
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref(&Self::playlist_sort_key(playlist_id), sort.stored());
+        }
+    }
+
+    /// Insertion time for one playlist row (0 when unknown: unknown rows
+    /// read as oldest, so they lead oldest-first and trail newest-first;
+    /// only tests that bypass the store hit this, real rows backfill).
+    pub(crate) fn playlist_added_for(&self, playlist_id: &str, track_id: &str) -> i64 {
+        self.playlist_added
+            .get(playlist_id)
+            .and_then(|m| m.get(track_id))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Display order for an own playlist: stored Manual order untouched,
+    /// every other pick a pure sort over it (stable, deterministic).
+    /// Favorites never reaches here (its view has no picker).
+    pub(crate) fn playlist_ordered_tracks(&self, playlist: &Playlist) -> Vec<Track> {
+        let sort = self
+            .playlist_sorts
+            .get(&playlist.id)
+            .copied()
+            .unwrap_or_default();
+        self.playlist_ordered_tracks_with(playlist, sort)
+    }
+
+    /// Sort helper with an explicit pick (pure, unit-tested; the view
+    /// passes the cached pick via [`Self::playlist_ordered_tracks`]).
+    pub(crate) fn playlist_ordered_tracks_with(
+        &self,
+        playlist: &Playlist,
+        sort: PlaylistSort,
+    ) -> Vec<Track> {
+        let mut tracks = playlist.tracks.clone();
+        match sort {
+            PlaylistSort::Manual => {}
+            PlaylistSort::OldestFirst => {
+                // No times cached (tests that bypass the store): stored
+                // order already is insertion order.
+                if self.playlist_added.contains_key(&playlist.id) {
+                    tracks.sort_by_key(|t| self.playlist_added_for(&playlist.id, &t.id));
+                }
+            }
+            PlaylistSort::NewestFirst => {
+                if self.playlist_added.contains_key(&playlist.id) {
+                    tracks.sort_by_key(|t| {
+                        std::cmp::Reverse(self.playlist_added_for(&playlist.id, &t.id))
+                    });
+                } else {
+                    tracks.reverse();
+                }
+            }
+            PlaylistSort::Title => {
+                tracks.sort_by(|a, b| {
+                    a.title
+                        .to_lowercase()
+                        .cmp(&b.title.to_lowercase())
+                        .then_with(|| a.artist.to_lowercase().cmp(&b.artist.to_lowercase()))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
+            PlaylistSort::Artist => {
+                tracks.sort_by(|a, b| {
+                    a.artist
+                        .to_lowercase()
+                        .cmp(&b.artist.to_lowercase())
+                        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
+            PlaylistSort::Album => {
+                tracks.sort_by(|a, b| {
+                    a.album
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .cmp(&b.album.as_deref().unwrap_or("").to_lowercase())
+                        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
+            PlaylistSort::LikedFirst => {
+                tracks.sort_by_key(|t| (!self.liked.contains(&t.id), t.title.to_lowercase()));
+            }
+        }
+        tracks
+    }
+
+    /// True while a manual playlist drag has moved past slop.
+    pub(crate) fn pl_dragging(&self) -> bool {
+        self.pl_drag.is_some_and(|d| d.live)
+    }
+
+    /// Latched playlist slot filtered to real moves (own-spot hovers are
+    /// None, mirroring the queue drag). Needs the list length: stale
+    /// drags from a navigated-away list never open a gap.
+    pub(crate) fn pl_effective_slot(&self, len: usize) -> Option<usize> {
+        let drag = self.pl_drag?;
+        if !drag.live {
+            return None;
+        }
+        self.pl_drag_id.as_deref()?;
+        drag.slot
+            .filter(|s| slot_commit(len, drag.from, *s).is_some())
+    }
+
+    /// Cancel any in-flight manual playlist drag.
+    pub(crate) fn cancel_pl_drag(&mut self) {
+        self.pl_drag = None;
+        self.pl_press_snap = None;
+        self.pl_drag_id = None;
+    }
+
+    /// Release path for a manual playlist press (shared by the `DragEnd`
+    /// release subscription and direct `PlDragEnd` sends): a live drag on
+    /// a committing slot reorders (positions persist, `added_at` stable);
+    /// otherwise a clean press/release over the same unmutated row plays
+    /// it (same snapshot guard, same-song no-op as `PlayPlaylistAt`).
+    /// Returns the play task on a click-to-play, else none.
+    pub(crate) fn pl_release_task(&mut self) -> iced::Task<Message> {
+        let snap = self.pl_press_snap.take();
+        let drag = self.pl_drag.take();
+        let drag_id = self.pl_drag_id.take();
+        let (Some(drag), Some(pid)) = (drag, drag_id) else {
+            return iced::Task::none();
+        };
+        let ordered = self
+            .find_playlist(&pid)
+            .map(|p| self.playlist_ordered_tracks(&p))
+            .unwrap_or_default();
+        let current_len = ordered.len();
+        let snap_ok = snap.as_ref().is_some_and(|s| {
+            s.from == drag.from
+                && current_len == s.len
+                && ordered.get(s.from).is_some_and(|t| t.id == s.id)
+        });
+        let manual =
+            self.playlist_sorts.get(&pid).copied().unwrap_or_default() == PlaylistSort::Manual;
+        // Reorder: only a live drag on a committing slot, Manual only.
+        if snap_ok && drag.live && manual {
+            if let Some(slot) = drag.slot {
+                if let Some(to) = slot_commit(current_len, drag.from, slot) {
+                    if let Some(pos) = self.user_playlists.iter().position(|p| p.id == pid) {
+                        let mut ids: Vec<String> = self.user_playlists[pos]
+                            .tracks
+                            .iter()
+                            .map(|t| t.id.clone())
+                            .collect();
+                        if drag.from < ids.len() {
+                            let item = ids.remove(drag.from);
+                            ids.insert(to.min(ids.len()), item);
+                            let mut tracks: Vec<Track> = ids
+                                .iter()
+                                .filter_map(|id| {
+                                    self.user_playlists[pos]
+                                        .tracks
+                                        .iter()
+                                        .find(|t| &t.id == id)
+                                        .cloned()
+                                })
+                                .collect();
+                            if tracks.len() == self.user_playlists[pos].tracks.len() {
+                                std::mem::swap(&mut self.user_playlists[pos].tracks, &mut tracks);
+                                self.persist_playlist_reordered(&pid, &ids);
+                                self.status = self.language.playlist_reordered();
+                                self.just_reordered_at = Some(std::time::Instant::now());
+                                return iced::Task::none();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Click-to-play: no commit plus a clean press/release over the
+        // same unmutated row with the cursor still on it (a move voids
+        // the click via the release distance below; a reorder voids it
+        // via the commit above). Modal layers suppress it like every
+        // other row click, and the reorder grace eats the click that
+        // shares a committing release.
+        let modal = self.context_menu.is_some()
+            || self.pl_menu.is_some()
+            || self.coll_menu.is_some()
+            || self.show_suggest;
+        let click = !modal
+            && snap.as_ref().is_some_and(|s| {
+                snap_ok
+                    && !self
+                        .just_reordered_at
+                        .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(150))
+                    && release_is_click_at(s.pos, self.cursor)
+                    && self.pl_hover == Some(s.from)
+            });
+        if !click {
+            return iced::Task::none();
+        }
+        let Some(s) = snap else {
+            return iced::Task::none();
+        };
+        // Same-song no-op (app contract): clicking the live track's own
+        // row never restarts audio.
+        if self.queue.current().is_some_and(|t| t.id == s.id) {
+            return iced::Task::none();
+        }
+        let Some(p) = self.find_playlist(&pid) else {
+            self.status = self.language.playlist_not_found_plain();
+            return iced::Task::none();
+        };
+        // Same suffix rule as the row button it replaces: the displayed
+        // (sorted) list plays from the clicked song on, anchored by id
+        // with the index as fallback.
+        let display = self.playlist_ordered_tracks(&p);
+        let start = display
+            .iter()
+            .position(|t| t.id == s.id)
+            .unwrap_or(s.from.min(display.len()));
+        let label = self.language.playlist_queue_label(&p.title);
+        let tracks: Vec<Track> = display.into_iter().skip(start).collect();
+        if tracks.is_empty() {
+            self.status = self.language.nothing_to_play(&label);
+            return iced::Task::none();
+        }
+        self.close_menu();
+        self.queue.clear();
+        self.autoplay.clear();
+        self.autoplay_for = None;
+        self.drag = None;
+        self.queue_many(tracks, &label)
+    }
+
     /// Accept an artist id, a catalog track id, or a plain name.
     pub(crate) fn resolve_artist_name(&self, id_or_name: &str) -> String {
         if let Some(a) = self.results.artists.iter().find(|a| a.id == id_or_name) {

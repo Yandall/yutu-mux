@@ -133,6 +133,7 @@ impl LibraryStore {
                      thumbnail_url TEXT,
                      thumbnail_large_url TEXT,
                      is_video INTEGER NOT NULL DEFAULT 0,
+                     added_at INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY (playlist_id, position));
                  CREATE INDEX IF NOT EXISTS idx_ptracks_pid ON playlist_tracks(playlist_id);",
             )
@@ -195,6 +196,35 @@ impl LibraryStore {
                     ))
                     .map_err(|e| e.to_string())?;
             }
+        }
+        // Playlist add-time migration: added_at keeps insertion order
+        // apart from the manual position, so oldest/newest sorts survive
+        // manual reorders. Old rows backfill from position (no reorder
+        // existed before, so position was insertion order).
+        {
+            let mut has = false;
+            let mut pragma = self
+                .conn
+                .prepare("PRAGMA table_info(playlist_tracks)")
+                .map_err(|e| e.to_string())?;
+            let names = pragma
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            for name in names.flatten() {
+                if name == "added_at" {
+                    has = true;
+                }
+            }
+            if !has {
+                self.conn
+                    .execute_batch(
+                        "ALTER TABLE playlist_tracks ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0",
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            self.conn
+                .execute_batch("UPDATE playlist_tracks SET added_at = position WHERE added_at = 0")
+                .map_err(|e| e.to_string())?;
         }
         // Likes add-order migration: liked_at timestamps new likes; old
         // rows backfill from rowid order so existing installs keep a
@@ -733,7 +763,9 @@ impl LibraryStore {
     /// Mirror a server playlist exactly: upsert the title (re-imports
     /// refresh renames instead of keeping the stale one) and replace the
     /// track rows, so server-side removals disappear locally too. Order
-    /// follows `tracks`.
+    /// follows `tracks`. Existing tracks keep their `added_at` so
+    /// oldest/newest sorts stay stable across syncs; brand-new tracks
+    /// append after the previous max in server order.
     pub fn sync_server_playlist(
         &self,
         id: &str,
@@ -748,6 +780,32 @@ impl LibraryStore {
                     params![id, title],
                 )
                 .map_err(|e| e.to_string())?;
+            let mut existing: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = self
+                    .conn
+                    .prepare(
+                        "SELECT track_id, added_at FROM playlist_tracks WHERE playlist_id = ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![id], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                    })
+                    .map_err(|e| e.to_string())?;
+                for row in rows.flatten() {
+                    existing.insert(row.0, row.1);
+                }
+            }
+            let mut max_added = existing.values().copied().max().unwrap_or(-1);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            if max_added < now {
+                max_added = now - 1;
+            }
             self.conn
                 .execute(
                     "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
@@ -755,11 +813,18 @@ impl LibraryStore {
                 )
                 .map_err(|e| e.to_string())?;
             for (i, t) in tracks.iter().enumerate() {
+                let added = match existing.get(&t.id) {
+                    Some(v) => *v,
+                    None => {
+                        max_added += 1;
+                        max_added
+                    }
+                };
                 self.conn
                     .execute(
                         "INSERT OR IGNORE INTO playlist_tracks
-                         (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                         (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video, added_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                         params![
                             id,
                             i as i64,
@@ -770,13 +835,94 @@ impl LibraryStore {
                             t.duration_secs as i64,
                             t.thumbnail_url,
                             t.thumbnail_large_url,
-                            i64::from(t.is_video)
+                            i64::from(t.is_video),
+                            added
                         ],
                     )
                     .map_err(|e| e.to_string())?;
             }
             Ok(())
         })
+    }
+
+    /// Persist a manual reorder: positions follow `ordered_ids` order,
+    /// `added_at` untouched so oldest/newest stay on insertion time.
+    /// Unknown ids are ignored; missing playlist tracks are left out.
+    /// Two passes via negative temporaries: positions share a
+    /// `(playlist_id, position)` primary key, so direct rewrites collide
+    /// mid-flight (t1 1->0 while t0 still 0) and roll back.
+    pub fn reorder_playlist(
+        &self,
+        playlist_id: &str,
+        ordered_ids: &[String],
+    ) -> Result<(), String> {
+        self.with_tx(|| {
+            for (i, tid) in ordered_ids.iter().enumerate() {
+                self.conn
+                    .execute(
+                        "UPDATE playlist_tracks SET position = ?1 WHERE playlist_id = ?2 AND track_id = ?3",
+                        params![-(i as i64) - 1, playlist_id, tid],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            for (i, tid) in ordered_ids.iter().enumerate() {
+                self.conn
+                    .execute(
+                        "UPDATE playlist_tracks SET position = ?1 WHERE playlist_id = ?2 AND track_id = ?3",
+                        params![i as i64, playlist_id, tid],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Insertion times per track for one playlist (manual reorders keep
+    /// positions but never touch these, so oldest/newest sorts are stable).
+    pub fn playlist_added_map(
+        &self,
+        playlist_id: &str,
+    ) -> Result<std::collections::HashMap<String, i64>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT track_id, added_at FROM playlist_tracks WHERE playlist_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![playlist_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows.flatten() {
+            out.insert(row.0, row.1);
+        }
+        Ok(out)
+    }
+
+    /// Insertion times for every playlist (one query for startup warming).
+    pub fn playlist_added_all(
+        &self,
+    ) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, i64>>, String>
+    {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT playlist_id, track_id, added_at FROM playlist_tracks")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out: std::collections::HashMap<String, std::collections::HashMap<String, i64>> =
+            std::collections::HashMap::new();
+        for (pid, tid, added) in rows.flatten() {
+            out.entry(pid).or_default().insert(tid, added);
+        }
+        Ok(out)
     }
 
     pub fn delete_playlist(&self, id: &str) -> Result<(), String> {
@@ -966,11 +1112,24 @@ impl LibraryStore {
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
+            let max_added: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(added_at), -1) FROM playlist_tracks WHERE playlist_id = ?1",
+                    params![playlist_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let added = now.max(max_added + 1);
             self.conn
                 .execute(
                     "INSERT OR IGNORE INTO playlist_tracks
-                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                     (playlist_id, position, track_id, title, artist, album, duration_secs, thumbnail_url, thumbnail_large_url, is_video, added_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         playlist_id,
                         pos,
@@ -981,7 +1140,8 @@ impl LibraryStore {
                         track.duration_secs as i64,
                         track.thumbnail_url,
                         track.thumbnail_large_url,
-                        i64::from(track.is_video)
+                        i64::from(track.is_video),
+                        added
                     ],
                 )
                 .map(|_| ())

@@ -451,15 +451,36 @@ pub(crate) fn card_button(
     }
 }
 
-/// Ghost chip: the held block while dragging (card + accent border,
-/// deliberately more compact than a full row).
-/// Accent bar marking the armed insertion slot.
-pub(crate) fn drop_bar(_: &iced::Theme) -> iced::widget::container::Style {
+/// Drop-target gap: the open room a live drag will land in (YouTube-style
+/// reorder). Tinted card with a faint accent edge so the target reads even
+/// when the floating ghost is elsewhere; full row height so siblings shift
+/// by exactly one row to make room.
+pub(crate) fn drop_gap(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(ACCENT)),
-        border: iced::Border::default().rounded(2),
+        background: Some(iced::Background::Color(iced::Color::from_rgba(
+            1.0, 1.0, 1.0, 0.05,
+        ))),
+        border: iced::Border {
+            color: iced::Color::from_rgba(1.0, 0.0, 0.2, 0.35),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
         ..Default::default()
     }
+}
+
+/// Open room at the drop target while live-dragging: the gap (not a bar)
+/// marks the landing spot while the floating ghost carries the song.
+pub(crate) fn drag_gap_box(h: f32) -> iced::Element<'static, Message> {
+    use iced::Fill;
+    iced::widget::container(
+        iced::widget::Space::new()
+            .height(iced::Length::Fixed(h.max(0.0)))
+            .width(Fill),
+    )
+    .style(drop_gap)
+    .width(Fill)
+    .into()
 }
 
 /// Hairline divider between queue rows (visible on dark and hover).

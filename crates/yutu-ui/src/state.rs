@@ -40,9 +40,9 @@ pub enum Route {
 /// after the last) so every song always has a committable move. A press
 /// first arms the drag invisibly (`live` false, no layout change) so a
 /// plain click never shifts rows; the slot lanes only appear once the
-/// cursor moves past click slop (`live` true). The origin row keeps its
-/// full height while held and only the armed slot parts rows, so long
-/// lists never jump by O(n) on press.
+/// cursor moves past click slop (`live` true). While live the origin row
+/// is held by the floating ghost and the list opens one full-row gap at
+/// the commit target, so siblings shift by exactly one row to make room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DragState {
     pub(crate) from: usize,
@@ -156,6 +156,75 @@ pub enum SearchFilter {
     Albums,
     Artists,
     Playlists,
+}
+
+/// Own-playlist sort pick (PlaylistDetail header): display-only except
+/// Manual, which is the stored position order and the only draggable
+/// mode. Oldest/newest read insertion time (`added_at`, not position),
+/// so manual reorders never move them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlaylistSort {
+    #[default]
+    Manual,
+    NewestFirst,
+    OldestFirst,
+    Title,
+    Artist,
+    Album,
+    LikedFirst,
+}
+
+impl PlaylistSort {
+    /// All picks in picker order (matches the request list).
+    pub const ALL: [Self; 7] = [
+        Self::NewestFirst,
+        Self::OldestFirst,
+        Self::Title,
+        Self::Artist,
+        Self::Album,
+        Self::LikedFirst,
+        Self::Manual,
+    ];
+
+    /// Picker label (user-facing, stays English like other glue labels).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NewestFirst => "Newest first",
+            Self::OldestFirst => "Oldest first",
+            Self::Title => "Title",
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+            Self::LikedFirst => "Liked first",
+            Self::Manual => "Manual",
+        }
+    }
+
+    /// Stored pref value.
+    pub fn stored(self) -> &'static str {
+        match self {
+            Self::NewestFirst => "newest",
+            Self::OldestFirst => "oldest",
+            Self::Title => "title",
+            Self::Artist => "artist",
+            Self::Album => "album",
+            Self::LikedFirst => "liked",
+            Self::Manual => "manual",
+        }
+    }
+
+    /// Parse a stored value (unknown falls back to Manual, so prefs never
+    /// break the view).
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_lowercase().as_str() {
+            "newest" | "newest-first" | "newest first" => Self::NewestFirst,
+            "oldest" | "oldest-first" | "oldest first" => Self::OldestFirst,
+            "title" => Self::Title,
+            "artist" => Self::Artist,
+            "album" => Self::Album,
+            "liked" | "liked-first" | "liked first" => Self::LikedFirst,
+            _ => Self::Manual,
+        }
+    }
 }
 
 /// Which sign-in started an import (status wording only). `Sync` is a
@@ -365,10 +434,14 @@ pub enum Message {
     /// Play-all with shuffle turned on first (hero shuffle buttons).
     PlayAllShuffled,
     /// Play one playlist from the clicked row on: the song plus the
-    /// rest of the playlist from that point replace the queue.
+    /// rest of the playlist from that point replace the queue. The
+    /// clicked id anchors the suffix (ordered-view inserts between
+    /// render and click must not shift the head); the index is the
+    /// fallback when the id left the list.
     PlayPlaylistAt {
         playlist_id: String,
         index: usize,
+        track_id: String,
     },
     /// Shuffle-play one search hero artist (known catalog tracks).
     PlayArtistShuffled(String),
@@ -440,6 +513,31 @@ pub enum Message {
     GlobalPress,
     /// Insertion-slot hover while dragging (0..=len, edges included).
     DragSlot(usize),
+    /// Manual playlist reorder (own playlists, Manual sort only): grip
+    /// press arms, slot hover goes live, release commits. Scoped by
+    /// playlist id so stale drags never commit after navigation.
+    PlDragStart {
+        playlist_id: String,
+        index: usize,
+    },
+    PlDragSlot(usize),
+    PlDragEnd,
+    /// Playlist detail row hover (index into the ordered view): highlight
+    /// plus manual-drag arming.
+    PlRowHover(usize),
+    PlRowExit(usize),
+    /// Cursor over a playlist row action button (heart or ellipsis):
+    /// presses there must never arm a manual drag.
+    PlActionHover(Option<usize>),
+    /// Action-button leave: clears only when it still names this row,
+    /// so a fast jump onto another row's action never disarms it (a
+    /// press there must delete, never start a drag).
+    PlActionExit(usize),
+    /// Own-playlist sort pick (PlaylistDetail header picker).
+    PlaylistSortSelected {
+        playlist_id: String,
+        sort: PlaylistSort,
+    },
     /// Animation frame (sidebar widths + drawer slide converge).
     Animate,
     /// Bottom drawer open/close.

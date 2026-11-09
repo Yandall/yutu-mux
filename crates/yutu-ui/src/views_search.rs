@@ -114,15 +114,18 @@ impl AppState {
         } else {
             MUTED
         };
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let hovered =
+            self.hovered_track.as_deref() == Some(t.id.as_str()) || self.pl_hover == Some(index);
         let hover_id = t.id.clone();
         let play_here = Message::PlayPlaylistAt {
             playlist_id: playlist_id.to_string(),
             index,
+            track_id: t.id.clone(),
         };
         let play_here_text = Message::PlayPlaylistAt {
             playlist_id: playlist_id.to_string(),
             index,
+            track_id: t.id.clone(),
         };
         mouse_area(
             container(
@@ -164,6 +167,133 @@ impl AppState {
         .on_right_press(Message::OpenContext(t.id.clone()))
         .on_enter(Message::TrackHover(Some(hover_id.clone())))
         .on_exit(Message::TrackExit(hover_id))
+        .into()
+    }
+
+    /// Manual-sort playlist row: byte-for-byte the same visuals as
+    /// [`Self::playlist_track_row`] at rest (same art, text, duration,
+    /// heart, ellipsis, spacing), so switching sorts never restyles
+    /// the list. One press path for the whole row (art, text, gaps,
+    /// duration): plain visuals let the press reach the row area from
+    /// anywhere, so a drag can start anywhere in the row; only the
+    /// heart and ellipsis buttons own their press (hover-guarded, never
+    /// arming). Arming is invisible and only goes live after the cursor
+    /// moves past click slop: a plain click with no move just plays via
+    /// the DragEnd snapshot instead of reordering. While live-dragging
+    /// the origin is held by the floating ghost and the list shows a gap
+    /// instead, so this always renders the plain row.
+    pub(crate) fn playlist_manual_row(
+        &self,
+        playlist_id: &str,
+        t: &Track,
+        index: usize,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{button, container, mouse_area, row, text};
+        use iced::Fill;
+        let pid = playlist_id.to_string();
+        // No live-origin branch: while live-dragging the origin is held by
+        // the floating ghost and the list shows a gap instead, so this
+        // always renders the plain row.
+        let heart_color = if self.liked.contains(&t.id) {
+            ACCENT
+        } else {
+            MUTED
+        };
+        let hovered =
+            self.hovered_track.as_deref() == Some(t.id.as_str()) || self.pl_hover == Some(index);
+        let hover_id = t.id.clone();
+        // No inner play buttons: plain visuals let the press reach the
+        // outer row area from art, text, gaps, or duration (only the
+        // heart and ellipsis buttons own their press, guarded below). A
+        // clean press/release plays via the DragEnd snapshot; a move to
+        // a slot reorders instead. Same one-press-path contract as the
+        // queue row.
+        let heart_btn: iced::Element<'_, Message> =
+            button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
+                .style(hover_row)
+                .on_press(Message::Like(t.id.clone()))
+                .padding(6)
+                .into();
+        let more_btn: iced::Element<'_, Message> = button(btn_icon("ellipsis", 15.0, MUTED))
+            .style(hover_row)
+            .on_press(Message::OpenContext(t.id.clone()))
+            .padding(6)
+            .into();
+        let heart_cell: iced::Element<'_, Message> = mouse_area(heart_btn)
+            .on_enter(Message::PlActionHover(Some(index)))
+            .on_exit(Message::PlActionExit(index))
+            .into();
+        let more_cell: iced::Element<'_, Message> = mouse_area(more_btn)
+            .on_enter(Message::PlActionHover(Some(index)))
+            .on_exit(Message::PlActionExit(index))
+            .into();
+        mouse_area(
+            container(
+                row![
+                    container(self.thumb(t)).padding(2),
+                    container(Self::btn_track_text_single(
+                        &t.title,
+                        &t.artist,
+                        14,
+                        iced::Color::WHITE
+                    ))
+                    .padding(3)
+                    .width(Fill),
+                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    heart_cell,
+                    more_cell,
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(8),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(TRACK_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Message::PlDragStart {
+            playlist_id: pid,
+            index,
+        })
+        .on_right_press(Message::OpenContext(t.id.clone()))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
+        .into()
+    }
+
+    /// Edge insertion lane for manual playlist drags (slot 0 / slot len):
+    /// transparent hover strips only, never a visible bar. The armed lane
+    /// collapses to zero (the full-row gap marks the target instead).
+    pub(crate) fn pl_drop_slot(&self, len: usize, k: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area};
+        use iced::Fill;
+        let armed = self.pl_effective_slot(len) == Some(k);
+        let h = if armed { 0.0 } else { 10.0 };
+        mouse_area(container(
+            iced::widget::Space::new()
+                .height(iced::Length::Fixed(h))
+                .width(Fill),
+        ))
+        .on_enter(Message::PlDragSlot(k))
+        .into()
+    }
+
+    /// Middle insertion lane for manual playlist drags: transparent 4px
+    /// hover strip, collapsing to zero once armed like the queue lanes.
+    pub(crate) fn pl_drop_divider(&self, len: usize, k: usize) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area};
+        use iced::Fill;
+        let armed = self.pl_effective_slot(len) == Some(k);
+        let h = if armed { 0.0 } else { 4.0 };
+        mouse_area(container(
+            iced::widget::Space::new()
+                .height(iced::Length::Fixed(h))
+                .width(Fill),
+        ))
+        .on_enter(Message::PlDragSlot(k))
         .into()
     }
 
