@@ -712,6 +712,42 @@ fn ctrl_box(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
         .into()
 }
 
+/// Repeat transport button: icon only when `badge` is empty (Repeat
+/// Off), icon plus badge text otherwise. An empty badge must not keep
+/// its fixed-width box: the reserved space pushed the icon left of the
+/// button center and widened the whole transport row, so Play sat left
+/// of center. Collapsing the box when empty keeps every transport
+/// button the same 18px content width and Play truly centered.
+fn repeat_button<'a>(
+    repeat_icon: &'a str,
+    badge: &'a str,
+    pad: impl Into<iced::Padding>,
+) -> iced::Element<'a, Message> {
+    use iced::widget::{button, container, row};
+    if badge.is_empty() {
+        button(ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)))
+            .style(hover_row)
+            .on_press(Message::CycleRepeat)
+            .padding(pad)
+            .into()
+    } else {
+        button(
+            row![
+                ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)),
+                container(btn_text(badge, 11))
+                    .width(iced::Length::Fixed(24.0))
+                    .align_x(iced::alignment::Horizontal::Center),
+            ]
+            .spacing(3)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(hover_row)
+        .on_press(Message::CycleRepeat)
+        .padding(pad)
+        .into()
+    }
+}
+
 /// Flow preset names into rows that fit `body_w` (like flex-wrap):
 /// greedy fill per row, so a short preset joins the first row even when
 /// the full strip cannot. Every row holds at least one segment, and an
@@ -16108,19 +16144,7 @@ impl AppState {
                     .style(hover_row)
                     .on_press(Message::Next)
                     .padding(6),
-                button(
-                    row![
-                        ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)),
-                        container(btn_text(repeat_badge, 11))
-                            .width(iced::Length::Fixed(24.0))
-                            .align_x(iced::alignment::Horizontal::Center),
-                    ]
-                    .spacing(3)
-                    .align_y(iced::alignment::Vertical::Center),
-                )
-                .style(hover_row)
-                .on_press(Message::CycleRepeat)
-                .padding(6),
+                repeat_button(repeat_icon, repeat_badge, 6),
             ]
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center);
@@ -16217,19 +16241,7 @@ impl AppState {
                                 .style(hover_row)
                                 .on_press(Message::Next)
                                 .padding(pad_side),
-                            button(
-                                row![
-                                    ctrl_box(btn_icon(repeat_icon, 14.0, iced::Color::WHITE)),
-                                    container(btn_text(repeat_badge, 11))
-                                        .width(iced::Length::Fixed(24.0))
-                                        .align_x(iced::alignment::Horizontal::Center),
-                                ]
-                                .spacing(3)
-                                .align_y(iced::alignment::Vertical::Center),
-                            )
-                            .style(hover_row)
-                            .on_press(Message::CycleRepeat)
-                            .padding(pad_side),
+                            repeat_button(repeat_icon, repeat_badge, pad_side),
                         ]
                         .spacing(transport_gap)
                         .align_y(iced::alignment::Vertical::Center),
@@ -24523,6 +24535,21 @@ mod tests {
         let thick = String::from_utf8_lossy(&raw);
         assert!(thick.contains("stroke-width=\"2.5\""));
         assert!(!thick.contains("stroke-width=\"2\""));
+        // Filled transport glyphs stay optically centered in their
+        // 18px boxes: the play triangle spans 5-21 (center 12, matching
+        // pause), and the skip bars are filled rects (a stroked line
+        // with stroke none paints nothing, leaving a one-sided
+        // triangle that reads as off-center).
+        let play = include_str!("../assets/icons/play.svg");
+        assert!(play.contains("points=\"5 3 19 12 5 21 5 3\""));
+        assert!(include_str!("../assets/icons/skip-back.svg").contains("<rect"));
+        assert!(include_str!("../assets/icons/skip-forward.svg").contains("<rect"));
+        assert!(!include_str!("../assets/icons/skip-back.svg").contains("<line"));
+        assert!(!include_str!("../assets/icons/skip-forward.svg").contains("<line"));
+        // The repeat button collapses its badge box when Repeat is off,
+        // so the icon stays centered and Play stays on the row center.
+        let _ = repeat_button("repeat", "", 6);
+        let _ = repeat_button("repeat-1", "1", 6);
         assert_eq!(iced::font::Weight::Medium, medium_font().weight);
     }
 
