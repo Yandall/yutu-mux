@@ -2208,8 +2208,16 @@ const ART_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 const MAX_RESOLVE_ATTEMPTS: u8 = 3;
 /// A stream-URL resolve that outlives this never returns: the timeout
 /// error flows through the normal retry path instead of wedging the
-/// loader on a hung yt-dlp. Generous: healthy resolves take seconds.
-const RESOLVE_TIMEOUT_SECS: u64 = 15;
+/// loader on a hung yt-dlp. Generous: healthy resolves take seconds
+/// (worst case: pinned client fails, default set, then URL warm-up).
+const RESOLVE_TIMEOUT_SECS: u64 = 20;
+/// Longest wait for a fresh stream URL to stop answering 403 (seen:
+/// up to ~3.5s on yt-dlp's `tv_samsung` client URLs).
+const STREAM_WARM_SECS: u64 = 6;
+/// An mpv stream load that is idle this long after `loadfile` without
+/// any audible playback never opened (`loadfile` is async, so an edge
+/// refusal never reaches the call site): retry it like a failed resolve.
+const STREAM_OPEN_GRACE: std::time::Duration = std::time::Duration::from_millis(2500);
 /// Same backstop for full-fetch resolves (slow networks fetch
 /// for minutes legitimately, so this only catches true stalls).
 const RESOLVE_BYTES_TIMEOUT_SECS: u64 = 300;
@@ -2790,6 +2798,13 @@ pub struct AppState {
     /// position): distinguishes a finished track from a load that never
     /// started, so the EOF-idle net never fires on gaps or failures.
     heard_audio: bool,
+    /// When the current stream URL was handed to mpv, until audio is
+    /// heard: the watchdog for loads the backend accepted but never
+    /// opened (see [`STREAM_OPEN_GRACE`]). Cleared wherever
+    /// `heard_audio` resets (new loads, both Stops).
+    /// Bound to the track id it was armed for: it only ever fires for
+    /// that track (queue edits that shift `current()` cannot retarget it).
+    stream_opened_at: Option<(std::time::Instant, String)>,
     /// Track id a prefetch was already attempted for (no Tick spam).
     prefetch_attempted: Option<String>,
     /// Google device-flow login in progress (cloned into poll tasks).
@@ -4145,10 +4160,36 @@ async fn resolve_via_raw(video_id: &str) -> Result<Vec<u8>, String> {
 
 /// yt-dlp `--get-url` only (no fetch): the fast path behind instant
 /// playback. Failures name the track; the caller decides bytes-vs-stream.
+/// The sidecar runs on the blocking pool (it takes seconds, and on an
+/// async worker it would also starve the caller's timeout). The URL is
+/// then warmed: some clients' fresh URLs answer 403 for a few seconds,
+/// and mpv opening one at once fails the load.
 async fn resolve_stream_url(video_id: &str) -> Result<String, String> {
     let bin = yutu_core::find_yt_dlp()
         .ok_or_else(|| "yt-dlp not installed: install it to play music.".to_string())?;
-    yutu_core::resolve_audio_url(&bin, video_id).map_err(|e| e.to_string())
+    let url = ytdlp_resolve(&bin, video_id).await?;
+    yutu_player::warm_stream_url(&url, std::time::Duration::from_secs(STREAM_WARM_SECS))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(url)
+}
+
+/// `yutu_core::resolve_audio_url` on the blocking pool: the sidecar
+/// takes seconds (two runs when the pinned client fails), which on an
+/// async worker would stall it and starve the caller's timeout.
+async fn ytdlp_resolve(bin: &str, video_id: &str) -> Result<String, String> {
+    let (bin, id) = (bin.to_string(), video_id.to_string());
+    tokio::task::spawn_blocking(move || yutu_core::resolve_audio_url(&bin, &id))
+        .await
+        .map_err(|e| format!("stream resolver stopped: {e}"))?
+        .map_err(|e| e.to_string())
+}
+
+/// Best-effort warm-up on the bytes path: a still-refused URL falls
+/// through to the fetch, whose 403 handling owns the fallback chain.
+async fn warm_for_fetch(url: &str) {
+    let _ =
+        yutu_player::warm_stream_url(url, std::time::Duration::from_secs(STREAM_WARM_SECS)).await;
 }
 
 /// Real search over the live Innertube API: the web-style unfiltered
@@ -4321,7 +4362,11 @@ async fn hydrate_one(_id: String) -> Vec<Track> {
 /// stack handles the headers/retries a bare GET lacks).
 async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
     if let Some(bin) = yutu_core::find_yt_dlp() {
-        match yutu_core::resolve_audio_url(&bin, video_id) {
+        let resolved = ytdlp_resolve(&bin, video_id).await;
+        if let Ok(url) = &resolved {
+            warm_for_fetch(url).await;
+        }
+        match resolved {
             Ok(url) => match yutu_player::fetch_bytes(&url).await {
                 Ok(bytes) => return Ok(bytes),
                 Err(first) => {
@@ -4331,7 +4376,8 @@ async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
                             "yutu-stream",
                             format_args!("chunked fetch 403 ({msg}); re-resolving once"),
                         );
-                        if let Ok(fresh) = yutu_core::resolve_audio_url(&bin, video_id) {
+                        if let Ok(fresh) = ytdlp_resolve(&bin, video_id).await {
+                            warm_for_fetch(&fresh).await;
                             if let Ok(bytes) = yutu_player::fetch_bytes(&fresh).await {
                                 return Ok(bytes);
                             }
@@ -4340,7 +4386,13 @@ async fn resolve_and_fetch(video_id: &str) -> Result<Vec<u8>, String> {
                             "yutu-stream",
                             "fresh URL also failed; yt-dlp direct fetch (memory-only)",
                         );
-                        match yutu_core::download_audio_bytes(&bin, video_id) {
+                        let (b, id) = (bin.clone(), video_id.to_string());
+                        let direct = tokio::task::spawn_blocking(move || {
+                            yutu_core::download_audio_bytes(&b, &id).map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("direct fetch stopped: {e}")));
+                        match direct {
                             Ok(bytes) => return Ok(bytes),
                             Err(e) => {
                                 yutu_core::app_log::warn(
@@ -5134,6 +5186,7 @@ impl AppState {
             prefetch_attempted: None,
             resolve_attempts: 0,
             heard_audio: false,
+            stream_opened_at: None,
             #[cfg(feature = "innertube")]
             google_login: None,
             #[cfg(feature = "innertube")]
@@ -5900,6 +5953,7 @@ impl AppState {
         self.prefetch_attempted = None;
         self.resolve_attempts = 0;
         self.heard_audio = false;
+        self.stream_opened_at = None;
         self.loading_track = Some(t.id.clone());
         self.end_advanced = false;
         self.paused = false;
@@ -5967,6 +6021,7 @@ impl AppState {
         self.prefetch_attempted = None;
         self.resolve_attempts = 0;
         self.heard_audio = false;
+        self.stream_opened_at = None;
         self.loading_track = Some(t.id.clone());
         self.end_advanced = false;
         self.paused = true;
@@ -6062,6 +6117,7 @@ impl AppState {
             Some(audio) => match audio.play_stream_url(url) {
                 Ok(()) => {
                     self.loading_track = None;
+                    self.stream_opened_at = Some((std::time::Instant::now(), t.id.clone()));
                     self.status = self.language.playing_line(&t.title, &t.artist);
                     let held = self.seek_drag.is_some();
                     self.consume_deferred_seeks();
@@ -6302,6 +6358,27 @@ impl AppState {
         self.peek_next_id()
     }
 
+    /// Open-failure watchdog predicate (pure, Tick-tested): a stream
+    /// URL handed to mpv at least [`STREAM_OPEN_GRACE`] ago, with the
+    /// backend idle (no file) and nothing ever heard. The EOF net's
+    /// mirror image: it needs heard audio, this needs none. Paused,
+    /// loading, and drag-held states never qualify (a paused autoload
+    /// that failed is caught on resume); rodio never reports idle.
+    fn stream_open_failed(&self, now: std::time::Instant) -> bool {
+        !self.paused
+            && !self.heard_audio
+            && self.loading_track.is_none()
+            && self.seek_drag.is_none()
+            && self.stream_opened_at.as_ref().is_some_and(|(at, id)| {
+                now.saturating_duration_since(*at) >= STREAM_OPEN_GRACE
+                    && self.queue.current().is_some_and(|t| &t.id == id)
+            })
+            && self
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.wants_stream() && a.is_idle())
+    }
+
     /// EOF safety net predicate (pure, Tick-tested): true when the raw
     /// backend clock reads idle (0/0) after audible playback of a live
     /// load, or when the backend itself reports holding no file (mpv
@@ -6381,6 +6458,7 @@ impl AppState {
                 }
                 self.resolve_attempts = 0;
                 self.heard_audio = false;
+                self.stream_opened_at = None;
                 self.prefetch_attempted = None;
                 self.loading_track = Some(t.id.clone());
                 self.end_advanced = false;
@@ -9032,6 +9110,7 @@ impl AppState {
                 // Stopped is not finished (same disarm as the UI Stop:
                 // a later resume on the empty backend must not skip).
                 self.heard_audio = false;
+                self.stream_opened_at = None;
                 self.autoload = false;
                 self.paused = true;
                 self.status = self.language.desktop_stopped();
@@ -10360,6 +10439,7 @@ impl AppState {
                 // backend is silent with no next song coming), device or
                 // no device. A held seek drag dies with the load too.
                 self.heard_audio = false;
+                self.stream_opened_at = None;
                 self.seek_drag = None;
                 self.seek_drag_at = None;
                 self.seek_paused = false;
@@ -11344,6 +11424,10 @@ impl AppState {
                         if let Some(a) = &self.audio {
                             a.stop();
                         }
+                        // Stopped, not finished: disarm both idle nets
+                        // (the index fell back to the previous song).
+                        self.heard_audio = false;
+                        self.stream_opened_at = None;
                         self.position_secs = 0.0;
                         self.loading_track = None;
                     }
@@ -13183,6 +13267,22 @@ impl AppState {
                 // leaves 0.0) for a finished song.
                 if raw_pos > 0.0 {
                     self.heard_audio = true;
+                    self.stream_opened_at = None;
+                }
+                // Stream that never opened (edge refused the URL): mpv
+                // went idle with nothing heard. Drop the dead URL and
+                // take the normal retry/skip path (fresh resolve).
+                if self.stream_open_failed(now) {
+                    if let Some((_, id)) = self.stream_opened_at.take() {
+                        self.url_cache.remove(&id);
+                        if self.prefetched.as_ref().is_some_and(|(p, _)| p == &id) {
+                            self.prefetched = None;
+                        }
+                        tasks.push(self.retry_or_skip_failed(
+                            id,
+                            "the stream never started (server refused the URL)".into(),
+                        ));
+                    }
                 }
                 // Prefetch the next song 2s before the current one ends,
                 // so the advance lands on a warm URL. One attempt per
@@ -27551,6 +27651,137 @@ mod tests {
         let _ = s.update(Message::Prev);
         assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
         assert!(s.loading_track.is_none());
+    }
+
+    #[test]
+    fn stream_open_watchdog_needs_an_idle_stream_backend() {
+        use std::time::{Duration, Instant};
+        // No device (and rodio) never reports idle: the watchdog can
+        // never fire there, whatever the clock says.
+        let mut s = test_state();
+        s.audio = None;
+        s.queue.push(mk_track("m1", "One", "A"));
+        let t0 = Instant::now();
+        s.stream_opened_at = Some((t0, "m1".into()));
+        assert!(!s.stream_open_failed(t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    #[cfg(feature = "mpv")]
+    fn stream_open_watchdog_catches_a_load_that_never_opened() {
+        use std::time::{Duration, Instant};
+        // `loadfile` is async: a URL the edge refuses (HTTP 403) leaves
+        // mpv idle with no error at the call site. A fresh backend is
+        // exactly that shape (idle, nothing heard). Needs real libmpv.
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        let mut s = test_state();
+        s.audio = Some(AudioOut::Mpv(backend));
+        s.queue.push(mk_track("m1", "One", "A"));
+        s.queue.push(mk_track("m2", "Two", "A"));
+        let t0 = Instant::now();
+        let late = t0 + STREAM_OPEN_GRACE + Duration::from_millis(100);
+        assert!(!s.stream_open_failed(late), "no load handed over yet");
+        s.stream_opened_at = Some((t0, "m2".into()));
+        assert!(
+            !s.stream_open_failed(late),
+            "armed for another track: never retargets the current one"
+        );
+        s.stream_opened_at = Some((t0, "m1".into()));
+        assert!(
+            !s.stream_open_failed(t0 + Duration::from_millis(500)),
+            "inside the grace mpv may not have picked the file up"
+        );
+        assert!(s.stream_open_failed(late));
+        s.paused = true;
+        assert!(
+            !s.stream_open_failed(late),
+            "paused holds (caught on resume)"
+        );
+        s.paused = false;
+        s.heard_audio = true;
+        assert!(
+            !s.stream_open_failed(late),
+            "heard audio is the EOF net's job"
+        );
+        s.heard_audio = false;
+        s.loading_track = Some("m1".into());
+        assert!(!s.stream_open_failed(late), "a resolve in flight holds");
+        s.loading_track = None;
+        // Full tick: the dead URL is dropped and the same track
+        // re-resolves through the normal retry budget.
+        s.url_cache.insert(
+            "m1".into(),
+            ("https://example.invalid/dead".into(), u64::MAX),
+        );
+        s.prefetched = Some(("m1".into(), "https://example.invalid/dead".into()));
+        let _ = s.update(Message::Tick(late));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        assert_eq!(s.loading_track.as_deref(), Some("m1"), "retrying");
+        assert_eq!(s.resolve_attempts, 1);
+        assert!(s.stream_opened_at.is_none(), "one retry per failed open");
+        assert!(!s.url_cache.contains_key("m1"), "dead URL never reused");
+        assert!(s.prefetched.is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "mpv")]
+    fn stream_handoff_arms_the_watchdog_and_new_loads_disarm_it() {
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        let mut s = test_state();
+        s.audio = Some(AudioOut::Mpv(backend));
+        let t = mk_track("m1", "One", "A");
+        s.queue.push(t.clone());
+        assert!(s.try_play_url("https://example.invalid/audio", &t));
+        assert!(s.stream_opened_at.is_some(), "handoff arms the watchdog");
+        let _ = s.update(Message::Stop);
+        assert!(s.stream_opened_at.is_none(), "Stop disarms it");
+        assert!(s.try_play_url("https://example.invalid/audio", &t));
+        // No cached/prefetched URL: the new load resolves, disarmed.
+        let _ = s.play_current_task();
+        assert_eq!(s.loading_track.as_deref(), Some("m1"));
+        assert!(s.stream_opened_at.is_none(), "new loads disarm it");
+    }
+
+    #[test]
+    #[cfg(feature = "mpv")]
+    fn removing_a_stuck_last_song_never_restarts_the_previous_one() {
+        use std::time::{Duration, Instant};
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        let mut s = test_state();
+        s.audio = Some(AudioOut::Mpv(backend));
+        s.queue.push(mk_track("m1", "One", "A"));
+        let t2 = mk_track("m2", "Two", "A");
+        s.queue.push(t2.clone());
+        s.queue.jump_to(1);
+        assert!(s.try_play_url("https://example.invalid/stuck", &t2));
+        // Remove the stuck last song: no next one, so playback stops
+        // and the index falls back to m1. The user stopped: nothing
+        // may re-resolve m1 behind their back.
+        let _ = s.update(Message::RemoveFromQueue("m2".into()));
+        assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+        let late = Instant::now() + STREAM_OPEN_GRACE + Duration::from_millis(100);
+        assert!(!s.stream_open_failed(late));
+        let _ = s.update(Message::Tick(late));
+        assert!(s.loading_track.is_none(), "no retry of the previous song");
+        assert_eq!(s.resolve_attempts, 0);
     }
 
     #[test]

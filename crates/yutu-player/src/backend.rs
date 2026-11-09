@@ -274,6 +274,54 @@ pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
     }
 }
 
+/// Pause between warm-up probes of a refused stream URL.
+const WARM_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
+/// Cap per warm-up probe: a stalled edge or hung connect is a
+/// transport error (fail open), never a wait past the caller's budget.
+const WARM_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Wait until a freshly resolved stream URL actually serves bytes.
+/// Some yt-dlp clients mint googlevideo URLs that answer HTTP 403 for
+/// a few seconds before they go live; mpv opening one at once fails
+/// the load. Probes with a 1-byte ranged GET: 2xx is ready, 403 is
+/// retried until `max_wait`, then errors (the caller re-resolves).
+/// Any other HTTP error fails at once. Transport errors (including a
+/// probe past [`WARM_PROBE_TIMEOUT`]) fail open (`Ok`): the probe is advisory, so a local network quirk must never
+/// block playback that the player itself might manage.
+pub async fn warm_stream_url(url: &str, max_wait: std::time::Duration) -> Result<(), PlayerError> {
+    let client = http_client();
+    let deadline = std::time::Instant::now() + max_wait;
+    loop {
+        let response = match client
+            .get(url)
+            .header("Range", "bytes=0-0")
+            .header("Accept", "*/*")
+            .timeout(WARM_PROBE_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        if status != reqwest::StatusCode::FORBIDDEN {
+            return Err(PlayerError::Stream(format!(
+                "stream URL refused: HTTP {status}"
+            )));
+        }
+        if std::time::Instant::now() + WARM_RETRY > deadline {
+            return Err(PlayerError::Stream(format!(
+                "stream URL still refused (HTTP 403) after {}s",
+                max_wait.as_secs_f32().round()
+            )));
+        }
+        tokio::time::sleep(WARM_RETRY).await;
+    }
+}
+
 /// Parse `bytes 0-1048575/4172542` into the total length.
 fn parse_content_range_total(header: &str) -> Option<u64> {
     header.rsplit('/').next()?.trim().parse().ok()
@@ -425,5 +473,81 @@ mod tests {
     async fn live_fetch_bytes() {
         let bytes = fetch_bytes("https://example.com").await.expect("fetch");
         assert!(!bytes.is_empty());
+    }
+
+    /// Local HTTP stub: answers `refusals` requests with `refuse_status`,
+    /// then 206 forever. Returns its URL and a served-request counter.
+    fn stub_server(
+        refusals: usize,
+        refuse_status: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = served.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let mut req = Vec::new();
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                let reply = if n < refusals {
+                    format!("HTTP/1.1 {refuse_status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                } else {
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/10\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx".to_string()
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (format!("http://{addr}/videoplayback"), served)
+    }
+
+    #[tokio::test]
+    async fn warm_waits_out_a_fresh_url_403_window() {
+        let (url, served) = stub_server(2, "403 Forbidden");
+        warm_stream_url(&url, std::time::Duration::from_secs(5))
+            .await
+            .expect("URL goes live after the 403 window");
+        assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn warm_gives_up_on_a_permanent_403() {
+        let (url, _) = stub_server(usize::MAX, "403 Forbidden");
+        let err = warm_stream_url(&url, std::time::Duration::from_millis(700))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("403"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn warm_fails_fast_on_other_http_errors() {
+        let (url, served) = stub_server(usize::MAX, "404 Not Found");
+        let err = warm_stream_url(&url, std::time::Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("404"), "{err}");
+        assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn warm_fails_open_on_transport_errors() {
+        // Bind then drop: the port refuses connections.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let url = format!("http://{addr}/videoplayback");
+        warm_stream_url(&url, std::time::Duration::from_secs(1))
+            .await
+            .expect("transport errors never block playback");
     }
 }
