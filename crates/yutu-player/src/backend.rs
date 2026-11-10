@@ -21,15 +21,53 @@ pub enum PlayerError {
 /// Shared HTTP client for stream/audio fetches: one connection pool
 /// and TLS session cache per process instead of one per fetch (a fresh
 /// `Client::new()` per 60px thumb burned handshakes plus pool memory
-/// on every scroll sweep).
+/// on every scroll sweep). Hardened: 15s timeout, redirects only to the
+/// same fetch allowlist, so a googlevideo 302 cannot bounce to an
+/// attacker host with the browser headers.
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
+        let policy = reqwest::redirect::Policy::custom(|attempt| {
+            if yutu_core::security::is_allowed_fetch_url(attempt.url().as_str()) {
+                reqwest::redirect::Policy::limited(5).redirect(attempt)
+            } else {
+                attempt.stop()
+            }
+        });
         reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(policy)
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
+}
+
+/// True for URLs the fetcher may pull. Prod: streams plus artwork only.
+/// Tests additionally allow loopback stub servers (`127.0.0.1`, `localhost`)
+/// so the offline harness keeps working without weakening prod.
+fn is_fetchable(url: &str) -> bool {
+    if yutu_core::security::is_allowed_fetch_url(url) {
+        return true;
+    }
+    is_test_loopback(url)
+}
+
+/// True for the loopback stub servers used by tests. Never true in prod
+/// builds: a compromised sidecar must not make the app hit local services.
+fn is_test_loopback(url: &str) -> bool {
+    #[cfg(test)]
+    {
+        url.starts_with("http://127.0.0.1/")
+            || url.starts_with("http://localhost/")
+            || url.starts_with("http://127.0.0.1:")
+            || url.starts_with("http://localhost:")
+    }
+    #[cfg(not(test))]
+    {
+        let _ = url;
+        false
+    }
 }
 
 /// Stability anchor for audio backends (stub → rodio → mpv).
@@ -210,12 +248,21 @@ impl AudioBackend for RodioBackend {
 /// 200 + full body) are returned as-is. HTTP errors surface as
 /// `PlayerError::Stream` with the status preserved for PO-token hints.
 ///
+/// Barrier: only allowlisted hosts are fetched (streams plus artwork), so
+/// a compromised sidecar or server row cannot redirect the fetcher to an
+/// attacker host, `file://`, or loopback. URLs are redacted in errors so
+/// short-lived signatures never land in logs.
+///
 /// Browser-like headers go on every request: bare HTTP clients (default
 /// library user-agents, no referer) get transient 403s from some Google
 /// edges that a normal browser header set sails through.
 pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
     const CHUNK: u64 = 1024 * 1024;
     const MAX_BYTES: u64 = 100 * 1024 * 1024;
+    if !is_fetchable(url) {
+        return Err(PlayerError::Stream("blocked untrusted URL".to_string()));
+    }
+    let redacted = yutu_core::security::redact_url_for_log(url);
     let client = http_client();
     let mut start: u64 = 0;
     let mut out = Vec::new();
@@ -230,19 +277,24 @@ pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
             .header("Referer", "https://www.youtube.com/")
             .send()
             .await
-            .map_err(|e| PlayerError::Stream(format!("GET {url}: {e}")))?;
+            .map_err(|e| PlayerError::Stream(format!("GET {redacted}: {e}")))?;
         let status = response.status();
         if status == reqwest::StatusCode::OK {
             // No range support: whole body at once.
             let body = response
                 .bytes()
                 .await
-                .map_err(|e| PlayerError::Stream(format!("read {url}: {e}")))?;
+                .map_err(|e| PlayerError::Stream(format!("read {redacted}: {e}")))?;
             out.extend_from_slice(&body);
+            if out.len() as u64 > MAX_BYTES {
+                return Err(PlayerError::Stream("over size cap".to_string()));
+            }
             return Ok(out);
         }
         if !status.is_success() {
-            return Err(PlayerError::Stream(format!("GET {url}: HTTP {status}")));
+            return Err(PlayerError::Stream(format!(
+                "GET {redacted}: HTTP {status}"
+            )));
         }
         let total = response
             .headers()
@@ -252,14 +304,14 @@ pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, PlayerError> {
         let chunk = response
             .bytes()
             .await
-            .map_err(|e| PlayerError::Stream(format!("read {url}: {e}")))?;
+            .map_err(|e| PlayerError::Stream(format!("read {redacted}: {e}")))?;
         if chunk.is_empty() {
-            return Err(PlayerError::Stream(format!("empty chunk from {url}")));
+            return Err(PlayerError::Stream(format!("empty chunk from {redacted}")));
         }
         out.extend_from_slice(&chunk);
         start += chunk.len() as u64;
         if out.len() as u64 > MAX_BYTES {
-            return Err(PlayerError::Stream(format!("{url}: over size cap")));
+            return Err(PlayerError::Stream("over size cap".to_string()));
         }
         match total {
             Some(total) if start >= total => return Ok(out),
@@ -288,7 +340,15 @@ const WARM_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 /// Any other HTTP error fails at once. Transport errors (including a
 /// probe past [`WARM_PROBE_TIMEOUT`]) fail open (`Ok`): the probe is advisory, so a local network quirk must never
 /// block playback that the player itself might manage.
+///
+/// Barrier: untrusted URLs are rejected before any probe, so a compromised
+/// sidecar cannot make the warmer hit an attacker host.
 pub async fn warm_stream_url(url: &str, max_wait: std::time::Duration) -> Result<(), PlayerError> {
+    // Streams only (no artwork): the warmer precedes mpv, which only
+    // plays googlevideo.
+    if !yutu_core::security::is_allowed_stream_url(url) && !is_test_loopback(url) {
+        return Err(PlayerError::Stream("blocked untrusted URL".to_string()));
+    }
     let client = http_client();
     let deadline = std::time::Instant::now() + max_wait;
     loop {
@@ -469,10 +529,18 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "live network: fetches example.com"]
-    async fn live_fetch_bytes() {
-        let bytes = fetch_bytes("https://example.com").await.expect("fetch");
-        assert!(!bytes.is_empty());
+    async fn untrusted_hosts_are_blocked_without_network() {
+        let err = fetch_bytes("https://example.com").await.unwrap_err();
+        assert!(err.to_string().contains("blocked"), "{err}");
+        let err = fetch_bytes("file:///etc/passwd").await.unwrap_err();
+        assert!(err.to_string().contains("blocked"), "{err}");
+        let err = warm_stream_url(
+            "https://evil.com/videoplayback",
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("blocked"), "{err}");
     }
 
     /// Local HTTP stub: answers `refusals` requests with `refuse_status`,

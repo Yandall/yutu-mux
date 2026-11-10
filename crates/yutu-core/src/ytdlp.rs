@@ -19,12 +19,16 @@ pub const YTDLP_BIN_NAME: &str = "yt-dlp";
 /// Locate the sidecar: `YUTU_YTDLP_BIN` env override first (tests, custom
 /// installs), then the directory holding the running executable (the
 /// Windows installer and the Scoop/zip layout ship `yt-dlp` beside
-/// `yutu-mux` so nothing needs to be on PATH), then `PATH`, then the
-/// current working directory.
+/// `yutu-mux` so nothing needs to be on PATH), then `PATH`.
+/// No current-directory fallback: running from an attacker directory must
+/// never pick up a planted binary.
 pub fn find_yt_dlp() -> Option<String> {
     if let Some(path) = std::env::var_os("YUTU_YTDLP_BIN") {
         let path = PathBuf::from(path);
-        if path.is_file() {
+        // Env override must be absolute: a relative name would resolve
+        // against the current directory, reintroducing the plant this
+        // barrier removes.
+        if path.is_absolute() && is_executable_file(&path) {
             return Some(path.to_string_lossy().into_owned());
         }
     }
@@ -32,7 +36,7 @@ pub fn find_yt_dlp() -> Option<String> {
         if let Some(dir) = exe.parent() {
             for name in [YTDLP_BIN_NAME, &format!("{YTDLP_BIN_NAME}.exe")] {
                 let candidate = dir.join(name);
-                if candidate.is_file() {
+                if is_executable_file(&candidate) {
                     return Some(candidate.to_string_lossy().into_owned());
                 }
             }
@@ -40,21 +44,40 @@ pub fn find_yt_dlp() -> Option<String> {
     }
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
+            // Empty entries, "." and any relative entry mean cwd: skip
+            // them, never load from there.
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            if !dir.is_absolute() {
+                continue;
+            }
             for name in [YTDLP_BIN_NAME, &format!("{YTDLP_BIN_NAME}.exe")] {
                 let candidate = dir.join(name);
-                if candidate.is_file() {
+                if is_executable_file(&candidate) {
                     return Some(candidate.to_string_lossy().into_owned());
                 }
             }
         }
     }
-    let cwd = std::env::current_dir()
-        .map(|d| d.join(YTDLP_BIN_NAME))
-        .unwrap_or_else(|_| PathBuf::from(YTDLP_BIN_NAME));
-    if cwd.is_file() {
-        return Some(cwd.to_string_lossy().into_owned());
-    }
     None
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Build a sidecar [`Command`] that never flashes a console window.
@@ -87,9 +110,15 @@ pub const PREFERRED_PLAYER_CLIENT: &str = "visionos";
 /// Asks [`PREFERRED_PLAYER_CLIENT`] first, then yt-dlp's own default
 /// client set when that fails (clients break independently, so a pin
 /// must never be the only path). Returns the first `https://` line of
-/// stdout; on double failure the default-set error wins (it is the
-/// configuration yt-dlp maintains).
+/// stdout that passes the stream allowlist; a sidecar that returns an
+/// off-domain URL is rejected fail-closed. On double failure the default-set
+/// error wins (it is the configuration yt-dlp maintains).
 pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamError> {
+    if !crate::security::is_valid_video_id(video_id) {
+        return Err(StreamError::NotFound {
+            video_id: crate::security::truncate_for_log(video_id, 64),
+        });
+    }
     match get_url(bin, video_id, Some(PREFERRED_PLAYER_CLIENT)) {
         Ok(url) => Ok(url),
         Err(_) => get_url(bin, video_id, None),
@@ -124,7 +153,12 @@ fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, St
         let l = l.trim();
         l.starts_with("https://").then_some(l.to_string())
     }) {
-        return Ok(line);
+        if crate::security::is_allowed_stream_url(&line) {
+            return Ok(line);
+        }
+        return Err(StreamError::Network(
+            "sidecar returned untrusted URL".to_string(),
+        ));
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(classify_ytdlp_error(&stderr, video_id))
@@ -139,6 +173,11 @@ fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, St
 /// preference as [`resolve_audio_url`]. Capped at 200 MiB.
 pub fn download_audio_bytes(bin: &str, video_id: &str) -> Result<Vec<u8>, StreamError> {
     const MAX_BYTES: u64 = 200 * 1024 * 1024;
+    if !crate::security::is_valid_video_id(video_id) {
+        return Err(StreamError::NotFound {
+            video_id: crate::security::truncate_for_log(video_id, 64),
+        });
+    }
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let output = sidecar_command(bin)
         .args([
@@ -185,10 +224,11 @@ fn classify_ytdlp_error(stderr: &str, video_id: &str) -> StreamError {
         || lowered.contains("removed")
     {
         StreamError::NotFound {
-            video_id: video_id.to_string(),
+            video_id: crate::security::truncate_for_log(video_id, 64),
         }
     } else {
-        StreamError::Network(format!("yt-dlp: {}", stderr.trim()))
+        let snippet = crate::security::truncate_for_log(stderr.trim(), 500);
+        StreamError::Network(format!("yt-dlp: {snippet}"))
     }
 }
 
@@ -231,11 +271,11 @@ mod tests {
         let bin = write_fake_script(
             "pinned",
             &format!(
-                r#"case "$*" in *player_client={PREFERRED_PLAYER_CLIENT}*) echo https://example.invalid/pinned ;; *) exit 1 ;; esac"#
+                r#"case "$*" in *player_client={PREFERRED_PLAYER_CLIENT}*) echo https://r1.googlevideo.com/pinned ;; *) exit 1 ;; esac"#
             ),
         );
-        let url = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap();
-        assert_eq!(url, "https://example.invalid/pinned");
+        let url = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/pinned");
     }
 
     #[test]
@@ -244,10 +284,10 @@ mod tests {
         // A broken pinned client must never be the only path.
         let bin = write_fake_script(
             "fallback",
-            r#"case "$*" in *player_client=*) echo 'ERROR: page needs reload' >&2; exit 1 ;; *) echo https://example.invalid/default ;; esac"#,
+            r#"case "$*" in *player_client=*) echo 'ERROR: page needs reload' >&2; exit 1 ;; *) echo https://r1.googlevideo.com/default ;; esac"#,
         );
-        let url = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap();
-        assert_eq!(url, "https://example.invalid/default");
+        let url = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/default");
     }
 
     #[test]
@@ -257,29 +297,45 @@ mod tests {
             "both-fail",
             r#"case "$*" in *player_client=*) echo 'ERROR: pinned broke' >&2 ;; *) echo 'ERROR: Video unavailable' >&2 ;; esac; exit 1"#,
         );
-        let err = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap_err();
+        let err = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap_err();
         assert!(matches!(err, StreamError::NotFound { .. }), "{err:?}");
     }
 
     #[test]
     #[cfg(unix)]
     fn resolves_first_https_line() {
+        let bin = write_fake_ytdlp("https://r1.googlevideo.com/audio");
+        let url = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/audio");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn off_domain_url_is_rejected() {
         let bin = write_fake_ytdlp("https://example.invalid/audio.webm");
-        let url = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap();
-        assert_eq!(url, "https://example.invalid/audio.webm");
+        let err = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap_err();
+        assert!(matches!(err, StreamError::Network(_)), "{err:?}");
+    }
+
+    #[test]
+    fn invalid_video_id_is_rejected() {
+        let err = resolve_audio_url("/nonexistent/yt-dlp", "vid").unwrap_err();
+        assert!(matches!(err, StreamError::NotFound { .. }), "{err:?}");
+        let err = resolve_audio_url("/nonexistent/yt-dlp", "https://evil").unwrap_err();
+        assert!(matches!(err, StreamError::NotFound { .. }), "{err:?}");
     }
 
     #[test]
     #[cfg(unix)]
     fn stderr_without_url_classifies() {
         let bin = write_fake_ytdlp("");
-        let err = resolve_audio_url(&bin.to_string_lossy(), "vid").unwrap_err();
+        let err = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap_err();
         assert!(matches!(err, StreamError::Network(_)));
     }
 
     #[test]
     fn missing_binary_is_a_clean_error() {
-        let err = resolve_audio_url("/nonexistent/yt-dlp", "x").unwrap_err();
+        let err = resolve_audio_url("/nonexistent/yt-dlp", "dQw4w9WgXcQ").unwrap_err();
         assert!(matches!(err, StreamError::Network(_)));
     }
 
@@ -288,15 +344,21 @@ mod tests {
     fn direct_download_returns_stdout_bytes() {
         // Fake sidecar: ignores args, prints media bytes to stdout.
         let bin = write_fake_ytdlp("fake-audio-bytes");
-        let bytes = download_audio_bytes(&bin.to_string_lossy(), "vid").unwrap();
+        let bytes = download_audio_bytes(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap();
         // `echo` appends a newline; the point is stdout passes through.
         assert_eq!(bytes, b"fake-audio-bytes\n");
     }
 
     #[test]
     fn direct_download_missing_binary_is_a_clean_error() {
-        let err = download_audio_bytes("/nonexistent/yt-dlp", "x").unwrap_err();
+        let err = download_audio_bytes("/nonexistent/yt-dlp", "dQw4w9WgXcQ").unwrap_err();
         assert!(matches!(err, StreamError::Network(_)));
+    }
+
+    #[test]
+    fn direct_download_rejects_invalid_id() {
+        let err = download_audio_bytes("/nonexistent/yt-dlp", "x").unwrap_err();
+        assert!(matches!(err, StreamError::NotFound { .. }), "{err:?}");
     }
 
     #[test]

@@ -84,13 +84,65 @@ fn mpv_op_err(op: &str, err: libmpv2::Error) -> PlayerError {
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Spill in-memory audio to a uniquely named temp file for `loadfile`.
+/// Uses `create_new` plus 0600 on unix so a planted symlink in the shared
+/// temp dir cannot redirect the write.
 fn spill_temp_bytes(bytes: &[u8]) -> Result<PathBuf, PlayerError> {
-    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("yutu-mux-{}-{n}.media", std::process::id()));
-    std::fs::write(&path, bytes)
-        .map_err(|e| PlayerError::Stream(format!("mpv temp spill failed: {e}")))?;
-    Ok(path)
+    // Try a few counter values with exclusive create: pid reuse plus a
+    // stale file must never overwrite.
+    for _ in 0..100 {
+        let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        path.push(format!("yutu-mux-{}-{n}.media", std::process::id()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    use std::io::Write as _;
+                    f.write_all(bytes)
+                        .map_err(|e| PlayerError::Stream(format!("mpv temp spill failed: {e}")))?;
+                    return Ok(path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    path.pop();
+                    continue;
+                }
+                Err(e) => {
+                    return Err(PlayerError::Stream(format!("mpv temp spill failed: {e}")));
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    use std::io::Write as _;
+                    f.write_all(bytes)
+                        .map_err(|e| PlayerError::Stream(format!("mpv temp spill failed: {e}")))?;
+                    return Ok(path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    path.pop();
+                    continue;
+                }
+                Err(e) => {
+                    return Err(PlayerError::Stream(format!("mpv temp spill failed: {e}")));
+                }
+            }
+        }
+    }
+    Err(PlayerError::Stream(
+        "mpv temp spill failed: no fresh name".to_string(),
+    ))
 }
 
 /// Gapless-capable audio backend over libmpv (`--features mpv` only).
@@ -122,25 +174,61 @@ impl MpvBackend {
         })
     }
 
-    /// Load a stream URL or local path, replacing the current playlist entry.
+    /// Load a stream URL, replacing the current playlist entry.
     /// Playback starts unless the player is paused (see [`MpvBackend::play`]).
+    /// Barrier: only googlevideo `https` URLs are handed to libmpv, so a
+    /// compromised resolver cannot make the C backend open an attacker host
+    /// or a `file://`/`edl://`/`lavf://` protocol URL.
     pub fn load_url(&self, url: &str) -> Result<(), PlayerError> {
+        if !yutu_core::security::is_allowed_stream_url(url) {
+            return Err(PlayerError::Stream("blocked untrusted URL".to_string()));
+        }
         self.mpv
             .command("loadfile", &[url, "replace"])
             .map_err(|e| mpv_op_err("loadfile", e))
     }
 
     /// Load a local file path, replacing the current playlist entry.
+    /// Barrier: only files inside the OS temp dir (where [`load_bytes`]
+    /// spills) are accepted, resolved without following a final symlink
+    /// and rejected if the canonical path escapes. Anything else is
+    /// rejected so a compromised playlist row cannot make libmpv open
+    /// arbitrary paths.
     pub fn load_file(&self, path: &str) -> Result<(), PlayerError> {
-        self.load_url(path)
+        let candidate = std::path::Path::new(path);
+        // Reject symlink final components: `is_file` follows them, so an
+        // attacker-planted `/tmp/x.media -> /etc/passwd` would otherwise
+        // pass. Spills are never symlinks.
+        if candidate
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(PlayerError::Stream("blocked untrusted file".to_string()));
+        }
+        let temp = std::env::temp_dir();
+        let canonical_temp = temp.canonicalize().unwrap_or(temp);
+        let canonical_candidate = candidate
+            .canonicalize()
+            .map_err(|_| PlayerError::Stream("blocked untrusted file".to_string()))?;
+        if !canonical_candidate.is_file() || !canonical_candidate.starts_with(&canonical_temp) {
+            return Err(PlayerError::Stream("blocked untrusted file".to_string()));
+        }
+        self.mpv
+            .command("loadfile", &[path, "replace"])
+            .map_err(|e| mpv_op_err("loadfile", e))
     }
 
     /// Load in-memory audio by spilling it to a temp file and loading that.
     /// Spilled files are tracked and removed best-effort on `stop`/`Drop`.
     pub fn load_bytes(&self, bytes: &[u8]) -> Result<(), PlayerError> {
+        // Cap in-memory spills: a compromised fetcher must not fill the disk.
+        const MAX_SPILL_BYTES: usize = 200 * 1024 * 1024;
+        if bytes.len() > MAX_SPILL_BYTES {
+            return Err(PlayerError::Stream("over size cap".to_string()));
+        }
         let path = spill_temp_bytes(bytes)?;
         let path_str = path.to_string_lossy().into_owned();
-        let result = self.load_url(&path_str);
+        let result = self.load_file(&path_str);
         match result {
             Ok(()) => {
                 if let Ok(mut guard) = self.temp_files.lock() {
