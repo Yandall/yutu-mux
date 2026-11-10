@@ -29,6 +29,14 @@ tokio = { version = "1", features = ["rt", "macros", "signal"] }
 # them; only Rust allocations route here, libmpv/ffmpeg keep theirs).
 mimalloc = "0.1"
 
+# Build script input, used only when TARGET contains `windows` (the gate
+# lives in build.rs via the TARGET env var, because a build script
+# compiles for the host and `cfg(windows)` would miss cross builds).
+# Unconditional so the script source resolves on every host; MSVC needs
+# rc.exe, MinGW cross builds need x86_64-w64-mingw32-windres.
+[build-dependencies]
+winres = "0.1"
+
 [features]
 # Forwarded to yutu-ui (the binary itself has no code-gated code):
 # `cargo run --features debug-panel` from the workspace root.

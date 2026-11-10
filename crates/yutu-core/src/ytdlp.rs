@@ -17,12 +17,25 @@ use crate::stream::StreamError;
 pub const YTDLP_BIN_NAME: &str = "yt-dlp";
 
 /// Locate the sidecar: `YUTU_YTDLP_BIN` env override first (tests, custom
-/// installs), then `PATH`, then the current working directory.
+/// installs), then the directory holding the running executable (the
+/// Windows installer and the Scoop/zip layout ship `yt-dlp` beside
+/// `yutu-mux` so nothing needs to be on PATH), then `PATH`, then the
+/// current working directory.
 pub fn find_yt_dlp() -> Option<String> {
     if let Some(path) = std::env::var_os("YUTU_YTDLP_BIN") {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in [YTDLP_BIN_NAME, &format!("{YTDLP_BIN_NAME}.exe")] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
         }
     }
     if let Some(path) = std::env::var_os("PATH") {
@@ -42,6 +55,23 @@ pub fn find_yt_dlp() -> Option<String> {
         return Some(cwd.to_string_lossy().into_owned());
     }
     None
+}
+
+/// Build a sidecar [`Command`] that never flashes a console window.
+/// Windows gives every console-subsystem child its own console unless
+/// asked not to (`CREATE_NO_WINDOW`); for a GUI app that flash reads as
+/// malware behavior, so every sidecar spawn goes through here. Everywhere
+/// else this is exactly `Command::new`.
+pub(crate) fn sidecar_command(bin: &str) -> Command {
+    // `mut` is only needed for the Windows flag below.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new(bin);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
 }
 
 /// yt-dlp player client tried first. Its URLs stream on the first
@@ -69,7 +99,7 @@ pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamErro
 /// One `yt-dlp --get-url` run, optionally pinned to a player client.
 fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, StreamError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let mut cmd = Command::new(bin);
+    let mut cmd = sidecar_command(bin);
     if let Some(client) = client {
         cmd.args([
             "--extractor-args",
@@ -110,7 +140,7 @@ fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, St
 pub fn download_audio_bytes(bin: &str, video_id: &str) -> Result<Vec<u8>, StreamError> {
     const MAX_BYTES: u64 = 200 * 1024 * 1024;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let output = Command::new(bin)
+    let output = sidecar_command(bin)
         .args([
             "-f",
             "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",

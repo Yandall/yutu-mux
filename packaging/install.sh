@@ -6,7 +6,9 @@
 #
 # The installer only fetches prebuilt release artifacts (Linux x86_64
 # tarball, macOS arm64 disk image) plus system dependencies. It never
-# compiles anything and never installs Rust. To build from source, see
+# compiles anything and never installs Rust. Windows is not covered here:
+# use packaging/windows/install.ps1, the Setup exe, or Scoop instead
+# (see docs/INSTALL.md). To build from source, see
 # docs/PACKAGING.md and run cargo or packaging/macos/build-app.sh
 # by hand.
 #

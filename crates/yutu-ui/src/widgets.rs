@@ -215,40 +215,14 @@ pub(crate) fn eq_flow_rows(names: &[String], body_w: f32) -> Vec<Vec<String>> {
     rows.into_iter().filter(|r| !r.is_empty()).collect()
 }
 
-/// Current local hour via `localtime_r` (libc, always present on Linux
-/// and macOS): std only, no chrono. Falls back to 12 (afternoon) when the
-/// clock is unreadable.
+/// Current local hour for the home greeting. chrono reads the OS local
+/// clock on every platform (tzdata on Unix, WinAPI on Windows): std only
+/// has UTC, and a hand-rolled libc `localtime_r` does not exist on
+/// Windows, so it cannot link there. Falls back to 12 (afternoon) when
+/// the clock is unreadable.
 pub(crate) fn local_hour() -> u8 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as std::os::raw::c_long)
-        .unwrap_or(0);
-    #[repr(C, align(8))]
-    struct LocalTm {
-        tm_sec: i32,
-        tm_min: i32,
-        tm_hour: i32,
-        _rest: [u8; 64],
-    }
-    extern "C" {
-        pub(crate) fn localtime_r(
-            timep: *const std::os::raw::c_long,
-            result: *mut LocalTm,
-        ) -> *mut LocalTm;
-    }
-    let mut tm = LocalTm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 12,
-        _rest: [0; 64],
-    };
-    let ok = unsafe { !localtime_r(&secs, &mut tm).is_null() };
-    if ok {
-        tm.tm_hour.clamp(0, 23) as u8
-    } else {
-        12
-    }
+    use chrono::Timelike;
+    chrono::Local::now().hour().clamp(0, 23) as u8
 }
 
 /// Slider in theme red: red filled rail, pale track, white round handle.

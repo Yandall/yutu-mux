@@ -1,0 +1,7 @@
+# Docker build context for packaging/windows/Dockerfile: keep it to sources
+# only. target/ must stay out (gigabytes, plus files that may be owned by
+# another uid from container runs, which breaks context reads), and so
+# must the per-user output and VCS metadata.
+target/
+dist/
+.git/

@@ -47,3 +47,44 @@ jobs:
           files: |
             dist/*/*.dmg
             dist/*/*.dmg.sha256
+  windows-zip-setup:
+    name: windows x86_64 zip + installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Inno Setup (installer builder only)
+        run: choco install innosetup --no-progress -y
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Feature checks (innertube + submit + mpv compile)
+        run: |
+          cargo check --workspace --all-features --locked
+          cargo check -p yutu-player --features mpv --locked
+      - name: Build self-contained staged zip (mpv DLLs + yt-dlp.exe beside the exe)
+        shell: pwsh
+        run: packaging/windows/build-windows.ps1 --output dist
+      - name: Read version
+        shell: pwsh
+        run: |
+          $v = ([regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+          if (-not $v) { throw 'could not read version from Cargo.toml' }
+          "APP_VERSION=$v" >> $env:GITHUB_ENV
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $repoRoot = (Get-Location).Path
+          $stage = Join-Path $repoRoot "dist\yutu-mux-$env:APP_VERSION-windows-x86_64\yutu-mux-$env:APP_VERSION-windows-x86_64"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="$env:APP_VERSION" /DStageDir="$stage" /O"dist\output" /F"YutuMux-$env:APP_VERSION-windows-x86_64-Setup" packaging\windows\YutuMux.iss
+          if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
+          $setup = "dist\output\YutuMux-$env:APP_VERSION-windows-x86_64-Setup.exe"
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          Set-Content "$setup.sha256" "$hash  $(Split-Path $setup -Leaf)`n" -NoNewline
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*/*.zip
+            dist/*/*.zip.sha256
+            dist/output/*.exe
+            dist/output/*.exe.sha256

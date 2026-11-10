@@ -1,0 +1,28 @@
+{
+  "version": "0.1.0",
+  "description": "Native YouTube Music desktop client",
+  "homepage": "https://github.com/Yandall/yutu-mux",
+  "license": "MIT",
+  "_note": "On every release, update version plus the 64bit hash below (or run 'scoop update' with autoupdate). The zip is self-contained: yutu-mux.exe plus mpv DLLs and yt-dlp.exe beside it, so the manifest declares no depends.",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Yandall/yutu-mux/releases/download/v0.1.0/yutu-mux-0.1.0-windows-x86_64.zip",
+      "hash": "REPLACE_WITH_RELEASE_SHA256"
+    }
+  },
+  "bin": "yutu-mux.exe",
+  "checkver": {
+    "github": "https://github.com/Yandall/yutu-mux"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Yandall/yutu-mux/releases/download/v$version/yutu-mux-$version-windows-x86_64.zip",
+        "hash": {
+          "url": "$url.sha256",
+          "regex": "([a-fA-F0-9]{64})"
+        }
+      }
+    }
+  }
+}

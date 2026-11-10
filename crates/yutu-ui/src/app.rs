@@ -26,9 +26,22 @@ use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GA
 /// leaves it empty by default, which strands Wayland windows with a
 /// generic icon. Other platforms keep the default settings.
 pub(crate) fn window_settings() -> iced::window::Settings {
+    // Title-bar/taskbar icon (the Windows caption row, X11 hints): the
+    // exe-embedded .ico only brands Explorer entries, the live window
+    // needs its own icon or the OS shows the generic placeholder.
+    // Shared source with the Linux icon theme entries (no forked art);
+    // a corrupt PNG falls back to the OS default icon, never a panic.
+    // Format is guessed from the PNG magic bytes, so no extra decoder
+    // dependency is needed.
+    let icon = iced::window::icon::from_file_data(
+        include_bytes!("../../../packaging/linux/icons/hicolor/64x64/apps/yutu-mux.png"),
+        None,
+    )
+    .ok();
     #[cfg(target_os = "linux")]
     {
         iced::window::Settings {
+            icon,
             platform_specific: iced::window::settings::PlatformSpecific {
                 application_id: "yutu-mux".into(),
                 ..Default::default()
@@ -38,7 +51,10 @@ pub(crate) fn window_settings() -> iced::window::Settings {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        iced::window::Settings::default()
+        iced::window::Settings {
+            icon,
+            ..Default::default()
+        }
     }
 }
 
