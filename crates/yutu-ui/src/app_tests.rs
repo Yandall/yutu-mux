@@ -4475,7 +4475,7 @@ fn lazy_image_never_fetches_from_view() {
 fn artwork_ready_saves_every_cover_to_disk() {
     let dir = redirect_art_cache();
     let mut s = test_state();
-    let url = "https://example.invalid/saveall.jpg".to_string();
+    let url = "https://i.ytimg.com/vi/saveall/hqdefault.jpg".to_string();
     let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x00, 0x10];
     jpeg.resize(1024, 0);
     let _ = s.update(Message::ArtworkReady {
@@ -4521,8 +4521,8 @@ fn expired_artwork_reads_as_missing() {
     ));
     let dir = base.to_string_lossy().into_owned();
     let _ = std::fs::remove_dir_all(&dir);
-    let fresh_url = "https://example.invalid/ttl-fresh";
-    let old_url = "https://example.invalid/ttl-old";
+    let fresh_url = "https://i.ytimg.com/vi/ttlfresh/hqdefault.jpg";
+    let old_url = "https://i.ytimg.com/vi/ttlold/hqdefault.jpg";
     save_artwork_in(&dir, fresh_url, &[0xFF, 0xD8, 0xFF, 0xE0]);
     save_artwork_in(&dir, old_url, &[0xFF, 0xD8, 0xFF, 0xE0]);
     // Age one cover past the TTL: it reads as missing (the file
@@ -4721,7 +4721,7 @@ fn save_artwork_replaces_sibling_extensions() {
     ));
     let dir = base.to_string_lossy().into_owned();
     let _ = std::fs::remove_dir_all(&dir);
-    let url = "https://example.invalid/changing";
+    let url = "https://i.ytimg.com/vi/changing/hqdefault.jpg";
     save_artwork_in(&dir, url, &[0xFF, 0xD8, 0xFF, 0xE0]);
     assert!(artwork_path_in(&dir, url).is_some());
     // Same stem, new content type: the stale jpg must not shadow it.
@@ -8631,11 +8631,11 @@ fn stream_handoff_arms_the_watchdog_and_new_loads_disarm_it() {
     s.audio = Some(AudioOut::Mpv(backend));
     let t = mk_track("m1", "One", "A");
     s.queue.push(t.clone());
-    assert!(s.try_play_url("https://example.invalid/audio", &t));
+    assert!(s.try_play_url("https://r1.googlevideo.com/audio", &t));
     assert!(s.stream_opened_at.is_some(), "handoff arms the watchdog");
     let _ = s.update(Message::Stop);
     assert!(s.stream_opened_at.is_none(), "Stop disarms it");
-    assert!(s.try_play_url("https://example.invalid/audio", &t));
+    assert!(s.try_play_url("https://r1.googlevideo.com/audio", &t));
     // No cached/prefetched URL: the new load resolves, disarmed.
     let _ = s.play_current_task();
     assert_eq!(s.loading_track.as_deref(), Some("m1"));
@@ -8659,7 +8659,7 @@ fn removing_a_stuck_last_song_never_restarts_the_previous_one() {
     let t2 = mk_track("m2", "Two", "A");
     s.queue.push(t2.clone());
     s.queue.jump_to(1);
-    assert!(s.try_play_url("https://example.invalid/stuck", &t2));
+    assert!(s.try_play_url("https://r1.googlevideo.com/stuck", &t2));
     // Remove the stuck last song: no next one, so playback stops
     // and the index falls back to m1. The user stopped: nothing
     // may re-resolve m1 behind their back.

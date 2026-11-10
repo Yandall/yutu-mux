@@ -546,7 +546,13 @@ impl MprisService {
     fn set_volume(&self, volume: f64) {
         // Inbox, not direct apply: the UI owns volume and would overwrite a
         // direct write on its next publish. Applied within one tick.
-        self.lock().push_command(PlayerCommand::SetVolume(volume));
+        // Clamped here so a malicious client cannot smuggle NaN through.
+        let clamped = if volume.is_finite() {
+            volume.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.lock().push_command(PlayerCommand::SetVolume(clamped));
     }
 
     #[zbus(property)]
@@ -632,15 +638,15 @@ impl MprisService {
 
     /// Relative seek in microseconds (negative allowed).
     fn seek(&self, offset: i64) {
-        self.lock()
-            .push_command(PlayerCommand::Seek(offset as f64 / 1_000_000.0));
+        let secs = yutu_core::security::clamp_seek_offset_secs(offset as f64 / 1_000_000.0);
+        self.lock().push_command(PlayerCommand::Seek(secs));
     }
 
     /// Absolute seek in microseconds (track id is informational here: the UI
     /// seeks whatever is current, matching single-track-player behavior).
     fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
-        self.lock()
-            .push_command(PlayerCommand::SetPosition(position as f64 / 1_000_000.0));
+        let secs = yutu_core::security::clamp_position_secs(position as f64 / 1_000_000.0);
+        self.lock().push_command(PlayerCommand::SetPosition(secs));
     }
 }
 
