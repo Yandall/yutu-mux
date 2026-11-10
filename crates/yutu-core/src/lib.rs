@@ -34,15 +34,15 @@ pub mod ytdlp;
 /// Shared HTTP client for Innertube POSTs (search, player): one pool per
 /// process instead of one per request (a search fans out to five POSTs,
 /// and a fresh client per POST burns handshakes plus pool memory).
-/// Hardened: 15s timeout, at most 5 redirects, so a hung or malicious
-/// endpoint cannot wedge the app.
+/// Hardened: 15s timeout, no redirects (API POSTs carrying cookies must
+/// never follow a 302 off-domain with the headers).
 #[cfg(feature = "innertube")]
 pub(crate) fn shared_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })

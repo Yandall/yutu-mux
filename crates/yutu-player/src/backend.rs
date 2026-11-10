@@ -21,13 +21,22 @@ pub enum PlayerError {
 /// Shared HTTP client for stream/audio fetches: one connection pool
 /// and TLS session cache per process instead of one per fetch (a fresh
 /// `Client::new()` per 60px thumb burned handshakes plus pool memory
-/// on every scroll sweep). Hardened: 15s timeout, at most 5 redirects.
+/// on every scroll sweep). Hardened: 15s timeout, redirects only to the
+/// same fetch allowlist, so a googlevideo 302 cannot bounce to an
+/// attacker host with the browser headers.
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
+        let policy = reqwest::redirect::Policy::custom(|attempt| {
+            if yutu_core::security::is_allowed_fetch_url(attempt.url().as_str()) {
+                reqwest::redirect::Policy::limited(5).redirect(attempt)
+            } else {
+                attempt.stop()
+            }
+        });
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(policy)
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())

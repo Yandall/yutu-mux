@@ -22,15 +22,19 @@ pub struct PoToken {
     pub from_snapshot: bool,
 }
 
-/// Locate the sidecar: `PATH` only. No current-directory fallback: running
-/// from an attacker directory must never pick up a planted binary.
+/// Locate the sidecar: `PATH` only (absolute entries). No current-directory
+/// fallback and no relative entries: running from an attacker directory
+/// must never pick up a planted binary.
 /// Returns `None` when the user has not installed it (callers then fall back
 /// to token-free clients and surface [`crate::stream::StreamError::hint`]).
 pub fn find_botguard_bin() -> Option<String> {
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
-            // Empty PATH entries mean cwd: skip them, never load from there.
+            // Empty entries, "." and any relative entry mean cwd: skip them.
             if dir.as_os_str().is_empty() {
+                continue;
+            }
+            if !dir.is_absolute() {
                 continue;
             }
             let candidate = dir.join(BOTGUARD_BIN_NAME);
@@ -93,8 +97,15 @@ pub fn fetch_po_token(bin: &str, identifier: &str) -> Result<PoToken, String> {
 /// Tokens are base64(ish) and routinely *end* with `=` padding, so an item is
 /// only treated as metadata when the part before the first `=` is a short
 /// identifier (`valid_until`, `from_snapshot`, …). Anything else (including
-/// strings containing `=`) is a token.
+/// strings containing `=`) is a token. Tokens are capped (count, length,
+/// charset) so a compromised helper cannot OOM the app or smuggle `&`,
+/// `#`, `?` query separators into the `pot=` URL param.
 pub fn parse_po_output(out: &str) -> Result<PoToken, String> {
+    const MAX_TOKENS: usize = 8;
+    const MAX_TOKEN_LEN: usize = 4096;
+    if out.len() > 64 * 1024 {
+        return Err("sidecar output too large".into());
+    }
     let mut tokens = Vec::new();
     let mut valid_until = None;
     let mut from_snapshot = false;
@@ -109,7 +120,25 @@ pub fn parse_po_output(out: &str) -> Result<PoToken, String> {
                 }
                 _ => {}
             },
-            _ => tokens.push(item.to_string()),
+            _ => {
+                if tokens.len() >= MAX_TOKENS {
+                    return Err("sidecar returned too many tokens".into());
+                }
+                if item.len() > MAX_TOKEN_LEN
+                    || !item.bytes().all(|b| {
+                        b.is_ascii_alphanumeric()
+                            || b == b'-'
+                            || b == b'_'
+                            || b == b'='
+                            || b == b'/'
+                            || b == b'+'
+                            || b == b'.'
+                    })
+                {
+                    return Err("sidecar returned untrusted token".into());
+                }
+                tokens.push(item.to_string());
+            }
         }
     }
     if tokens.is_empty() {

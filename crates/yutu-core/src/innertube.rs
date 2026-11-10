@@ -1535,8 +1535,9 @@ async fn raw_player_with_token(video_id: &str, po_token: &str) -> Result<String,
         .map_err(|e| StreamError::Network(format!("token player body: {e}")))?;
     crate::app_log::info("yutu-stream", format_args!("player POST HTTP {status}"));
     if !status.is_success() {
+        let snippet = crate::security::truncate_for_log(&text, 500);
         return Err(classify_player_error(
-            &format!("{status} {text}"),
+            &format!("{status} {snippet}"),
             StreamClient::WebMusic,
             video_id,
         ));

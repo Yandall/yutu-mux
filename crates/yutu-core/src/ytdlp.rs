@@ -25,7 +25,10 @@ pub const YTDLP_BIN_NAME: &str = "yt-dlp";
 pub fn find_yt_dlp() -> Option<String> {
     if let Some(path) = std::env::var_os("YUTU_YTDLP_BIN") {
         let path = PathBuf::from(path);
-        if is_executable_file(&path) {
+        // Env override must be absolute: a relative name would resolve
+        // against the current directory, reintroducing the plant this
+        // barrier removes.
+        if path.is_absolute() && is_executable_file(&path) {
             return Some(path.to_string_lossy().into_owned());
         }
     }
@@ -41,8 +44,12 @@ pub fn find_yt_dlp() -> Option<String> {
     }
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
-            // Empty PATH entries mean cwd: skip them, never load from there.
+            // Empty entries, "." and any relative entry mean cwd: skip
+            // them, never load from there.
             if dir.as_os_str().is_empty() {
+                continue;
+            }
+            if !dir.is_absolute() {
                 continue;
             }
             for name in [YTDLP_BIN_NAME, &format!("{YTDLP_BIN_NAME}.exe")] {

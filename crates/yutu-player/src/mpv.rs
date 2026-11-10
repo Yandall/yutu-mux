@@ -190,16 +190,27 @@ impl MpvBackend {
 
     /// Load a local file path, replacing the current playlist entry.
     /// Barrier: only files inside the OS temp dir (where [`load_bytes`]
-    /// spills) are accepted, and they must exist. Anything else is rejected
-    /// so a compromised playlist row cannot make libmpv open arbitrary paths.
+    /// spills) are accepted, resolved without following a final symlink
+    /// and rejected if the canonical path escapes. Anything else is
+    /// rejected so a compromised playlist row cannot make libmpv open
+    /// arbitrary paths.
     pub fn load_file(&self, path: &str) -> Result<(), PlayerError> {
         let candidate = std::path::Path::new(path);
+        // Reject symlink final components: `is_file` follows them, so an
+        // attacker-planted `/tmp/x.media -> /etc/passwd` would otherwise
+        // pass. Spills are never symlinks.
+        if candidate
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(PlayerError::Stream("blocked untrusted file".to_string()));
+        }
         let temp = std::env::temp_dir();
-        let ok = candidate.is_file()
-            && candidate
-                .parent()
-                .is_some_and(|parent| parent.starts_with(&temp));
-        if !ok {
+        let canonical_temp = temp.canonicalize().unwrap_or(temp);
+        let canonical_candidate = candidate
+            .canonicalize()
+            .map_err(|_| PlayerError::Stream("blocked untrusted file".to_string()))?;
+        if !canonical_candidate.is_file() || !canonical_candidate.starts_with(&canonical_temp) {
             return Err(PlayerError::Stream("blocked untrusted file".to_string()));
         }
         self.mpv

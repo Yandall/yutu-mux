@@ -34,17 +34,21 @@ impl CookieAuth {
     /// `SAPISID=`), so storing the raw Netscape text would fail later with
     /// a generic "header" error. Normalising here keeps the failure local
     /// and actionable. Errors never echo cookie material.
-    /// Barrier: files over 1 MiB are rejected before reading, so a picked
-    /// giant file cannot OOM the app.
+    /// Barrier: files over 1 MiB are rejected while reading (bounded
+    /// `take`), so a picked giant file or a swap between check and read
+    /// cannot OOM the app.
     pub fn from_file(path: &Path) -> Result<Self, String> {
-        let size = std::fs::metadata(path)
-            .map(|m| m.len())
+        use std::io::Read as _;
+        let file = std::fs::File::open(path).map_err(|e| format!("read cookie file: {e}"))?;
+        let limit = crate::security::MAX_COOKIE_FILE_BYTES + 1;
+        let mut buf = String::new();
+        file.take(limit)
+            .read_to_string(&mut buf)
             .map_err(|e| format!("read cookie file: {e}"))?;
-        if size > crate::security::MAX_COOKIE_FILE_BYTES {
+        if buf.len() as u64 >= limit {
             return Err("cookie file too large".into());
         }
-        let raw = std::fs::read_to_string(path).map_err(|e| format!("read cookie file: {e}"))?;
-        Self::from_header_str(&raw)
+        Self::from_header_str(&buf)
     }
 
     pub fn state(&self) -> AuthState {
