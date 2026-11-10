@@ -1,3 +1,12 @@
+// Release builds on Windows are GUI-subsystem (no console window next
+// to the app). Debug builds keep the console for diagnostics. Panics
+// and errors still land in the log file on every platform, so hiding
+// the console loses no trail.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use std::sync::{Arc, Mutex};
 use yutu_desktop::mpris::{MprisPlayer, PlaybackStatus, SharedPlayer};
 use yutu_desktop::NowPlaying;
@@ -15,8 +24,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// track/status/volume on every state change, so external clients
 /// (`playerctl`, desktop widgets) observe live updates on property read.
 /// `PropertiesChanged` signals on mutation are the remaining follow-up.
-/// macOS uses the Now Playing driver instead: this spawn is Linux-only.
-#[cfg(not(target_os = "macos"))]
+/// macOS uses the Now Playing driver instead: this spawn is Linux-only
+/// (Windows has no D-Bus session bus, so MPRIS never applies there).
+#[cfg(target_os = "linux")]
 fn spawn_mpris(state: SharedPlayer) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
@@ -68,7 +78,16 @@ fn main() -> iced::Result {
     // Now Playing + media keys on macOS): failures log, GUI runs on.
     #[cfg(target_os = "macos")]
     yutu_desktop::macos::spawn_media_integration(Arc::clone(&state));
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     spawn_mpris(Arc::clone(&state));
+    // Windows: pin the GPU backend to DX12 unless the user chose one.
+    // wgpu's default backend probe hangs on machines with a broken
+    // Vulkan/GL stack (no window ever appears, no error either); DX12 is
+    // the native API and works where the default does not. Explicit user
+    // choice wins: only fill the default when WGPU_BACKEND is unset.
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        std::env::set_var("WGPU_BACKEND", "dx12");
+    }
     yutu_ui::run(Some(state))
 }

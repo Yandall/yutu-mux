@@ -10,7 +10,6 @@
 //! challenge and can take seconds on a cold snapshot).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub const BOTGUARD_BIN_NAME: &str = "rustypipe-botguard";
 
@@ -67,7 +66,7 @@ fn is_executable_file(path: &Path) -> bool {
 /// The `--` separator is mandatory: video IDs may start with `-` and would
 /// otherwise parse as CLI flags.
 pub fn fetch_po_token(bin: &str, identifier: &str) -> Result<PoToken, String> {
-    let output = Command::new(bin)
+    let output = crate::ytdlp::sidecar_command(bin)
         .arg("--")
         .arg(identifier)
         .output()

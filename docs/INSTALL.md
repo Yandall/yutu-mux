@@ -113,7 +113,49 @@ own yt-dlp sidecar); the Homebrew packages stay as fallback. The macOS
 installer path is untested
 because the maintainer has no Mac.
 
-## Options and removal
+## Windows
+
+Three paths, all self-contained (the app ships with its mpv DLLs and the
+yt-dlp sidecar beside the exe, so no dependencies are ever installed and
+no admin rights are needed):
+
+1. Setup exe (recommended): download
+   `YutuMux-<version>-windows-x86_64-Setup.exe` from the latest GitHub
+   Release, verify its `.exe.sha256` checksum, and run it. Installs to
+   `%LOCALAPPDATA%\Programs\YutuMux` with a Start Menu shortcut.
+2. PowerShell installer: downloads the release zip, verifies its checksum
+   fail-closed, and extracts it to the same location:
+
+   ```powershell
+   irm -o install.ps1 https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/windows/install.ps1
+   powershell -ExecutionPolicy Bypass -File install.ps1 -Yes
+   ```
+
+   (`-Version vX.Y.Z` pins a release; `-DesktopShortcut` adds a desktop
+   icon; `-NoShortcut` skips the Start Menu shortcut.)
+3. Scoop: `scoop install https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/windows/scoop/yutu-mux.json`
+   (or from a bucket once published; `scoop update yutu-mux` follows
+   `checkver`/`autoupdate`).
+
+First launch: Windows SmartScreen warns because the binaries are not
+code-signed yet (see `docs/PACKAGING.md`): More info, Run anyway. Launch
+YutuMux and sign in through Settings with a cookies.txt file.
+
+Installed files (paths 1 and 2):
+
+```text
+%LOCALAPPDATA%\Programs\YutuMux\yutu-mux.exe
+%LOCALAPPDATA%\Programs\YutuMux\libmpv-2.dll
+%LOCALAPPDATA%\Programs\YutuMux\yt-dlp.exe
+%LOCALAPPDATA%\Programs\YutuMux\yutu-mux.ico
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\YutuMux.lnk
+```
+
+Removal: Add/Remove Programs (Setup exe path), `scoop uninstall yutu-mux`
+(Scoop path), or `packaging/windows/uninstall.ps1` (script path). All
+three keep user data under `%APPDATA%\yutu-mux`.
+
+## Options and removal (Linux + macOS)
 
 ```sh
 ./packaging/install.sh --dry-run       # print actions without changes
@@ -127,8 +169,6 @@ because the maintainer has no Mac.
 `YUTU_INSTALL_PREFIX` provides another way to set the installation prefix.
 The prefix must be absolute. Uninstall removes only the binary, Linux
 launcher, and macOS bundle listed above. It never removes the library,
-artwork/lyrics cache, logs, or sign-in session.
-
-Windows is not supported by these scripts. Native Windows packaging is
-planned separately; a Windows `.exe` cannot be produced by running these
-Unix scripts.
+artwork/lyrics cache, logs, or sign-in session. The Unix scripts never
+produce a Windows build; Windows installs from the Setup exe, the
+PowerShell installer, or Scoop (see the Windows section above).

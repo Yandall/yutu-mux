@@ -35,6 +35,15 @@ needed. (If a newer LTS, e.g. `25.08`, becomes the Flathub default before
 release, bump `runtime-version` in `flatpak/org.yutu_mux.YutuMux.yaml` —
 nothing else changes.)
 
+### Windows (CI-built, see Section 6)
+
+No local prerequisites: the `windows-zip-setup` release job runs
+`packaging/windows/build-windows.ps1` on `windows-latest`, which
+downloads the mpv dev package and the yt-dlp sidecar itself.
+To reproduce the link step by hand you need the MSVC toolchain plus 7-Zip;
+without mpv, the rodio-only escape hatch works on Windows too
+(`$env:CARGO_FLAGS="--no-default-features --features submit,innertube,lyrics"`).
+
 ### macOS (by hand, see Section 5)
 
 Xcode command-line tools + a stable Rust toolchain, plus
@@ -216,7 +225,70 @@ Notarization (paid Apple Developer ID, stapling, `notarytool`) is out of
 scope until there is a Mac-owning maintainer; until then any `.dmg` is
 ad-hoc-signed only.
 
-## 6. Version-bump checklist (next release)
+## 6. Windows zip + installer (built in CI on every `v*` tag)
+
+The `windows-zip-setup` release job runs on `windows-latest`: checkout,
+Inno Setup install, `cargo test --workspace --locked`, feature checks,
+then `packaging/windows/build-windows.ps1 --output dist`, which:
+
+1. Downloads the pinned mpv dev 7z archive
+   (`shinchiro/mpv-winbuild-cmake`, `-MpvTag`/`-MpvCommit` at the top of
+   the script) and extracts it with 7-Zip.
+2. Resolves the MSVC import library: uses `mpv.lib` from the dev package
+   when present, otherwise generates one from the shipped `libmpv-2.dll`
+   with `dumpbin` + `lib.exe` (located via `vswhere` or `PATH`), and
+   prepends its directory to `LIB` for the link. (The dev package only
+   ships the MinGW `libmpv.dll.a`, which MSVC cannot consume.)
+3. `cargo build --release --locked` (honors `CARGO_FLAGS`, so the
+   rodio-only escape hatch from Section 1 works).
+4. Downloads the latest `yt-dlp.exe` sidecar (freshness is deliberate:
+   a pinned yt-dlp rots against YouTube changes within weeks).
+5. Stages `yutu-mux.exe` with `libmpv-2.dll` (a fully static build: the
+   one file carrying mpv + ffmpeg), `yt-dlp.exe`, `yutu-mux.ico`,
+   `README.md`, `LICENSE` into
+   `dist/yutu-mux-<version>-windows-x86_64/`, zips it, and writes the
+   `.zip.sha256` checksum. The build fails if `libmpv-2.dll` is missing.
+
+The same job then compiles `packaging/windows/YutuMux.iss` with Inno
+Setup 6 (`ISCC.exe`) into
+`YutuMux-<version>-windows-x86_64-Setup.exe` plus its `.exe.sha256`.
+The installer is per-user (`PrivilegesRequired=lowest`, no admin),
+copies the staged files to `%LOCALAPPDATA%\Programs\YutuMux`, adds a
+Start Menu shortcut (optional desktop icon), and registers the standard
+uninstaller. The `AppId` GUID in the `.iss` is stable: never change it,
+or upgrades will pile up duplicate Add/Remove Programs entries.
+
+Local repro on a Windows machine with Rust (MSVC), 7-Zip, and VS Build
+Tools installed: run the `.ps1` by hand, then `ISCC.exe` with the
+defines shown in the `.iss` header comment.
+
+No Windows machine around: `packaging/windows/build-windows-docker.sh`
+builds the same zip on Linux through Docker (Rust 1.99 + MinGW-w64 image
+defined by `packaging/windows/Dockerfile`, compiled for
+`x86_64-pc-windows-gnu` against the dev package's `libmpv.dll.a`; a
+cargo registry cache below `~/.cache` keeps rebuilds fast). The inner
+`build-windows-cross.sh` also runs on any Linux host with MinGW
+installed. An `objdump` pass over the exe and the DLL auto-bundles any
+MinGW runtime DLL the bundle actually needs and fails loudly otherwise,
+so the zip never ships a bundle that dies on launch. This path produces
+the portable zip only (what `install.ps1` and Scoop consume): the Inno
+Setup.exe still needs Windows, since `ISCC.exe` is a Windows-only
+compiler.
+
+Scoop distribution is the manifest
+`packaging/windows/scoop/yutu-mux.json` (self-contained zip URL, no
+`depends` because the zip already carries mpv and yt-dlp, `checkver` +
+`autoupdate` with hash extraction from the `.zip.sha256` file). Install
+directly from the URL or from a bucket; on every release update its
+`version` and `hash` fields.
+
+First-launch honesty note (same class as the macOS ad-hoc signature):
+the zip, the PowerShell installer, and the Setup exe are unsigned until
+code signing (Azure Trusted Signing or a cert + `signtool`) is set up,
+so Windows SmartScreen warns on first run: More info, Run anyway. The
+published `.sha256` files are integrity checks, not signatures.
+
+## 7. Version-bump checklist (next release)
 
 There are FIVE `Cargo.toml` version fields (the binary crate counts
 too); today all read `0.1.0`:
@@ -232,16 +304,18 @@ Then:
 6. Move the shipped notes under a dated `## X.Y.Z` entry in
    `CHANGELOG.md` (add a fresh heading on top for the next cycle).
 7. Commit, tag `git tag vX.Y.Z`, push tag — `release.yml` builds the
-   Linux tarball and the macOS disk image and attaches both to the
-   GitHub Release automatically.
-8. Only an Intel-mac asset still needs a by-hand build on a Mac
+   Linux tarball, the macOS disk image, and the Windows zip + installer
+   and attaches all of them to the GitHub Release automatically.
+8. Update `packaging/windows/scoop/yutu-mux.json` (`version` plus the
+   `64bit` `hash` from the published `.zip.sha256`).
+9. Only an Intel-mac asset still needs a by-hand build on a Mac
    (Section 5) and a `gh release upload` of the
    `YutuMux-<version>-macos-x86_64.dmg` plus its `.dmg.sha256` to the
    same Release.
-9. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
-   before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
+10. Regenerate the Flatpak vendor outputs (Section 2) from the tagged tree
+    before `flatpak-builder`, and verify `flatpak run` + the MPRIS check.
 
-## 7. License hygiene
+## 8. License hygiene
 
 Everything added here is MIT-clean: the manifest, desktop file, workflow,
 and this doc contain no GPL tooling and vendor nothing. `create-dmg` is
