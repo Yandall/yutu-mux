@@ -22,6 +22,16 @@ Pin the working `ytmapi-rs` version from `Cargo.lock`, attach the
 Needs a display (`$DISPLAY` or Wayland socket) + wgpu-capable GPU. Run
 `cargo run` from a desktop session, not SSH without forwarding.
 
+On Windows the app defaults to the DX12 backend: the driver probe for
+the other backends hangs on some machines (process alive, no window, no
+error). If the window still never appears, force a backend explicitly
+before launching (PowerShell):
+
+```powershell
+$env:WGPU_BACKEND="dx12"  # or "vulkan", "gl", "dx11"
+.\yutu-mux.exe
+```
+
 ## Cookie expired
 
 Re-export `cookies.txt` from a fresh private window (see `docs/AUTH.md`),

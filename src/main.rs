@@ -71,5 +71,14 @@ fn main() -> iced::Result {
     yutu_desktop::macos::spawn_media_integration(Arc::clone(&state));
     #[cfg(target_os = "linux")]
     spawn_mpris(Arc::clone(&state));
+    // Windows: pin the GPU backend to DX12 unless the user chose one.
+    // wgpu's default backend probe hangs on machines with a broken
+    // Vulkan/GL stack (no window ever appears, no error either); DX12 is
+    // the native API and works where the default does not. Explicit user
+    // choice wins: only fill the default when WGPU_BACKEND is unset.
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        std::env::set_var("WGPU_BACKEND", "dx12");
+    }
     yutu_ui::run(Some(state))
 }
