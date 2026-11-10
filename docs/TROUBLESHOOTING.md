@@ -24,13 +24,18 @@ Needs a display (`$DISPLAY` or Wayland socket) + wgpu-capable GPU. Run
 
 On Windows the app defaults to the DX12 backend: the driver probe for
 the other backends hangs on some machines (process alive, no window, no
-error). If the window still never appears, force a backend explicitly
+error), and Vulkan fails outright where no working Vulkan driver is
+installed. If the window still never appears, force a backend explicitly
 before launching (PowerShell):
 
 ```powershell
 $env:WGPU_BACKEND="dx12"  # or "vulkan", "gl", "dx11"
 .\yutu-mux.exe
 ```
+
+Notes from real hardware: `dx12` is the supported path; `gl` opens but
+can corrupt icon rendering (upstream wgpu-GL texture quirk, not app
+artwork); an explicit `WGPU_BACKEND` always wins over the default.
 
 ## Cookie expired
 
