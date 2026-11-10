@@ -11,9 +11,10 @@
   `packaging/windows/install.ps1`, or the Scoop manifest in
   `packaging/windows/scoop/`. The same zip can also be built on Linux
   through Docker (`packaging/windows/build-windows-docker.sh`); the
-  Setup exe still needs Windows. The Windows exe carries the app icon
-  and defaults to the DX12 GPU backend (the driver probe for the other
+  Setup exe still needs Windows. The Windows exe carries the app icon,
+  defaults to the DX12 GPU backend (the driver probe for the other
   backends hangs on some machines with no window and no error; an
-  explicit `WGPU_BACKEND` still wins). App data lives under
+  explicit `WGPU_BACKEND` still wins), and release builds open no
+  console window. App data lives under
   `%APPDATA%\yutu-mux`. Linux and macOS behavior is unchanged (system
   dependencies via `packaging/install.sh`, nothing bundled).

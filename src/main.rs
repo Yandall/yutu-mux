@@ -1,3 +1,12 @@
+// Release builds on Windows are GUI-subsystem (no console window next
+// to the app). Debug builds keep the console for diagnostics. Panics
+// and errors still land in the log file on every platform, so hiding
+// the console loses no trail.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use std::sync::{Arc, Mutex};
 use yutu_desktop::mpris::{MprisPlayer, PlaybackStatus, SharedPlayer};
 use yutu_desktop::NowPlaying;
