@@ -57,6 +57,23 @@ pub fn find_yt_dlp() -> Option<String> {
     None
 }
 
+/// Build a sidecar [`Command`] that never flashes a console window.
+/// Windows gives every console-subsystem child its own console unless
+/// asked not to (`CREATE_NO_WINDOW`); for a GUI app that flash reads as
+/// malware behavior, so every sidecar spawn goes through here. Everywhere
+/// else this is exactly `Command::new`.
+pub(crate) fn sidecar_command(bin: &str) -> Command {
+    // `mut` is only needed for the Windows flag below.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new(bin);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// yt-dlp player client tried first. Its URLs stream on the first
 /// request. Newer yt-dlp defaults (2026.10+) also query `tv_samsung`
 /// and prefer its `TVHTML5` URLs, which the edge answers with HTTP 403
@@ -82,7 +99,7 @@ pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamErro
 /// One `yt-dlp --get-url` run, optionally pinned to a player client.
 fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, StreamError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let mut cmd = Command::new(bin);
+    let mut cmd = sidecar_command(bin);
     if let Some(client) = client {
         cmd.args([
             "--extractor-args",
@@ -123,7 +140,7 @@ fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, St
 pub fn download_audio_bytes(bin: &str, video_id: &str) -> Result<Vec<u8>, StreamError> {
     const MAX_BYTES: u64 = 200 * 1024 * 1024;
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let output = Command::new(bin)
+    let output = sidecar_command(bin)
         .args([
             "-f",
             "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
