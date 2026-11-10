@@ -11,6 +11,7 @@
   `packaging/windows/install.ps1`, or the Scoop manifest in
   `packaging/windows/scoop/`. The same zip can also be built on Linux
   through Docker (`packaging/windows/build-windows-docker.sh`); the
-  Setup exe still needs Windows. App data lives under
+  Setup exe still needs Windows. The Windows exe carries the app icon.
+  App data lives under
   `%APPDATA%\yutu-mux`. Linux and macOS behavior is unchanged (system
   dependencies via `packaging/install.sh`, nothing bundled).
