@@ -9,7 +9,10 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-rusqlite = "0.32"
+# `bundled-windows` links a static SQLite only on Windows targets (no
+# SQLite DLL to ship in the self-contained Windows package); Unix builds
+# keep using the system library installed via packaging/install.sh.
+rusqlite = { version = "0.32", features = ["bundled-windows"] }
 md5 = "0.8"
 sha1 = { version = "0.10", optional = true }
 # Exact pin: `ytm_token` implements the public `AuthToken` + `LoggedIn`

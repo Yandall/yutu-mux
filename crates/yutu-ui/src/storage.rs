@@ -28,12 +28,21 @@ pub(crate) fn now_unix() -> i64 {
 }
 
 /// XDG data dir without extra deps: $XDG_DATA_HOME or ~/.local/share.
+/// Windows uses %APPDATA% (Roaming) with the same single-root layout.
 pub fn data_dir() -> String {
-    let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        format!("{home}/.local/share")
-    });
-    format!("{base}/yutu-mux")
+    #[cfg(windows)]
+    {
+        let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+        return format!("{base}/yutu-mux");
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            format!("{home}/.local/share")
+        });
+        format!("{base}/yutu-mux")
+    }
 }
 
 pub fn default_library_path() -> String {

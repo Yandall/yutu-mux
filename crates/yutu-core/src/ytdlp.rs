@@ -17,12 +17,25 @@ use crate::stream::StreamError;
 pub const YTDLP_BIN_NAME: &str = "yt-dlp";
 
 /// Locate the sidecar: `YUTU_YTDLP_BIN` env override first (tests, custom
-/// installs), then `PATH`, then the current working directory.
+/// installs), then the directory holding the running executable (the
+/// Windows installer and the Scoop/zip layout ship `yt-dlp` beside
+/// `yutu-mux` so nothing needs to be on PATH), then `PATH`, then the
+/// current working directory.
 pub fn find_yt_dlp() -> Option<String> {
     if let Some(path) = std::env::var_os("YUTU_YTDLP_BIN") {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in [YTDLP_BIN_NAME, &format!("{YTDLP_BIN_NAME}.exe")] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
         }
     }
     if let Some(path) = std::env::var_os("PATH") {

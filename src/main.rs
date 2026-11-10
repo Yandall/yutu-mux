@@ -15,8 +15,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// track/status/volume on every state change, so external clients
 /// (`playerctl`, desktop widgets) observe live updates on property read.
 /// `PropertiesChanged` signals on mutation are the remaining follow-up.
-/// macOS uses the Now Playing driver instead: this spawn is Linux-only.
-#[cfg(not(target_os = "macos"))]
+/// macOS uses the Now Playing driver instead: this spawn is Linux-only
+/// (Windows has no D-Bus session bus, so MPRIS never applies there).
+#[cfg(target_os = "linux")]
 fn spawn_mpris(state: SharedPlayer) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
@@ -68,7 +69,7 @@ fn main() -> iced::Result {
     // Now Playing + media keys on macOS): failures log, GUI runs on.
     #[cfg(target_os = "macos")]
     yutu_desktop::macos::spawn_media_integration(Arc::clone(&state));
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     spawn_mpris(Arc::clone(&state));
     yutu_ui::run(Some(state))
 }
