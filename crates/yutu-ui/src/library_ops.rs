@@ -326,6 +326,7 @@ impl AppState {
         let modal = self.context_menu.is_some()
             || self.pl_menu.is_some()
             || self.coll_menu.is_some()
+            || self.sort_menu.is_some()
             || self.show_suggest;
         let click = !modal
             && snap.as_ref().is_some_and(|s| {

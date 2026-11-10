@@ -1,5 +1,6 @@
 //! yutu-ui: native Iced app: real YouTube Music data only, no mock fixtures.
 
+mod dropdown;
 mod eq_graph;
 mod i18n;
 mod pointing_slider;

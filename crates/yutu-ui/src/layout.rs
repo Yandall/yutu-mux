@@ -35,6 +35,10 @@ pub(crate) const MIXED_SEARCH_CAP: usize = 30;
 /// and the next section below.
 pub(crate) const HOME_STRIP_GAP: f32 = 14.0;
 pub(crate) const TRACK_ROW_H: f32 = 56.0;
+/// Sort selector width on playlist detail: fits the longest pick
+/// ("Newest first" at button weight) so the `...` trigger never shifts
+/// when the pick changes.
+pub(crate) const SORT_BUTTON_W: f32 = 144.0;
 /// Context menu item height (icon 14 + 14px text at 1.3 line height +
 /// 8px padding each side, rounded up): fixed so the playlist flyout
 /// anchor math can never drift from the laid-out rows.

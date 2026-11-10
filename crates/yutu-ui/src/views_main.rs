@@ -3,6 +3,8 @@
 #[allow(unused_imports)]
 use super::*;
 #[allow(unused_imports)]
+use dropdown::dropdown;
+#[allow(unused_imports)]
 use pointing_slider::pointing_slider;
 #[allow(unused_imports)]
 use row_button::row_button;
@@ -454,6 +456,7 @@ impl AppState {
         if self.context_menu.is_some()
             || self.pl_menu.is_some()
             || self.coll_menu.is_some()
+            || self.sort_menu.is_some()
             || self.show_suggest
         {
             return None;
@@ -1824,8 +1827,7 @@ impl AppState {
     pub(crate) fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{
-            button, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
-            toggler,
+            button, checkbox, column, container, mouse_area, row, scrollable, text, toggler,
         };
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
@@ -2376,15 +2378,24 @@ impl AppState {
                 column![
                     text(self.language.settings_title()).size(22),
                     text(self.language.language_section()).size(17),
-                    settings_input(
-                        pick_list(
-                            &Language::ALL_LABELS[..],
-                            Some(self.language.label()),
-                            |name: &str| Message::LanguageChanged(Language::parse(name)),
+                    settings_input({
+                        let face: iced::Element<'_, Message> = button(
+                            row![
+                                btn_text(self.language.label(), 13).width(Fill),
+                                btn_icon("chevron-down", 13.0, MUTED),
+                            ]
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
                         )
+                        .style(hover_row)
+                        .on_press(Message::OpenSelectMenu(SelectMenu::Language))
+                        .padding(8)
                         .width(Fill)
-                        .into(),
-                    ),
+                        .into();
+                        let menu = (self.sort_menu == Some(SelectMenu::Language))
+                            .then(|| self.select_menu_card(&SelectMenu::Language, 240.0));
+                        dropdown(face, menu).into()
+                    }),
                     text(self.language.playback_section()).size(17),
                     column![
                         text(if self.muted {
@@ -2412,28 +2423,44 @@ impl AppState {
                     settings_input(eq_panel),
                     text(self.language.lyrics_section()).size(17),
                     text(self.language.default_lyrics_provider()).size(13),
-                    settings_input(
-                        pick_list(
-                            ["LRCLIB", "YouTube Music"].as_slice(),
-                            Some(self.lyrics_provider.label()),
-                            |name: &str| Message::SetLyricsProvider(LyricsProvider::parse(name)),
+                    settings_input({
+                        let face: iced::Element<'_, Message> = button(
+                            row![
+                                btn_text(self.lyrics_provider.label(), 13).width(Fill),
+                                btn_icon("chevron-down", 13.0, MUTED),
+                            ]
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
                         )
+                        .style(hover_row)
+                        .on_press(Message::OpenSelectMenu(SelectMenu::LyricsProvider))
+                        .padding(8)
                         .width(Fill)
-                        .into(),
-                    ),
+                        .into();
+                        let menu = (self.sort_menu == Some(SelectMenu::LyricsProvider))
+                            .then(|| self.select_menu_card(&SelectMenu::LyricsProvider, 240.0));
+                        dropdown(face, menu).into()
+                    }),
                     text(self.language.appearance_section()).size(17),
                     text(self.language.display_font()).size(13),
-                    settings_input(
-                        pick_list(
-                            self.font_rows.as_slice(),
-                            Some(self.font_family.label().to_string()),
-                            |name: String| Message::FontFamilyChanged(FontFamily::from_label(
-                                &name
-                            )),
+                    settings_input({
+                        let face: iced::Element<'_, Message> = button(
+                            row![
+                                btn_text(self.font_family.label(), 13).width(Fill),
+                                btn_icon("chevron-down", 13.0, MUTED),
+                            ]
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
                         )
+                        .style(hover_row)
+                        .on_press(Message::OpenSelectMenu(SelectMenu::FontFamily))
+                        .padding(8)
                         .width(Fill)
-                        .into(),
-                    ),
+                        .into();
+                        let menu = (self.sort_menu == Some(SelectMenu::FontFamily))
+                            .then(|| self.select_menu_card(&SelectMenu::FontFamily, 240.0));
+                        dropdown(face, menu).into()
+                    }),
                     relaunch_button,
                     stale_font_note,
                     column![
@@ -2733,45 +2760,33 @@ impl AppState {
                     let is_fav = pid == Self::FAVORITES_ID;
                     let sort = self.playlist_sort_cached(&pid);
                     let ordered = self.playlist_ordered_tracks(&p);
-                    // Sort picker for own playlists only (Favorites keeps
-                    // its liked-order view with no picker, like before).
-                    let sort_row: iced::Element<'_, Message> = if is_fav {
+                    // Sort control for own playlists only (Favorites keeps
+                    // its liked-order view with no picker, like before):
+                    // sort icon + current sort in the quiet button family.
+                    // The open card floats from this button (dropdown
+                    // overlay), never from the cursor. Fixed width
+                    // (longest pick) so the `...` trigger never shifts
+                    // when the pick changes.
+                    let sort_button: iced::Element<'_, Message> = if is_fav {
                         text("").size(1).into()
                     } else {
-                        use iced::widget::pick_list;
-                        const SORT_OPTS: [&str; 7] = [
-                            "Newest first",
-                            "Oldest first",
-                            "Title",
-                            "Artist",
-                            "Album",
-                            "Liked first",
-                            "Manual",
-                        ];
-                        let pid_pick = pid.clone();
-                        row![
-                            text(self.language.playlist_sort_label())
-                                .size(12)
-                                .color(MUTED),
-                            pick_list(&SORT_OPTS[..], Some(sort.label()), move |name: &str| {
-                                Message::PlaylistSortSelected {
-                                    playlist_id: pid_pick.clone(),
-                                    sort: match name {
-                                        "Newest first" => PlaylistSort::NewestFirst,
-                                        "Oldest first" => PlaylistSort::OldestFirst,
-                                        "Title" => PlaylistSort::Title,
-                                        "Artist" => PlaylistSort::Artist,
-                                        "Album" => PlaylistSort::Album,
-                                        "Liked first" => PlaylistSort::LikedFirst,
-                                        _ => PlaylistSort::Manual,
-                                    },
-                                }
-                            })
-                            .width(iced::Length::Fixed(160.0)),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .into()
+                        let face: iced::Element<'_, Message> = button(
+                            row![
+                                btn_icon("arrow-up-down", 13.0, MUTED),
+                                btn_text(sort.label(), 13),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::OpenSelectMenu(SelectMenu::Sort(pid.clone())))
+                        .padding(8)
+                        .width(iced::Length::Fixed(SORT_BUTTON_W))
+                        .into();
+                        let menu = (self.sort_menu == Some(SelectMenu::Sort(pid.clone())))
+                            .then(|| self.select_menu_card(&SelectMenu::Sort(pid.clone()), 220.0));
+                        dropdown(face, menu).into()
                     };
                     // Rows: Manual reuses the exact same row visuals as
                     // every other pick at rest (same spacing, no grip,
@@ -2829,42 +2844,53 @@ impl AppState {
                             .collect();
                         column(rows).spacing(2).into()
                     };
+                    // Actions: play, shuffle, sort (own lists only), menu.
+                    // Built as a vec so Favorites simply omits the sort
+                    // slot instead of leaving an empty gap in the row.
+                    let mut actions: Vec<iced::Element<'_, Message>> = vec![
+                        button(
+                            row![
+                                btn_icon("play", 13.0, iced::Color::WHITE),
+                                btn_text(self.language.play_all(), 13)
+                            ]
+                            .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(accent_button)
+                        .on_press(Message::PlayAll)
+                        .padding(8)
+                        .into(),
+                        button(
+                            row![
+                                btn_icon("shuffle", 13.0, iced::Color::WHITE),
+                                btn_text(self.language.shuffle_label(), 13)
+                            ]
+                            .spacing(6)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(accent_button)
+                        .on_press(Message::PlayAllShuffled)
+                        .padding(8)
+                        .into(),
+                    ];
+                    if !is_fav {
+                        actions.push(sort_button);
+                    }
+                    actions.push(
+                        button(btn_icon("ellipsis", 15.0, MUTED))
+                            .style(hover_row)
+                            .on_press(Message::OpenPlaylistMenu(p.id.clone()))
+                            .padding(8)
+                            .into(),
+                    );
                     column![
                         text(p.title.clone()).size(24),
                         text(self.language.playlist_sub(p.tracks.len()))
                             .size(12)
                             .color(MUTED),
-                        row![
-                            button(
-                                row![
-                                    btn_icon("play", 13.0, iced::Color::WHITE),
-                                    btn_text(self.language.play_all(), 13)
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                            )
-                            .style(accent_button)
-                            .on_press(Message::PlayAll)
-                            .padding(8),
-                            button(
-                                row![
-                                    btn_icon("shuffle", 13.0, iced::Color::WHITE),
-                                    btn_text(self.language.shuffle_label(), 13)
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                            )
-                            .style(accent_button)
-                            .on_press(Message::PlayAllShuffled)
-                            .padding(8),
-                            button(btn_icon("ellipsis", 15.0, MUTED))
-                                .style(hover_row)
-                                .on_press(Message::OpenPlaylistMenu(p.id.clone()))
-                                .padding(8),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::alignment::Vertical::Center),
-                        sort_row,
+                        iced::widget::Row::with_children(actions)
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center),
                         list,
                     ]
                     .spacing(10)
@@ -3686,6 +3712,18 @@ impl AppState {
                 layers.push(pl_scrim);
                 layers.push(pl_placed);
             }
+        }
+        // Selector scrim while any dropdown menu is open (the open card
+        // floats from its button via the dropdown overlay): press
+        // dismisses, hovers stay frozen underneath like the other menus.
+        if self.sort_menu.is_some() {
+            let sort_scrim: iced::Element<'_, Message> =
+                mouse_area(container(text("").size(1)).width(Fill).height(Fill))
+                    .on_press(Message::CloseContext)
+                    .on_enter(Message::ClearHovers)
+                    .on_exit(Message::ClearHovers)
+                    .into();
+            layers.push(sort_scrim);
         }
         // Collection menu: same frozen-anchor scrim pattern, no
         // flyout. Search hits resolve live (results may have moved on

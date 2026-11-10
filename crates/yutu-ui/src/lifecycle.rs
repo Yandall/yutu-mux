@@ -128,6 +128,7 @@ impl AppState {
             submenu_fly_hot: false,
             submenu_hot_at: None,
             pl_menu: None,
+            sort_menu: None,
             coll_menu: None,
             menu_at: None,
             cursor: None,

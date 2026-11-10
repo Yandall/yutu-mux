@@ -687,6 +687,7 @@ impl AppState {
         self.context_menu = Some(id);
         self.close_playlist_submenu();
         self.pl_menu = None;
+        self.sort_menu = None;
         self.coll_menu = None;
     }
 
@@ -824,6 +825,7 @@ impl AppState {
         self.menu_at = None;
         self.close_playlist_submenu();
         self.pl_menu = None;
+        self.sort_menu = None;
         self.coll_menu = None;
     }
 
@@ -840,10 +842,112 @@ impl AppState {
     pub(crate) fn open_pl_menu(&mut self, id: String) {
         self.menu_at = self.cursor;
         self.pl_menu = Some(id);
+        self.sort_menu = None;
         self.context_menu = None;
         self.close_playlist_submenu();
         self.coll_menu = None;
         self.show_suggest = false;
+    }
+
+    /// Open a selector menu, freezing the cursor like the other menus
+    /// (only one menu kind is ever open). The open card floats from the
+    /// button itself, never from the cursor.
+    pub(crate) fn open_select_menu(&mut self, menu: SelectMenu) {
+        self.menu_at = self.cursor;
+        self.sort_menu = Some(menu);
+        self.context_menu = None;
+        self.close_playlist_submenu();
+        self.pl_menu = None;
+        self.coll_menu = None;
+        self.show_suggest = false;
+    }
+
+    /// Open menu card for a selector kind: one row per pick with the
+    /// active pick in accent. Rows send their message directly (pick
+    /// handlers close the menu); the caller floats this from its button
+    /// via the dropdown overlay and keeps the top-level scrim while open.
+    pub(crate) fn select_menu_card(
+        &self,
+        kind: &SelectMenu,
+        width: f32,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{column, container, row};
+        use iced::Fill;
+        let rows: Vec<(String, bool, Message)> = match kind {
+            SelectMenu::Sort(pid) => {
+                let current = self.playlist_sort_cached(pid);
+                PlaylistSort::ALL
+                    .iter()
+                    .map(|opt| {
+                        (
+                            opt.label().to_string(),
+                            *opt == current,
+                            Message::PlaylistSortSelected {
+                                playlist_id: pid.clone(),
+                                sort: *opt,
+                            },
+                        )
+                    })
+                    .collect()
+            }
+            SelectMenu::Language => Language::ALL_LABELS
+                .iter()
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        self.language.label() == *name,
+                        Message::LanguageChanged(Language::parse(name)),
+                    )
+                })
+                .collect(),
+            SelectMenu::LyricsProvider => LyricsProvider::all()
+                .iter()
+                .map(|p| {
+                    (
+                        p.label().to_string(),
+                        *p == self.lyrics_provider,
+                        Message::SetLyricsProvider(*p),
+                    )
+                })
+                .collect(),
+            SelectMenu::FontFamily => self
+                .font_rows
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        name == self.font_family.label(),
+                        Message::FontFamilyChanged(FontFamily::from_label(name)),
+                    )
+                })
+                .collect(),
+        };
+        let mut menu_rows: Vec<iced::Element<'_, Message>> = Vec::with_capacity(rows.len());
+        for (label, active, msg) in rows {
+            let text = if active {
+                btn_text(label, 14).color(ACCENT)
+            } else {
+                btn_text(label, 14).color(iced::Color::WHITE)
+            };
+            menu_rows.push(
+                row_button(
+                    row![text]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                )
+                .style(hover_row)
+                .on_press(msg)
+                .padding(8)
+                .width(Fill)
+                .into(),
+            );
+        }
+        container(column(menu_rows).spacing(0))
+            .style(card_bg)
+            .padding(14)
+            .width(width)
+            .into()
     }
 
     /// Open the search collection menu, same frozen anchor (only one
@@ -854,6 +958,7 @@ impl AppState {
         self.context_menu = None;
         self.close_playlist_submenu();
         self.pl_menu = None;
+        self.sort_menu = None;
         self.show_suggest = false;
     }
 
@@ -863,6 +968,7 @@ impl AppState {
         if self.context_menu.is_some()
             || self.pl_menu.is_some()
             || self.coll_menu.is_some()
+            || self.sort_menu.is_some()
             || self.show_suggest
         {
             None

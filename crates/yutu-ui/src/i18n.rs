@@ -1227,9 +1227,6 @@ impl Language {
     pub fn playlist_reordered(self) -> String {
         self.tr("playlist-reordered")
     }
-    pub fn playlist_sort_label(self) -> String {
-        self.tr("playlist-sort-label")
-    }
     pub fn playlist_nothing_to_queue(self, title: &str) -> String {
         self.tr_args("playlist-nothing-to-queue", &[("title", title)])
     }

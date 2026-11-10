@@ -52,6 +52,7 @@ pub(crate) fn icon_bytes(name: &str) -> &'static [u8] {
         "chevron-right" => include_bytes!("../assets/icons/chevron-right.svg"),
         "arrow-up" => include_bytes!("../assets/icons/arrow-up.svg"),
         "arrow-down" => include_bytes!("../assets/icons/arrow-down.svg"),
+        "arrow-up-down" => include_bytes!("../assets/icons/arrow-up-down.svg"),
         "trash" => include_bytes!("../assets/icons/trash-2.svg"),
         "ellipsis" => include_bytes!("../assets/icons/ellipsis.svg"),
         "grip" => include_bytes!("../assets/icons/grip-vertical.svg"),
