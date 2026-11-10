@@ -4,11 +4,13 @@
 
 ## Unreleased
 
-- Windows support: self-contained package (app plus mpv/ffmpeg DLLs and
+- Windows support: self-contained package (app plus libmpv-2.dll and
   the yt-dlp.exe sidecar beside the exe, no manual dependencies).
   New `windows-zip-setup` release job builds the zip plus an Inno Setup
   per-user installer on every tag; install via the Setup exe,
   `packaging/windows/install.ps1`, or the Scoop manifest in
-  `packaging/windows/scoop/`. App data lives under `%APPDATA%\yutu-mux`.
-  Linux and macOS behavior is unchanged (system dependencies via
-  `packaging/install.sh`, nothing bundled).
+  `packaging/windows/scoop/`. The same zip can also be built on Linux
+  through Docker (`packaging/windows/build-windows-docker.sh`); the
+  Setup exe still needs Windows. App data lives under
+  `%APPDATA%\yutu-mux`. Linux and macOS behavior is unchanged (system
+  dependencies via `packaging/install.sh`, nothing bundled).

@@ -23,6 +23,10 @@ serde_json = "1"
 # native panel on macOS). Optional so the offline compile check stays
 # lean; only the innertube cookie flow uses it.
 rfd = { version = "0.18", optional = true }
+# Local hour for the home greeting (`chrono::Local`, WinAPI on Windows,
+# tzdata on Unix). Default features carry the `clock` module; already in
+# the closure via ytmapi-rs, so this adds no new crates.
+chrono = "0.4"
 # Project Fluent localization: external .ftl catalogs per locale
 # (translators edit text files, never Rust). Pure Rust, no system
 # deps, so every build config stays green.

@@ -145,7 +145,7 @@ Installed files (paths 1 and 2):
 
 ```text
 %LOCALAPPDATA%\Programs\YutuMux\yutu-mux.exe
-%LOCALAPPDATA%\Programs\YutuMux\mpv-*.dll
+%LOCALAPPDATA%\Programs\YutuMux\libmpv-2.dll
 %LOCALAPPDATA%\Programs\YutuMux\yt-dlp.exe
 %LOCALAPPDATA%\Programs\YutuMux\yutu-mux.ico
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\YutuMux.lnk

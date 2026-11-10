@@ -39,7 +39,7 @@ nothing else changes.)
 
 No local prerequisites: the `windows-zip-setup` release job runs
 `packaging/windows/build-windows.ps1` on `windows-latest`, which
-downloads the mpv dev + runtime packages and the yt-dlp sidecar itself.
+downloads the mpv dev package and the yt-dlp sidecar itself.
 To reproduce the link step by hand you need the MSVC toolchain plus 7-Zip;
 without mpv, the rodio-only escape hatch works on Windows too
 (`$env:CARGO_FLAGS="--no-default-features --features submit,innertube,lyrics"`).
@@ -231,21 +231,23 @@ The `windows-zip-setup` release job runs on `windows-latest`: checkout,
 Inno Setup install, `cargo test --workspace --locked`, feature checks,
 then `packaging/windows/build-windows.ps1 --output dist`, which:
 
-1. Downloads the pinned mpv dev + runtime 7z archives
+1. Downloads the pinned mpv dev 7z archive
    (`shinchiro/mpv-winbuild-cmake`, `-MpvTag`/`-MpvCommit` at the top of
-   the script) and extracts them with 7-Zip.
+   the script) and extracts it with 7-Zip.
 2. Resolves the MSVC import library: uses `mpv.lib` from the dev package
-   when present, otherwise generates one from the shipped mpv DLL with
-   `dumpbin` + `lib.exe` (located via `vswhere` or `PATH`), and prepends
-   its directory to `LIB` for the link.
+   when present, otherwise generates one from the shipped `libmpv-2.dll`
+   with `dumpbin` + `lib.exe` (located via `vswhere` or `PATH`), and
+   prepends its directory to `LIB` for the link. (The dev package only
+   ships the MinGW `libmpv.dll.a`, which MSVC cannot consume.)
 3. `cargo build --release --locked` (honors `CARGO_FLAGS`, so the
    rodio-only escape hatch from Section 1 works).
 4. Downloads the latest `yt-dlp.exe` sidecar (freshness is deliberate:
    a pinned yt-dlp rots against YouTube changes within weeks).
-5. Stages `yutu-mux.exe` with all mpv/ffmpeg DLLs, `yt-dlp.exe`,
-   `yutu-mux.ico`, `README.md`, `LICENSE` into
+5. Stages `yutu-mux.exe` with `libmpv-2.dll` (a fully static build: the
+   one file carrying mpv + ffmpeg), `yt-dlp.exe`, `yutu-mux.ico`,
+   `README.md`, `LICENSE` into
    `dist/yutu-mux-<version>-windows-x86_64/`, zips it, and writes the
-   `.zip.sha256` checksum. The build fails if no mpv DLL lands in stage.
+   `.zip.sha256` checksum. The build fails if `libmpv-2.dll` is missing.
 
 The same job then compiles `packaging/windows/YutuMux.iss` with Inno
 Setup 6 (`ISCC.exe`) into
@@ -259,6 +261,19 @@ or upgrades will pile up duplicate Add/Remove Programs entries.
 Local repro on a Windows machine with Rust (MSVC), 7-Zip, and VS Build
 Tools installed: run the `.ps1` by hand, then `ISCC.exe` with the
 defines shown in the `.iss` header comment.
+
+No Windows machine around: `packaging/windows/build-windows-docker.sh`
+builds the same zip on Linux through Docker (Rust 1.99 + MinGW-w64 image
+defined by `packaging/windows/Dockerfile`, compiled for
+`x86_64-pc-windows-gnu` against the dev package's `libmpv.dll.a`; a
+cargo registry cache below `~/.cache` keeps rebuilds fast). The inner
+`build-windows-cross.sh` also runs on any Linux host with MinGW
+installed. An `objdump` pass over the exe and the DLL auto-bundles any
+MinGW runtime DLL the bundle actually needs and fails loudly otherwise,
+so the zip never ships a bundle that dies on launch. This path produces
+the portable zip only (what `install.ps1` and Scoop consume): the Inno
+Setup.exe still needs Windows, since `ISCC.exe` is a Windows-only
+compiler.
 
 Scoop distribution is the manifest
 `packaging/windows/scoop/yutu-mux.json` (self-contained zip URL, no

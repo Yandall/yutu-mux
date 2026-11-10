@@ -7086,6 +7086,7 @@ dependencies = [
 name = "yutu-ui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "fluent-bundle",
  "fontdb",
  "futures",
