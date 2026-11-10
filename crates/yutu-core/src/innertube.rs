@@ -1108,6 +1108,11 @@ impl InnertubeBackend {
     /// A PO-token failure anywhere in the chain takes precedence on exhaustion
     /// because it is the actionable error.
     pub async fn resolve_stream(&self, req: &mut StreamRequest) -> Result<String, StreamError> {
+        if !crate::security::is_valid_video_id(&req.video_id) {
+            return Err(StreamError::NotFound {
+                video_id: crate::security::truncate_for_log(&req.video_id, 64),
+            });
+        }
         let mut po_token_client: Option<&'static str> = None;
         while let Some(client) = req.next_client() {
             match self.player_url_for_client(client, &req.video_id).await {
@@ -1144,7 +1149,14 @@ impl InnertubeBackend {
         let raw = raw.map_err(|e| classify_player_error(&e.to_string(), client, video_id))?;
         let value: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| StreamError::Network(format!("player JSON: {e}")))?;
-        extract_audio_url(&value).ok_or_else(|| classify_no_url(&value, client, video_id))
+        let url =
+            extract_audio_url(&value).ok_or_else(|| classify_no_url(&value, client, video_id))?;
+        if !crate::security::is_allowed_stream_url(&url) {
+            return Err(StreamError::Network(
+                "player returned untrusted URL".to_string(),
+            ));
+        }
+        Ok(url)
     }
 
     /// Raw `player`-endpoint JSON for one probe. The `Q` turbofish is required:
@@ -1251,14 +1263,24 @@ impl InnertubeBackend {
                             );
                             match extract_audio_url(&value) {
                                 Some(url) => {
-                                    crate::app_log::info(
-                                        "yutu-stream",
-                                        format_args!("token #{i} yielded URL"),
-                                    );
-                                    return Ok(ResolvedStream {
-                                        url,
-                                        pot_token: minted.tokens.get(1).cloned(),
-                                    });
+                                    if !crate::security::is_allowed_stream_url(&url) {
+                                        last_err = StreamError::Network(
+                                            "player returned untrusted URL".to_string(),
+                                        );
+                                        crate::app_log::warn(
+                                            "yutu-stream",
+                                            format_args!("token #{i} untrusted URL blocked"),
+                                        );
+                                    } else {
+                                        crate::app_log::info(
+                                            "yutu-stream",
+                                            format_args!("token #{i} yielded URL"),
+                                        );
+                                        return Ok(ResolvedStream {
+                                            url,
+                                            pot_token: minted.tokens.get(1).cloned(),
+                                        });
+                                    }
                                 }
                                 None => {
                                     last_err =

@@ -27,16 +27,25 @@ pub mod raw_search;
 mod raw_search_tests;
 pub mod scrobble;
 pub mod secure_store;
+pub mod security;
 pub mod stream;
 pub mod ytdlp;
 
 /// Shared HTTP client for Innertube POSTs (search, player): one pool per
 /// process instead of one per request (a search fans out to five POSTs,
 /// and a fresh client per POST burns handshakes plus pool memory).
+/// Hardened: 15s timeout, at most 5 redirects, so a hung or malicious
+/// endpoint cannot wedge the app.
 #[cfg(feature = "innertube")]
 pub(crate) fn shared_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
 }
 
 #[cfg(feature = "innertube")]

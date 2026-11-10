@@ -276,6 +276,15 @@ pub(crate) fn prune_artwork_dir_in(dir: &str, max_bytes: u64) {
 /// file anew). Same-URL byte changes are rare upstream, so the stable
 /// name stays: versioning per fetch would orphan a file per refresh.
 pub(crate) fn save_artwork_in(dir: &str, url: &str, bytes: &[u8]) {
+    // Barrier: cap artwork at 10 MiB and allowlist the host, so a
+    // compromised row cannot fill the disk or plant files for off-domain URLs.
+    const MAX_ARTWORK_BYTES: usize = 10 * 1024 * 1024;
+    if bytes.len() > MAX_ARTWORK_BYTES {
+        return;
+    }
+    if !yutu_core::security::is_allowed_artwork_url(url) {
+        return;
+    }
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }

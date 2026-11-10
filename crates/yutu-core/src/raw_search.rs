@@ -182,6 +182,11 @@ async fn post_search(
     auth: &SearchAuth,
     params: Option<&str>,
 ) -> Result<String, SearchFail> {
+    // Barrier: cap query length before any network, so a compromised caller
+    // cannot make the app POST megabytes.
+    if query.len() > crate::security::MAX_SEARCH_QUERY_LEN {
+        return Err(SearchFail::Other("search query too long".into()));
+    }
     // Same body the web client sends: unfiltered carries no `params`
     // (the server ranks the mixed All order), filter tabs carry the
     // tab's params, and the context pins WEB_REMIX plus locale.

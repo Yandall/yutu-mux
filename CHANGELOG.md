@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+- Security barrier: least-privilege allowlists so the app only does what
+  it is supposed to, even if a sidecar or server row is compromised.
+  New `yutu-core::security` module (std-only, always on): strict 11-char
+  video ids, safe server ids, `https` googlevideo-only stream URLs and
+  YouTube-image-only artwork URLs, URL redaction and stderr truncation,
+  D-Bus seek and volume clamping, plus search, cookie, and artwork size
+  caps. Sidecars no longer load from the current directory (PATH and exe
+  dir only, executable bit required), all HTTP clients carry a 15s
+  timeout with limited redirects, `fetch_bytes` and `warm_stream_url`
+  reject off-domain hosts, `MpvBackend::load_url` accepts only
+  googlevideo and `load_file` only temp-dir files (exclusive-create
+  spills), and `save_artwork_in` caps at 10 MiB. Off-domain sidecar
+  output is rejected fail-closed.
+
 - Windows support: self-contained package (app plus libmpv-2.dll and
   the yt-dlp.exe sidecar beside the exe, no manual dependencies).
   New `windows-zip-setup` release job builds the zip plus an Inno Setup

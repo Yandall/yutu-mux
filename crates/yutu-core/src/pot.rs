@@ -9,7 +9,7 @@
 //! Std-only, no async: callers run this in `spawn_blocking` (it solves a
 //! challenge and can take seconds on a cold snapshot).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const BOTGUARD_BIN_NAME: &str = "rustypipe-botguard";
 
@@ -22,23 +22,22 @@ pub struct PoToken {
     pub from_snapshot: bool,
 }
 
-/// Locate the sidecar: `PATH` first, then the current working directory.
+/// Locate the sidecar: `PATH` only. No current-directory fallback: running
+/// from an attacker directory must never pick up a planted binary.
 /// Returns `None` when the user has not installed it (callers then fall back
 /// to token-free clients and surface [`crate::stream::StreamError::hint`]).
 pub fn find_botguard_bin() -> Option<String> {
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
+            // Empty PATH entries mean cwd: skip them, never load from there.
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
             let candidate = dir.join(BOTGUARD_BIN_NAME);
             if is_executable_file(&candidate) {
                 return Some(candidate.to_string_lossy().into_owned());
             }
         }
-    }
-    let cwd = std::env::current_dir()
-        .map(|d| d.join(BOTGUARD_BIN_NAME))
-        .unwrap_or_else(|_| PathBuf::from(BOTGUARD_BIN_NAME));
-    if is_executable_file(&cwd) {
-        return Some(cwd.to_string_lossy().into_owned());
     }
     None
 }
@@ -64,8 +63,16 @@ fn is_executable_file(path: &Path) -> bool {
 /// visitor-data for session-bound ones).
 ///
 /// The `--` separator is mandatory: video IDs may start with `-` and would
-/// otherwise parse as CLI flags.
+/// otherwise parse as CLI flags. Identifiers are allowlisted (video id or
+/// short safe id) so a compromised caller cannot smuggle flags or paths.
+/// Sidecar stderr is truncated, so a compromised helper cannot OOM the app
+/// through error strings.
 pub fn fetch_po_token(bin: &str, identifier: &str) -> Result<PoToken, String> {
+    let ok = crate::security::is_valid_video_id(identifier)
+        || crate::security::is_safe_server_id(identifier);
+    if !ok {
+        return Err("refusing to mint token for untrusted identifier".to_string());
+    }
     let output = crate::ytdlp::sidecar_command(bin)
         .arg("--")
         .arg(identifier)
@@ -73,7 +80,8 @@ pub fn fetch_po_token(bin: &str, identifier: &str) -> Result<PoToken, String> {
         .map_err(|e| format!("run {bin}: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{bin} failed: {}", stderr.trim()));
+        let snippet = crate::security::truncate_for_log(stderr.trim(), 500);
+        return Err(format!("{bin} failed: {snippet}"));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_po_output(&stdout)
@@ -123,6 +131,7 @@ fn is_metadata_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// Shape of a real sidecar response (tokens redacted, metadata kept).
     const SAMPLE: &str = "MnRUOKENT0KENt6x0HYKon9J8I-SCEWj3aOQKzLam6LXdLRXW3ypcXHdygoyg4slY9Z9kW0HXdWGKbBep7vWCgE2rjynS1YrhUJYiQfCZTS7FqeJz3MEFIg== MnR3PvWN5T_RRHcCYSMusEHb5MIJmbaZae9TQkssf4Zzht_2ooYgESn5F2OmBM33_hgi3597PoQMtwAofrz5HIyLICAfocSxBZCT1frOBEoXUIOMeXjtctrmfccXNJn9kFq0IvboUu2uKbAYQVVKjHa4gxmoSQ== valid_until=1791428867 from_snapshot=false";
@@ -174,8 +183,14 @@ mod tests {
 
     #[test]
     fn missing_binary_is_a_clean_error() {
-        let err = fetch_po_token("/nonexistent/rustypipe-botguard", "x").unwrap_err();
+        let err = fetch_po_token("/nonexistent/rustypipe-botguard", "dQw4w9WgXcQ").unwrap_err();
         assert!(err.contains("run /nonexistent"));
+    }
+
+    #[test]
+    fn invalid_identifier_is_rejected() {
+        let err = fetch_po_token("/nonexistent/rustypipe-botguard", "x").unwrap_err();
+        assert!(err.contains("untrusted"), "{err}");
     }
 
     #[test]

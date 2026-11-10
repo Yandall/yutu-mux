@@ -34,7 +34,15 @@ impl CookieAuth {
     /// `SAPISID=`), so storing the raw Netscape text would fail later with
     /// a generic "header" error. Normalising here keeps the failure local
     /// and actionable. Errors never echo cookie material.
+    /// Barrier: files over 1 MiB are rejected before reading, so a picked
+    /// giant file cannot OOM the app.
     pub fn from_file(path: &Path) -> Result<Self, String> {
+        let size = std::fs::metadata(path)
+            .map(|m| m.len())
+            .map_err(|e| format!("read cookie file: {e}"))?;
+        if size > crate::security::MAX_COOKIE_FILE_BYTES {
+            return Err("cookie file too large".into());
+        }
         let raw = std::fs::read_to_string(path).map_err(|e| format!("read cookie file: {e}"))?;
         Self::from_header_str(&raw)
     }
@@ -52,6 +60,9 @@ impl CookieAuth {
     /// session restore: the saved file holds exactly what [`from_file`]
     /// would have produced, so validation is the same).
     pub fn from_header_str(header: &str) -> Result<Self, String> {
+        if header.len() > crate::security::MAX_COOKIE_FILE_BYTES as usize {
+            return Err("cookie file too large".into());
+        }
         let raw = header.trim().to_string();
         if raw.is_empty() {
             return Err("cookie file is empty".into());
