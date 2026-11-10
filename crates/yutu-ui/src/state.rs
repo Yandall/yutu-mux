@@ -227,6 +227,21 @@ impl PlaylistSort {
     }
 }
 
+/// Which selector menu is open (None = closed): at most one at a time.
+/// The open card floats from its button (input-anchored dropdown
+/// overlay); dismissal stays top-level (scrim + Esc) like the menus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectMenu {
+    /// Sort picks for this playlist id (detail header).
+    Sort(String),
+    /// Settings language pick.
+    Language,
+    /// Settings lyrics-provider pick.
+    LyricsProvider,
+    /// Settings display-font pick.
+    FontFamily,
+}
+
 /// Which sign-in started an import (status wording only). `Sync` is a
 /// manual or scheduled refresh (same pipeline, "Sync" wording).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -568,6 +583,12 @@ pub enum Message {
     ClearHovers,
     /// Playlist context menu open/close (sidebar rows, detail header).
     OpenPlaylistMenu(String),
+    /// Sort menu open for this playlist id (detail header sort button):
+    /// same frozen anchor as the other menus, picks send
+    /// [`PlaylistSortSelected`](Message::PlaylistSortSelected).
+    /// The open card floats from the button itself (input-anchored
+    /// dropdown overlay), never from the cursor.
+    OpenSelectMenu(SelectMenu),
     /// Search collection menu open (album/artist/community-playlist
     /// rows): right-click or the hover `…` button, same frozen anchor
     /// as the track and playlist menus.

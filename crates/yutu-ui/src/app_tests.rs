@@ -1423,6 +1423,56 @@ fn playlist_sort_pick_persists_and_play_follows_it() {
 }
 
 #[test]
+fn playlist_sort_menu_opens_picks_and_dismisses() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    let sort = || SelectMenu::Sort("u1".into());
+    // Opens like the other menus, closing them.
+    let _ = s.update(Message::OpenPlaylistMenu("u1".into()));
+    let _ = s.update(Message::OpenSelectMenu(sort()));
+    assert_eq!(s.sort_menu, Some(sort()));
+    assert!(s.pl_menu.is_none());
+    // A pick persists and closes the menu.
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: "u1".into(),
+        sort: PlaylistSort::Artist,
+    });
+    assert_eq!(s.playlist_sort_cached("u1"), PlaylistSort::Artist);
+    assert!(s.sort_menu.is_none());
+    // Esc closes an open sort menu.
+    let _ = s.update(Message::OpenSelectMenu(sort()));
+    assert!(s.sort_menu.is_some());
+    let _ = s.update(Message::CloseContext);
+    assert!(s.sort_menu.is_none());
+    // An open sort menu freezes row hovers like the other menus.
+    let _ = s.update(Message::OpenSelectMenu(sort()));
+    let _ = s.update(Message::TrackHover(Some("t0".into())));
+    assert!(s.hovered_track.is_none());
+    assert!(s.pl_hover.is_none());
+}
+
+#[test]
+fn settings_select_menus_open_pick_and_dismiss() {
+    let mut s = test_state();
+    for kind in [
+        SelectMenu::Language,
+        SelectMenu::LyricsProvider,
+        SelectMenu::FontFamily,
+    ] {
+        let _ = s.update(Message::OpenPlaylistMenu("x".into()));
+        let _ = s.update(Message::OpenSelectMenu(kind.clone()));
+        assert_eq!(s.sort_menu, Some(kind.clone()));
+        assert!(s.pl_menu.is_none());
+        let _ = s.update(Message::CloseContext);
+        assert!(s.sort_menu.is_none());
+    }
+    let _ = s.update(Message::OpenSelectMenu(SelectMenu::Language));
+    let _ = s.update(Message::LanguageChanged(Language::parse("Español")));
+    assert_eq!(s.language, Language::Spanish);
+    assert!(s.sort_menu.is_none());
+}
+
+#[test]
 fn playlist_manual_drag_reorders_and_persists() {
     let mut s = test_state();
     for t in ["t0", "t1", "t2"].iter().map(|id| mk_track(id, id, "A")) {

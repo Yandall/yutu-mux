@@ -289,7 +289,6 @@ not-in-queue = Not in queue: { $id }.
 removed-from-autoplay = Removed { $title } from autoplay.
 queue-reordered = Queue reordered.
 playlist-reordered = Playlist reordered.
-playlist-sort-label = Sort
 playlist-nothing-to-queue = Playlist { $title }: nothing to queue.
 playlist-queued = Playlist { $title }: queued { $n } track(s).
 playlist-nothing-playable = Playlist { $label }: nothing playable.

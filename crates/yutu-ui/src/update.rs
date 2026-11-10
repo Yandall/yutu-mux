@@ -45,7 +45,10 @@ impl AppState {
                 if self.drag.is_some() {
                     return iced::Task::none();
                 }
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                 {
                     self.close_menu();
                     return iced::Task::none();
@@ -62,7 +65,10 @@ impl AppState {
                 if self.drag.is_some() {
                     return iced::Task::none();
                 }
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                 {
                     self.close_menu();
                     return iced::Task::none();
@@ -467,6 +473,7 @@ impl AppState {
                 }
             }
             Message::SetLyricsProvider(provider) => {
+                self.sort_menu = None;
                 if self.lyrics_provider != provider {
                     self.lyrics_provider = provider;
                     self.persist_lyrics_provider();
@@ -1330,6 +1337,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.hovered_history = None;
@@ -1351,6 +1359,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.hovered_track = None;
@@ -1408,6 +1417,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.hovered_recent = None;
@@ -1514,6 +1524,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.hovered_playlist = None;
@@ -1536,6 +1547,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.hovered_auto = None;
@@ -1557,6 +1569,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.hovered_queue = None;
@@ -1670,6 +1683,7 @@ impl AppState {
                     let modal = self.context_menu.is_some()
                         || self.pl_menu.is_some()
                         || self.coll_menu.is_some()
+                        || self.sort_menu.is_some()
                         || self.show_suggest;
                     let click = !committed
                         && !modal
@@ -1700,6 +1714,7 @@ impl AppState {
             }
             Message::PlaylistSortSelected { playlist_id, sort } => {
                 self.persist_playlist_sort(&playlist_id, sort);
+                self.sort_menu = None;
                 self.cancel_pl_drag();
                 self.pl_hover = None;
                 self.pl_action_hover = None;
@@ -1708,6 +1723,7 @@ impl AppState {
                 if self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest
                 {
                     self.pl_hover = None;
@@ -1945,6 +1961,9 @@ impl AppState {
                     return task;
                 }
             }
+            Message::OpenSelectMenu(menu) => {
+                self.open_select_menu(menu);
+            }
             Message::OpenAlbumMenu(id) => {
                 self.open_coll_for(CollectionMenu::Album(id.clone()));
                 // Menu headers render the 544 key (rows warm the small
@@ -2115,6 +2134,7 @@ impl AppState {
                 let modal = self.context_menu.is_some()
                     || self.pl_menu.is_some()
                     || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                     || self.show_suggest;
                 // Latched hover hysteresis: expand on rail/edge entry, stay
                 // open anywhere inside panel + grace, collapse only outside.
@@ -2183,7 +2203,10 @@ impl AppState {
                 }
                 // Topmost first: menus, popup, drag, drawer. Menus sit
                 // above the popup in the layer stack.
-                if self.context_menu.is_some() || self.pl_menu.is_some() || self.coll_menu.is_some()
+                if self.context_menu.is_some()
+                    || self.pl_menu.is_some()
+                    || self.coll_menu.is_some()
+                    || self.sort_menu.is_some()
                 {
                     self.close_menu();
                 } else if self.show_suggest {
@@ -2273,6 +2296,7 @@ impl AppState {
                 }
             }
             Message::FontFamilyChanged(family) => {
+                self.sort_menu = None;
                 self.font_family = family;
                 if let Ok(store) = LibraryStore::open(&self.library_path) {
                     let _ = store.set_pref("font_family", &family.stored());
@@ -2293,6 +2317,7 @@ impl AppState {
                 }
             }
             Message::LanguageChanged(language) => {
+                self.sort_menu = None;
                 self.language = language;
                 if let Ok(store) = LibraryStore::open(&self.library_path) {
                     let _ = store.set_pref("language", language.stored());

@@ -186,6 +186,9 @@ pub struct AppState {
     pub(crate) context_menu: Option<String>,
     /// Playlist menu open for this playlist id (None = closed).
     pub(crate) pl_menu: Option<String>,
+    /// Selector menu open (None = closed): sort picks and settings picks
+    /// share one dropdown idiom.
+    pub(crate) sort_menu: Option<SelectMenu>,
     /// Search collection menu open (None = closed).
     pub(crate) coll_menu: Option<CollectionMenu>,
     /// Playlist flyout open for this track id (side panel, menu stays).
