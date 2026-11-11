@@ -2387,7 +2387,7 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Center)
                             .width(Fill),
                         )
-                        .style(hover_row)
+                        .style(select_face)
                         .on_press(Message::OpenSelectMenu(SelectMenu::Language))
                         .padding(8)
                         .width(Fill)
@@ -2432,7 +2432,7 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Center)
                             .width(Fill),
                         )
-                        .style(hover_row)
+                        .style(select_face)
                         .on_press(Message::OpenSelectMenu(SelectMenu::LyricsProvider))
                         .padding(8)
                         .width(Fill)
@@ -2452,7 +2452,7 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Center)
                             .width(Fill),
                         )
-                        .style(hover_row)
+                        .style(select_face)
                         .on_press(Message::OpenSelectMenu(SelectMenu::FontFamily))
                         .padding(8)
                         .width(Fill)
@@ -2779,7 +2779,7 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Center)
                             .width(Fill),
                         )
-                        .style(hover_row)
+                        .style(select_face)
                         .on_press(Message::OpenSelectMenu(SelectMenu::Sort(pid.clone())))
                         .padding(8)
                         .width(iced::Length::Fixed(SORT_BUTTON_W))
