@@ -9,6 +9,8 @@ license = "MIT"
 yutu-core = { path = "../yutu-core" }
 yutu-player = { path = "../yutu-player" }
 yutu-desktop = { path = "../yutu-desktop" }
+# URL opener for About page links (xdg-open/open/start per platform).
+open = "5"
 iced = { version = "0.14", features = ["tokio", "image", "svg", "advanced", "canvas"] }
 # Trait bounds for the pointing-slider wrapper (mirrors iced's Slider).
 num-traits = "0.2"

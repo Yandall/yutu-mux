@@ -231,6 +231,15 @@ needs-innertube-search-offline = Real search needs `--features innertube` (offli
 shortcuts-hint = Shortcuts: Space play/pause · n next · p prev · / search
 ready-status = Ready: search for music.
 
+## About (Settings)
+
+about-section = About
+about-version = Version { $version }
+about-license = MIT License: free software, see LICENSE.
+about-source = Source code on GitHub
+about-notices = Bundled type: Adwaita Sans (OFL-1.1). Icons: Lucide (ISC).
+about-backend = Playback links the system libmpv (GPL-2.0); the rodio-only build is GPL-free.
+
 ## Equalizer (Settings)
 
 enable-custom-eq = Enable custom EQ

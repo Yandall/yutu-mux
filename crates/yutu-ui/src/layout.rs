@@ -20,6 +20,11 @@ use yutu_player::MpvBackend;
 #[allow(unused_imports)]
 use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
+/// App version from the package manifest (About section, one place).
+pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Project home (About section link, one place).
+pub(crate) const GITHUB_URL: &str = "https://github.com/Yandall/yutu-mux";
+
 /// Fixed row/card heights: every card and row keeps one height and long
 /// names truncate with an ellipsis instead of stretching the container.
 /// Containers pair these with `.clip(true)` as a backstop, so even an

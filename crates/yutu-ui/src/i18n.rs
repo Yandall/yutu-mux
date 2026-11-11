@@ -743,6 +743,24 @@ impl Language {
     pub fn shortcuts_hint(self) -> String {
         self.tr("shortcuts-hint")
     }
+    pub fn about_section(self) -> String {
+        self.tr("about-section")
+    }
+    pub fn about_version(self) -> String {
+        self.tr_args("about-version", &[("version", crate::APP_VERSION)])
+    }
+    pub fn about_license(self) -> String {
+        self.tr("about-license")
+    }
+    pub fn about_source(self) -> String {
+        self.tr("about-source")
+    }
+    pub fn about_notices(self) -> String {
+        self.tr("about-notices")
+    }
+    pub fn about_backend(self) -> String {
+        self.tr("about-backend")
+    }
     pub fn enable_custom_eq(self) -> String {
         self.tr("enable-custom-eq")
     }

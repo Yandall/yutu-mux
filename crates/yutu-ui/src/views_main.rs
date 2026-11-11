@@ -2524,6 +2524,18 @@ impl AppState {
                     },
                     self.error_section(),
                     self.cache_section(),
+                    text(self.language.about_section()).size(17),
+                    column![
+                        text(self.language.about_version()).size(13),
+                        text(self.language.about_license()).size(12).color(MUTED),
+                        button(btn_text(self.language.about_source(), 12))
+                            .style(ghost_button)
+                            .on_press(Message::OpenUrl(GITHUB_URL.to_string()))
+                            .padding(8),
+                        text(self.language.about_notices()).size(12).color(MUTED),
+                        text(self.language.about_backend()).size(12).color(MUTED),
+                    ]
+                    .spacing(4),
                     text(self.language.shortcuts_hint()).size(12).color(MUTED),
                 ]
                 .spacing(10)

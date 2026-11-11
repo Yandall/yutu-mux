@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- About info, everywhere: new About section at the end of Settings
+  (version, MIT license, GitHub link button, Adwaita/Lucide/libmpv
+  notices, English + Spanish). macOS gets the same text in the
+  native About panel via `Credits.rtf`, and the app menu now reads
+  YutuMux (the launcher keeps its process name).
+
 - Now Playing drawer snaps back to the top (hero) on every song
   change while open, instead of keeping the old song's scroll depth;
   lyrics follow re-arms from scratch and centers the verse once it

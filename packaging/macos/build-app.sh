@@ -98,7 +98,9 @@ cat > "$APP/Contents/MacOS/$APP_NAME" <<'EOF'
 # sidecar, and this directory are added back before starting the app.
 HERE="$(dirname "$0")"
 export PATH="$HERE:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-exec "$HERE/yutu-mux-bin" "$@"
+# argv[0] names the app in the menu bar (About/Hide/Quit): without
+# -a it reads the post-exec binary name (yutu-mux-bin) instead.
+exec -a "$APP_NAME" "$HERE/yutu-mux-bin" "$@"
 EOF
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -159,6 +161,20 @@ iconutil -c icns -o "$APP/Contents/Resources/$APP_NAME.icns" "$ICONSET"
 rm -rf "$ICONSET_TMP"
 [ -s "$APP/Contents/Resources/$APP_NAME.icns" ] \
     || { echo "error: .icns build failed (see iconutil output above)" >&2; exit 1; }
+
+echo "==> writing About panel credits"
+cat > "$APP/Contents/Resources/Credits.rtf" <<EOF
+{\\rtf1\\ansi
+YutuMux $VERSION\\par
+Native YouTube Music desktop app (Iced, no webview).\\par
+\\par
+MIT License: free software, see LICENSE.\\par
+Source: https://github.com/Yandall/yutu-mux\\par
+\\par
+Bundled type: Adwaita Sans (OFL-1.1). Icons: Lucide (ISC).\\par
+Playback links the system libmpv (GPL-2.0); the rodio-only build is GPL-free.\\par
+}
+EOF
 
 echo "==> ad-hoc signing (personal use; distribution needs a Developer ID)"
 codesign -s - --deep --force "$APP" >/dev/null
