@@ -21,6 +21,11 @@ Honest limits: free-tier bitrate ceiling (128-256kbps AAC/Opus is
 YouTube's, not ours), no offline keep (streaming only), PO-token 403s
 surface as errors.
 
+## Screenshots
+
+![Home with quick picks, library, and queue](assets/screenshots/home.png)
+![Now Playing drawer with synced lyrics](assets/screenshots/now-playing.png)
+
 ## Install
 
 ### One-command installer (Linux + macOS)
