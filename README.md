@@ -31,9 +31,9 @@ curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/ins
 
 This installs the app per-user below `~/.local`: the `yutu-mux` command
 plus a desktop launcher on Linux, or `YutuMux.app` on macOS (first launch
-is right-click, Open). Until the first release is published there is
-nothing to download yet, so build manually (`cargo run` needs Rust, see
-below). Run
+is right-click, Open). It downloads the prebuilt artifacts from the
+[releases page](https://github.com/Yandall/yutu-mux/releases) (pass
+`--version` to pin one). Run
 `packaging/uninstall.sh` to remove it later. Details, options, and manual
 build steps: `docs/INSTALL.md`.
 
