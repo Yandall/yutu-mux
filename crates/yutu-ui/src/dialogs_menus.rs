@@ -943,11 +943,22 @@ impl AppState {
                 .into(),
             );
         }
-        container(column(menu_rows).spacing(0))
-            .style(card_bg)
-            .padding(14)
-            .width(width)
-            .into()
+        // Capped height with scroll: long pickers (system fonts) stop
+        // at SELECT_MENU_MAX_H and scroll instead of stretching the
+        // overlay past the viewport. Natural height below the cap, so
+        // short pickers show no empty gap and no scrollbar.
+        container(
+            iced::widget::scrollable(column(menu_rows).spacing(0).width(Fill))
+                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("select")))
+                .on_scroll(|v| Message::Scrolled("select", v.absolute_offset().y))
+                .width(Fill),
+        )
+        .style(card_bg)
+        .padding(14)
+        .width(width)
+        .max_height(SELECT_MENU_MAX_H)
+        .into()
     }
 
     /// Open the search collection menu, same frozen anchor (only one

@@ -43,6 +43,10 @@ pub(crate) const SORT_BUTTON_W: f32 = 144.0;
 /// 8px padding each side, rounded up): fixed so the playlist flyout
 /// anchor math can never drift from the laid-out rows.
 pub(crate) const MENU_ROW_H: f32 = 36.0;
+/// Selector menu cap (total card height incl. padding): long pickers
+/// (system fonts) stop here and scroll instead of stretching the
+/// overlay past the viewport.
+pub(crate) const SELECT_MENU_MAX_H: f32 = 320.0;
 pub(crate) const SUGGEST_ROW_H: f32 = 44.0;
 /// Queue row height: fits a wrapped 2-line title plus the artist line
 /// with room to spare (2 x 12px x 1.25 + 2px gap + 11px x 1.25 +

@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Selector menus: closed picker faces now carry an input-like border
+  (new `select_face` button style) so they never read as plain text,
+  and the open card caps at 320px with a slim scrollbar instead of
+  stretching past the viewport for long lists (system fonts).
+
 - Security barrier: least-privilege allowlists so the app only does what
   it is supposed to, even if a sidecar or server row is compromised.
   New `yutu-core::security` module (std-only, always on): strict 11-char
