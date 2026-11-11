@@ -558,6 +558,18 @@ impl AppState {
     /// funnels through play/fetch_current_task, so both call this).
     pub(crate) fn track_start_tasks(&mut self, t: &Track) -> Vec<iced::Task<Message>> {
         let mut tasks = Vec::new();
+        // New song with the drawer open: back to the top (hero)
+        // instead of keeping the old song's scroll depth; the follow
+        // run re-arms from scratch (same rule as opening the drawer)
+        // and centers the verse once playback passes its timestamp.
+        // The 0.0 echo matches the ring, so no takeover fires.
+        if self.drawer_open {
+            self.drawer_scroll = 0.0;
+            self.lyrics_follow = true;
+            self.lyrics_follow_at = None;
+            self.lyrics_cmds = [0.0, f32::NAN, f32::NAN];
+            tasks.push(Self::lyrics_scroll_task(0.0));
+        }
         if let Some(art) = self.large_art_task(t) {
             tasks.push(art);
         }
