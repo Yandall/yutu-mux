@@ -138,6 +138,36 @@ pub(crate) fn file_pick(
     }
 }
 
+/// Selector face: input-like bordered button (dark fill, soft border)
+/// so closed pickers never read as plain text. Same fill and border
+/// as the file picker, always available (unlike the innertube-only
+/// file picker). Hover lightens the border for feedback.
+pub(crate) fn select_face(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let hovered = matches!(
+        status,
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+    );
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(
+            0x1E, 0x1E, 0x1E,
+        ))),
+        text_color: iced::Color::WHITE,
+        border: iced::Border {
+            color: if hovered {
+                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+            } else {
+                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            },
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 /// Shared cap for Settings inputs (text fields, pickers, sliders, the
 /// cookie picker row): full width on narrow windows, aligned cap on wide
 /// ones so no field stretches across the whole pane.
