@@ -4890,6 +4890,36 @@ fn lyric_follow_snaps_instantly_without_animations() {
 }
 
 #[test]
+fn track_change_resets_open_drawer_to_top() {
+    let mut s = test_state();
+    let _ = s.update(Message::EnqueueTrack("m1".into()));
+    let _ = s.update(Message::PlayNow("m1".into()));
+    // Drawer open with a stale deep scroll (the user read far down
+    // the old lyrics, disengaging follow).
+    let _ = s.update(Message::ToggleDrawer);
+    let _ = s.update(Message::DrawerScrolled(500.0));
+    assert!(!s.lyrics_follow);
+    // Changing song snaps back to the hero and re-arms follow.
+    let _ = s.update(Message::PlayNow("m2".into()));
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+    assert_eq!(s.drawer_scroll, 0.0);
+    assert!(s.lyrics_follow);
+    assert!(s.lyrics_follow_at.is_none());
+    // The 0.0 echo matches the command ring, so no takeover fires.
+    let _ = s.update(Message::DrawerScrolled(0.0));
+    assert!(s.lyrics_follow);
+    // Closed drawer: stale offsets are untouched, nothing re-arms.
+    let mut s = test_state();
+    let _ = s.update(Message::EnqueueTrack("m1".into()));
+    let _ = s.update(Message::PlayNow("m1".into()));
+    s.drawer_scroll = 500.0;
+    s.lyrics_follow = false;
+    let _ = s.update(Message::PlayNow("m2".into()));
+    assert_eq!(s.drawer_scroll, 500.0);
+    assert!(!s.lyrics_follow);
+}
+
+#[test]
 fn home_slots_live_under_body_not_the_strip() {
     redirect_art_cache();
     let mut s = test_state();

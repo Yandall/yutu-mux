@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- Now Playing drawer snaps back to the top (hero) on every song
+  change while open, instead of keeping the old song's scroll depth;
+  lyrics follow re-arms from scratch and centers the verse once it
+  lands.
+
 - Default font is now bundled Adwaita Sans (GNOME's Inter variation,
   OFL-1.1, variable v51.0): one `AdwaitaSans-Regular.ttf` covers body,
   Medium, and Bold weights, replacing the three Inter statics. Stored
