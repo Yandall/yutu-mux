@@ -2988,6 +2988,29 @@ fn language_selector_persists_and_renders_spanish() {
 }
 
 #[test]
+fn about_section_renders_version_in_both_languages() {
+    for lang in [Language::English, Language::Spanish] {
+        for s in [
+            lang.about_section(),
+            lang.about_version(),
+            lang.about_license(),
+            lang.about_source(),
+            lang.about_notices(),
+            lang.about_backend(),
+        ] {
+            assert!(!s.is_empty(), "blank about string");
+        }
+    }
+    assert!(Language::English.about_version().contains(APP_VERSION));
+    assert!(Language::Spanish.about_version().contains(APP_VERSION));
+    assert_ne!(
+        Language::English.about_section(),
+        Language::Spanish.about_section()
+    );
+    assert!(GITHUB_URL.starts_with("https://github.com/"));
+}
+
+#[test]
 fn failure_filter_matches_in_both_languages() {
     use yutu_core::HistorySection as S;
     let en = Language::English;

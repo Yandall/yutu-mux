@@ -231,6 +231,15 @@ needs-innertube-search-offline = La búsqueda real necesita `--features innertub
 shortcuts-hint = Atajos: Espacio reproducir/pausar · n siguiente · p anterior · / buscar
 ready-status = Listo: busca música.
 
+## About (Settings)
+
+about-section = Acerca de
+about-version = Versión { $version }
+about-license = Licencia MIT: software libre, ver LICENSE.
+about-source = Código fuente en GitHub
+about-notices = Tipo incluido: Adwaita Sans (OFL-1.1). Iconos: Lucide (ISC).
+about-backend = La reproducción usa libmpv del sistema (GPL-2.0); la versión solo-rodio es libre de GPL.
+
 ## Equalizer (Settings)
 
 enable-custom-eq = Activar EQ personalizado

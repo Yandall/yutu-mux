@@ -37,6 +37,13 @@ impl AppState {
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
             }
+            Message::OpenUrl(url) => {
+                // Best effort: a missing opener only logs (stderr
+                // keeps the detail, the status line stays quiet).
+                if let Err(e) = open::that(&url) {
+                    yutu_core::app_log::warn("yutu-ui", format!("open {url} failed: {e}"));
+                }
+            }
             Message::NavBack => {
                 // Side buttons never disturb a drag (Esc owns cancel);
                 // menus and the popup dismiss first, second press goes.

@@ -321,6 +321,8 @@ pub enum CollectionMenu {
 #[derive(Debug, Clone)]
 pub enum Message {
     Navigate(Route),
+    /// Open a URL in the system browser (About page links).
+    OpenUrl(String),
     SearchChanged(String),
     Search,
     PlayTrack(usize),
