@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Default font is now bundled Adwaita Sans (GNOME's Inter variation,
+  OFL-1.1, variable v51.0): one `AdwaitaSans-Regular.ttf` covers body,
+  Medium, and Bold weights, replacing the three Inter statics. Stored
+  `font_family` prefs migrate automatically (legacy `inter` parses to
+  the new default); the picker head reads "Adwaita Sans (bundled)".
+
 - Selector menus: closed picker faces now carry an input-like border
   (new `select_face` button style) so they never read as plain text,
   and the open card caps at 320px with a slim scrollbar instead of

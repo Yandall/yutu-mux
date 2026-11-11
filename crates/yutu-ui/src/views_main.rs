@@ -2352,7 +2352,7 @@ impl AppState {
                 .into();
                 // Uninstalled pick: the stored custom family is gone, so
                 // body text silently uses the fallback until repicked
-                // (bundled Inter and System can never go missing).
+                // (bundled Adwaita Sans and System can never go missing).
                 let stale_font_note: iced::Element<'_, Message> =
                     if is_font_missing(self.font_family, &self.system_font_rows) {
                         text(self.language.stale_font_note())

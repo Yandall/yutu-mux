@@ -105,7 +105,7 @@ before pushing.
 ## License
 
 MIT, see `LICENSE`. By using or contributing to this project you agree to
-the MIT license terms. Third-party notices in `NOTICE.md` (Inter OFL-1.1,
+the MIT license terms. Third-party notices in `NOTICE.md` (Adwaita Sans OFL-1.1,
 Lucide ISC, symphonia MPL-2.0, and others).
 
 Note: the default build links the system `libmpv`

@@ -143,7 +143,7 @@ impl AppState {
             drawer_anim: 0.0,
             animations_enabled: true,
             anim_ms: ANIM_DEFAULT_MS,
-            font_family: FontFamily::Inter,
+            font_family: FontFamily::Adwaita,
             language: Language::system_default(),
             ui_scale: UI_SCALE_DEFAULT,
             system_font_rows: Vec::new(),
