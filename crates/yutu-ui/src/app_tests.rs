@@ -7491,15 +7491,15 @@ fn animation_prefs_clamp_and_default() {
 
 #[test]
 fn font_prefs_default_parse_and_persist() {
-    // Inter renders the same outlines on Linux and macOS, so it is
+    // Adwaita Sans renders the same outlines on Linux and macOS, so it is
     // the default; System keeps the old platform-sans behavior.
     let s = test_state();
-    assert_eq!(s.font_family, FontFamily::Inter);
+    assert_eq!(s.font_family, FontFamily::Adwaita);
     assert_eq!(FontFamily::parse("system"), FontFamily::System);
     assert_eq!(FontFamily::parse("SYSTEM "), FontFamily::System);
-    assert_eq!(FontFamily::parse("junk"), FontFamily::Inter);
-    assert_eq!(FontFamily::parse(""), FontFamily::Inter);
-    assert_eq!(FontFamily::parse("name:"), FontFamily::Inter);
+    assert_eq!(FontFamily::parse("junk"), FontFamily::Adwaita);
+    assert_eq!(FontFamily::parse(""), FontFamily::Adwaita);
+    assert_eq!(FontFamily::parse("name:"), FontFamily::Adwaita);
     assert_eq!(
         FontFamily::parse("NAME:DejaVu Sans"),
         FontFamily::parse("name:DejaVu Sans")
@@ -7510,7 +7510,10 @@ fn font_prefs_default_parse_and_persist() {
     assert_eq!(FontFamily::parse(&custom.stored()), custom);
     assert_eq!(custom.label(), "DejaVu Sans");
     // Picker rows map back: heads are special, the rest is raw.
-    assert_eq!(FontFamily::from_label("Inter (bundled)"), FontFamily::Inter);
+    assert_eq!(
+        FontFamily::from_label("Adwaita Sans (bundled)"),
+        FontFamily::Adwaita
+    );
     assert_eq!(FontFamily::from_label("System default"), FontFamily::System);
     assert_eq!(FontFamily::from_label("DejaVu Sans"), custom);
     // Interning leaks once: the same name returns one pointer.
@@ -7531,40 +7534,38 @@ fn font_prefs_default_parse_and_persist() {
     };
     let _ = store.set_pref("font_family", "junk");
     let (fallback, _) = AppState::with_library_path(s.library_path.clone());
-    assert_eq!(fallback.font_family, FontFamily::Inter);
+    assert_eq!(fallback.font_family, FontFamily::Adwaita);
 }
 
 #[test]
 fn system_family_rows_come_sorted_and_deduped() {
-    // Memory-loaded database (no system scan): the bundled faces
-    // share one family, so three loads collapse to one row.
+    // Memory-loaded database (no system scan): the bundled variable
+    // face loads as one family.
     let mut db = fontdb::Database::new();
-    for bytes in [
-        include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice(),
-        include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice(),
-        include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice(),
-    ] {
-        db.load_font_data(bytes.to_vec());
-    }
-    assert_eq!(family_names_of(&db), vec!["Inter".to_string()]);
+    let bytes = include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf").as_slice();
+    db.load_font_data(bytes.to_vec());
+    assert_eq!(family_names_of(&db), vec!["Adwaita Sans".to_string()]);
     assert!(family_names_of(&fontdb::Database::new()).is_empty());
     // The picker heads the list with the two pinned rows; an
-    // installed Inter stays covered by the bundled head.
+    // installed Adwaita Sans stays covered by the bundled head.
     let rows = font_option_rows(&[
         "DejaVu Sans".to_string(),
-        "Inter".to_string(),
+        "Adwaita Sans".to_string(),
         "DejaVu Sans".to_string(),
     ]);
-    assert_eq!(rows[0], "Inter (bundled)");
+    assert_eq!(rows[0], "Adwaita Sans (bundled)");
     assert_eq!(rows[1], "System default");
     assert!(rows.contains(&"DejaVu Sans".to_string()));
-    assert!(!rows.iter().any(|r| r == "Inter"));
+    assert!(!rows.iter().any(|r| r == "Adwaita Sans"));
     // The async scan lands through the message (heads only until
     // then, since tests never run the startup task).
     let mut s = test_state();
     assert_eq!(
         s.font_rows,
-        vec!["Inter (bundled)".to_string(), "System default".to_string()]
+        vec![
+            "Adwaita Sans (bundled)".to_string(),
+            "System default".to_string()
+        ]
     );
     let _ = s.update(Message::SystemFontsLoaded(vec![
         "B".to_string(),
@@ -7578,11 +7579,11 @@ fn system_family_rows_come_sorted_and_deduped() {
 #[test]
 fn missing_font_note_only_for_gone_custom_families() {
     let system = vec!["DejaVu Sans".to_string()];
-    assert!(!is_font_missing(FontFamily::Inter, &system));
+    assert!(!is_font_missing(FontFamily::Adwaita, &system));
     assert!(!is_font_missing(FontFamily::System, &system));
-    // Bundled Inter renders without any installed namesake.
+    // Bundled Adwaita Sans renders without any installed namesake.
     assert!(!is_font_missing(
-        FontFamily::Custom(intern_font_name("Inter")),
+        FontFamily::Custom(intern_font_name("Adwaita Sans")),
         &system
     ));
     assert!(!is_font_missing(
@@ -7601,9 +7602,9 @@ fn missing_font_note_only_for_gone_custom_families() {
 
 #[test]
 fn font_pending_rule() {
-    assert!(!font_pending(FontFamily::Inter, FontFamily::Inter));
+    assert!(!font_pending(FontFamily::Adwaita, FontFamily::Adwaita));
     assert!(!font_pending(FontFamily::System, FontFamily::System));
-    assert!(font_pending(FontFamily::System, FontFamily::Inter));
+    assert!(font_pending(FontFamily::System, FontFamily::Adwaita));
     let (a, b) = (
         FontFamily::Custom(intern_font_name("DejaVu Sans")),
         FontFamily::Custom(intern_font_name("Noto Sans")),
@@ -7612,7 +7613,7 @@ fn font_pending_rule() {
     assert!(font_pending(a, b));
     assert!(font_pending(
         FontFamily::Custom(intern_font_name("DejaVu Sans")),
-        FontFamily::Inter
+        FontFamily::Adwaita
     ));
 }
 
@@ -7620,19 +7621,22 @@ fn font_pending_rule() {
 fn font_change_status_names_the_restart() {
     // Pure in both args: no test depends on the process-wide
     // effective family (only run() sets it, and tests never do).
-    assert_eq!(font_pick_status(FontFamily::Inter, FontFamily::Inter), None);
+    assert_eq!(
+        font_pick_status(FontFamily::Adwaita, FontFamily::Adwaita),
+        None
+    );
     assert_eq!(
         font_pick_status(FontFamily::System, FontFamily::System),
         None
     );
-    let note = font_pick_status(FontFamily::System, FontFamily::Inter)
+    let note = font_pick_status(FontFamily::System, FontFamily::Adwaita)
         .expect("changed pick must note the restart");
     assert!(note.contains("relaunch"), "{note}");
     // The no-op pick leaves the status alone (release builds show
     // failures only, so it must never erase a visible failure).
     let mut s = test_state();
     let before = s.status.clone();
-    let _ = s.update(Message::FontFamilyChanged(FontFamily::Inter));
+    let _ = s.update(Message::FontFamilyChanged(FontFamily::Adwaita));
     assert_eq!(s.status, before);
     let _ = s.update(Message::FontFamilyChanged(FontFamily::System));
     assert!(s.status.contains("relaunch"), "{}", s.status);
@@ -7670,7 +7674,7 @@ fn ui_scale_clamp_persist_and_nan_fallback() {
 #[test]
 fn button_fonts_follow_the_effective_family() {
     // Explicit-weight fonts must share the body family (a pinned
-    // SansSerif here would split buttons from Inter body text).
+    // SansSerif here would split buttons from Adwaita Sans body text).
     assert_eq!(medium_font().weight, iced::font::Weight::Medium);
     assert_eq!(bold_font().weight, iced::font::Weight::Bold);
     assert_eq!(medium_font().family, effective_font().to_iced_font().family);

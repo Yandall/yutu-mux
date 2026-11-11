@@ -59,15 +59,15 @@ pub(crate) fn window_settings() -> iced::window::Settings {
 }
 
 pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
-    // Display startup: the bundled Inter faces always register (the
-    // System pick just leaves them unused) and the stored family
-    // picks the renderer default. Scale reads live state, so the
-    // slider applies instantly; the family is startup-fixed.
+    // Display startup: the bundled Adwaita Sans variable face always
+    // registers (the System pick just leaves it unused) and the stored
+    // family picks the renderer default. Scale reads live state, so
+    // the slider applies instantly; the family is startup-fixed.
     let startup_family = LibraryStore::open(&default_library_path())
         .ok()
         .and_then(|store| store.get_pref("font_family").unwrap_or(None))
         .map(|raw| FontFamily::parse(&raw))
-        .unwrap_or(FontFamily::Inter);
+        .unwrap_or(FontFamily::Adwaita);
     let _ = EFFECTIVE_FONT.set(startup_family);
     iced::application(
         move || {
@@ -81,9 +81,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
     )
     .title(|state: &AppState| state.window_title())
     .window(window_settings())
-    .font(include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice())
-    .font(include_bytes!("../assets/fonts/Inter-Medium.ttf").as_slice())
-    .font(include_bytes!("../assets/fonts/Inter-Bold.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf").as_slice())
     .default_font(startup_family.to_iced_font())
     .scale_factor(|state: &AppState| clamp_scale(state.ui_scale))
     .theme(AppState::theme)
