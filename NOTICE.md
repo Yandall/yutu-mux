@@ -3,10 +3,12 @@
 yutu-mux sources are MIT, see `LICENSE`. The built app combines the
 following third-party works. Keep this file accurate when adding deps.
 
-## Fonts: Inter (OFL-1.1)
+## Fonts: Adwaita Sans (OFL-1.1)
 
 - Files: `crates/yutu-ui/assets/fonts/*.ttf`
-- Copyright (c) 2016 The Inter Project Authors.
+- Copyright (c) 2016, The Inter Project Authors.
+  Copyright (c) 2015-2025, Renzhi Li. Copyright (c) 2025, Jamie Gravendeel.
+  Copyright (c) 2025, Florian Müllner.
 - License: SIL Open Font License 1.1, full text in
   `crates/yutu-ui/assets/fonts/OFL.txt`.
 

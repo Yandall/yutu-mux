@@ -21,12 +21,12 @@ use yutu_player::MpvBackend;
 use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
 /// Display font (Settings Appearance, persisted pref `font_family`):
-/// bundled Inter by default so Linux and macOS render the same
+/// bundled Adwaita Sans by default so Linux and macOS render the same
 /// outlines; System keeps the old platform-sans behavior; Custom is
 /// any installed family picked from the system list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontFamily {
-    Inter,
+    Adwaita,
     System,
     /// An installed family by name (interned, see [`intern_font_name`]).
     Custom(&'static str),
@@ -35,7 +35,7 @@ pub enum FontFamily {
 impl FontFamily {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Inter => "Inter (bundled)",
+            Self::Adwaita => "Adwaita Sans (bundled)",
             Self::System => "System default",
             Self::Custom(name) => name,
         }
@@ -43,7 +43,7 @@ impl FontFamily {
 
     pub(crate) fn stored(self) -> String {
         match self {
-            Self::Inter => "inter".to_string(),
+            Self::Adwaita => "adwaita".to_string(),
             Self::System => "system".to_string(),
             Self::Custom(name) => format!("name:{name}"),
         }
@@ -56,25 +56,25 @@ impl FontFamily {
         } else if raw.len() >= 5 && raw[..5].eq_ignore_ascii_case("name:") {
             // The prefix is ASCII, so byte index 5 is a boundary.
             if raw[5..].trim().is_empty() {
-                Self::Inter
+                Self::Adwaita
             } else {
                 Self::Custom(intern_font_name(&raw[5..]))
             }
         } else {
-            // "inter", legacy values, and junk all default to Inter.
-            Self::Inter
+            // "adwaita", legacy "inter", and junk all default to Adwaita.
+            Self::Adwaita
         }
     }
 
     /// Map a picker row back (the two heads are special; every other
     /// row is a raw installed family name).
     pub(crate) fn from_label(label: &str) -> Self {
-        if label == Self::Inter.label() {
-            Self::Inter
+        if label == Self::Adwaita.label() {
+            Self::Adwaita
         } else if label == Self::System.label() {
             Self::System
         } else if label.trim().is_empty() {
-            Self::Inter
+            Self::Adwaita
         } else {
             Self::Custom(intern_font_name(label))
         }
@@ -82,7 +82,7 @@ impl FontFamily {
 
     pub(crate) fn to_iced_font(self) -> iced::Font {
         match self {
-            Self::Inter => iced::Font::with_name("Inter"),
+            Self::Adwaita => iced::Font::with_name("Adwaita Sans"),
             Self::System => iced::Font::default(),
             Self::Custom(name) => iced::Font::with_name(name),
         }
@@ -150,19 +150,19 @@ pub(crate) fn system_font_task() -> iced::Task<Message> {
 }
 
 /// Picker rows: the two pinned heads plus installed families (an
-/// installed "Inter", if any, is covered by the bundled head).
+/// installed "Adwaita Sans", if any, is covered by the bundled head).
 pub(crate) fn font_option_rows(system: &[String]) -> Vec<String> {
     let mut options = vec![
-        FontFamily::Inter.label().to_string(),
+        FontFamily::Adwaita.label().to_string(),
         FontFamily::System.label().to_string(),
     ];
     options.extend(
         system
             .iter()
             .filter(|name| {
-                name.as_str() != FontFamily::Inter.label()
+                name.as_str() != FontFamily::Adwaita.label()
                     && name.as_str() != FontFamily::System.label()
-                    && name.as_str() != "Inter"
+                    && name.as_str() != "Adwaita Sans"
             })
             .cloned(),
     );
@@ -170,14 +170,14 @@ pub(crate) fn font_option_rows(system: &[String]) -> Vec<String> {
 }
 
 /// True when the picked custom family is gone from the installed
-/// list (bundled Inter always counts as present; an empty list means
+/// list (bundled Adwaita Sans always counts as present; an empty list means
 /// the startup scan has not landed yet, not that fonts are missing).
 pub(crate) fn is_font_missing(family: FontFamily, system: &[String]) -> bool {
     match family {
         FontFamily::Custom(name) => {
-            name != "Inter" && !system.is_empty() && !system.iter().any(|n| n == name)
+            name != "Adwaita Sans" && !system.is_empty() && !system.iter().any(|n| n == name)
         }
-        FontFamily::Inter | FontFamily::System => false,
+        FontFamily::Adwaita | FontFamily::System => false,
     }
 }
 
@@ -188,7 +188,7 @@ pub(crate) fn is_font_missing(family: FontFamily, system: &[String]) -> bool {
 pub(crate) static EFFECTIVE_FONT: std::sync::OnceLock<FontFamily> = std::sync::OnceLock::new();
 
 pub(crate) fn effective_font() -> FontFamily {
-    *EFFECTIVE_FONT.get_or_init(|| FontFamily::Inter)
+    *EFFECTIVE_FONT.get_or_init(|| FontFamily::Adwaita)
 }
 
 /// True when the pick differs from the startup-effective family
