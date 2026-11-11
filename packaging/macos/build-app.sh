@@ -125,6 +125,9 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
     command -v dylibbundler >/dev/null 2>&1 \
         || { echo "error: need dylibbundler (brew install dylibbundler)" >&2; exit 1; }
     echo "==> bundling libmpv (+ ffmpeg libs)"
+    # dylibbundler refuses a missing dest dir (newer versions error
+    # out instead of creating it), so make it unconditionally.
+    mkdir -p "$APP/Contents/libs"
     dylibbundler -b \
         -x "$APP/Contents/MacOS/yutu-mux-bin" \
         -d "$APP/Contents/libs" \
