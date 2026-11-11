@@ -55,6 +55,64 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Inno Setup (installer builder only)
         run: choco install innosetup --no-progress -y
+      - name: Fetch mpv dev package (link + run tests)
+        shell: pwsh
+        run: |
+          # The Test step below links libmpv (default features), but the
+          # runner ships no mpv: fetch the same dev package the bundle
+          # script uses (pin parsed from it, single source of truth),
+          # resolve or generate mpv.lib for the linker, and put the DLL
+          # dir on PATH so mpv-linked tests can also run.
+          $script = Get-Content packaging/windows/build-windows.ps1 -Raw
+          $tag = ([regex]::Match($script, '\[string\]\$MpvTag = "([^"]+)"')).Groups[1].Value
+          $commit = ([regex]::Match($script, '\[string\]\$MpvCommit = "([^"]+)"')).Groups[1].Value
+          if (-not $tag -or -not $commit) { throw "could not read mpv pin from build-windows.ps1" }
+          $tmp = Join-Path $env:RUNNER_TEMP "mpv-dev-test"
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/$tag/mpv-dev-x86_64-$tag-git-$commit.7z"
+          Invoke-WebRequest -Uri $url -OutFile "$tmp\mpv-dev.7z" -UseBasicParsing
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe" }
+          & $sevenZip x "$tmp\mpv-dev.7z" "-o$tmp\mpv-dev" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z failed to unpack the mpv dev package" }
+          $lib = Get-ChildItem -Path "$tmp\mpv-dev" -Filter "mpv.lib" -Recurse | Select-Object -First 1
+          if ($lib) {
+            $libDir = $lib.DirectoryName
+          } else {
+            # Same dumpbin/lib generation as build-windows.ps1: the dev
+            # package ships a MinGW import lib, MSVC needs mpv.lib.
+            $dll = Get-ChildItem -Path "$tmp\mpv-dev" -Filter "libmpv-2.dll" -Recurse | Select-Object -First 1
+            if (-not $dll) { throw "mpv dev package has no libmpv-2.dll" }
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $bindir = Split-Path (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools -find "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" 2>$null | Select-Object -First 1) -Parent
+            if (-not $bindir) { throw "dumpbin.exe not found (needs Visual Studio Build Tools)" }
+            $genDir = Join-Path $tmp "mpv-genlib"
+            New-Item -ItemType Directory -Path $genDir -Force | Out-Null
+            & "$bindir\dumpbin.exe" /exports $dll.FullName "/out:$genDir\mpv-exports.txt" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "dumpbin failed" }
+            $names = @()
+            $inTable = $false
+            foreach ($line in (Get-Content "$genDir\mpv-exports.txt")) {
+              if (-not $inTable) {
+                if ($line -match "ordinal\s+hint\s+RVA\s+name") { $inTable = $true }
+                continue
+              }
+              $t = $line.Trim()
+              if ($t -eq "" -or $t -match "Summary") { break }
+              $parts = ($t -split "\s+")
+              if ($parts.Count -ge 4 -and $parts[0] -match "^\d+$") { $names += $parts[3] }
+            }
+            if ($names.Count -eq 0) { throw "no exports parsed from libmpv-2.dll" }
+            $def = "LIBRARY libmpv-2`r`nEXPORTS`r`n" + ($names -join "`r`n") + "`r`n"
+            [IO.File]::WriteAllText("$genDir\mpv.def", $def, [Text.UTF8Encoding]::new($false))
+            & "$bindir\lib.exe" "/def:$genDir\mpv.def" "/out:$genDir\mpv.lib" /machine:x64 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "lib.exe failed to create mpv.lib" }
+            $libDir = $genDir
+          }
+          $tail = if ($env:LIB) { ";$env:LIB" } else { "" }
+          "LIB=$libDir$tail" >> $env:GITHUB_ENV
+          $dllDir = (Get-ChildItem -Path "$tmp\mpv-dev" -Filter "libmpv-2.dll" -Recurse | Select-Object -First 1).DirectoryName
+          $dllDir >> $env:GITHUB_PATH
       - name: Test
         run: cargo test --workspace --locked
       - name: Feature checks (innertube + submit + mpv compile)
