@@ -1,11 +1,20 @@
 # Yutu Mux
 
-> This project was 100% vibecoded. I made it because I wanted to have a
-> better YouTube Music client that I could use in Linux and also macOS. I
-> cannot guarantee the quality of the code but I'll try to fix any issue
-> during my spare time, contributions are welcomed.
+Native Rust YouTube Music desktop app. Iced UI (no webview). Linux, macOS, and Windows.
 
-Native Rust YouTube Music desktop app. Iced UI (no webview). Linux + macOS.
+## Content
+
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Install](#install)
+  - [Linux and macOS (one-command installer)](#linux-and-macos-one-command-installer)
+  - [Windows](#windows)
+  - [Manual development build](#manual-development-build)
+- [Sign in](#sign-in)
+- [Disclaimer of use](#disclaimer-of-use)
+- [Layout](#layout)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
@@ -28,7 +37,7 @@ surface as errors.
 
 ## Install
 
-### One-command installer (Linux + macOS)
+### Linux and macOS (one-command installer)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/install.sh | sh -s -- --yes
@@ -41,6 +50,29 @@ is right-click, Open). It downloads the prebuilt artifacts from the
 `--version` to pin one). Run
 `packaging/uninstall.sh` to remove it later. Details, options, and manual
 build steps: `docs/INSTALL.md`.
+
+### Windows
+
+No admin rights needed: mpv DLLs and the yt-dlp sidecar ship beside the
+exe, so no dependencies are ever installed.
+
+1. **Setup exe (recommended):** download
+   `YutuMux-<version>-windows-x86_64-Setup.exe` from the
+   [releases page](https://github.com/Yandall/yutu-mux/releases) and run
+   it. Installs to `%LOCALAPPDATA%\Programs\YutuMux` with a Start Menu
+   shortcut.
+2. **PowerShell installer:** downloads the release zip, verifies its
+   checksum, and extracts it to the same location:
+
+   ```powershell
+   irm -o install.ps1 https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/windows/install.ps1
+   powershell -ExecutionPolicy Bypass -File install.ps1 -Yes
+   ```
+3. **Scoop:**
+   `scoop install https://raw.githubusercontent.com/Yandall/yutu-mux/main/packaging/windows/scoop/yutu-mux.json`
+
+First launch: Windows SmartScreen warns because the binaries are not
+code-signed yet: More info, Run anyway. Full details: `docs/INSTALL.md`.
 
 ### Manual development build
 
