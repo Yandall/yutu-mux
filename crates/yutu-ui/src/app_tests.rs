@@ -1261,6 +1261,49 @@ fn arming_any_modal_clears_hovers() {
     let _ = s.view();
 }
 
+#[cfg(feature = "update")]
+#[test]
+fn hovers_stay_frozen_behind_dialogs() {
+    fn info(tag: &str) -> yutu_core::UpdateInfo {
+        yutu_core::UpdateInfo {
+            latest_tag: tag.into(),
+            html_url: "https://example.test/r".into(),
+            notes: "".into(),
+            newer: true,
+        }
+    }
+    let mut s = test_state();
+    // Arm the update modal, then hover like the cursor gliding over a
+    // row behind the scrim: nothing highlights, nothing arms.
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(info("v9.9.9")),
+    });
+    assert!(s.pending_update.is_some());
+    let _ = s.update(Message::TrackHover(Some("m1".into())));
+    let _ = s.update(Message::PlaylistHover(Some("u1".into())));
+    let _ = s.update(Message::PanelHover(0));
+    let _ = s.update(Message::AlbumHover(Some("al1".into())));
+    let _ = s.update(Message::RemoveHover(Some(0)));
+    let _ = s.update(Message::PlActionHover(Some(0)));
+    assert!(s.hovered_track.is_none());
+    assert!(s.hovered_playlist.is_none());
+    assert!(s.hovered_queue.is_none());
+    assert!(s.hovered_album.is_none());
+    assert!(s.hover_remove.is_none());
+    assert!(s.pl_action_hover.is_none());
+    assert!(s.pl_hover.is_none());
+    // Sidebar latches freeze too (no glide behind the dialog).
+    s.sidebar_pinned = false;
+    s.sidebar_latched = false;
+    let _ = s.update(Message::CursorMoved(iced::Point::new(10.0, 400.0)));
+    assert!(!s.sidebar_latched);
+    let _ = s.view();
+    // Dismiss and the rows highlight again.
+    let _ = s.update(Message::UpdateLater);
+    let _ = s.update(Message::TrackHover(Some("m1".into())));
+    assert_eq!(s.hovered_track.as_deref(), Some("m1"));
+}
+
 #[test]
 fn playlist_crud() {
     let mut s = test_state();

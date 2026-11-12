@@ -1635,12 +1635,7 @@ impl AppState {
             }
             Message::HistoryHover(h) => {
                 // Modal open: rows behind scrims never highlight.
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_history = None;
                 } else {
                     self.hovered_history = h;
@@ -1657,12 +1652,7 @@ impl AppState {
                 }
             }
             Message::TrackHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_track = None;
                     self.pl_hover = None;
                     self.pl_action_hover = None;
@@ -1715,12 +1705,7 @@ impl AppState {
                 }
             }
             Message::RecentHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_recent = None;
                 } else {
                     self.hovered_recent = h;
@@ -1795,7 +1780,7 @@ impl AppState {
                 self.clear_hovers();
             }
             Message::RemoveHover(h) => {
-                self.hover_remove = h;
+                self.hover_remove = if self.modal_freeze() { None } else { h };
             }
             Message::RemoveExit(i) => {
                 if self.hover_remove == Some(i) {
@@ -1803,7 +1788,7 @@ impl AppState {
                 }
             }
             Message::PlActionHover(h) => {
-                self.pl_action_hover = h;
+                self.pl_action_hover = if self.modal_freeze() { None } else { h };
             }
             Message::PlActionExit(i) => {
                 if self.pl_action_hover == Some(i) {
@@ -1811,12 +1796,7 @@ impl AppState {
                 }
             }
             Message::PlaylistHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_playlist = None;
                 } else {
                     self.hovered_playlist = h;
@@ -1834,12 +1814,7 @@ impl AppState {
                 }
             }
             Message::AutoHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_auto = None;
                 } else {
                     self.hovered_auto = h;
@@ -1856,12 +1831,7 @@ impl AppState {
                 }
             }
             Message::PanelHover(i) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_queue = None;
                 } else {
                     self.hovered_queue = Some(i);
@@ -2010,12 +1980,7 @@ impl AppState {
                 self.pl_action_hover = None;
             }
             Message::PlRowHover(i) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.pl_hover = None;
                 } else {
                     self.pl_hover = Some(i);
@@ -2425,12 +2390,9 @@ impl AppState {
                         }
                     }
                 }
-                // Modal freeze: hover latch never glides behind menus.
-                let modal = self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest;
+                // Modal freeze: hover latch never glides behind menus
+                // or dialogs.
+                let modal = self.modal_freeze();
                 // Latched hover hysteresis: expand on rail/edge entry, stay
                 // open anywhere inside panel + grace, collapse only outside.
                 // Y-gated above the player zone so the bottom strip never

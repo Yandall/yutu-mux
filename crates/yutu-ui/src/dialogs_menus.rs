@@ -1227,12 +1227,7 @@ impl AppState {
     /// Collection hover with the same modal freeze as track rows: rows
     /// behind scrims never highlight.
     pub(crate) fn coll_hover(&self, h: Option<String>) -> Option<String> {
-        if self.context_menu.is_some()
-            || self.pl_menu.is_some()
-            || self.coll_menu.is_some()
-            || self.sort_menu.is_some()
-            || self.show_suggest
-        {
+        if self.modal_freeze() {
             None
         } else {
             h
