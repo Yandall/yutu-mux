@@ -206,6 +206,8 @@ impl AppState {
             pending_cookie_source: None,
             modal_anim: 0.0,
             pending_playlist_delete: None,
+            pending_playlist_rename: None,
+            rename_playlist_name: String::new(),
             #[cfg(feature = "innertube")]
             pending_signout: false,
             scrobble_modal_open: false,

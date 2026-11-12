@@ -988,14 +988,94 @@ impl AppState {
                 if self.modal_target() == 0.0 {
                     self.modal_anim = 0.0;
                 }
+                self.pending_playlist_rename = None;
+                self.rename_playlist_name.clear();
                 self.pending_playlist_delete = Some(id);
             }
             Message::CancelDeletePlaylist => {
                 self.pending_playlist_delete = None;
             }
+            Message::RequestRenamePlaylist(id) => {
+                self.close_menu();
+                // Same either-form rule as adds (see AddToPlaylist).
+                let id = yutu_core::canonical_playlist_id(&id);
+                if id == Self::FAVORITES_ID {
+                    self.status = self.language.favorites_locked();
+                    return iced::Task::none();
+                }
+                let Some(current) = self.find_playlist(&id).map(|p| p.title.clone()) else {
+                    self.status = self.language.playlist_locked(&id);
+                    return iced::Task::none();
+                };
+                // Restart the entrance only when nothing is open: the
+                // ticker is shared, so resetting under a settled dialog
+                // would make its card jump down and re-rise.
+                if self.modal_target() == 0.0 {
+                    self.modal_anim = 0.0;
+                }
+                self.pending_playlist_delete = None;
+                self.pending_playlist_rename = Some(id);
+                self.rename_playlist_name = current;
+            }
+            Message::RenamePlaylistNameChanged(name) => {
+                self.rename_playlist_name = name;
+            }
+            Message::CancelRenamePlaylist => {
+                self.pending_playlist_rename = None;
+                self.rename_playlist_name.clear();
+            }
+            Message::RenamePlaylist { playlist_id, title } => {
+                self.close_menu();
+                let pending = self.pending_playlist_rename.clone();
+                self.pending_playlist_rename = None;
+                self.rename_playlist_name.clear();
+                // Same either-form rule as adds (see AddToPlaylist).
+                let id = yutu_core::canonical_playlist_id(&playlist_id);
+                if id == Self::FAVORITES_ID {
+                    self.status = self.language.favorites_locked();
+                    self.publish_mpris();
+                    return iced::Task::none();
+                }
+                let title = title.trim().to_string();
+                if title.is_empty() {
+                    self.status = self.language.playlist_name_empty();
+                    self.publish_mpris();
+                    return iced::Task::none();
+                }
+                let Some(pos) = self.user_playlists.iter().position(|p| p.id == id) else {
+                    self.status = self.language.playlist_locked(&id);
+                    self.publish_mpris();
+                    return iced::Task::none();
+                };
+                if self.user_playlists[pos].title == title {
+                    // Same name: still close the dialog, but only when it
+                    // was the armed one (a stale confirm never clobbers).
+                    if pending.as_deref() != Some(id.as_str()) {
+                        self.status = self.language.playlist_locked(&id);
+                    }
+                    return iced::Task::none();
+                }
+                self.user_playlists[pos].title = title.clone();
+                self.persist_playlist_renamed(&id, &title);
+                if Self::is_server_playlist(&id) {
+                    self.record_pending("rename", Some(&id), None, Some(&title));
+                } else {
+                    // Local shells have no server row yet: the pending
+                    // create carries the title, so refresh it instead of
+                    // recording a rename the server could never apply.
+                    self.record_pending("create", Some(&id), None, Some(&title));
+                }
+                self.status = self.language.renamed_playlist(&title);
+                self.publish_mpris();
+                // Server lists mirror the rename on YouTube Music;
+                // local shells stay local-only.
+                return Self::playlist_rename_sync_task(id, title);
+            }
             Message::DeletePlaylist(id) => {
                 self.close_menu();
                 self.pending_playlist_delete = None;
+                self.pending_playlist_rename = None;
+                self.rename_playlist_name.clear();
                 // Same either-form rule as adds (see AddToPlaylist).
                 let id = yutu_core::canonical_playlist_id(&id);
                 if id == Self::FAVORITES_ID {
@@ -2183,6 +2263,11 @@ impl AppState {
                     self.pending_playlist_delete = None;
                     return iced::Task::none();
                 }
+                if self.pending_playlist_rename.is_some() {
+                    self.pending_playlist_rename = None;
+                    self.rename_playlist_name.clear();
+                    return iced::Task::none();
+                }
                 #[cfg(feature = "innertube")]
                 if self.pending_signout {
                     self.pending_signout = false;
@@ -3045,28 +3130,42 @@ impl AppState {
             },
             #[cfg(feature = "innertube")]
             Message::ServerPlaylistSynced { detail, op, result } => match result {
-                Ok(()) => {
-                    let (op_name, pid, tid) = match &op {
-                        PlaylistSyncOp::Add {
-                            playlist_id,
-                            track_id,
-                        } => ("add", Some(playlist_id.as_str()), Some(track_id.as_str())),
-                        PlaylistSyncOp::Remove {
-                            playlist_id,
-                            track_id,
-                        } => (
-                            "remove",
-                            Some(playlist_id.as_str()),
-                            Some(track_id.as_str()),
-                        ),
-                        PlaylistSyncOp::Delete { playlist_id } => {
-                            ("delete", Some(playlist_id.as_str()), None)
+                Ok(()) => match &op {
+                    PlaylistSyncOp::Add {
+                        playlist_id,
+                        track_id,
+                    } => {
+                        if let Ok(store) = LibraryStore::open(&self.library_path) {
+                            let _ = store.clear_pending(
+                                "add",
+                                Some(playlist_id.as_str()),
+                                Some(track_id.as_str()),
+                            );
                         }
-                    };
-                    if let Ok(store) = LibraryStore::open(&self.library_path) {
-                        let _ = store.clear_pending(op_name, pid, tid);
                     }
-                }
+                    PlaylistSyncOp::Remove {
+                        playlist_id,
+                        track_id,
+                    } => {
+                        if let Ok(store) = LibraryStore::open(&self.library_path) {
+                            let _ = store.clear_pending(
+                                "remove",
+                                Some(playlist_id.as_str()),
+                                Some(track_id.as_str()),
+                            );
+                        }
+                    }
+                    PlaylistSyncOp::Delete { playlist_id } => {
+                        if let Ok(store) = LibraryStore::open(&self.library_path) {
+                            let _ = store.clear_pending("delete", Some(playlist_id.as_str()), None);
+                        }
+                    }
+                    PlaylistSyncOp::Rename { playlist_id, title } => {
+                        if let Ok(store) = LibraryStore::open(&self.library_path) {
+                            let _ = store.clear_pending_rename(playlist_id, title);
+                        }
+                    }
+                },
                 Err(e) => {
                     yutu_core::app_log::warn("yutu-sync", format!("{detail}: {e}"));
                     self.status =

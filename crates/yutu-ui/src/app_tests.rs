@@ -1022,6 +1022,60 @@ fn signout_confirms_first() {
 }
 
 #[test]
+fn playlist_rename_via_dialog() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    let pid = s.user_playlists[0].id.clone();
+    // The menu row arms the dialog with the current title, nothing renamed yet.
+    let _ = s.update(Message::OpenPlaylistMenu(pid.clone()));
+    let _ = s.update(Message::RequestRenamePlaylist(pid.clone()));
+    assert!(s.pl_menu.is_none());
+    assert_eq!(s.pending_playlist_rename.as_deref(), Some(pid.as_str()));
+    assert_eq!(s.rename_playlist_name, "Gym");
+    assert_eq!(s.user_playlists[0].title, "Gym");
+    let _ = s.view();
+    // Cancel keeps the old name; Esc dismisses too.
+    let _ = s.update(Message::RenamePlaylistNameChanged("Evening".into()));
+    let _ = s.update(Message::CancelRenamePlaylist);
+    assert!(s.pending_playlist_rename.is_none());
+    assert_eq!(s.user_playlists[0].title, "Gym");
+    let _ = s.update(Message::RequestRenamePlaylist(pid.clone()));
+    let _ = s.update(Message::CloseContext);
+    assert!(s.pending_playlist_rename.is_none());
+    assert_eq!(s.user_playlists[0].title, "Gym");
+    // Confirm renames in memory and in SQLite.
+    let _ = s.update(Message::RequestRenamePlaylist(pid.clone()));
+    let _ = s.update(Message::RenamePlaylist {
+        playlist_id: pid.clone(),
+        title: "Evening".into(),
+    });
+    assert!(s.pending_playlist_rename.is_none());
+    assert_eq!(s.user_playlists[0].title, "Evening");
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    let saved = store.user_playlists().unwrap();
+    assert_eq!(saved[0].title, "Evening");
+    // Empty names are rejected; unknown and Favorites never arm.
+    let _ = s.update(Message::RequestRenamePlaylist(pid.clone()));
+    let _ = s.update(Message::RenamePlaylist {
+        playlist_id: pid.clone(),
+        title: "   ".into(),
+    });
+    assert_eq!(s.user_playlists[0].title, "Evening");
+    let _ = s.update(Message::RequestRenamePlaylist("nope".into()));
+    assert!(s.pending_playlist_rename.is_none());
+    let _ = s.update(Message::RequestRenamePlaylist("__favorites".into()));
+    assert!(s.pending_playlist_rename.is_none());
+    assert!(s.status.contains("can't be deleted"));
+    // Same name is a no-op with no status churn.
+    let _ = s.update(Message::RequestRenamePlaylist(pid.clone()));
+    let _ = s.update(Message::RenamePlaylist {
+        playlist_id: pid.clone(),
+        title: "Evening".into(),
+    });
+    assert_eq!(s.user_playlists[0].title, "Evening");
+}
+
+#[test]
 fn playlist_crud() {
     let mut s = test_state();
     let _ = s.update(Message::CreatePlaylist("Gym".into()));

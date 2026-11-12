@@ -641,6 +641,35 @@ impl AppState {
         )
     }
 
+    /// Rename a server playlist (best effort).
+    /// Sends `browse/edit_playlist` with `ACTION_SET_PLAYLIST_NAME`.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn playlist_rename_sync_task(
+        playlist_id: String,
+        title: String,
+    ) -> iced::Task<Message> {
+        if !Self::is_server_playlist(&playlist_id) || !Self::has_session() {
+            return iced::Task::none();
+        }
+        iced::Task::perform(
+            async move {
+                let result = match Self::session_backend().await {
+                    Ok(b) => b.rename_server_playlist(&playlist_id, &title).await,
+                    Err(e) => Err(e),
+                };
+                (playlist_id, title, result)
+            },
+            |(playlist_id, title, result)| Message::ServerPlaylistSynced {
+                detail: format!("YouTube rename of {playlist_id} failed"),
+                op: PlaylistSyncOp::Rename {
+                    playlist_id: playlist_id.clone(),
+                    title: title.clone(),
+                },
+                result,
+            },
+        )
+    }
+
     /// Offline builds: server sync is a no-op (local state is the truth).
     #[cfg(not(feature = "innertube"))]
     pub(crate) fn like_sync_task(_track_id: String, _liked: bool) -> iced::Task<Message> {
@@ -682,6 +711,15 @@ impl AppState {
     pub(crate) fn playlist_remove_sync_task(
         _playlist_id: String,
         _track_id: String,
+    ) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Offline builds: server sync is a no-op (local state is the truth).
+    #[cfg(not(feature = "innertube"))]
+    pub(crate) fn playlist_rename_sync_task(
+        _playlist_id: String,
+        _title: String,
     ) -> iced::Task<Message> {
         iced::Task::none()
     }
@@ -766,6 +804,14 @@ impl AppState {
                     if let (Some(local), Some(title)) = (op.playlist_id, op.title) {
                         if self.user_playlists.iter().any(|p| p.id == local) {
                             tasks.push(Self::playlist_create_sync_task(local, title));
+                        }
+                    }
+                }
+                "rename" => {
+                    // Only while the list still exists locally.
+                    if let (Some(pid), Some(title)) = (op.playlist_id, op.title) {
+                        if self.user_playlists.iter().any(|p| p.id == pid) {
+                            tasks.push(Self::playlist_rename_sync_task(pid, title));
                         }
                     }
                 }
@@ -1150,13 +1196,18 @@ impl AppState {
                         // Disk first (off the GUI thread): the handler only
                         // touches memory, so arrivals never stall events.
                         // Lists with unpushed edits are not persisted:
-                        // the server copy predates local intent.
+                        // the server copy predates local intent. A pending
+                        // rename also blocks the persist (the server title
+                        // predates the local one); the memory merge keeps
+                        // the local title with fresh tracks.
                         let playlist = Playlist {
                             id: header.id,
                             title: header.title.clone(),
                             tracks,
                         };
-                        if !Self::playlist_has_pending_store(&library_path, &playlist.id) {
+                        if !Self::playlist_has_pending_store(&library_path, &playlist.id)
+                            && !Self::playlist_has_rename_pending_store(&library_path, &playlist.id)
+                        {
                             Self::persist_imported(
                                 &library_path,
                                 &playlist.tracks,

@@ -209,6 +209,13 @@ impl AppState {
         let _ = store.delete_playlist(id);
     }
 
+    pub(crate) fn persist_playlist_renamed(&self, id: &str, title: &str) {
+        let Ok(store) = LibraryStore::open(&self.library_path) else {
+            return;
+        };
+        let _ = store.rename_playlist(id, title);
+    }
+
     pub(crate) fn persist_playlist_added(&self, playlist_id: &str, track: &Track) {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
             return;
