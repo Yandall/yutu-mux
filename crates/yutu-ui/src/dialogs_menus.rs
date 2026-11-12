@@ -161,6 +161,9 @@ impl AppState {
         .on_right_press(dismiss)
         .on_enter(Message::ClearHovers)
         .on_exit(Message::ClearHovers)
+        // Arrow over the whole backdrop: the vote shadows every
+        // widget beneath, so background buttons never show the hand.
+        .interaction(iced::mouse::Interaction::Idle)
         .into();
         // Entrance: the card starts below center and settles as the
         // ticker eases `modal_anim` to 1.
@@ -346,14 +349,11 @@ impl AppState {
                     .style(accent_button)
                     .on_press(Message::UpdateAndRestart)
                     .padding(8),
-                row_button(
-                    text(self.language.update_available(&info.latest_tag))
-                        .size(12)
-                        .color(ACCENT),
-                )
-                .style(hover_row)
-                .on_press(Message::OpenUrl(info.html_url.clone()))
-                .padding(8),
+                link_row(
+                    self.language.update_available(&info.latest_tag),
+                    12.0,
+                    info.html_url.clone(),
+                ),
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)
@@ -412,15 +412,11 @@ impl AppState {
         let notes_h = ((info.notes.lines().count() as f32) * 15.0 + 12.0).clamp(48.0, 220.0);
         let mut body: Vec<iced::Element<'_, Message>> = vec![
             text(self.language.update_title()).size(16).into(),
-            row_button(
-                text(self.language.update_available(&info.latest_tag))
-                    .size(13)
-                    .color(ACCENT),
-            )
-            .style(hover_row)
-            .on_press(Message::OpenUrl(info.html_url.clone()))
-            .padding(4)
-            .into(),
+            link_row(
+                self.language.update_available(&info.latest_tag),
+                13.0,
+                info.html_url.clone(),
+            ),
         ];
         if !info.notes.trim().is_empty() {
             body.push(

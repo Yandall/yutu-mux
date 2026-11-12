@@ -32,6 +32,33 @@ pub(crate) fn btn_text<'a>(
     text(label).size(size).font(medium_font())
 }
 
+/// Underlined release link: accent text plus a 1px accent rule
+/// pinned to the text width (Iced 0.14 text has no underline style,
+/// so the rule draws it). Shrinks to the label, so it reads as a
+/// link rather than a divider. Points the cursor like every other
+/// press target (see [`row_button`]).
+pub(crate) fn link_row(label: String, size: f32, url: String) -> iced::Element<'static, Message> {
+    use iced::widget::{column, rule};
+    use iced::Length;
+    // The rule fills the shrink-wrapped column, so it lands exactly
+    // under the label (link underline, not a full-width divider).
+    column![
+        row_button(btn_text(label, size).color(ACCENT))
+            .style(hover_row)
+            .on_press(Message::OpenUrl(url))
+            .padding(2),
+        rule::horizontal(1).style(|_: &iced::Theme| rule::Style {
+            color: ACCENT,
+            radius: 0.0.into(),
+            fill_mode: rule::FillMode::Full,
+            snap: true,
+        }),
+    ]
+    .spacing(1)
+    .width(Length::Shrink)
+    .into()
+}
+
 /// Heart with hollow/filled states: outline when inactive, solid when
 /// active. The filled glyph is the verbatim Lucide heart with its
 /// `fill="none"` flipped at runtime (Lucide ships no filled heart), so
