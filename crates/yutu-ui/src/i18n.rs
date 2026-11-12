@@ -800,9 +800,6 @@ impl Language {
     pub fn update_later(self) -> String {
         self.tr("update-later")
     }
-    pub fn view_changelog(self) -> String {
-        self.tr("view-changelog")
-    }
     pub fn update_progress(self, pct: u64) -> String {
         self.tr_args("update-progress", &[("pct", &pct.to_string())])
     }

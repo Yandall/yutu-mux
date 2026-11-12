@@ -324,6 +324,9 @@ pub enum Message {
     Navigate(Route),
     /// Open a URL in the system browser (About page links).
     OpenUrl(String),
+    /// Explicit no-op (non-dismissing modal scrims eat clicks with
+    /// this instead of a dismiss message).
+    NoOp,
     /// Manual self-update probe (About section button).
     CheckForUpdates,
     /// Self-update probe done (startup or manual): newer releases

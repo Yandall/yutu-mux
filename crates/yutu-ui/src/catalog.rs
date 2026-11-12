@@ -686,9 +686,10 @@ impl AppState {
     /// Move the captured fresh-import source into the cleanup modal once
     /// the connection succeeds (base stage). Missing files arm nothing;
     /// session re-imports and syncs never capture a source, so they
-    /// never prompt.
+    /// never prompt. Reports whether the modal armed (the caller drops
+    /// background focus then, like every other modal arming).
     #[cfg(feature = "innertube")]
-    pub(crate) fn arm_cookie_cleanup(&mut self) {
+    pub(crate) fn arm_cookie_cleanup(&mut self) -> bool {
         if let Some(src) = self.pending_cookie_source.take() {
             if !src.is_empty() && std::path::Path::new(&src).exists() {
                 self.pending_cookie_cleanup = Some(src);
@@ -698,8 +699,10 @@ impl AppState {
                 if !self.scrobble_modal_open {
                     self.modal_anim = 0.0;
                 }
+                return true;
             }
         }
+        false
     }
 
     /// Entrance target for the modal layer: 1 while any dialog is open.

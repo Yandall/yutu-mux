@@ -44,6 +44,7 @@ impl AppState {
                     yutu_core::app_log::warn("yutu-ui", format!("open {url} failed: {e}"));
                 }
             }
+            Message::NoOp => {}
             Message::CheckForUpdates => {
                 // One probe at a time, and never under a download (the
                 // settings button is replaced then; button spam and Tick
@@ -83,6 +84,10 @@ impl AppState {
                                 if self.modal_target() == 0.0 {
                                     self.modal_anim = 0.0;
                                 }
+                                self.clear_hovers();
+                                self.status = self.language.update_available(&info.latest_tag);
+                                self.publish_mpris();
+                                return Self::unfocus_task();
                             }
                             self.status = self.language.update_available(&info.latest_tag);
                             self.publish_mpris();
@@ -1191,6 +1196,11 @@ impl AppState {
                 self.pending_playlist_rename = None;
                 self.rename_playlist_name.clear();
                 self.pending_playlist_delete = Some(id);
+                // Nothing behind the dialog stays interactive: frozen
+                // hovers clear and keyboard focus drops (same for every
+                // modal arming below).
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             Message::CancelDeletePlaylist => {
                 self.pending_playlist_delete = None;
@@ -1216,6 +1226,8 @@ impl AppState {
                 self.pending_playlist_delete = None;
                 self.pending_playlist_rename = Some(id);
                 self.rename_playlist_name = current;
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             Message::RenamePlaylistNameChanged(name) => {
                 self.rename_playlist_name = name;
@@ -1335,6 +1347,8 @@ impl AppState {
                     self.modal_anim = 0.0;
                 }
                 self.scrobble_modal_open = true;
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             Message::CloseScrobbleModal => {
                 self.scrobble_modal_open = false;
@@ -1778,18 +1792,7 @@ impl AppState {
                 }
             }
             Message::ClearHovers => {
-                self.hovered_track = None;
-                self.hovered_recent = None;
-                self.hovered_album = None;
-                self.hovered_artist = None;
-                self.hovered_search_playlist = None;
-                self.hovered_playlist = None;
-                self.hovered_queue = None;
-                self.hovered_history = None;
-                self.hovered_auto = None;
-                self.hover_remove = None;
-                self.pl_hover = None;
-                self.pl_action_hover = None;
+                self.clear_hovers();
             }
             Message::RemoveHover(h) => {
                 self.hover_remove = h;
@@ -2473,10 +2476,8 @@ impl AppState {
                     self.rename_playlist_name.clear();
                     return iced::Task::none();
                 }
-                if self.pending_update.is_some() {
-                    self.dismiss_update_modal();
-                    return iced::Task::none();
-                }
+                // No update-modal arm here by design: Esc never
+                // dismisses it (an explicit action does).
                 #[cfg(feature = "innertube")]
                 if self.pending_signout {
                     self.pending_signout = false;
@@ -2956,10 +2957,13 @@ impl AppState {
                     // Connection succeeded and the session is stored:
                     // offer to delete the plaintext export now, without
                     // waiting for the playlist stages behind it.
-                    if kind == ImportKind::Cookie {
-                        self.arm_cookie_cleanup();
+                    let mut tasks = vec![];
+                    if kind == ImportKind::Cookie && self.arm_cookie_cleanup() {
+                        self.clear_hovers();
+                        tasks.push(Self::unfocus_task());
                     }
-                    return self.begin_playlist_stages(kind, staged);
+                    tasks.push(self.begin_playlist_stages(kind, staged));
+                    return iced::Task::batch(tasks);
                 }
                 Err(e) => {
                     self.login_busy = false;
@@ -3133,6 +3137,8 @@ impl AppState {
                     self.modal_anim = 0.0;
                 }
                 self.pending_signout = true;
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             #[cfg(feature = "innertube")]
             Message::CancelSignOut => {

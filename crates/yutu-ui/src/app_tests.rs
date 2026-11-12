@@ -1160,6 +1160,12 @@ fn update_modal_omits_defers_and_installs() {
     assert!(s.update_dialog().is_some());
     let _ = s.view();
     // "Later" dismisses for this session but keeps the settings offer.
+    // Esc and scrim clicks never dismiss this modal (an explicit
+    // action does).
+    let _ = s.update(Message::CloseContext);
+    assert!(s.pending_update.is_some());
+    let _ = s.update(Message::NoOp);
+    assert!(s.pending_update.is_some());
     let _ = s.update(Message::UpdateLater);
     assert!(s.pending_update.is_none());
     assert!(s.update_dialog().is_none());
@@ -1222,6 +1228,37 @@ fn update_modal_omits_defers_and_installs() {
     });
     assert_eq!(s.update_phase, UpdatePhase::Idle);
     assert!(s.status.contains("failed"));
+}
+
+#[cfg(feature = "update")]
+#[test]
+fn arming_any_modal_clears_hovers() {
+    let mut s = test_state();
+    // Frozen highlights (cursor never exits the row the modal opens
+    // over) plus the unfocus task clear everything behind dialogs.
+    s.hovered_track = Some("m1".into());
+    s.hovered_playlist = Some("u1".into());
+    s.hovered_queue = Some(0);
+    s.pl_hover = Some(0);
+    let _ = s.update(Message::RequestDeletePlaylist("nope".into()));
+    // Unknown id never arms: hovers stay (nothing opened).
+    assert!(s.hovered_track.is_some());
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    let pid = s.user_playlists[0].id.clone();
+    s.hovered_track = Some("m1".into());
+    s.hovered_playlist = Some(pid.clone());
+    let _ = s.update(Message::RequestDeletePlaylist(pid.clone()));
+    assert!(s.pending_playlist_delete.is_some());
+    assert!(s.hovered_track.is_none());
+    assert!(s.hovered_playlist.is_none());
+    assert!(s.hovered_queue.is_none());
+    assert!(s.pl_hover.is_none());
+    let _ = s.update(Message::CancelDeletePlaylist);
+    s.hovered_track = Some("m1".into());
+    let _ = s.update(Message::RequestRenamePlaylist(pid));
+    assert!(s.pending_playlist_rename.is_some());
+    assert!(s.hovered_track.is_none());
+    let _ = s.view();
 }
 
 #[test]

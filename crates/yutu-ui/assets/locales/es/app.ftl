@@ -252,7 +252,6 @@ update-title = Nueva versión disponible
 update-and-restart = Actualizar y reiniciar
 omit-version = Omitir esta versión
 update-later = Actualizar más tarde
-view-changelog = Cambios
 update-progress = Descargando actualización… { $pct }%
 update-progress-unknown = Descargando actualización…
 update-installing = Instalando actualización…

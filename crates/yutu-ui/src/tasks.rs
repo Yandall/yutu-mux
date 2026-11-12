@@ -1017,6 +1017,16 @@ impl AppState {
         iced::widget::operation::move_cursor_to_end("yutu-search")
     }
 
+    /// Drop keyboard focus (one place): arming any modal returns this
+    /// so a background input never keeps its focus ring (or keystrokes)
+    /// behind the dialog. There is no Task-level unfocus helper, so
+    /// this focuses a sentinel Id no widget carries: the focus walk
+    /// unfocuses every non-matching widget, leaving nothing focused.
+    /// Same task mechanism as the cursor-end helper.
+    pub(crate) fn unfocus_task() -> iced::Task<Message> {
+        iced::widget::operation::focus(iced::widget::Id::new("__yutu_modal_unfocus"))
+    }
+
     /// Rows behind the open suggest popup: text suggestions first,
     /// then the top-track rows. Zero when the popup is closed.
     pub(crate) fn suggest_count(&self) -> usize {

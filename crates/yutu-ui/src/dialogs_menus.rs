@@ -346,13 +346,14 @@ impl AppState {
                     .style(accent_button)
                     .on_press(Message::UpdateAndRestart)
                     .padding(8),
-                button(btn_text(self.language.view_changelog(), 12))
-                    .style(ghost_button)
-                    .on_press(Message::OpenUrl(info.html_url.clone()))
-                    .padding(8),
-                text(self.language.update_available(&info.latest_tag))
-                    .size(12)
-                    .color(MUTED),
+                row_button(
+                    text(self.language.update_available(&info.latest_tag))
+                        .size(12)
+                        .color(ACCENT),
+                )
+                .style(hover_row)
+                .on_press(Message::OpenUrl(info.html_url.clone()))
+                .padding(8),
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)
@@ -404,17 +405,22 @@ impl AppState {
     /// session). While downloading/installing the actions give way to
     /// progress; scrim/Esc cancels like "later".
     pub(crate) fn update_dialog(&self) -> Option<iced::Element<'_, Message>> {
-        use iced::widget::{button, column, container, row, scrollable, text, Space};
+        use iced::widget::{button, column, container, row, scrollable, text};
         use iced::Fill;
         let info = self.pending_update.clone()?;
         let busy = self.update_phase != UpdatePhase::Idle;
         let notes_h = ((info.notes.lines().count() as f32) * 15.0 + 12.0).clamp(48.0, 220.0);
         let mut body: Vec<iced::Element<'_, Message>> = vec![
             text(self.language.update_title()).size(16).into(),
-            text(self.language.update_available(&info.latest_tag))
-                .size(13)
-                .color(ACCENT)
-                .into(),
+            row_button(
+                text(self.language.update_available(&info.latest_tag))
+                    .size(13)
+                    .color(ACCENT),
+            )
+            .style(hover_row)
+            .on_press(Message::OpenUrl(info.html_url.clone()))
+            .padding(4)
+            .into(),
         ];
         if !info.notes.trim().is_empty() {
             body.push(
@@ -489,23 +495,15 @@ impl AppState {
                 .into(),
             );
         }
-        body.push(
-            row![
-                Space::new().width(Fill),
-                button(btn_text(self.language.view_changelog(), 12))
-                    .style(ghost_button)
-                    .on_press(Message::OpenUrl(info.html_url.clone()))
-                    .padding(8),
-            ]
-            .align_y(iced::alignment::Vertical::Center)
-            .into(),
-        );
         let card: iced::Element<'_, Message> = container(column(body).spacing(8))
             .style(card_bg)
             .padding(16)
             .width(440)
             .into();
-        Some(self.modal_frame(card, Message::UpdateLater))
+        // Non-dismissing scrim (see modal_frame): clicks outside are
+        // eaten with NoOp, Esc is a no-op for this modal; leaving goes
+        // through Update and restart, Omit, or Later.
+        Some(self.modal_frame(card, Message::NoOp))
     }
 
     /// Persist scrobble secrets to the OS keychain, one write per field
@@ -1039,6 +1037,25 @@ impl AppState {
     pub(crate) fn cancel_drag(&mut self) {
         self.drag = None;
         self.press_snap = None;
+    }
+
+    /// Drop every row hover (one place): arming any modal calls this
+    /// so a frozen hover highlight never sits behind the dialog (the
+    /// cursor never exits the row it was on when the modal appeared).
+    /// Shared with the scrim hover-freeze (same frozen state).
+    pub(crate) fn clear_hovers(&mut self) {
+        self.hovered_track = None;
+        self.hovered_recent = None;
+        self.hovered_album = None;
+        self.hovered_artist = None;
+        self.hovered_search_playlist = None;
+        self.hovered_playlist = None;
+        self.hovered_queue = None;
+        self.hovered_history = None;
+        self.hovered_auto = None;
+        self.hover_remove = None;
+        self.pl_hover = None;
+        self.pl_action_hover = None;
     }
 
     /// Close the context menu and drop its anchor.
