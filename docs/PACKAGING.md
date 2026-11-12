@@ -229,7 +229,7 @@ ad-hoc-signed only.
 
 The `windows-zip-setup` release job runs on `windows-latest`: checkout,
 Inno Setup install, `cargo test --workspace --locked`, feature checks,
-then `packaging/windows/build-windows.ps1 --output dist`, which:
+then `packaging/windows/build-windows.ps1 -Output dist`, which:
 
 1. Downloads the pinned mpv dev 7z archive
    (`shinchiro/mpv-winbuild-cmake`, `-MpvTag`/`-MpvCommit` at the top of
