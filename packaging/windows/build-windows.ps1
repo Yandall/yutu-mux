@@ -63,6 +63,18 @@ function Find-SevenZip {
 function Find-VsTool($fileName) {
     $cmd = Get-Command $fileName -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
+    # Filesystem search first: vswhere's -find glob matches nothing on
+    # some images (observed on GitHub's windows-latest), while link.exe
+    # proves the MSVC layout below exists. Both Program Files roots:
+    # 64-bit VS lives under ProgramFiles, older installs under x86.
+    $roots = @()
+    if ($env:ProgramFiles) { $roots += $env:ProgramFiles }
+    if (${env:ProgramFiles(x86)}) { $roots += ${env:ProgramFiles(x86)} }
+    foreach ($pf in $roots) {
+        $hit = Get-ChildItem -Path (Join-Path $pf "Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\$fileName") -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+    }
+    # Last resort: the VS installer locator.
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
         $found = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools -find "VC\Tools\MSVC\*\bin\Hostx64\x64\$fileName" 2>$null | Select-Object -First 1

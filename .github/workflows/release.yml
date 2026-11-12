@@ -81,11 +81,20 @@ jobs:
           } else {
             # Same dumpbin/lib generation as build-windows.ps1: the dev
             # package ships a MinGW import lib, MSVC needs mpv.lib.
+            # Tool lookup mirrors Find-VsTool (filesystem search: vswhere
+            # -find matches nothing on some runner images).
             $dll = Get-ChildItem -Path "$tmp\mpv-dev" -Filter "libmpv-2.dll" -Recurse | Select-Object -First 1
             if (-not $dll) { throw "mpv dev package has no libmpv-2.dll" }
-            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $bindir = Split-Path (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools -find "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" 2>$null | Select-Object -First 1) -Parent
-            if (-not $bindir) { throw "dumpbin.exe not found (needs Visual Studio Build Tools)" }
+            $dumpbin = $null
+            $roots = @()
+            if ($env:ProgramFiles) { $roots += $env:ProgramFiles }
+            if (${env:ProgramFiles(x86)}) { $roots += ${env:ProgramFiles(x86)} }
+            foreach ($pf in $roots) {
+              $hit = Get-ChildItem -Path (Join-Path $pf "Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe") -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { $dumpbin = $hit.FullName; break }
+            }
+            if (-not $dumpbin) { throw "dumpbin.exe not found (needs Visual Studio Build Tools with MSVC)" }
+            $bindir = Split-Path $dumpbin -Parent
             $genDir = Join-Path $tmp "mpv-genlib"
             New-Item -ItemType Directory -Path $genDir -Force | Out-Null
             & "$bindir\dumpbin.exe" /exports $dll.FullName "/out:$genDir\mpv-exports.txt" | Out-Null
