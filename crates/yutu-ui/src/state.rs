@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, history_section, should_scrobble, weekly_mix, Album, Artist, HistoryEntry,
     HistorySection, LibraryStore, LyricsProvider, LyricsResult, Playlist, PlaylistHit,
-    QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
+    QueueSnapshot, SearchAll, SearchResults, TopKind, Track, UpdateInfo,
 };
 #[cfg(feature = "mpv")]
 #[allow(unused_imports)]
@@ -323,6 +323,13 @@ pub enum Message {
     Navigate(Route),
     /// Open a URL in the system browser (About page links).
     OpenUrl(String),
+    /// Manual self-update probe (About section button).
+    CheckForUpdates,
+    /// Self-update probe done (startup or manual): newer releases
+    /// surface, up-to-date stays silent unless manually requested.
+    UpdateCheckCompleted {
+        result: Result<UpdateInfo, String>,
+    },
     SearchChanged(String),
     Search,
     PlayTrack(usize),

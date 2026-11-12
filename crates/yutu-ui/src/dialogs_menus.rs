@@ -333,6 +333,70 @@ impl AppState {
         Some(self.modal_frame(card, Message::CancelRenamePlaylist))
     }
 
+    /// Self-update row (About section): manual check button plus the
+    /// latest verdict (checking spinner, newer with download, up to
+    /// date). Probes run once at startup and on demand; failures
+    /// surface through the status line only for manual checks.
+    #[cfg(feature = "update")]
+    pub(crate) fn update_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, row, text};
+        let check: iced::Element<'_, Message> =
+            button(btn_text(self.language.check_for_updates(), 12))
+                .style(ghost_button)
+                .on_press(Message::CheckForUpdates)
+                .padding(8)
+                .into();
+        let verdict: iced::Element<'_, Message> = if self.update_checking {
+            row![
+                Self::spinner_frame(self.spin_frame, 12.0, MUTED),
+                text(self.language.checking_for_updates())
+                    .size(12)
+                    .color(MUTED),
+            ]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
+        } else if let Some(info) = &self.update_available {
+            row![
+                button(btn_text(
+                    self.language.download_update(&info.latest_tag),
+                    12
+                ))
+                .style(accent_button)
+                .on_press(Message::OpenUrl(info.html_url.clone()))
+                .padding(8),
+                text(self.language.update_available(&info.latest_tag))
+                    .size(12)
+                    .color(ACCENT),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
+        } else if self.update_checked {
+            text(self.language.up_to_date(crate::APP_VERSION))
+                .size(12)
+                .color(MUTED)
+                .into()
+        } else {
+            text("").size(1).into()
+        };
+        column![row![check, verdict,]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),]
+        .spacing(4)
+        .into()
+    }
+
+    /// Offline builds: no HTTP client, so the check explains itself.
+    #[cfg(not(feature = "update"))]
+    pub(crate) fn update_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::text;
+        text(self.language.needs_update_check())
+            .size(12)
+            .color(MUTED)
+            .into()
+    }
+
     /// Persist scrobble secrets to the OS keychain, one write per field
     /// (never per keystroke). Empty fields delete their entries, so
     /// cleared tokens leave no residue. Every field is attempted even

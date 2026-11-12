@@ -208,6 +208,10 @@ impl AppState {
             pending_playlist_delete: None,
             pending_playlist_rename: None,
             rename_playlist_name: String::new(),
+            update_checking: false,
+            update_manual: false,
+            update_checked: false,
+            update_available: None,
             #[cfg(feature = "innertube")]
             pending_signout: false,
             scrobble_modal_open: false,
@@ -428,6 +432,14 @@ impl AppState {
         let mut init = vec![system_font_task()];
         if state.audio.is_some() && state.queue.current().is_some() {
             init.push(state.autoload_current_task());
+        }
+        // Silent startup probe (best effort, never blocks the window):
+        // a newer release surfaces in the status + About section, an
+        // up-to-date or failed probe stays quiet (see the handler).
+        #[cfg(feature = "update")]
+        {
+            state.update_checking = true;
+            init.push(Self::update_check_task(APP_VERSION.to_string()));
         }
         (state, iced::Task::batch(init))
     }

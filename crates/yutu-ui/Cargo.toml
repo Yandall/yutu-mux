@@ -39,11 +39,14 @@ unic-langid = { version = "0.9", features = ["macros"] }
 # Default is the real app: live search/radio + scrobble submission + mpv
 # playback (seek/position/EQ). `--no-default-features` is the offline
 # compile check (empty states, rodio-only).
-default = ["submit", "innertube", "mpv", "lyrics"]
+default = ["submit", "innertube", "mpv", "lyrics", "update"]
 innertube = ["yutu-core/innertube", "dep:rfd"]
 submit = ["yutu-core/submit"]
 mpv = ["yutu-player/mpv"]
 lyrics = ["yutu-core/lyrics"]
+# Self-update check (About section + startup probe): own yutu-core
+# feature so `--no-default-features` stays HTTP-free.
+update = ["yutu-core/update"]
 # Opt-in debug UI in any build (error panel, cache census, full status
 # text): `cargo run --features debug-panel`. Debug builds show it
 # without the flag; release builds hide it without the flag.

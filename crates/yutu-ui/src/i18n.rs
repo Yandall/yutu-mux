@@ -779,6 +779,24 @@ impl Language {
     pub fn about_backend(self) -> String {
         self.tr("about-backend")
     }
+    pub fn check_for_updates(self) -> String {
+        self.tr("check-for-updates")
+    }
+    pub fn checking_for_updates(self) -> String {
+        self.tr("checking-for-updates")
+    }
+    pub fn update_available(self, tag: &str) -> String {
+        self.tr_args("update-available", &[("tag", tag)])
+    }
+    pub fn download_update(self, tag: &str) -> String {
+        self.tr_args("download-update", &[("tag", tag)])
+    }
+    pub fn up_to_date(self, version: &str) -> String {
+        self.tr_args("up-to-date", &[("version", version)])
+    }
+    pub fn needs_update_check(self) -> String {
+        self.tr("needs-update-check")
+    }
     pub fn enable_custom_eq(self) -> String {
         self.tr("enable-custom-eq")
     }
@@ -1379,6 +1397,9 @@ impl Language {
     }
     pub fn fail_check(self) -> String {
         self.tr("fail-check")
+    }
+    pub fn fail_update_check(self) -> String {
+        self.tr("fail-update-check")
     }
     pub fn fail_live_top(self) -> String {
         self.tr("fail-live-top")

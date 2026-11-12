@@ -233,6 +233,7 @@ needs-innertube-import-offline = Cookie import needs `--features innertube` (off
 needs-innertube-playlists = Playlists need `--features innertube`.
 needs-innertube-radio = Radio needs `--features innertube`.
 needs-innertube-search-offline = Real search needs `--features innertube` (offline build).
+needs-update-check = Update check needs `--features update`.
 shortcuts-hint = Shortcuts: Space play/pause · n next · p prev · / search
 ready-status = Ready: search for music.
 
@@ -244,6 +245,11 @@ about-license = MIT License: free software, see LICENSE.
 about-source = Source code on GitHub
 about-notices = Bundled type: Adwaita Sans (OFL-1.1). Icons: Lucide (ISC).
 about-backend = Playback links the system libmpv (GPL-2.0); the rodio-only build is GPL-free.
+check-for-updates = Check for updates
+checking-for-updates = Checking for updates…
+update-available = New version { $tag } available.
+download-update = Download { $tag }
+up-to-date = Up to date ({ $version }).
 
 ## Equalizer (Settings)
 
@@ -377,6 +383,7 @@ fail-signout = Sign-out failed
 fail-export-delete = Could not delete export file
 fail-signin = Sign-in failed
 fail-check = Check failed
+fail-update-check = Update check failed
 fail-live-top = Live top songs failed
 fail-live-album = Live album songs failed
 fail-artist-lookup = Artist lookup failed

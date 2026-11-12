@@ -29,6 +29,9 @@ pub mod scrobble;
 pub mod secure_store;
 pub mod security;
 pub mod stream;
+pub mod update;
+#[cfg(test)]
+mod update_tests;
 pub mod ytdlp;
 
 /// Shared HTTP client for Innertube POSTs (search, player): one pool per
@@ -99,6 +102,9 @@ pub use secure_store::{
     SCROBBLE_LB_TOKEN,
 };
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
+#[cfg(feature = "update")]
+pub use update::fetch_update_info;
+pub use update::{is_newer_version, UpdateInfo, RELEASES_API_URL, RELEASES_PAGE_URL};
 pub use ytdlp::{download_audio_bytes, find_yt_dlp, resolve_audio_url};
 #[cfg(feature = "innertube")]
 pub mod ytm_token;

@@ -36,6 +36,9 @@ keyring = "4"
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1"]
 lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
+# Self-update check (latest GitHub release tag vs this build): its own
+# feature so offline builds keep no HTTP client at all.
+update = ["dep:reqwest", "dep:tokio"]
 # Test-only mock backend + fixtures (never in release binaries): enabled
 # via dev-dependencies by crates whose tests use `MockBackend`.
 test-fixtures = []

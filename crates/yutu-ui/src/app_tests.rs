@@ -1075,6 +1075,71 @@ fn playlist_rename_via_dialog() {
     assert_eq!(s.user_playlists[0].title, "Evening");
 }
 
+#[cfg(feature = "update")]
+#[test]
+fn update_check_reports_newer_and_up_to_date() {
+    let mut s = test_state();
+    // Settle the silent startup probe so the manual check below runs.
+    s.update_checking = false;
+    // Manual check arms the probe with a checking status.
+    let _ = s.update(Message::CheckForUpdates);
+    assert!(s.update_checking);
+    assert!(s.status.contains("Checking"));
+    let _ = s.view();
+    // A newer release surfaces with its tag and download target.
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(yutu_core::UpdateInfo {
+            latest_tag: "v9.9.9".into(),
+            html_url: "https://example.test/r".into(),
+            newer: true,
+        }),
+    });
+    assert!(!s.update_checking);
+    assert!(s.update_checked);
+    assert!(s
+        .update_available
+        .as_ref()
+        .is_some_and(|i| i.latest_tag == "v9.9.9"));
+    assert!(s.status.contains("v9.9.9"));
+    let _ = s.view();
+    // Same version clears the badge and confirms up-to-date on manual checks.
+    let _ = s.update(Message::CheckForUpdates);
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(yutu_core::UpdateInfo {
+            latest_tag: APP_VERSION.into(),
+            html_url: "https://example.test/r".into(),
+            newer: false,
+        }),
+    });
+    assert!(s.update_available.is_none());
+    assert!(s.status.contains("Up to date"));
+    // Failures report honestly on manual checks.
+    let _ = s.update(Message::CheckForUpdates);
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Err("boom".into()),
+    });
+    assert!(!s.update_checking);
+    assert!(s.update_available.is_none());
+    assert!(s.status.contains("failed"));
+    // The silent startup probe reports only newer releases: up-to-date
+    // and failed probes leave the status alone.
+    let quiet = s.language.ready_status();
+    s.status = quiet.clone();
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(yutu_core::UpdateInfo {
+            latest_tag: APP_VERSION.into(),
+            html_url: "https://example.test/r".into(),
+            newer: false,
+        }),
+    });
+    assert_eq!(s.status, quiet);
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Err("boom".into()),
+    });
+    assert_eq!(s.status, quiet);
+    assert!(s.update_checked);
+}
+
 #[test]
 fn playlist_crud() {
     let mut s = test_state();

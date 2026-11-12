@@ -2527,6 +2527,7 @@ impl AppState {
                     text(self.language.about_section()).size(17),
                     column![
                         text(self.language.about_version()).size(13),
+                        self.update_section(),
                         text(self.language.about_license()).size(12).color(MUTED),
                         button(btn_text(self.language.about_source(), 12))
                             .style(ghost_button)

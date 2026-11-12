@@ -44,6 +44,61 @@ impl AppState {
                     yutu_core::app_log::warn("yutu-ui", format!("open {url} failed: {e}"));
                 }
             }
+            Message::CheckForUpdates => {
+                // One probe at a time (button spam collapses into the
+                // in-flight check).
+                if self.update_checking {
+                    return iced::Task::none();
+                }
+                #[cfg(feature = "update")]
+                {
+                    self.update_manual = true;
+                    self.update_checking = true;
+                    self.status = self.language.checking_for_updates();
+                    self.publish_mpris();
+                }
+                #[cfg(not(feature = "update"))]
+                {
+                    self.status = self.language.needs_update_check();
+                    self.publish_mpris();
+                }
+                // Offline builds: no HTTP client, the task is a no-op.
+                return Self::update_check_task(crate::APP_VERSION.to_string());
+            }
+            Message::UpdateCheckCompleted { result } => {
+                self.update_checking = false;
+                self.update_checked = true;
+                let manual = std::mem::replace(&mut self.update_manual, false);
+                match result {
+                    Ok(info) => {
+                        if info.newer {
+                            self.update_available = Some(info.clone());
+                            self.status = self.language.update_available(&info.latest_tag);
+                            self.publish_mpris();
+                        } else {
+                            self.update_available = None;
+                            // The silent startup probe stays out of the
+                            // way when there is nothing to report; only
+                            // manual checks confirm up-to-date.
+                            if manual {
+                                self.status = self.language.up_to_date(crate::APP_VERSION);
+                                self.publish_mpris();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.update_available = None;
+                        yutu_core::app_log::warn("yutu-update", format!("check: {e}"));
+                        // Same silence rule as up-to-date: startup stays
+                        // on Ready, manual checks report honestly.
+                        if manual {
+                            self.status =
+                                Self::failure_status(self.language.fail_update_check(), &e);
+                            self.publish_mpris();
+                        }
+                    }
+                }
+            }
             Message::NavBack => {
                 // Side buttons never disturb a drag (Esc owns cancel);
                 // menus and the popup dismiss first, second press goes.

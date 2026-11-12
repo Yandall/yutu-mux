@@ -715,6 +715,22 @@ impl AppState {
         iced::Task::none()
     }
 
+    /// Offline builds: no HTTP client, nothing to probe.
+    #[cfg(not(feature = "update"))]
+    pub(crate) fn update_check_task(_current: String) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Self-update probe (best effort): latest GitHub release tag vs
+    /// this build. Silent unless newer (see the completion handler).
+    #[cfg(feature = "update")]
+    pub(crate) fn update_check_task(current: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move { yutu_core::fetch_update_info(&current).await },
+            |result| Message::UpdateCheckCompleted { result },
+        )
+    }
+
     /// Offline builds: server sync is a no-op (local state is the truth).
     #[cfg(not(feature = "innertube"))]
     pub(crate) fn playlist_rename_sync_task(
