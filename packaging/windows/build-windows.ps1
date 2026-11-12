@@ -100,10 +100,10 @@ function New-MpvImportLib($dllPath, $outDir) {
             if ($line -match "ordinal\s+hint\s+RVA\s+name") { $inTable = $true }
             continue
         }
-        $t = $line.Trim()
-        if ($t -eq "" -or $t -match "Summary") { break }
-        $parts = ($t -split "\s+")
-        if ($parts.Count -ge 4 -and $parts[0] -match "^\d+$") { $names += $parts[3] }
+        # Blank lines separate the header from the rows: skip them
+        # (breaking on them parsed zero exports) and stop at the tail.
+        if ($line -match "Summary") { break }
+        if ($line -match "^\s*\d+\s+\w+\s+[0-9A-Fa-f]+\s+(\S+)\s*$") { $names += $Matches[1] }
     }
     if ($names.Count -eq 0) { throw "no exports parsed from $dllPath" }
     $defPath = Join-Path $outDir "mpv.def"
