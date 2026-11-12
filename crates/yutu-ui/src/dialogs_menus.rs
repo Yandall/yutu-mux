@@ -290,6 +290,49 @@ impl AppState {
         Some(self.modal_frame(card, Message::CancelDeletePlaylist))
     }
 
+    /// Playlist-rename dialog: the menu row opens it with the current
+    /// title prefilled (mirrored to YouTube Music while signed in).
+    /// Save is the CTA; scrim/Esc keeps the old name (safe default).
+    pub(crate) fn playlist_rename_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, text, text_input};
+        use iced::Fill;
+        let id = self.pending_playlist_rename.clone()?;
+        let name = self.rename_playlist_name.clone();
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text(self.language.rename_playlist_title()).size(16),
+                text_input(
+                    self.language.rename_playlist_placeholder(),
+                    &self.rename_playlist_name
+                )
+                .style(rounded_input)
+                .on_input(Message::RenamePlaylistNameChanged)
+                .width(Fill)
+                .padding(10),
+                iced::widget::row![
+                    button(btn_text(self.language.rename_playlist_save(), 12))
+                        .style(accent_button)
+                        .on_press(Message::RenamePlaylist {
+                            playlist_id: id,
+                            title: name,
+                        })
+                        .padding(8),
+                    button(btn_text(self.language.rename_playlist_cancel(), 12))
+                        .style(ghost_button)
+                        .on_press(Message::CancelRenamePlaylist)
+                        .padding(8),
+                ]
+                .spacing(8),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(400)
+        .into();
+        Some(self.modal_frame(card, Message::CancelRenamePlaylist))
+    }
+
     /// Persist scrobble secrets to the OS keychain, one write per field
     /// (never per keystroke). Empty fields delete their entries, so
     /// cleared tokens leave no residue. Every field is attempted even

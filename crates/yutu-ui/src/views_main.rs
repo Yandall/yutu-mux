@@ -3657,6 +3657,23 @@ impl AppState {
                 ];
                 let mut pl_items = items;
                 if pid3 != Self::FAVORITES_ID {
+                    let pid_rename = pid3.clone();
+                    pl_items.push(
+                        row_button(
+                            row![
+                                btn_icon("pencil", 14.0, iced::Color::WHITE),
+                                btn_text(self.language.rename_playlist(), 14),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::RequestRenamePlaylist(pid_rename))
+                        .padding(8)
+                        .width(Fill)
+                        .into(),
+                    );
                     let pid4 = pid3.clone();
                     pl_items.push(
                         row_button(
@@ -3967,6 +3984,11 @@ impl AppState {
         // Playlist-delete confirm above everything else: same dimmed
         // frame, scrim/Esc keeps the playlist (safe default).
         if let Some(dialog) = self.playlist_delete_dialog() {
+            layers.push(dialog);
+        }
+        // Playlist-rename dialog above everything else: same dimmed
+        // frame, scrim/Esc keeps the old name (safe default).
+        if let Some(dialog) = self.playlist_rename_dialog() {
             layers.push(dialog);
         }
         // Sign-out confirm above everything else: same dimmed frame,

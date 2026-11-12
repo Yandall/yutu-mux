@@ -557,9 +557,17 @@ impl AppState {
         // Re-import refreshes in place (same slot, new rows); new server
         // lists append after the local ones. Lists with unpushed edits
         // keep their local contents until the pushes land (a replace
-        // would clobber intent the server hasn't seen).
+        // would clobber intent the server hasn't seen). A pending rename
+        // keeps the local title but still takes the fresh tracks.
         for p in playlists {
             if self.playlist_has_pending(&p.id) {
+                continue;
+            }
+            if self.playlist_has_rename_pending(&p.id) {
+                match self.user_playlists.iter().position(|x| x.id == p.id) {
+                    Some(i) => self.user_playlists[i].tracks = p.tracks,
+                    None => self.user_playlists.push(p),
+                }
                 continue;
             }
             match self.user_playlists.iter().position(|x| x.id == p.id) {
@@ -708,10 +716,12 @@ impl AppState {
             return 1.0;
         }
         if self.pending_playlist_delete.is_some() {
-            1.0
-        } else {
-            0.0
+            return 1.0;
         }
+        if self.pending_playlist_rename.is_some() {
+            return 1.0;
+        }
+        0.0
     }
 
     /// True while a modal entrance still needs ticker frames.
@@ -895,10 +905,31 @@ impl AppState {
         store.has_playlist_pending(playlist_id).unwrap_or(false)
     }
 
+    /// True when a playlist has a pending rename (store-level check for
+    /// background tasks, which have no `&self`).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn playlist_has_rename_pending_store(library_path: &str, playlist_id: &str) -> bool {
+        let Ok(store) = LibraryStore::open(library_path) else {
+            return false;
+        };
+        store
+            .pending_ops()
+            .unwrap_or_default()
+            .iter()
+            .any(|o| o.op == "rename" && o.playlist_id.as_deref() == Some(playlist_id))
+    }
+
     /// True when a playlist has pending add/remove rows.
     #[cfg(feature = "innertube")]
     pub(crate) fn playlist_has_pending(&self, playlist_id: &str) -> bool {
         Self::playlist_has_pending_store(&self.library_path, playlist_id)
+    }
+
+    /// True when a playlist has a pending rename (local title wins over
+    /// the server title until the push lands).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn playlist_has_rename_pending(&self, playlist_id: &str) -> bool {
+        Self::playlist_has_rename_pending_store(&self.library_path, playlist_id)
     }
 
     /// Record a not-yet-confirmed server write (see `PendingOp`).

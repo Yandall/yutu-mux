@@ -370,6 +370,12 @@ pub struct AppState {
     /// Playlist awaiting a delete/keep decision (modal). `None` hides
     /// the dialog; the menu row arms it, the dialog confirms it.
     pub(crate) pending_playlist_delete: Option<String>,
+    /// Playlist awaiting a rename (modal). `None` hides the dialog;
+    /// the menu row arms it with the current title in
+    /// `rename_playlist_name`, the dialog confirms it.
+    pub(crate) pending_playlist_rename: Option<String>,
+    /// Rename dialog input (prefilled on arm, edited per keystroke).
+    pub(crate) rename_playlist_name: String,
     /// Sign-out confirm dialog open (Settings row arms it).
     #[cfg(feature = "innertube")]
     pub(crate) pending_signout: bool,

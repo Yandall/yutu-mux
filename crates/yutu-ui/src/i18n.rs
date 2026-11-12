@@ -576,6 +576,24 @@ impl Language {
     pub fn delete_playlist(self) -> String {
         self.tr("delete-playlist")
     }
+    pub fn rename_playlist(self) -> String {
+        self.tr("rename-playlist")
+    }
+    pub fn rename_playlist_title(self) -> String {
+        self.tr("rename-playlist-title")
+    }
+    pub fn rename_playlist_save(self) -> String {
+        self.tr("rename-playlist-save")
+    }
+    pub fn rename_playlist_cancel(self) -> String {
+        self.tr("rename-playlist-cancel")
+    }
+    pub fn rename_playlist_placeholder(self) -> &'static str {
+        match self {
+            Self::English => "New name…",
+            Self::Spanish => "Nuevo nombre…",
+        }
+    }
     pub fn playlists_toggle(self, n: usize) -> String {
         self.tr_args("playlists-toggle", &[("n", &n.to_string())])
     }
@@ -1204,6 +1222,9 @@ impl Language {
     }
     pub fn deleted_playlist(self, id: &str) -> String {
         self.tr_args("deleted-playlist", &[("id", id)])
+    }
+    pub fn renamed_playlist(self, title: &str) -> String {
+        self.tr_args("renamed-playlist", &[("title", title)])
     }
     pub fn weekly_empty(self) -> String {
         self.tr("weekly-empty")

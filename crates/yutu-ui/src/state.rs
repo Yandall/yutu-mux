@@ -369,6 +369,19 @@ pub enum Message {
     RequestDeletePlaylist(String),
     /// Dismiss the playlist-delete confirm (scrim/Esc/keep: safe default).
     CancelDeletePlaylist,
+    /// Arm the playlist-rename dialog (menu row): the dialog edits
+    /// `rename_playlist_name`, prefilled with the current title.
+    RequestRenamePlaylist(String),
+    /// Rename dialog input (one keystroke at a time).
+    RenamePlaylistNameChanged(String),
+    /// Dismiss the playlist-rename dialog (scrim/Esc: safe default).
+    CancelRenamePlaylist,
+    /// Confirm a playlist rename from the dialog (title carried
+    /// explicitly like [`Message::CreatePlaylist`]).
+    RenamePlaylist {
+        playlist_id: String,
+        title: String,
+    },
     SelectEqPreset(String),
     SetEqBand(usize, f32),
     EqToggled(bool),
@@ -865,5 +878,9 @@ pub enum PlaylistSyncOp {
     },
     Delete {
         playlist_id: String,
+    },
+    Rename {
+        playlist_id: String,
+        title: String,
     },
 }

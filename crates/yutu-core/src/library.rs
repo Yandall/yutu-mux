@@ -39,7 +39,8 @@ pub fn edit_playlist_id(id: &str) -> String {
 /// pulling, so web changes reconcile without dropping local intent.
 /// Op names: `like`, `unlike`, `dislike`, `undislike` (track_id),
 /// `add`, `remove` (playlist_id + track_id), `create` (playlist_id is
-/// the local shell id, title set), `delete` (playlist_id).
+/// the local shell id, title set), `rename` (playlist_id + new title),
+/// `delete` (playlist_id).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingOp {
     pub op: String,
@@ -438,10 +439,19 @@ impl LibraryStore {
                         )
                         .map_err(|e| e.to_string())?;
                 }
+                "rename" => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM pending_ops WHERE op = 'rename'
+                             AND IFNULL(playlist_id,'') = IFNULL(?1,'')",
+                            params![playlist_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
                 "delete" => {
                     self.conn
                         .execute(
-                            "DELETE FROM pending_ops WHERE op IN ('add','remove','delete')
+                            "DELETE FROM pending_ops WHERE op IN ('add','remove','rename','delete')
                              AND IFNULL(playlist_id,'') = IFNULL(?1,'')",
                             params![playlist_id],
                         )
@@ -474,6 +484,21 @@ impl LibraryStore {
                  AND IFNULL(playlist_id,'') = IFNULL(?2,'')
                  AND IFNULL(track_id,'') = IFNULL(?3,'')",
                 params![op, playlist_id, track_id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Drop a confirmed rename only when the pending title still matches
+    /// (a stale in-flight rename must never clear a newer rename intent
+    /// for the same playlist).
+    pub fn clear_pending_rename(&self, playlist_id: &str, title: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM pending_ops WHERE op = 'rename'
+                 AND IFNULL(playlist_id,'') = ?1
+                 AND IFNULL(title,'') = ?2",
+                params![playlist_id, title],
             )
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -755,6 +780,19 @@ impl LibraryStore {
             .execute(
                 "INSERT OR IGNORE INTO playlists(id, title) VALUES (?1, ?2)",
                 params![id, title],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rename a local playlist (title only, tracks untouched). Empty
+    /// titles are rejected by the caller; unknown ids are a no-op that
+    /// still reports success so offline retries stay idempotent.
+    pub fn rename_playlist(&self, id: &str, title: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE playlists SET title = ?1 WHERE id = ?2",
+                params![title, id],
             )
             .map(|_| ())
             .map_err(|e| e.to_string())

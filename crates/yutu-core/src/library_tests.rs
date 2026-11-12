@@ -63,17 +63,67 @@ fn pending_collapses_to_latest_intent() {
     let ops = s.pending_ops().unwrap();
     assert_eq!(ops.len(), 2);
     assert_eq!(ops[1].op, "remove");
-    // Recording a delete drops add/remove rows for that playlist.
+    // Recording a rename keeps the latest title only.
+    s.record_pending("rename", Some("PL1"), None, Some("Old"))
+        .unwrap();
+    s.record_pending("rename", Some("PL1"), None, Some("New"))
+        .unwrap();
+    let renames: Vec<_> = s
+        .pending_ops()
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.op == "rename")
+        .collect();
+    assert_eq!(renames.len(), 1);
+    assert_eq!(renames[0].title.as_deref(), Some("New"));
+    // Recording a delete drops add/remove/rename rows for that playlist.
     s.record_pending("delete", Some("PL1"), None, None).unwrap();
     let ops = s.pending_ops().unwrap();
-    assert_eq!(ops.len(), 2);
     assert!(ops.iter().any(|o| o.op == "unlike"));
     assert!(ops.iter().any(|o| o.op == "delete"));
+    assert!(!ops.iter().any(|o| o.op == "rename"));
     // Exact-op clear leaves newer rows alone.
     s.clear_pending("like", None, Some("m1")).unwrap();
-    assert_eq!(s.pending_ops().unwrap().len(), 2);
     s.clear_pending("unlike", None, Some("m1")).unwrap();
+}
+
+#[test]
+fn rename_pending_clears_only_matching_title() {
+    let s = LibraryStore::in_memory().unwrap();
+    s.record_pending("rename", Some("PL1"), None, Some("B"))
+        .unwrap();
+    // Stale in-flight title does not clear the newer intent.
+    s.clear_pending_rename("PL1", "A").unwrap();
     assert_eq!(s.pending_ops().unwrap().len(), 1);
+    s.clear_pending_rename("PL1", "B").unwrap();
+    assert!(s.pending_ops().unwrap().is_empty());
+}
+
+#[test]
+fn rename_playlist_updates_title_only() {
+    use crate::models::Track;
+    let s = LibraryStore::in_memory().unwrap();
+    s.create_playlist("u1", "Gym").unwrap();
+    let t = Track {
+        id: "m1".into(),
+        title: "Song".into(),
+        artist: "Someone".into(),
+        album: None,
+        duration_secs: 200,
+        thumbnail_url: None,
+        thumbnail_large_url: None,
+        plays: None,
+        is_video: false,
+    };
+    s.add_to_playlist("u1", &t).unwrap();
+    s.rename_playlist("u1", "Evening").unwrap();
+    let lists = s.user_playlists().unwrap();
+    assert_eq!(lists.len(), 1);
+    assert_eq!(lists[0].title, "Evening");
+    assert_eq!(lists[0].tracks.len(), 1);
+    // Unknown ids are a no-op, never an error.
+    s.rename_playlist("missing", "Whatever").unwrap();
+    assert_eq!(s.user_playlists().unwrap().len(), 1);
 }
 
 #[test]
