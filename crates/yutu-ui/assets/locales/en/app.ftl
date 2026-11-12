@@ -248,7 +248,15 @@ about-backend = Playback links the system libmpv (GPL-2.0); the rodio-only build
 check-for-updates = Check for updates
 checking-for-updates = Checking for updates…
 update-available = New version { $tag } available.
-download-update = Download { $tag }
+update-title = New version available
+update-and-restart = Update and restart
+omit-version = Omit this version
+update-later = Update later
+view-changelog = Changelog
+update-progress = Downloading update… { $pct }%
+update-progress-unknown = Downloading update…
+update-installing = Installing update…
+update-no-build = No update build for this platform.
 up-to-date = Up to date ({ $version }).
 
 ## Equalizer (Settings)
@@ -384,6 +392,9 @@ fail-export-delete = Could not delete export file
 fail-signin = Sign-in failed
 fail-check = Check failed
 fail-update-check = Update check failed
+fail-update-download = Update download failed
+fail-update-install = Update install failed
+fail-update-restart = Update restart failed
 fail-live-top = Live top songs failed
 fail-live-album = Live album songs failed
 fail-artist-lookup = Artist lookup failed

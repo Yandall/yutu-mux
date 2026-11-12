@@ -386,6 +386,21 @@ pub struct AppState {
     /// Latest release when it is newer than this build (`None` clears
     /// on up-to-date or failed probes, so stale badges never linger).
     pub(crate) update_available: Option<UpdateInfo>,
+    /// Update modal open for this release (`None` hides it). Armed by
+    /// the silent startup probe, never by manual checks (those report
+    /// inline in the settings row + status).
+    pub(crate) pending_update: Option<UpdateInfo>,
+    /// Install phase for the modal progress UI (`Idle` otherwise).
+    pub(crate) update_phase: UpdatePhase,
+    /// Download progress: `(bytes, total)` (`None` total reads as
+    /// indeterminate).
+    pub(crate) update_progress: Option<(u64, Option<u64>)>,
+    /// Download/install generation: dismissing the modal bumps it so
+    /// stale progress and arrivals drop instead of reopening work.
+    pub(crate) update_gen: u64,
+    /// Omitted release tag (persisted `update_skipped_tag` pref): the
+    /// auto-modal never shows it again; manual checks still report it.
+    pub(crate) update_skipped_tag: Option<String>,
     /// Sign-out confirm dialog open (Settings row arms it).
     #[cfg(feature = "innertube")]
     pub(crate) pending_signout: bool,

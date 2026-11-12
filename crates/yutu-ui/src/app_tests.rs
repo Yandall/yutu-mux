@@ -51,6 +51,10 @@ fn test_state() -> AppState {
     // Unit tests pin English (system-locale default would make
     // string assertions env-dependent); Spanish gets its own tests.
     s.language = Language::English;
+    // Settle the silent startup update probe: unit tests drive
+    // completions explicitly, and a perpetually-checking flag would
+    // pin `animating()` on for every animation test.
+    s.update_checking = false;
     // Unit-test scaffolding: seed the catalog so id-based flows resolve.
     // User-visible views never read fixtures.
     for t in yutu_core::MockBackend::fixture_tracks() {
@@ -1078,24 +1082,27 @@ fn playlist_rename_via_dialog() {
 #[cfg(feature = "update")]
 #[test]
 fn update_check_reports_newer_and_up_to_date() {
+    fn info(tag: &str, newer: bool) -> yutu_core::UpdateInfo {
+        yutu_core::UpdateInfo {
+            latest_tag: tag.into(),
+            html_url: "https://example.test/r".into(),
+            notes: "Highlights.".into(),
+            newer,
+        }
+    }
     let mut s = test_state();
-    // Settle the silent startup probe so the manual check below runs.
-    s.update_checking = false;
     // Manual check arms the probe with a checking status.
     let _ = s.update(Message::CheckForUpdates);
     assert!(s.update_checking);
     assert!(s.status.contains("Checking"));
-    let _ = s.view();
-    // A newer release surfaces with its tag and download target.
+    // A newer release surfaces with its tag but never arms the modal
+    // on a manual check (inline settings row + status only).
     let _ = s.update(Message::UpdateCheckCompleted {
-        result: Ok(yutu_core::UpdateInfo {
-            latest_tag: "v9.9.9".into(),
-            html_url: "https://example.test/r".into(),
-            newer: true,
-        }),
+        result: Ok(info("v9.9.9", true)),
     });
     assert!(!s.update_checking);
     assert!(s.update_checked);
+    assert!(s.pending_update.is_none());
     assert!(s
         .update_available
         .as_ref()
@@ -1105,11 +1112,7 @@ fn update_check_reports_newer_and_up_to_date() {
     // Same version clears the badge and confirms up-to-date on manual checks.
     let _ = s.update(Message::CheckForUpdates);
     let _ = s.update(Message::UpdateCheckCompleted {
-        result: Ok(yutu_core::UpdateInfo {
-            latest_tag: APP_VERSION.into(),
-            html_url: "https://example.test/r".into(),
-            newer: false,
-        }),
+        result: Ok(info(APP_VERSION, false)),
     });
     assert!(s.update_available.is_none());
     assert!(s.status.contains("Up to date"));
@@ -1126,11 +1129,7 @@ fn update_check_reports_newer_and_up_to_date() {
     let quiet = s.language.ready_status();
     s.status = quiet.clone();
     let _ = s.update(Message::UpdateCheckCompleted {
-        result: Ok(yutu_core::UpdateInfo {
-            latest_tag: APP_VERSION.into(),
-            html_url: "https://example.test/r".into(),
-            newer: false,
-        }),
+        result: Ok(info(APP_VERSION, false)),
     });
     assert_eq!(s.status, quiet);
     let _ = s.update(Message::UpdateCheckCompleted {
@@ -1138,6 +1137,91 @@ fn update_check_reports_newer_and_up_to_date() {
     });
     assert_eq!(s.status, quiet);
     assert!(s.update_checked);
+}
+
+#[cfg(feature = "update")]
+#[test]
+fn update_modal_omits_defers_and_installs() {
+    fn info(tag: &str) -> yutu_core::UpdateInfo {
+        yutu_core::UpdateInfo {
+            latest_tag: tag.into(),
+            html_url: "https://example.test/r".into(),
+            notes: "Highlights.".into(),
+            newer: true,
+        }
+    }
+    let mut s = test_state();
+    // The silent startup probe arms the modal for a newer release.
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(info("v9.9.9")),
+    });
+    assert!(s.pending_update.is_some());
+    assert!(s.update_available.is_some());
+    assert!(s.update_dialog().is_some());
+    let _ = s.view();
+    // "Later" dismisses for this session but keeps the settings offer.
+    let _ = s.update(Message::UpdateLater);
+    assert!(s.pending_update.is_none());
+    assert!(s.update_dialog().is_none());
+    assert!(s.update_available.is_some());
+    // "Omit" persists the skip and clears everything.
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(info("v9.9.9")),
+    });
+    let _ = s.update(Message::UpdateOmitVersion);
+    assert!(s.pending_update.is_none());
+    assert!(s.update_available.is_none());
+    assert_eq!(s.update_skipped_tag.as_deref(), Some("v9.9.9"));
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    assert_eq!(
+        store.get_pref("update_skipped_tag").unwrap().as_deref(),
+        Some("v9.9.9")
+    );
+    // An omitted tag never re-arms the auto-modal (manual checks still
+    // report it inline).
+    let _ = s.update(Message::CheckForUpdates);
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(info("v9.9.9")),
+    });
+    assert!(s.pending_update.is_none());
+    assert!(s.update_available.is_some());
+    // A different newer tag prompts again despite the omit.
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(info("v9.9.10")),
+    });
+    assert!(s.pending_update.is_some());
+    // "Update and restart" starts the download with modal progress.
+    let _ = s.update(Message::UpdateAndRestart);
+    assert_eq!(s.update_phase, UpdatePhase::Downloading);
+    assert!(s.update_progress.is_some());
+    let _ = s.view();
+    // Progress lands; a stale generation from a dismissed modal drops.
+    let _ = s.update(Message::UpdateProgress {
+        gen: s.update_gen,
+        downloaded: 10,
+        total: Some(100),
+    });
+    assert_eq!(s.update_progress, Some((10, Some(100))));
+    let _ = s.update(Message::UpdateLater);
+    let _ = s.update(Message::UpdateProgress {
+        gen: s.update_gen - 1,
+        downloaded: 99,
+        total: Some(100),
+    });
+    assert!(s.update_progress.is_none());
+    // Download completion moves to installing; install failure reports
+    // honestly without touching the app.
+    let _ = s.update(Message::UpdateCheckCompleted {
+        result: Ok(info("v9.9.10")),
+    });
+    let _ = s.update(Message::UpdateAndRestart);
+    let gen = s.update_gen;
+    let _ = s.update(Message::UpdateDownloaded {
+        gen,
+        result: Err("net down".into()),
+    });
+    assert_eq!(s.update_phase, UpdatePhase::Idle);
+    assert!(s.status.contains("failed"));
 }
 
 #[test]

@@ -721,6 +721,9 @@ impl AppState {
         if self.pending_playlist_rename.is_some() {
             return 1.0;
         }
+        if self.pending_update.is_some() {
+            return 1.0;
+        }
         0.0
     }
 

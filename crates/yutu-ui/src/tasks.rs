@@ -731,6 +731,76 @@ impl AppState {
         )
     }
 
+    /// Self-update download (best effort): the release artifact for
+    /// this machine plus its checksum sidecar, with per-chunk progress
+    /// forwarded like the playlist import ticks. `gen` quarantines
+    /// stale progress after the modal is dismissed mid-download.
+    #[cfg(feature = "update")]
+    pub(crate) fn update_download_task(tag: String, gen: u64) -> iced::Task<Message> {
+        let (tick_tx, tick_rx) = tokio::sync::mpsc::unbounded_channel();
+        let fetch = iced::Task::perform(
+            async move {
+                let result = async {
+                    let asset = yutu_core::release_asset_for(&tag)
+                        .ok_or_else(|| "no update build for this platform".to_string())?;
+                    let dir = std::env::temp_dir().join(yutu_core::update_scratch_name(&tag));
+                    yutu_core::download_release_asset(&asset, &dir, &|downloaded, total| {
+                        let _ = tick_tx.send((downloaded, total));
+                    })
+                    .await
+                }
+                .await;
+                (gen, result)
+            },
+            |(gen, result)| Message::UpdateDownloaded { gen, result },
+        );
+        // Progress ticks end when the download drops its sender; late
+        // ticks after completion are quarantined by generation.
+        let forward = iced::Task::stream(Self::update_tick_stream(tick_rx, gen));
+        iced::Task::batch([fetch, forward])
+    }
+
+    /// Forward update download ticks as messages (same combinator as
+    /// the import ticks: order preserved, ends when the download drops
+    /// its sender).
+    #[cfg(feature = "update")]
+    pub(crate) fn update_tick_stream(
+        mut tick_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, Option<u64>)>,
+        gen: u64,
+    ) -> impl futures::Stream<Item = Message> {
+        futures::stream::poll_fn(move |cx| {
+            tick_rx.poll_recv(cx).map(|opt| {
+                opt.map(|(downloaded, total)| Message::UpdateProgress {
+                    gen,
+                    downloaded,
+                    total,
+                })
+            })
+        })
+    }
+
+    /// Self-update install (blocking file work on a background task):
+    /// verify, unpack/replace per platform, then the completion
+    /// handler relaunches (or exits for the Windows installer).
+    #[cfg(feature = "update")]
+    pub(crate) fn update_install_task(
+        downloaded: yutu_core::DownloadedAsset,
+    ) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move { yutu_core::install_update_asset(&downloaded) },
+            |result| Message::UpdateInstalled { result },
+        )
+    }
+
+    /// Offline builds: update installs never start (no HTTP client, so
+    /// no download can complete into one).
+    #[cfg(not(feature = "update"))]
+    pub(crate) fn update_install_task(
+        _downloaded: yutu_core::DownloadedAsset,
+    ) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
     /// Offline builds: server sync is a no-op (local state is the truth).
     #[cfg(not(feature = "innertube"))]
     pub(crate) fn playlist_rename_sync_task(

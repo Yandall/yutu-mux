@@ -212,6 +212,11 @@ impl AppState {
             update_manual: false,
             update_checked: false,
             update_available: None,
+            pending_update: None,
+            update_phase: UpdatePhase::Idle,
+            update_progress: None,
+            update_gen: 0,
+            update_skipped_tag: None,
             #[cfg(feature = "innertube")]
             pending_signout: false,
             scrobble_modal_open: false,
@@ -383,6 +388,16 @@ impl AppState {
         if let Ok(store) = LibraryStore::open(&state.library_path) {
             if let Some(raw) = store.get_pref("lyrics_provider").unwrap_or(None) {
                 state.lyrics_provider = LyricsProvider::parse(&raw);
+            }
+        }
+        // Omitted update tag survives restarts: the auto-modal never
+        // re-shows a version the user skipped (manual checks still do).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(raw) = store.get_pref("update_skipped_tag").unwrap_or(None) {
+                let tag = raw.trim().to_string();
+                if !tag.is_empty() {
+                    state.update_skipped_tag = Some(tag);
+                }
             }
         }
         // Seed the in-memory catalog from the track cache plus

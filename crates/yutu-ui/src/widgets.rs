@@ -307,8 +307,9 @@ pub(crate) fn red_toggle(
     }
 }
 
-/// Import progress bar in theme red: red fill on a dark track.
-#[cfg(feature = "innertube")]
+/// Import/update progress bar in theme red: red fill on a dark track.
+/// Shared by the import banner and the self-update modal (ungated: a
+/// pure style with no backend behind it).
 pub(crate) fn import_bar(_: &iced::Theme) -> iced::widget::progress_bar::Style {
     iced::widget::progress_bar::Style {
         background: iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),

@@ -45,9 +45,10 @@ impl AppState {
                 }
             }
             Message::CheckForUpdates => {
-                // One probe at a time (button spam collapses into the
-                // in-flight check).
-                if self.update_checking {
+                // One probe at a time, and never under a download (the
+                // settings button is replaced then; button spam and Tick
+                // races collapse into the in-flight work).
+                if self.update_checking || self.update_phase != UpdatePhase::Idle {
                     return iced::Task::none();
                 }
                 #[cfg(feature = "update")]
@@ -71,8 +72,18 @@ impl AppState {
                 let manual = std::mem::replace(&mut self.update_manual, false);
                 match result {
                     Ok(info) => {
-                        if info.newer {
+                        // Omitted tags never arm the auto-modal (manual
+                        // checks still report them: explicit intent).
+                        let omitted =
+                            self.update_skipped_tag.as_deref() == Some(info.latest_tag.as_str());
+                        if info.newer && (manual || !omitted) {
                             self.update_available = Some(info.clone());
+                            if !manual {
+                                self.pending_update = Some(info.clone());
+                                if self.modal_target() == 0.0 {
+                                    self.modal_anim = 0.0;
+                                }
+                            }
                             self.status = self.language.update_available(&info.latest_tag);
                             self.publish_mpris();
                         } else {
@@ -99,6 +110,140 @@ impl AppState {
                     }
                 }
             }
+            Message::UpdateAndRestart => {
+                // One download at a time (the button is replaced while
+                // busy; spam collapses here).
+                if self.update_phase != UpdatePhase::Idle {
+                    return iced::Task::none();
+                }
+                let Some(info) = self
+                    .pending_update
+                    .clone()
+                    .or_else(|| self.update_available.clone())
+                else {
+                    return iced::Task::none();
+                };
+                #[cfg(feature = "update")]
+                {
+                    if yutu_core::release_asset_for(&info.latest_tag).is_none() {
+                        self.status = self.language.update_no_build();
+                        self.publish_mpris();
+                        return iced::Task::none();
+                    }
+                    self.update_gen += 1;
+                    let gen = self.update_gen;
+                    self.update_phase = UpdatePhase::Downloading;
+                    self.update_progress = Some((0, None));
+                    // Progress lives in the modal: make sure it is open
+                    // (settings starts it closed).
+                    if self.pending_update.is_none() {
+                        self.pending_update = Some(info.clone());
+                        if self.modal_target() == 0.0 {
+                            self.modal_anim = 0.0;
+                        }
+                    }
+                    self.publish_mpris();
+                    return Self::update_download_task(info.latest_tag, gen);
+                }
+                #[cfg(not(feature = "update"))]
+                {
+                    let _ = info;
+                    self.status = self.language.needs_update_check();
+                    self.publish_mpris();
+                    return iced::Task::none();
+                }
+            }
+            Message::UpdateOmitVersion => {
+                // Skip this version forever: persisted, the auto-modal
+                // never shows it again (a newer tag still prompts).
+                if let Some(info) = self
+                    .pending_update
+                    .clone()
+                    .or_else(|| self.update_available.clone())
+                {
+                    self.update_skipped_tag = Some(info.latest_tag.clone());
+                    if let Ok(store) = LibraryStore::open(&self.library_path) {
+                        let _ = store.set_pref("update_skipped_tag", &info.latest_tag);
+                    }
+                }
+                self.update_available = None;
+                self.dismiss_update_modal();
+            }
+            Message::UpdateLater => {
+                // Dismiss for this session only: the settings row keeps
+                // offering the update, next launch prompts again.
+                self.dismiss_update_modal();
+            }
+            Message::UpdateProgress {
+                gen,
+                downloaded,
+                total,
+            } => {
+                // Stale ticks from a dismissed modal drop (same
+                // quarantine as the import ticks).
+                if gen != self.update_gen {
+                    return iced::Task::none();
+                }
+                self.update_progress = Some((downloaded, total));
+            }
+            Message::UpdateDownloaded { gen, result } => {
+                if gen != self.update_gen {
+                    return iced::Task::none();
+                }
+                match result {
+                    Ok(downloaded) => {
+                        self.update_phase = UpdatePhase::Installing;
+                        self.publish_mpris();
+                        return Self::update_install_task(downloaded);
+                    }
+                    Err(e) => {
+                        self.update_phase = UpdatePhase::Idle;
+                        self.update_progress = None;
+                        yutu_core::app_log::warn("yutu-update", format!("download: {e}"));
+                        self.status =
+                            Self::failure_status(self.language.fail_update_download(), &e);
+                        self.publish_mpris();
+                    }
+                }
+            }
+            Message::UpdateInstalled { result } => match result {
+                Ok(relaunch) => {
+                    #[cfg(feature = "update")]
+                    {
+                        use yutu_core::Relaunch as R;
+                        // Persist the session before leaving (the Tick
+                        // saver may not have run since the last change).
+                        self.persist_queue();
+                        let come_back = match relaunch {
+                            R::Exec(exe) => yutu_core::relaunch_at(&exe),
+                            R::OpenApp(app) => yutu_core::open_path(&app),
+                            R::SpawnedInstaller => Ok(()),
+                        };
+                        match come_back {
+                            Ok(()) => std::process::exit(0),
+                            Err(e) => {
+                                self.update_phase = UpdatePhase::Idle;
+                                self.update_progress = None;
+                                yutu_core::app_log::warn("yutu-update", format!("restart: {e}"));
+                                self.status =
+                                    Self::failure_status(self.language.fail_update_restart(), &e);
+                                self.publish_mpris();
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "update"))]
+                    {
+                        let _ = relaunch;
+                    }
+                }
+                Err(e) => {
+                    self.update_phase = UpdatePhase::Idle;
+                    self.update_progress = None;
+                    yutu_core::app_log::warn("yutu-update", format!("install: {e}"));
+                    self.status = Self::failure_status(self.language.fail_update_install(), &e);
+                    self.publish_mpris();
+                }
+            },
             Message::NavBack => {
                 // Side buttons never disturb a drag (Esc owns cancel);
                 // menus and the popup dismiss first, second press goes.
@@ -1975,9 +2120,14 @@ impl AppState {
                     }
                     // Spinners advance while the pipeline runs or the
                     // artist full shelf loads (the frame drives the
-                    // rotated glyphs; nothing else moves).
+                    // rotated glyphs; nothing else moves). Update probes
+                    // and downloads turn their own spinners the same way
+                    // on every build config.
                     #[cfg(feature = "innertube")]
                     if self.pipeline_busy() || self.artist_full_loading.is_some() {
+                        self.spin_frame = self.spin_frame.wrapping_add(1);
+                    }
+                    if self.update_checking || self.update_phase != UpdatePhase::Idle {
                         self.spin_frame = self.spin_frame.wrapping_add(1);
                     }
                     // Lyrics follow glide: ease toward the verse target
@@ -2321,6 +2471,10 @@ impl AppState {
                 if self.pending_playlist_rename.is_some() {
                     self.pending_playlist_rename = None;
                     self.rename_playlist_name.clear();
+                    return iced::Task::none();
+                }
+                if self.pending_update.is_some() {
+                    self.dismiss_update_modal();
                     return iced::Task::none();
                 }
                 #[cfg(feature = "innertube")]

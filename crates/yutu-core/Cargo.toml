@@ -26,6 +26,11 @@ reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "form",
 ], optional = true }
+# Pure-Rust file work for self-updates (checksum, tarball): exact pins
+# per deny.toml (wildcards denied), licenses MIT/Apache-2.0.
+sha2 = { version = "=0.11.1", optional = true }
+flate2 = { version = "=1.1.10", optional = true }
+tar = { version = "=0.4.46", optional = true }
 # OS keychain for cookie sessions + scrobble tokens (Secret Service on
 # Linux, Keychain on macOS, Credential Manager on Windows). Unconditional:
 # scrobbling persistence is not feature-gated, and headless machines use
@@ -36,9 +41,11 @@ keyring = "4"
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1"]
 lyrics = ["dep:reqwest", "dep:tokio"]
 submit = ["dep:reqwest", "dep:tokio"]
-# Self-update check (latest GitHub release tag vs this build): its own
-# feature so offline builds keep no HTTP client at all.
-update = ["dep:reqwest", "dep:tokio"]
+# Self-update check (latest GitHub release tag vs this build) plus the
+# download/verify/install machinery behind "Update and restart".
+# Pure-Rust file work only (no system link): offline builds keep none
+# of it (see the `update` feature gate in update.rs).
+update = ["dep:reqwest", "dep:tokio", "dep:sha2", "dep:flate2", "dep:tar"]
 # Test-only mock backend + fixtures (never in release binaries): enabled
 # via dev-dependencies by crates whose tests use `MockBackend`.
 test-fixtures = []

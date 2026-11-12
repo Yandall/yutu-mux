@@ -30,6 +30,8 @@ pub mod secure_store;
 pub mod security;
 pub mod stream;
 pub mod update;
+#[cfg(all(test, feature = "update"))]
+mod update_install_tests;
 #[cfg(test)]
 mod update_tests;
 pub mod ytdlp;
@@ -103,8 +105,15 @@ pub use secure_store::{
 };
 pub use stream::{save_report, StreamClient, StreamError, StreamRequest};
 #[cfg(feature = "update")]
-pub use update::fetch_update_info;
-pub use update::{is_newer_version, UpdateInfo, RELEASES_API_URL, RELEASES_PAGE_URL};
+pub use update::{
+    download_release_asset, fetch_update_info, install_linux_tarball_to, install_macos_dmg,
+    install_update_asset, open_path, relaunch_at, verify_sha256,
+};
+pub use update::{
+    find_parent_app, is_newer_version, release_asset_for, release_asset_for_os,
+    update_scratch_name, AssetKind, DownloadedAsset, Relaunch, UpdateAsset, UpdateInfo,
+    RELEASES_API_URL, RELEASES_PAGE_URL,
+};
 pub use ytdlp::{download_audio_bytes, find_yt_dlp, resolve_audio_url};
 #[cfg(feature = "innertube")]
 pub mod ytm_token;

@@ -3992,6 +3992,11 @@ impl AppState {
         if let Some(dialog) = self.playlist_rename_dialog() {
             layers.push(dialog);
         }
+        // Self-update modal above everything else: same dimmed frame,
+        // scrim/Esc dismisses for this session (safe default).
+        if let Some(dialog) = self.update_dialog() {
+            layers.push(dialog);
+        }
         // Sign-out confirm above everything else: same dimmed frame,
         // scrim/Esc stays signed in (safe default).
         #[cfg(feature = "innertube")]
