@@ -130,7 +130,7 @@ jobs:
           cargo check -p yutu-player --features mpv --locked
       - name: Build self-contained staged zip (mpv DLLs + yt-dlp.exe beside the exe)
         shell: pwsh
-        run: packaging/windows/build-windows.ps1 --output dist
+        run: packaging/windows/build-windows.ps1 -Output dist
       - name: Read version
         shell: pwsh
         run: |
