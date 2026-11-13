@@ -1,8 +1,10 @@
-//! yutu-desktop: OS integration (MPRIS on Linux, Now Playing on macOS).
+//! yutu-desktop: OS integration (MPRIS on Linux, Now Playing on macOS,
+//! SMTC on Windows).
 //!
 //! * [`mpris`] : Linux MPRIS2 D-Bus service skeleton (`zbus`-based).
 //! * [`tray`] : toolkit-free tray state model feeding a future tray backend.
 //! * [`macos`] : macOS Now Playing + media keys driver (souvlaki).
+//! * [`windows`] : Windows SMTC + media keys driver (souvlaki).
 //! * [`macos_notes`] : macOS integration plan (kept: design constraints).
 
 /// MPRIS identity advertised on D-Bus.
@@ -14,6 +16,7 @@ pub mod mpris;
 #[cfg(test)]
 mod mpris_tests;
 pub mod tray;
+pub mod windows;
 
 pub use mpris::{
     LoopStatus, MprisPlayer, MprisRoot, MprisService, PlaybackStatus, PlayerCommand, SharedPlayer,
