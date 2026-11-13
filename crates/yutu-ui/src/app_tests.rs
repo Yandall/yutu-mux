@@ -177,7 +177,7 @@ fn search_preserves_play_counts() {
     wide.plays = Some("1B plays".into());
     let _ = s.view();
     let _ = s.suggest_track_row(&wide, false);
-    let _ = s.track_row(&wide);
+    let _ = s.track_row("search", &wide);
     let _ = s.queue_row(0);
     // Queue text boxes hold 2 title lines + 1 artist line always.
     let _ = AppState::track_text(&long, &long, 12, iced::Color::WHITE);
@@ -1300,8 +1300,47 @@ fn hovers_stay_frozen_behind_dialogs() {
     let _ = s.view();
     // Dismiss and the rows highlight again.
     let _ = s.update(Message::UpdateLater);
-    let _ = s.update(Message::TrackHover(Some("m1".into())));
-    assert_eq!(s.hovered_track.as_deref(), Some("m1"));
+    let _ = s.update(Message::TrackHover(Some(track_hover_key("quick", "m1"))));
+    assert_eq!(
+        s.hovered_track.as_deref(),
+        Some(track_hover_key("quick", "m1").as_str())
+    );
+}
+
+#[test]
+fn hover_keys_scope_rows_to_their_own_list() {
+    // Same track id in two scopes keys differently (the format is the
+    // contract: views build it, the detail derivation strips the
+    // `playlist:` prefix).
+    assert_eq!(track_hover_key("quick", "m1"), "quick:m1");
+    assert_ne!(
+        track_hover_key("quick", "m1"),
+        track_hover_key("more", "m1")
+    );
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    let pid = s.user_playlists[0].id.clone();
+    for tid in ["m1", "m2"] {
+        let _ = s.update(Message::AddToPlaylist {
+            playlist_id: pid.clone(),
+            track_id: tid.into(),
+        });
+    }
+    s.route = Route::PlaylistDetail(pid.clone());
+    // Playlist-scoped hover derives the ordered-view index.
+    let _ = s.update(Message::TrackHover(Some(track_hover_key("playlist", "m2"))));
+    assert_eq!(s.hovered_track.as_deref(), Some("playlist:m2"));
+    assert_eq!(s.pl_hover, Some(1));
+    // Another list's key for the same track is a different hover:
+    // exiting with it never clears the armed one.
+    let _ = s.update(Message::TrackHover(Some(track_hover_key("more", "m2"))));
+    assert_eq!(s.hovered_track.as_deref(), Some("more:m2"));
+    // ...and it never derives the detail index either.
+    assert!(s.pl_hover.is_none());
+    let _ = s.update(Message::TrackExit(track_hover_key("playlist", "m2")));
+    assert_eq!(s.hovered_track.as_deref(), Some("more:m2"));
+    let _ = s.update(Message::TrackExit(track_hover_key("more", "m2")));
+    assert!(s.hovered_track.is_none());
 }
 
 #[test]
@@ -1848,7 +1887,7 @@ fn playlist_manual_drag_needs_a_move_and_ignores_action_presses() {
     // drag never went live): the row click just plays instead.
     let before = order_of(&s);
     s.route = Route::PlaylistDetail(pid.clone());
-    let _ = s.update(Message::TrackHover(Some("t0".into())));
+    let _ = s.update(Message::TrackHover(Some(track_hover_key("playlist", "t0"))));
     let _ = s.update(Message::PlDragStart {
         playlist_id: pid.clone(),
         index: 0,
@@ -2481,16 +2520,16 @@ fn search_rows_hover_and_collection_menus() {
     let _ = s.search_artist_row(&artist);
     let _ = s.search_playlist_row(&pl);
     let _ = s.search_song_row(&t);
-    let _ = s.numbered_track_row(&t, 1, &RowPlay::Now);
-    let _ = s.track_row(&t);
+    let _ = s.numbered_track_row("search", &t, 1, &RowPlay::Now);
+    let _ = s.track_row("search", &t);
     // Play-count rows build with and without counts (search and
     // catalog hits carry "213M plays"; album, playlist, and radio
     // rows often carry none and must keep their layout).
     let mut played = mk_track("v2", "Toxicity", "System of a Down");
     played.plays = Some("213M plays".into());
     let _ = s.search_song_row(&played);
-    let _ = s.numbered_track_row(&played, 2, &RowPlay::Now);
-    let _ = s.track_row(&played);
+    let _ = s.numbered_track_row("search", &played, 2, &RowPlay::Now);
+    let _ = s.track_row("search", &played);
     // Top-song rows build with and without the album subtitle.
     let mut with_album = mk_track("v3", "Bicycle Race", "Queen");
     with_album.album = Some("Jazz".into());
@@ -2505,7 +2544,7 @@ fn search_rows_hover_and_collection_menus() {
     let _ = s.search_artist_row(&artist);
     let _ = s.search_playlist_row(&pl);
     let _ = s.search_song_row(&t);
-    let _ = s.numbered_track_row(&t, 1, &RowPlay::Now);
+    let _ = s.numbered_track_row("search", &t, 1, &RowPlay::Now);
     // Liked heart stays on the row at rest.
     s.liked.insert("v1".into());
     s.hovered_track = None;
@@ -8296,7 +8335,8 @@ fn panel_hover_tracks_cursor() {
     assert_eq!(s.hovered_queue, Some(2));
     let _ = s.update(Message::QueueExit(2));
     assert!(s.hovered_queue.is_none());
-    // Id-keyed row hover for non-index lists.
+    // Id-keyed row hover for non-index lists (payloads carry the
+    // scope-joined key; see `track_hover_key`).
     assert!(s.hovered_track.is_none());
     let _ = s.update(Message::TrackHover(Some("m1".into())));
     assert_eq!(s.hovered_track.as_deref(), Some("m1"));
@@ -8318,7 +8358,7 @@ fn stale_exit_never_wipes_fresh_hover() {
     // Matching exit still clears.
     let _ = s.update(Message::QueueExit(1));
     assert!(s.hovered_queue.is_none());
-    // Id-keyed (track rows across the whole app).
+    // Scope-keyed (track rows across the whole app).
     let _ = s.update(Message::TrackHover(Some("m2".into())));
     let _ = s.update(Message::TrackExit("m1".into()));
     assert_eq!(s.hovered_track.as_deref(), Some("m2"));

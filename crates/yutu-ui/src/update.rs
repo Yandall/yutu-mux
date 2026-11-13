@@ -1660,8 +1660,14 @@ impl AppState {
                     self.hovered_track = h.clone();
                     // Playlist detail highlight follows the same hover:
                     // derive the ordered index so manual rows light up
-                    // without a second enter message.
-                    if let (Some(id), Route::PlaylistDetail(pid)) = (h.as_deref(), &self.route) {
+                    // without a second enter message. The payload is a
+                    // scoped key (`playlist:id` on this route); only it
+                    // derives, so another list's hover never moves the
+                    // detail highlight.
+                    if let (Some(id), Route::PlaylistDetail(pid)) = (
+                        h.as_deref().and_then(|k| k.strip_prefix("playlist:")),
+                        &self.route,
+                    ) {
                         if let Some(p) = self.find_playlist(pid) {
                             let ordered = self.playlist_ordered_tracks(&p);
                             self.pl_hover = ordered.iter().position(|t| t.id == id);

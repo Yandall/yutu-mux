@@ -146,6 +146,15 @@ impl RowPlay {
     }
 }
 
+/// Hover key for one track-row instance: `scope:id`. The same track id
+/// renders in several lists at once (Quick picks + More-from,
+/// Discovery shelves, search + detail), so a bare id would light
+/// them all up; joining the list scope keeps the highlight (plus the
+/// reveal-on-hover actions) on the row under the cursor only.
+pub(crate) fn track_hover_key(scope: &str, id: &str) -> String {
+    format!("{scope}:{id}")
+}
+
 /// Search page type filter (chip row above the results). The backend
 /// returns songs, albums, artists and community playlists, so those
 /// are the only chips: no empty categories.
@@ -543,12 +552,17 @@ pub enum Message {
     /// History row-leave (same enter-before-exit ordering; see
     /// [`Message::QueueExit`]).
     HistoryExit(usize),
-    /// Id-keyed row hover (full-row highlight on non-index lists).
+    /// Scope-keyed row hover (full-row highlight on non-index lists):
+    /// the payload is [`AppState::track_hover_key`] (`scope:id`), so
+    /// the same track id in two visible lists (Quick picks +
+    /// More-from, Discovery shelves, search + detail) highlights only
+    /// under the cursor.
     TrackHover(Option<String>),
-    /// Track row-leave (same enter-before-exit ordering; see
-    /// [`Message::QueueExit`]).
+    /// Track row-leave (same enter-before-exit ordering as
+    /// [`Message::QueueExit`]). Carries the same scoped key the row
+    /// entered with, so leaving one instance never clears another.
     TrackExit(String),
-    /// Right-panel Recent hover (same id-keyed contract as track rows
+    /// Right-panel Recent hover (same per-row contract as track rows
     /// but its own state, so a Recent row and a center row for the
     /// same track never highlight together).
     RecentHover(Option<String>),

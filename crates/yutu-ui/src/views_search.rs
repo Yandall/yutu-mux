@@ -53,7 +53,7 @@ impl AppState {
 
     /// One compact track row: green play, title/artist, heart. All other
     /// actions live on detail screens: this killed the button-soup.
-    pub(crate) fn track_row(&self, t: &Track) -> iced::Element<'_, Message> {
+    pub(crate) fn track_row(&self, scope: &str, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{button, container, mouse_area, row};
         use iced::Fill;
         let heart_color = if self.liked.contains(&t.id) {
@@ -61,8 +61,8 @@ impl AppState {
         } else {
             MUTED
         };
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
-        let hover_id = t.id.clone();
+        let hover_id = track_hover_key(scope, &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         mouse_area(
             container(
                 row![
@@ -114,9 +114,9 @@ impl AppState {
         } else {
             MUTED
         };
-        let hovered =
-            self.hovered_track.as_deref() == Some(t.id.as_str()) || self.pl_hover == Some(index);
-        let hover_id = t.id.clone();
+        let hover_id = track_hover_key("playlist", &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str())
+            || self.pl_hover == Some(index);
         let play_here = Message::PlayPlaylistAt {
             playlist_id: playlist_id.to_string(),
             index,
@@ -199,9 +199,9 @@ impl AppState {
         } else {
             MUTED
         };
-        let hovered =
-            self.hovered_track.as_deref() == Some(t.id.as_str()) || self.pl_hover == Some(index);
-        let hover_id = t.id.clone();
+        let hover_id = track_hover_key("playlist", &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str())
+            || self.pl_hover == Some(index);
         // No inner play buttons: plain visuals let the press reach the
         // outer row area from art, text, gaps, or duration (only the
         // heart and ellipsis buttons own their press, guarded below). A
@@ -310,8 +310,8 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{column, container, mouse_area, row};
         use iced::Fill;
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
-        let hover_id = t.id.clone();
+        let hover_id = track_hover_key("suggest", &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         let play_id = t.id.clone();
         let menu_id = t.id.clone();
         let plays = t.plays.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -696,8 +696,8 @@ impl AppState {
     pub(crate) fn search_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row};
         use iced::Fill;
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
-        let hover_id = t.id.clone();
+        let hover_id = track_hover_key("hits", &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         let (heart, more) = self.song_actions(t, hovered);
         mouse_area(
             container(
