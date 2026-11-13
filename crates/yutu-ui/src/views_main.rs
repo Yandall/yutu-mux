@@ -2527,6 +2527,7 @@ impl AppState {
                     text(self.language.about_section()).size(17),
                     column![
                         text(self.language.about_version()).size(13),
+                        self.update_section(),
                         text(self.language.about_license()).size(12).color(MUTED),
                         button(btn_text(self.language.about_source(), 12))
                             .style(ghost_button)
@@ -3161,6 +3162,7 @@ impl AppState {
                     .on_right_press(Message::CloseSuggest)
                     .on_enter(Message::ClearHovers)
                     .on_exit(Message::ClearHovers)
+                    .interaction(iced::mouse::Interaction::Idle)
             };
             let suggest_scrim: iced::Element<'_, Message> = container(column![
                 row![
@@ -3465,12 +3467,15 @@ impl AppState {
                 .width(300);
                 // Dismiss layer: left-click outside closes. No right-press
                 // handler, so right-clicks pass through: right-clicking
-                // another song moves the menu in one step.
+                // another song moves the menu in one step. The arrow
+                // vote still shadows background buttons (cursor only,
+                // clicks and right-clicks behave as before).
                 let scrim: iced::Element<'_, Message> =
                     mouse_area(container(text("").size(1)).width(Fill).height(Fill))
                         .on_press(Message::CloseContext)
                         .on_enter(Message::ClearHovers)
                         .on_exit(Message::ClearHovers)
+                        .interaction(iced::mouse::Interaction::Idle)
                         .into();
                 // Cursor-anchored placement (clamped on screen), YTM-style.
                 let (mx, my) = menu_pos(self.menu_at, self.window);
@@ -3726,6 +3731,7 @@ impl AppState {
                         .on_press(Message::CloseContext)
                         .on_enter(Message::ClearHovers)
                         .on_exit(Message::ClearHovers)
+                        .interaction(iced::mouse::Interaction::Idle)
                         .into();
                 let (mx, my) = menu_pos(self.menu_at, self.window);
                 let pl_placed: iced::Element<'_, Message> = container(column![
@@ -3751,6 +3757,7 @@ impl AppState {
                     .on_press(Message::CloseContext)
                     .on_enter(Message::ClearHovers)
                     .on_exit(Message::ClearHovers)
+                    .interaction(iced::mouse::Interaction::Idle)
                     .into();
             layers.push(sort_scrim);
         }
@@ -3954,6 +3961,7 @@ impl AppState {
                         .on_press(Message::CloseContext)
                         .on_enter(Message::ClearHovers)
                         .on_exit(Message::ClearHovers)
+                        .interaction(iced::mouse::Interaction::Idle)
                         .into();
                 let (mx, my) = menu_pos(self.menu_at, self.window);
                 let coll_placed: iced::Element<'_, Message> = container(column![
@@ -3989,6 +3997,11 @@ impl AppState {
         // Playlist-rename dialog above everything else: same dimmed
         // frame, scrim/Esc keeps the old name (safe default).
         if let Some(dialog) = self.playlist_rename_dialog() {
+            layers.push(dialog);
+        }
+        // Self-update modal above everything else: same dimmed frame,
+        // scrim/Esc dismisses for this session (safe default).
+        if let Some(dialog) = self.update_dialog() {
             layers.push(dialog);
         }
         // Sign-out confirm above everything else: same dimmed frame,

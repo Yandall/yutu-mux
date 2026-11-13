@@ -779,6 +779,45 @@ impl Language {
     pub fn about_backend(self) -> String {
         self.tr("about-backend")
     }
+    pub fn check_for_updates(self) -> String {
+        self.tr("check-for-updates")
+    }
+    pub fn checking_for_updates(self) -> String {
+        self.tr("checking-for-updates")
+    }
+    pub fn update_available(self, tag: &str) -> String {
+        self.tr_args("update-available", &[("tag", tag)])
+    }
+    pub fn update_title(self) -> String {
+        self.tr("update-title")
+    }
+    pub fn update_and_restart(self) -> String {
+        self.tr("update-and-restart")
+    }
+    pub fn omit_version(self) -> String {
+        self.tr("omit-version")
+    }
+    pub fn update_later(self) -> String {
+        self.tr("update-later")
+    }
+    pub fn update_progress(self, pct: u64) -> String {
+        self.tr_args("update-progress", &[("pct", &pct.to_string())])
+    }
+    pub fn update_progress_unknown(self) -> String {
+        self.tr("update-progress-unknown")
+    }
+    pub fn update_installing(self) -> String {
+        self.tr("update-installing")
+    }
+    pub fn update_no_build(self) -> String {
+        self.tr("update-no-build")
+    }
+    pub fn up_to_date(self, version: &str) -> String {
+        self.tr_args("up-to-date", &[("version", version)])
+    }
+    pub fn needs_update_check(self) -> String {
+        self.tr("needs-update-check")
+    }
     pub fn enable_custom_eq(self) -> String {
         self.tr("enable-custom-eq")
     }
@@ -1379,6 +1418,18 @@ impl Language {
     }
     pub fn fail_check(self) -> String {
         self.tr("fail-check")
+    }
+    pub fn fail_update_check(self) -> String {
+        self.tr("fail-update-check")
+    }
+    pub fn fail_update_download(self) -> String {
+        self.tr("fail-update-download")
+    }
+    pub fn fail_update_install(self) -> String {
+        self.tr("fail-update-install")
+    }
+    pub fn fail_update_restart(self) -> String {
+        self.tr("fail-update-restart")
     }
     pub fn fail_live_top(self) -> String {
         self.tr("fail-live-top")

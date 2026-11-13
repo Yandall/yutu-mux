@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use yutu_core::{
     forgotten_favorites, history_section, should_scrobble, weekly_mix, Album, Artist, HistoryEntry,
     HistorySection, LibraryStore, LyricsProvider, LyricsResult, Playlist, PlaylistHit,
-    QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
+    QueueSnapshot, SearchAll, SearchResults, TopKind, Track, UpdateInfo,
 };
 #[cfg(feature = "mpv")]
 #[allow(unused_imports)]
@@ -376,6 +376,31 @@ pub struct AppState {
     pub(crate) pending_playlist_rename: Option<String>,
     /// Rename dialog input (prefilled on arm, edited per keystroke).
     pub(crate) rename_playlist_name: String,
+    /// Self-update probe in flight (About spinner + startup check).
+    pub(crate) update_checking: bool,
+    /// Manual check requested (the silent startup probe reports only
+    /// newer releases; manual checks also confirm up-to-date).
+    pub(crate) update_manual: bool,
+    /// A probe completed at least once (drives the up-to-date line).
+    pub(crate) update_checked: bool,
+    /// Latest release when it is newer than this build (`None` clears
+    /// on up-to-date or failed probes, so stale badges never linger).
+    pub(crate) update_available: Option<UpdateInfo>,
+    /// Update modal open for this release (`None` hides it). Armed by
+    /// the silent startup probe, never by manual checks (those report
+    /// inline in the settings row + status).
+    pub(crate) pending_update: Option<UpdateInfo>,
+    /// Install phase for the modal progress UI (`Idle` otherwise).
+    pub(crate) update_phase: UpdatePhase,
+    /// Download progress: `(bytes, total)` (`None` total reads as
+    /// indeterminate).
+    pub(crate) update_progress: Option<(u64, Option<u64>)>,
+    /// Download/install generation: dismissing the modal bumps it so
+    /// stale progress and arrivals drop instead of reopening work.
+    pub(crate) update_gen: u64,
+    /// Omitted release tag (persisted `update_skipped_tag` pref): the
+    /// auto-modal never shows it again; manual checks still report it.
+    pub(crate) update_skipped_tag: Option<String>,
     /// Sign-out confirm dialog open (Settings row arms it).
     #[cfg(feature = "innertube")]
     pub(crate) pending_signout: bool,

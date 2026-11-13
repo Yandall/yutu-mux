@@ -686,9 +686,10 @@ impl AppState {
     /// Move the captured fresh-import source into the cleanup modal once
     /// the connection succeeds (base stage). Missing files arm nothing;
     /// session re-imports and syncs never capture a source, so they
-    /// never prompt.
+    /// never prompt. Reports whether the modal armed (the caller drops
+    /// background focus then, like every other modal arming).
     #[cfg(feature = "innertube")]
-    pub(crate) fn arm_cookie_cleanup(&mut self) {
+    pub(crate) fn arm_cookie_cleanup(&mut self) -> bool {
         if let Some(src) = self.pending_cookie_source.take() {
             if !src.is_empty() && std::path::Path::new(&src).exists() {
                 self.pending_cookie_cleanup = Some(src);
@@ -698,30 +699,59 @@ impl AppState {
                 if !self.scrobble_modal_open {
                     self.modal_anim = 0.0;
                 }
+                return true;
             }
         }
+        false
+    }
+
+    /// True while any dialog modal is open (delete/rename/update
+    /// confirms, scrobbling, sign-out, cookie cleanup). Rows behind
+    /// the dialog scrim never highlight or take focus (see
+    /// [`Self::modal_freeze`]).
+    pub(crate) fn modal_open(&self) -> bool {
+        #[cfg(feature = "innertube")]
+        if self.pending_cookie_cleanup.is_some() {
+            return true;
+        }
+        if self.scrobble_modal_open {
+            return true;
+        }
+        #[cfg(feature = "innertube")]
+        if self.pending_signout {
+            return true;
+        }
+        if self.pending_playlist_delete.is_some() {
+            return true;
+        }
+        if self.pending_playlist_rename.is_some() {
+            return true;
+        }
+        if self.pending_update.is_some() {
+            return true;
+        }
+        false
+    }
+
+    /// Hover/modal freeze: any open menu, dialog, or popup (rows
+    /// behind scrims never highlight; cursor-move latches never glide
+    /// behind them either).
+    pub(crate) fn modal_freeze(&self) -> bool {
+        self.context_menu.is_some()
+            || self.pl_menu.is_some()
+            || self.coll_menu.is_some()
+            || self.sort_menu.is_some()
+            || self.show_suggest
+            || self.modal_open()
     }
 
     /// Entrance target for the modal layer: 1 while any dialog is open.
     pub(crate) fn modal_target(&self) -> f32 {
-        #[cfg(feature = "innertube")]
-        if self.pending_cookie_cleanup.is_some() {
-            return 1.0;
+        if self.modal_open() {
+            1.0
+        } else {
+            0.0
         }
-        if self.scrobble_modal_open {
-            return 1.0;
-        }
-        #[cfg(feature = "innertube")]
-        if self.pending_signout {
-            return 1.0;
-        }
-        if self.pending_playlist_delete.is_some() {
-            return 1.0;
-        }
-        if self.pending_playlist_rename.is_some() {
-            return 1.0;
-        }
-        0.0
     }
 
     /// True while a modal entrance still needs ticker frames.

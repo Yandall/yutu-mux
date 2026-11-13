@@ -233,6 +233,7 @@ needs-innertube-import-offline = La importación de cookies necesita `--features
 needs-innertube-playlists = Las listas necesitan `--features innertube`.
 needs-innertube-radio = La radio necesita `--features innertube`.
 needs-innertube-search-offline = La búsqueda real necesita `--features innertube` (versión sin conexión).
+needs-update-check = La búsqueda de actualizaciones necesita `--features update`.
 shortcuts-hint = Atajos: Espacio reproducir/pausar · n siguiente · p anterior · / buscar
 ready-status = Listo: busca música.
 
@@ -244,6 +245,18 @@ about-license = Licencia MIT: software libre, ver LICENSE.
 about-source = Código fuente en GitHub
 about-notices = Tipo incluido: Adwaita Sans (OFL-1.1). Iconos: Lucide (ISC).
 about-backend = La reproducción usa libmpv del sistema (GPL-2.0); la versión solo-rodio es libre de GPL.
+check-for-updates = Buscar actualizaciones
+checking-for-updates = Buscando actualizaciones…
+update-available = Nueva versión { $tag } disponible, lee los cambios aquí.
+update-title = Nueva versión disponible
+update-and-restart = Actualizar y reiniciar
+omit-version = Omitir esta versión
+update-later = Actualizar más tarde
+update-progress = Descargando actualización… { $pct }%
+update-progress-unknown = Descargando actualización…
+update-installing = Instalando actualización…
+update-no-build = Sin versión actualizable para esta plataforma.
+up-to-date = Actualizado ({ $version }).
 
 ## Equalizer (Settings)
 
@@ -377,6 +390,10 @@ fail-signout = Error al cerrar sesión
 fail-export-delete = No se pudo eliminar el archivo exportado
 fail-signin = Error al iniciar sesión
 fail-check = Error de comprobación
+fail-update-check = Falló la búsqueda de actualizaciones
+fail-update-download = Falló la descarga de la actualización
+fail-update-install = Falló la instalación de la actualización
+fail-update-restart = Falló el reinicio tras actualizar
 fail-live-top = Error al cargar populares
 fail-live-album = Error al cargar canciones del álbum
 fail-artist-lookup = Error al buscar artista

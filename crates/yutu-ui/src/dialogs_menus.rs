@@ -161,6 +161,9 @@ impl AppState {
         .on_right_press(dismiss)
         .on_enter(Message::ClearHovers)
         .on_exit(Message::ClearHovers)
+        // Arrow over the whole backdrop: the vote shadows every
+        // widget beneath, so background buttons never show the hand.
+        .interaction(iced::mouse::Interaction::Idle)
         .into();
         // Entrance: the card starts below center and settles as the
         // ticker eases `modal_anim` to 1.
@@ -331,6 +334,172 @@ impl AppState {
         .width(400)
         .into();
         Some(self.modal_frame(card, Message::CancelRenamePlaylist))
+    }
+
+    /// Self-update row (About section): a manual check button, swapped
+    /// for "Update and restart" plus a changelog link once a release
+    /// is available (the modal covers the notes; the row stays one
+    /// action).
+    #[cfg(feature = "update")]
+    pub(crate) fn update_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, row, text};
+        if let Some(info) = &self.update_available {
+            row![
+                button(btn_text(self.language.update_and_restart(), 12))
+                    .style(accent_button)
+                    .on_press(Message::UpdateAndRestart)
+                    .padding(8),
+                link_row(
+                    self.language.update_available(&info.latest_tag),
+                    12.0,
+                    info.html_url.clone(),
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
+        } else {
+            let mut items: Vec<iced::Element<'_, Message>> =
+                vec![button(btn_text(self.language.check_for_updates(), 12))
+                    .style(ghost_button)
+                    .on_press(Message::CheckForUpdates)
+                    .padding(8)
+                    .into()];
+            if self.update_checking {
+                items.push(Self::spinner_frame(self.spin_frame, 12.0, MUTED));
+                items.push(
+                    text(self.language.checking_for_updates())
+                        .size(12)
+                        .color(MUTED)
+                        .into(),
+                );
+            } else if self.update_checked {
+                items.push(
+                    text(self.language.up_to_date(crate::APP_VERSION))
+                        .size(12)
+                        .color(MUTED)
+                        .into(),
+                );
+            }
+            iced::widget::Row::with_children(items)
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        }
+    }
+
+    /// Offline builds: no HTTP client, so the check explains itself.
+    #[cfg(not(feature = "update"))]
+    pub(crate) fn update_section(&self) -> iced::Element<'_, Message> {
+        use iced::widget::text;
+        text(self.language.needs_update_check())
+            .size(12)
+            .color(MUTED)
+            .into()
+    }
+
+    /// Self-update modal: a newer release exists. Shows the tag, an
+    /// excerpt of its notes, and a changelog link, with three actions:
+    /// update and restart (downloads, verifies, installs), omit this
+    /// version (never prompts again), or later (dismisses for this
+    /// session). While downloading/installing the actions give way to
+    /// progress; scrim/Esc cancels like "later".
+    pub(crate) fn update_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, row, scrollable, text};
+        use iced::Fill;
+        let info = self.pending_update.clone()?;
+        let busy = self.update_phase != UpdatePhase::Idle;
+        let notes_h = ((info.notes.lines().count() as f32) * 15.0 + 12.0).clamp(48.0, 220.0);
+        let mut body: Vec<iced::Element<'_, Message>> = vec![
+            text(self.language.update_title()).size(16).into(),
+            link_row(
+                self.language.update_available(&info.latest_tag),
+                13.0,
+                info.html_url.clone(),
+            ),
+        ];
+        if !info.notes.trim().is_empty() {
+            body.push(
+                container(
+                    scrollable(text(info.notes.clone()).size(12).color(MUTED).width(Fill))
+                        .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                        .style(move |t, s| {
+                            slim_scroll_alpha(t, s, self.scroll_opacity("update-notes"))
+                        })
+                        .on_scroll(|v| Message::Scrolled("update-notes", v.absolute_offset().y))
+                        .height(iced::Length::Fixed(notes_h))
+                        .width(Fill),
+                )
+                .width(Fill)
+                .into(),
+            );
+        }
+        if busy {
+            let progress: iced::Element<'_, Message> = match self.update_phase {
+                UpdatePhase::Downloading => match self.update_progress {
+                    Some((done, Some(total))) if total > 0 => {
+                        let pct = (done.min(total) as f32 / total as f32 * 100.0).clamp(0.0, 100.0);
+                        column![
+                            iced::widget::progress_bar(0.0..=100.0, pct)
+                                .girth(8)
+                                .style(import_bar),
+                            text(self.language.update_progress(pct.round() as u64))
+                                .size(12)
+                                .color(MUTED),
+                        ]
+                        .spacing(4)
+                        .into()
+                    }
+                    _ => row![
+                        Self::spinner_frame(self.spin_frame, 12.0, ACCENT),
+                        text(self.language.update_progress_unknown())
+                            .size(12)
+                            .color(MUTED),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .into(),
+                },
+                _ => row![
+                    Self::spinner_frame(self.spin_frame, 12.0, ACCENT),
+                    text(self.language.update_installing())
+                        .size(12)
+                        .color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center)
+                .into(),
+            };
+            body.push(progress);
+        } else {
+            body.push(
+                row![
+                    button(btn_text(self.language.update_and_restart(), 12))
+                        .style(accent_button)
+                        .on_press(Message::UpdateAndRestart)
+                        .padding(8),
+                    button(btn_text(self.language.omit_version(), 12))
+                        .style(ghost_button)
+                        .on_press(Message::UpdateOmitVersion)
+                        .padding(8),
+                    button(btn_text(self.language.update_later(), 12))
+                        .style(ghost_button)
+                        .on_press(Message::UpdateLater)
+                        .padding(8),
+                ]
+                .spacing(8)
+                .into(),
+            );
+        }
+        let card: iced::Element<'_, Message> = container(column(body).spacing(8))
+            .style(card_bg)
+            .padding(16)
+            .width(440)
+            .into();
+        // Non-dismissing scrim (see modal_frame): clicks outside are
+        // eaten with NoOp, Esc is a no-op for this modal; leaving goes
+        // through Update and restart, Omit, or Later.
+        Some(self.modal_frame(card, Message::NoOp))
     }
 
     /// Persist scrobble secrets to the OS keychain, one write per field
@@ -782,6 +951,8 @@ impl AppState {
     /// A running pipeline counts: spinners advance one frame per tick.
     /// So does a lyrics follow glide (it settles on its own), and so
     /// does the artist full-shelf fetch (its Show-more spinner turns).
+    /// An update probe or download/install keeps the About and modal
+    /// spinners turning the same way.
     pub(crate) fn animating(&self) -> bool {
         self.sidebar_w != self.sidebar_target()
             || self.right_w != self.right_target()
@@ -792,6 +963,8 @@ impl AppState {
             || self.artist_full_loading.is_some()
             || self.lyrics_gliding()
             || self.modal_animating()
+            || self.update_checking
+            || self.update_phase != UpdatePhase::Idle
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -862,6 +1035,25 @@ impl AppState {
         self.press_snap = None;
     }
 
+    /// Drop every row hover (one place): arming any modal calls this
+    /// so a frozen hover highlight never sits behind the dialog (the
+    /// cursor never exits the row it was on when the modal appeared).
+    /// Shared with the scrim hover-freeze (same frozen state).
+    pub(crate) fn clear_hovers(&mut self) {
+        self.hovered_track = None;
+        self.hovered_recent = None;
+        self.hovered_album = None;
+        self.hovered_artist = None;
+        self.hovered_search_playlist = None;
+        self.hovered_playlist = None;
+        self.hovered_queue = None;
+        self.hovered_history = None;
+        self.hovered_auto = None;
+        self.hover_remove = None;
+        self.pl_hover = None;
+        self.pl_action_hover = None;
+    }
+
     /// Close the context menu and drop its anchor.
     pub(crate) fn close_menu(&mut self) {
         self.context_menu = None;
@@ -870,6 +1062,18 @@ impl AppState {
         self.pl_menu = None;
         self.sort_menu = None;
         self.coll_menu = None;
+    }
+
+    /// Dismiss the update modal and cancel in-flight download/install
+    /// work (the generation bump quarantines stale progress and
+    /// arrivals, like the import generation). "Later", scrim, and Esc
+    /// land here without persisting anything; the settings row keeps
+    /// offering the update.
+    pub(crate) fn dismiss_update_modal(&mut self) {
+        self.pending_update = None;
+        self.update_phase = UpdatePhase::Idle;
+        self.update_progress = None;
+        self.update_gen += 1;
     }
 
     /// Close the playlist flyout and drop its hover state (one place,
@@ -1019,12 +1223,7 @@ impl AppState {
     /// Collection hover with the same modal freeze as track rows: rows
     /// behind scrims never highlight.
     pub(crate) fn coll_hover(&self, h: Option<String>) -> Option<String> {
-        if self.context_menu.is_some()
-            || self.pl_menu.is_some()
-            || self.coll_menu.is_some()
-            || self.sort_menu.is_some()
-            || self.show_suggest
-        {
+        if self.modal_freeze() {
             None
         } else {
             h

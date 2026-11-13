@@ -44,6 +44,211 @@ impl AppState {
                     yutu_core::app_log::warn("yutu-ui", format!("open {url} failed: {e}"));
                 }
             }
+            Message::NoOp => {}
+            Message::CheckForUpdates => {
+                // One probe at a time, and never under a download (the
+                // settings button is replaced then; button spam and Tick
+                // races collapse into the in-flight work).
+                if self.update_checking || self.update_phase != UpdatePhase::Idle {
+                    return iced::Task::none();
+                }
+                #[cfg(feature = "update")]
+                {
+                    self.update_manual = true;
+                    self.update_checking = true;
+                    self.status = self.language.checking_for_updates();
+                    self.publish_mpris();
+                }
+                #[cfg(not(feature = "update"))]
+                {
+                    self.status = self.language.needs_update_check();
+                    self.publish_mpris();
+                }
+                // Offline builds: no HTTP client, the task is a no-op.
+                return Self::update_check_task(crate::APP_VERSION.to_string());
+            }
+            Message::UpdateCheckCompleted { result } => {
+                self.update_checking = false;
+                self.update_checked = true;
+                let manual = std::mem::replace(&mut self.update_manual, false);
+                match result {
+                    Ok(info) => {
+                        // Omitted tags never arm the auto-modal (manual
+                        // checks still report them: explicit intent).
+                        let omitted =
+                            self.update_skipped_tag.as_deref() == Some(info.latest_tag.as_str());
+                        if info.newer && (manual || !omitted) {
+                            self.update_available = Some(info.clone());
+                            if !manual {
+                                self.pending_update = Some(info.clone());
+                                if self.modal_target() == 0.0 {
+                                    self.modal_anim = 0.0;
+                                }
+                                self.clear_hovers();
+                                self.status = self.language.update_available(&info.latest_tag);
+                                self.publish_mpris();
+                                return Self::unfocus_task();
+                            }
+                            self.status = self.language.update_available(&info.latest_tag);
+                            self.publish_mpris();
+                        } else {
+                            self.update_available = None;
+                            // The silent startup probe stays out of the
+                            // way when there is nothing to report; only
+                            // manual checks confirm up-to-date.
+                            if manual {
+                                self.status = self.language.up_to_date(crate::APP_VERSION);
+                                self.publish_mpris();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.update_available = None;
+                        yutu_core::app_log::warn("yutu-update", format!("check: {e}"));
+                        // Same silence rule as up-to-date: startup stays
+                        // on Ready, manual checks report honestly.
+                        if manual {
+                            self.status =
+                                Self::failure_status(self.language.fail_update_check(), &e);
+                            self.publish_mpris();
+                        }
+                    }
+                }
+            }
+            Message::UpdateAndRestart => {
+                // One download at a time (the button is replaced while
+                // busy; spam collapses here).
+                if self.update_phase != UpdatePhase::Idle {
+                    return iced::Task::none();
+                }
+                let Some(info) = self
+                    .pending_update
+                    .clone()
+                    .or_else(|| self.update_available.clone())
+                else {
+                    return iced::Task::none();
+                };
+                #[cfg(feature = "update")]
+                {
+                    if yutu_core::release_asset_for(&info.latest_tag).is_none() {
+                        self.status = self.language.update_no_build();
+                        self.publish_mpris();
+                        return iced::Task::none();
+                    }
+                    self.update_gen += 1;
+                    let gen = self.update_gen;
+                    self.update_phase = UpdatePhase::Downloading;
+                    self.update_progress = Some((0, None));
+                    // Progress lives in the modal: make sure it is open
+                    // (settings starts it closed).
+                    if self.pending_update.is_none() {
+                        self.pending_update = Some(info.clone());
+                        if self.modal_target() == 0.0 {
+                            self.modal_anim = 0.0;
+                        }
+                    }
+                    self.publish_mpris();
+                    return Self::update_download_task(info.latest_tag, gen);
+                }
+                #[cfg(not(feature = "update"))]
+                {
+                    let _ = info;
+                    self.status = self.language.needs_update_check();
+                    self.publish_mpris();
+                    return iced::Task::none();
+                }
+            }
+            Message::UpdateOmitVersion => {
+                // Skip this version forever: persisted, the auto-modal
+                // never shows it again (a newer tag still prompts).
+                if let Some(info) = self
+                    .pending_update
+                    .clone()
+                    .or_else(|| self.update_available.clone())
+                {
+                    self.update_skipped_tag = Some(info.latest_tag.clone());
+                    if let Ok(store) = LibraryStore::open(&self.library_path) {
+                        let _ = store.set_pref("update_skipped_tag", &info.latest_tag);
+                    }
+                }
+                self.update_available = None;
+                self.dismiss_update_modal();
+            }
+            Message::UpdateLater => {
+                // Dismiss for this session only: the settings row keeps
+                // offering the update, next launch prompts again.
+                self.dismiss_update_modal();
+            }
+            Message::UpdateProgress {
+                gen,
+                downloaded,
+                total,
+            } => {
+                // Stale ticks from a dismissed modal drop (same
+                // quarantine as the import ticks).
+                if gen != self.update_gen {
+                    return iced::Task::none();
+                }
+                self.update_progress = Some((downloaded, total));
+            }
+            Message::UpdateDownloaded { gen, result } => {
+                if gen != self.update_gen {
+                    return iced::Task::none();
+                }
+                match result {
+                    Ok(downloaded) => {
+                        self.update_phase = UpdatePhase::Installing;
+                        self.publish_mpris();
+                        return Self::update_install_task(downloaded);
+                    }
+                    Err(e) => {
+                        self.update_phase = UpdatePhase::Idle;
+                        self.update_progress = None;
+                        yutu_core::app_log::warn("yutu-update", format!("download: {e}"));
+                        self.status =
+                            Self::failure_status(self.language.fail_update_download(), &e);
+                        self.publish_mpris();
+                    }
+                }
+            }
+            Message::UpdateInstalled { result } => match result {
+                Ok(relaunch) => {
+                    #[cfg(feature = "update")]
+                    {
+                        use yutu_core::Relaunch as R;
+                        // Persist the session before leaving (the Tick
+                        // saver may not have run since the last change).
+                        self.persist_queue();
+                        let come_back = match relaunch {
+                            R::Exec(exe) => yutu_core::relaunch_at(&exe),
+                            R::OpenApp(app) => yutu_core::open_path(&app),
+                            R::SpawnedInstaller => Ok(()),
+                        };
+                        match come_back {
+                            Ok(()) => std::process::exit(0),
+                            Err(e) => {
+                                self.update_phase = UpdatePhase::Idle;
+                                self.update_progress = None;
+                                yutu_core::app_log::warn("yutu-update", format!("restart: {e}"));
+                                self.status =
+                                    Self::failure_status(self.language.fail_update_restart(), &e);
+                                self.publish_mpris();
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "update"))]
+                    {
+                        let _ = relaunch;
+                    }
+                }
+                Err(e) => {
+                    self.update_phase = UpdatePhase::Idle;
+                    self.update_progress = None;
+                    yutu_core::app_log::warn("yutu-update", format!("install: {e}"));
+                    self.status = Self::failure_status(self.language.fail_update_install(), &e);
+                    self.publish_mpris();
+                }
+            },
             Message::NavBack => {
                 // Side buttons never disturb a drag (Esc owns cancel);
                 // menus and the popup dismiss first, second press goes.
@@ -991,6 +1196,11 @@ impl AppState {
                 self.pending_playlist_rename = None;
                 self.rename_playlist_name.clear();
                 self.pending_playlist_delete = Some(id);
+                // Nothing behind the dialog stays interactive: frozen
+                // hovers clear and keyboard focus drops (same for every
+                // modal arming below).
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             Message::CancelDeletePlaylist => {
                 self.pending_playlist_delete = None;
@@ -1016,6 +1226,8 @@ impl AppState {
                 self.pending_playlist_delete = None;
                 self.pending_playlist_rename = Some(id);
                 self.rename_playlist_name = current;
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             Message::RenamePlaylistNameChanged(name) => {
                 self.rename_playlist_name = name;
@@ -1135,6 +1347,8 @@ impl AppState {
                     self.modal_anim = 0.0;
                 }
                 self.scrobble_modal_open = true;
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             Message::CloseScrobbleModal => {
                 self.scrobble_modal_open = false;
@@ -1421,12 +1635,7 @@ impl AppState {
             }
             Message::HistoryHover(h) => {
                 // Modal open: rows behind scrims never highlight.
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_history = None;
                 } else {
                     self.hovered_history = h;
@@ -1443,12 +1652,7 @@ impl AppState {
                 }
             }
             Message::TrackHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_track = None;
                     self.pl_hover = None;
                     self.pl_action_hover = None;
@@ -1501,12 +1705,7 @@ impl AppState {
                 }
             }
             Message::RecentHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_recent = None;
                 } else {
                     self.hovered_recent = h;
@@ -1578,21 +1777,10 @@ impl AppState {
                 }
             }
             Message::ClearHovers => {
-                self.hovered_track = None;
-                self.hovered_recent = None;
-                self.hovered_album = None;
-                self.hovered_artist = None;
-                self.hovered_search_playlist = None;
-                self.hovered_playlist = None;
-                self.hovered_queue = None;
-                self.hovered_history = None;
-                self.hovered_auto = None;
-                self.hover_remove = None;
-                self.pl_hover = None;
-                self.pl_action_hover = None;
+                self.clear_hovers();
             }
             Message::RemoveHover(h) => {
-                self.hover_remove = h;
+                self.hover_remove = if self.modal_freeze() { None } else { h };
             }
             Message::RemoveExit(i) => {
                 if self.hover_remove == Some(i) {
@@ -1600,7 +1788,7 @@ impl AppState {
                 }
             }
             Message::PlActionHover(h) => {
-                self.pl_action_hover = h;
+                self.pl_action_hover = if self.modal_freeze() { None } else { h };
             }
             Message::PlActionExit(i) => {
                 if self.pl_action_hover == Some(i) {
@@ -1608,12 +1796,7 @@ impl AppState {
                 }
             }
             Message::PlaylistHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_playlist = None;
                 } else {
                     self.hovered_playlist = h;
@@ -1631,12 +1814,7 @@ impl AppState {
                 }
             }
             Message::AutoHover(h) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_auto = None;
                 } else {
                     self.hovered_auto = h;
@@ -1653,12 +1831,7 @@ impl AppState {
                 }
             }
             Message::PanelHover(i) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.hovered_queue = None;
                 } else {
                     self.hovered_queue = Some(i);
@@ -1807,12 +1980,7 @@ impl AppState {
                 self.pl_action_hover = None;
             }
             Message::PlRowHover(i) => {
-                if self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest
-                {
+                if self.modal_freeze() {
                     self.pl_hover = None;
                 } else {
                     self.pl_hover = Some(i);
@@ -1920,9 +2088,14 @@ impl AppState {
                     }
                     // Spinners advance while the pipeline runs or the
                     // artist full shelf loads (the frame drives the
-                    // rotated glyphs; nothing else moves).
+                    // rotated glyphs; nothing else moves). Update probes
+                    // and downloads turn their own spinners the same way
+                    // on every build config.
                     #[cfg(feature = "innertube")]
                     if self.pipeline_busy() || self.artist_full_loading.is_some() {
+                        self.spin_frame = self.spin_frame.wrapping_add(1);
+                    }
+                    if self.update_checking || self.update_phase != UpdatePhase::Idle {
                         self.spin_frame = self.spin_frame.wrapping_add(1);
                     }
                     // Lyrics follow glide: ease toward the verse target
@@ -2217,12 +2390,9 @@ impl AppState {
                         }
                     }
                 }
-                // Modal freeze: hover latch never glides behind menus.
-                let modal = self.context_menu.is_some()
-                    || self.pl_menu.is_some()
-                    || self.coll_menu.is_some()
-                    || self.sort_menu.is_some()
-                    || self.show_suggest;
+                // Modal freeze: hover latch never glides behind menus
+                // or dialogs.
+                let modal = self.modal_freeze();
                 // Latched hover hysteresis: expand on rail/edge entry, stay
                 // open anywhere inside panel + grace, collapse only outside.
                 // Y-gated above the player zone so the bottom strip never
@@ -2268,6 +2438,8 @@ impl AppState {
                     self.rename_playlist_name.clear();
                     return iced::Task::none();
                 }
+                // No update-modal arm here by design: Esc never
+                // dismisses it (an explicit action does).
                 #[cfg(feature = "innertube")]
                 if self.pending_signout {
                     self.pending_signout = false;
@@ -2747,10 +2919,13 @@ impl AppState {
                     // Connection succeeded and the session is stored:
                     // offer to delete the plaintext export now, without
                     // waiting for the playlist stages behind it.
-                    if kind == ImportKind::Cookie {
-                        self.arm_cookie_cleanup();
+                    let mut tasks = vec![];
+                    if kind == ImportKind::Cookie && self.arm_cookie_cleanup() {
+                        self.clear_hovers();
+                        tasks.push(Self::unfocus_task());
                     }
-                    return self.begin_playlist_stages(kind, staged);
+                    tasks.push(self.begin_playlist_stages(kind, staged));
+                    return iced::Task::batch(tasks);
                 }
                 Err(e) => {
                     self.login_busy = false;
@@ -2924,6 +3099,8 @@ impl AppState {
                     self.modal_anim = 0.0;
                 }
                 self.pending_signout = true;
+                self.clear_hovers();
+                return Self::unfocus_task();
             }
             #[cfg(feature = "innertube")]
             Message::CancelSignOut => {

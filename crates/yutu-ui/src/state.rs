@@ -10,9 +10,10 @@ use row_button::row_button;
 use std::collections::{HashMap, HashSet};
 #[allow(unused_imports)]
 use yutu_core::{
-    forgotten_favorites, history_section, should_scrobble, weekly_mix, Album, Artist, HistoryEntry,
-    HistorySection, LibraryStore, LyricsProvider, LyricsResult, Playlist, PlaylistHit,
-    QueueSnapshot, SearchAll, SearchResults, TopKind, Track,
+    forgotten_favorites, history_section, should_scrobble, weekly_mix, Album, Artist,
+    DownloadedAsset, HistoryEntry, HistorySection, LibraryStore, LyricsProvider, LyricsResult,
+    Playlist, PlaylistHit, QueueSnapshot, Relaunch, SearchAll, SearchResults, TopKind, Track,
+    UpdateInfo,
 };
 #[cfg(feature = "mpv")]
 #[allow(unused_imports)]
@@ -323,6 +324,44 @@ pub enum Message {
     Navigate(Route),
     /// Open a URL in the system browser (About page links).
     OpenUrl(String),
+    /// Explicit no-op (non-dismissing modal scrims eat clicks with
+    /// this instead of a dismiss message).
+    NoOp,
+    /// Manual self-update probe (About section button).
+    CheckForUpdates,
+    /// Self-update probe done (startup or manual): newer releases
+    /// surface, up-to-date stays silent unless manually requested.
+    UpdateCheckCompleted {
+        result: Result<UpdateInfo, String>,
+    },
+    /// Start the update download for an available release (modal or
+    /// settings "Update and restart" button).
+    UpdateAndRestart,
+    /// Skip this version forever (modal): persisted, so the auto-modal
+    /// never shows it again (manual checks still report it).
+    UpdateOmitVersion,
+    /// Dismiss the update modal for this session (actions, scrim, Esc):
+    /// the settings row keeps offering the update.
+    UpdateLater,
+    /// One download chunk landed (modal progress bar; stale
+    /// generations from a dismissed modal drop).
+    UpdateProgress {
+        gen: u64,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    /// The release artifact finished downloading (stale generations
+    /// drop): verify + install runs next.
+    UpdateDownloaded {
+        gen: u64,
+        result: Result<DownloadedAsset, String>,
+    },
+    /// The install step finished: success relaunches the app (the
+    /// Windows installer relaunches it instead), failure reports
+    /// honestly with the old binary untouched.
+    UpdateInstalled {
+        result: Result<Relaunch, String>,
+    },
     SearchChanged(String),
     Search,
     PlayTrack(usize),
@@ -860,6 +899,19 @@ pub enum Message {
         requested: Vec<String>,
         tracks: Vec<Track>,
     },
+}
+
+/// Self-update install phase (modal progress; `Idle` the rest of the
+/// time). Download progress rides alongside in
+/// [`AppState::update_progress`]. The busy variants only construct
+/// with the `update` feature; offline builds keep `Idle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(not(feature = "update"), allow(dead_code))]
+pub(crate) enum UpdatePhase {
+    #[default]
+    Idle,
+    Downloading,
+    Installing,
 }
 
 /// Which playlist push a [`Message::ServerPlaylistSynced`] reports, so

@@ -208,6 +208,15 @@ impl AppState {
             pending_playlist_delete: None,
             pending_playlist_rename: None,
             rename_playlist_name: String::new(),
+            update_checking: false,
+            update_manual: false,
+            update_checked: false,
+            update_available: None,
+            pending_update: None,
+            update_phase: UpdatePhase::Idle,
+            update_progress: None,
+            update_gen: 0,
+            update_skipped_tag: None,
             #[cfg(feature = "innertube")]
             pending_signout: false,
             scrobble_modal_open: false,
@@ -381,6 +390,16 @@ impl AppState {
                 state.lyrics_provider = LyricsProvider::parse(&raw);
             }
         }
+        // Omitted update tag survives restarts: the auto-modal never
+        // re-shows a version the user skipped (manual checks still do).
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(raw) = store.get_pref("update_skipped_tag").unwrap_or(None) {
+                let tag = raw.trim().to_string();
+                if !tag.is_empty() {
+                    state.update_skipped_tag = Some(tag);
+                }
+            }
+        }
         // Seed the in-memory catalog from the track cache plus
         // persisted playlists so Favorites/history/playlist songs render
         // on first launch with no search. Memory-only (no SQLite writes,
@@ -428,6 +447,14 @@ impl AppState {
         let mut init = vec![system_font_task()];
         if state.audio.is_some() && state.queue.current().is_some() {
             init.push(state.autoload_current_task());
+        }
+        // Silent startup probe (best effort, never blocks the window):
+        // a newer release surfaces in the status + About section, an
+        // up-to-date or failed probe stays quiet (see the handler).
+        #[cfg(feature = "update")]
+        {
+            state.update_checking = true;
+            init.push(Self::update_check_task(APP_VERSION.to_string()));
         }
         (state, iced::Task::batch(init))
     }

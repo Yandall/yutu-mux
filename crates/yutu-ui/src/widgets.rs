@@ -32,6 +32,39 @@ pub(crate) fn btn_text<'a>(
     text(label).size(size).font(medium_font())
 }
 
+/// Underlined release link: accent text plus a 1px accent rule
+/// pinned to the text width (Iced 0.14 text has no underline style,
+/// so the rule draws it). Shrinks to the label, so it reads as a
+/// link rather than a divider. No background in any state (unlike
+/// `hover_row`): the accent text plus the rule is the whole
+/// affordance. Points the cursor like every other press target
+/// (see [`row_button`]).
+pub(crate) fn link_row(label: String, size: f32, url: String) -> iced::Element<'static, Message> {
+    use iced::widget::{column, rule};
+    use iced::Length;
+    let plain = |_: &iced::Theme, _: iced::widget::button::Status| iced::widget::button::Style {
+        background: None,
+        ..Default::default()
+    };
+    // The rule fills the shrink-wrapped column, so it lands exactly
+    // under the label (link underline, not a full-width divider).
+    column![
+        row_button(btn_text(label, size).color(ACCENT))
+            .style(plain)
+            .on_press(Message::OpenUrl(url))
+            .padding(2),
+        rule::horizontal(1).style(|_: &iced::Theme| rule::Style {
+            color: ACCENT,
+            radius: 0.0.into(),
+            fill_mode: rule::FillMode::Full,
+            snap: true,
+        }),
+    ]
+    .spacing(1)
+    .width(Length::Shrink)
+    .into()
+}
+
 /// Heart with hollow/filled states: outline when inactive, solid when
 /// active. The filled glyph is the verbatim Lucide heart with its
 /// `fill="none"` flipped at runtime (Lucide ships no filled heart), so
@@ -307,8 +340,9 @@ pub(crate) fn red_toggle(
     }
 }
 
-/// Import progress bar in theme red: red fill on a dark track.
-#[cfg(feature = "innertube")]
+/// Import/update progress bar in theme red: red fill on a dark track.
+/// Shared by the import banner and the self-update modal (ungated: a
+/// pure style with no backend behind it).
 pub(crate) fn import_bar(_: &iced::Theme) -> iced::widget::progress_bar::Style {
     iced::widget::progress_bar::Style {
         background: iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
