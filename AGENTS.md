@@ -218,8 +218,7 @@ cargo test -p yutu-ui --no-default-features
   sequentially when they share files (especially the single-file UI).
   Then run adversarial reviewer agents over the final diff before
   pushing; fix every med+ finding, cheap lows too.
-- Keep `PLAN.md` execution tracker and `CHANGELOG.md` (0.2.0 unreleased
-  section) updated with each round.
+- Keep `CHANGELOG.md` updated with each round.
 - Only committer. New features go on a branch per feature
   (`feat/<name>`, `fix/<name>`), pushed for review as a PR; merge to
   `main` only once the feature is complete (3-config clippy + fmt +
