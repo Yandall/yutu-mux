@@ -1784,14 +1784,15 @@ impl AppState {
     /// Home song row: the art (hover play overlay) and the
     /// title/artist both play the song, with no separate play button.
     /// This is the app-wide row pattern: rows play on art/title
-    /// click, extra actions live in the right-click menu. Id-keyed
-    /// hover (quick picks and more-from never repeat a track).
-    pub(crate) fn home_song_row(&self, t: &Track) -> iced::Element<'_, Message> {
+    /// click, extra actions live in the right-click menu. The hover
+    /// key is scoped per shelf (`scope`), so the same track in Quick
+    /// picks and More-from highlights only under the cursor.
+    pub(crate) fn home_song_row(&self, scope: &str, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
+        let hover_id = track_hover_key(scope, &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         let menu_id = t.id.clone();
-        let hover_id = t.id.clone();
         mouse_area(
             container(
                 row![
@@ -1914,13 +1915,13 @@ impl AppState {
                     let left: Vec<iced::Element<'_, Message>> = quick
                         .iter()
                         .step_by(2)
-                        .map(|t| self.home_song_row(t))
+                        .map(|t| self.home_song_row("quick", t))
                         .collect();
                     let right: Vec<iced::Element<'_, Message>> = quick
                         .iter()
                         .skip(1)
                         .step_by(2)
-                        .map(|t| self.home_song_row(t))
+                        .map(|t| self.home_song_row("quick", t))
                         .collect();
                     column![
                         row![
@@ -2022,8 +2023,10 @@ impl AppState {
                             if tracks.is_empty() {
                                 text("").size(1).into()
                             } else {
-                                let rows: Vec<iced::Element<'_, Message>> =
-                                    tracks.iter().map(|t| self.home_song_row(t)).collect();
+                                let rows: Vec<iced::Element<'_, Message>> = tracks
+                                    .iter()
+                                    .map(|t| self.home_song_row("more", t))
+                                    .collect();
                                 column![
                                     text(self.language.more_from(&artist)).size(19),
                                     column(rows).spacing(2),
@@ -2139,7 +2142,9 @@ impl AppState {
                                 .tracks
                                 .iter()
                                 .enumerate()
-                                .map(|(i, t)| self.numbered_track_row(t, i + 1, &RowPlay::Now))
+                                .map(|(i, t)| {
+                                    self.numbered_track_row("search", t, i + 1, &RowPlay::Now)
+                                })
                                 .collect();
                             let list: iced::Element<'_, Message> = if songs.is_empty() {
                                 text(self.language.no_songs_for(&query)).color(MUTED).into()
@@ -2216,13 +2221,13 @@ impl AppState {
                     .home_shelves
                     .weekly
                     .iter()
-                    .map(|t| self.track_row(t))
+                    .map(|t| self.track_row("weekly", t))
                     .collect();
                 let forgotten: Vec<iced::Element<'_, Message>> = self
                     .home_shelves
                     .forgotten
                     .iter()
-                    .map(|t| self.track_row(t))
+                    .map(|t| self.track_row("forgotten", t))
                     .collect();
                 let weekly_section: iced::Element<'_, Message> = if weekly.is_empty() {
                     text(self.language.discovery_hint_play())
@@ -2621,7 +2626,7 @@ impl AppState {
                             .iter()
                             .take(10)
                             .enumerate()
-                            .map(|(i, t)| self.numbered_track_row(t, i + 1, &play))
+                            .map(|(i, t)| self.numbered_track_row("artist", t, i + 1, &play))
                             .collect(),
                         text("").size(1).into(),
                     )
@@ -2723,7 +2728,7 @@ impl AppState {
                     tracks
                         .iter()
                         .enumerate()
-                        .map(|(i, t)| self.numbered_track_row(t, i + 1, &play))
+                        .map(|(i, t)| self.numbered_track_row("album", t, i + 1, &play))
                         .collect()
                 };
                 let meta = if year.is_empty() {
@@ -2947,7 +2952,7 @@ impl AppState {
                 let rows: Vec<iced::Element<'_, Message>> = self
                     .radio_tracks
                     .iter()
-                    .map(|t| self.track_row(t))
+                    .map(|t| self.track_row("radio", t))
                     .collect();
                 let seed_label = self
                     .find_track(seed)

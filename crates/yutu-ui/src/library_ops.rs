@@ -575,8 +575,8 @@ impl AppState {
     ) -> iced::Element<'_, Message> {
         use iced::widget::{container, mouse_area, row, text};
         use iced::Fill;
-        let hovered = self.hovered_track.as_deref() == Some(t.id.as_str());
-        let hover_id = t.id.clone();
+        let hover_id = track_hover_key("artist-top", &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         let (heart, more) = self.song_actions(t, hovered);
         let play_msg = RowPlay::ArtistAt(artist_id.to_string()).message(&t.id, n);
         mouse_area(
