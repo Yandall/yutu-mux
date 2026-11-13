@@ -978,13 +978,13 @@ impl AppState {
                 None => text("").size(1).into(),
             };
             let drawer_btn: iced::Element<'_, Message> = if self.drawer_open {
-                button(ctrl_box(btn_icon("mic", 14.0, iced::Color::WHITE)))
+                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
                     .style(accent_button)
                     .on_press(Message::ToggleDrawer)
                     .padding(7)
                     .into()
             } else {
-                button(ctrl_box(btn_icon("mic", 14.0, MUTED)))
+                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
                     .style(hover_row)
                     .on_press(Message::ToggleDrawer)
                     .padding(7)
@@ -1174,12 +1174,12 @@ impl AppState {
                         .gap(8),
                         {
                             if self.drawer_open {
-                                button(ctrl_box(btn_icon("mic", 14.0, iced::Color::WHITE)))
+                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
                                     .style(accent_button)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
                             } else {
-                                button(ctrl_box(btn_icon("mic", 14.0, MUTED)))
+                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
                                     .style(hover_row)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
