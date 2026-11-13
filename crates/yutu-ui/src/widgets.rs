@@ -35,16 +35,22 @@ pub(crate) fn btn_text<'a>(
 /// Underlined release link: accent text plus a 1px accent rule
 /// pinned to the text width (Iced 0.14 text has no underline style,
 /// so the rule draws it). Shrinks to the label, so it reads as a
-/// link rather than a divider. Points the cursor like every other
-/// press target (see [`row_button`]).
+/// link rather than a divider. No background in any state (unlike
+/// `hover_row`): the accent text plus the rule is the whole
+/// affordance. Points the cursor like every other press target
+/// (see [`row_button`]).
 pub(crate) fn link_row(label: String, size: f32, url: String) -> iced::Element<'static, Message> {
     use iced::widget::{column, rule};
     use iced::Length;
+    let plain = |_: &iced::Theme, _: iced::widget::button::Status| iced::widget::button::Style {
+        background: None,
+        ..Default::default()
+    };
     // The rule fills the shrink-wrapped column, so it lands exactly
     // under the label (link underline, not a full-width divider).
     column![
         row_button(btn_text(label, size).color(ACCENT))
-            .style(hover_row)
+            .style(plain)
             .on_press(Message::OpenUrl(url))
             .padding(2),
         rule::horizontal(1).style(|_: &iced::Theme| rule::Style {
