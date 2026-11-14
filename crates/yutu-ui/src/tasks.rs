@@ -1107,13 +1107,14 @@ impl AppState {
         }
     }
 
-    /// Autoplay tail for [`Message::PlayNow`]: same-artist radio, seed first
-    /// (the caller strips the seed and anything already queued).
+    /// Autoplay tail for [`Message::PlayNow`]: the same YouTube Music
+    /// mix as Start mix (the caller strips the seed and anything already
+    /// queued), so a clicked song keeps going like the web player.
     #[cfg(feature = "innertube")]
-    pub(crate) fn autoplay_task(seed: String, artist: String) -> iced::Task<Message> {
+    pub(crate) fn autoplay_task(seed: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = live_radio(&seed, &artist).await;
+                let result = Self::live_mix(&seed).await;
                 (seed, result)
             },
             |(seed, result)| Message::AutoplayReady { seed, result },
@@ -1352,16 +1353,38 @@ impl AppState {
         })
     }
 
-    /// Radio seed: same-artist tracks first, then the rest of the search.
+    /// YouTube Music mix for a seed: the same watch radio the web app's
+    /// "Start radio" plays (`next` with playlist `RDAMVM<seed>`), seed
+    /// first then the server's curated picks. Uses the saved login when
+    /// there is one, so the mix is personalized like the signed-in web
+    /// client; anonymous otherwise.
     #[cfg(feature = "innertube")]
-    pub(crate) fn radio_task(seed: String, artist: String) -> iced::Task<Message> {
+    pub(crate) fn mix_task(gen: u64, seed: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = live_radio(&seed, &artist).await;
+                let result = Self::live_mix(&seed).await;
                 (seed, result)
             },
-            |(seed, result)| Message::RadioReady { seed, result },
+            move |(seed, result)| Message::MixReady { gen, seed, result },
         )
+    }
+
+    /// Fetch the YouTube Music mix for `seed` (see [`Self::mix_task`]):
+    /// saved login first for personalization; an expired login retries
+    /// signed out, since the mix itself is public.
+    #[cfg(feature = "innertube")]
+    pub(crate) async fn live_mix(seed: &str) -> Result<Vec<Track>, String> {
+        let result = match Self::detail_backend().await {
+            Ok(backend) => backend.recommendations_for(seed).await,
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(tracks) => Ok(tracks),
+            Err(e) => match yutu_core::InnertubeBackend::connect_anonymous().await {
+                Ok(anon) => anon.recommendations_for(seed).await,
+                Err(_) => Err(e),
+            },
+        }
     }
 
     /// Search-result playlist fetch: tracks arrive via

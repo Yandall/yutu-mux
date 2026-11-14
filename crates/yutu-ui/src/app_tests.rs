@@ -552,29 +552,116 @@ fn scrollbar_fade_lights_and_decays() {
     assert_eq!(s.scroll_opacity("drawer"), 1.0);
 }
 
+// Offline builds never start a mix (StartRadio only reports).
+#[cfg(feature = "innertube")]
 #[test]
-fn radio_ready_queues_fetched_sequence() {
+fn mix_ready_queues_youtube_mix_without_navigating() {
     let mut s = test_state();
-    // Unknown seed: fetch is kicked off so the song appears without a
-    // manual search, nothing queued yet.
+    let route = s.route.clone();
+    // Unknown seed: the mix response itself carries the seed, so no
+    // hydration round-trip and no view change.
     let _ = s.update(Message::StartRadio("unknown-id".into()));
-    assert!(s.status.contains("Fetching info"));
+    assert_eq!(s.route, route);
     assert!(s.queue.is_empty());
-    // Known seed (catalog): radio view entered; payload queues on ready.
     let _ = s.update(Message::StartRadio("m1".into()));
-    let _ = s.update(Message::RadioReady {
+    assert_eq!(s.route, route);
+    let gen = s.mix_gen;
+    let _ = s.update(Message::MixReady {
+        gen,
         seed: "m1".into(),
-        result: Ok(vec![mk_track("v9", "Come Together", "The Beatles")]),
+        result: Ok(vec![
+            mk_track("v9", "Come Together", "The Beatles"),
+            mk_track("m1", "Seed Song", "Seed Artist"),
+            mk_track("v9", "Come Together", "The Beatles"),
+            mk_track("v8", "Something", "The Beatles"),
+        ]),
     });
-    assert_eq!(s.route, Route::Radio("m1".into()));
-    assert_eq!(s.queue.len(), 1);
-    assert_eq!(s.radio_tracks.len(), 1);
-    // Failures report cleanly.
-    let _ = s.update(Message::RadioReady {
+    // Seed leads, server order after it, duplicates dropped.
+    let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["m1", "v9", "v8"]);
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m1"));
+    assert_eq!(s.route, route);
+    assert_eq!(
+        s.playing_from.as_deref(),
+        Some("Mix of Seed Song - Seed Artist")
+    );
+    // Failures report cleanly and leave the queue alone.
+    let _ = s.update(Message::StartRadio("m1".into()));
+    let gen = s.mix_gen;
+    let _ = s.update(Message::MixReady {
+        gen,
         seed: "m1".into(),
         result: Err("offline".into()),
     });
-    assert!(s.status.contains("Radio failed"));
+    assert!(s.status.contains("Mix failed"));
+    assert_eq!(s.queue.len(), 3);
+}
+
+// Offline builds never start a mix (StartRadio only reports).
+#[cfg(feature = "innertube")]
+#[test]
+fn stale_mix_never_hijacks_a_replaced_queue() {
+    let mut s = test_state();
+    let _ = s.update(Message::StartRadio("m1".into()));
+    let stale = s.mix_gen;
+    // The user plays something else before the mix lands.
+    let _ = s.update(Message::PlayNow("m2".into()));
+    let _ = s.update(Message::MixReady {
+        gen: stale,
+        seed: "m1".into(),
+        result: Ok(vec![mk_track("v9", "Come Together", "The Beatles")]),
+    });
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+    assert!(s.playing_from.is_none());
+}
+
+// Offline builds never start a mix (StartRadio only reports).
+#[cfg(feature = "innertube")]
+#[test]
+fn mix_is_dropped_when_playback_moved_on_while_loading() {
+    let mut s = test_state();
+    let _ = s.update(Message::PlayNow("m1".into()));
+    let _ = s.update(Message::QueueTrack("m2".into()));
+    let _ = s.update(Message::StartRadio("m3".into()));
+    let gen = s.mix_gen;
+    // The user skips ahead before the mix arrives.
+    let _ = s.update(Message::QueueJump(1));
+    let _ = s.update(Message::MixReady {
+        gen,
+        seed: "m3".into(),
+        result: Ok(vec![mk_track("m3", "Seed Song", "Seed Artist")]),
+    });
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("m2"));
+    assert!(s.playing_from.is_none());
+}
+
+// Offline builds never start a mix (StartRadio only reports).
+#[cfg(feature = "innertube")]
+#[test]
+fn mix_of_live_song_keeps_it_playing() {
+    let mut s = test_state();
+    let _ = s.update(Message::PlayNow("m1".into()));
+    // Pretend the load settled into a paused session (alive): a reload
+    // would set `loading_track` again.
+    s.loading_track = None;
+    s.paused = true;
+    let _ = s.update(Message::StartRadio("m1".into()));
+    let gen = s.mix_gen;
+    let _ = s.update(Message::MixReady {
+        gen,
+        seed: "m1".into(),
+        result: Ok(vec![
+            mk_track("m1", "Seed Song", "Seed Artist"),
+            mk_track("v9", "Come Together", "The Beatles"),
+        ]),
+    });
+    assert!(s.loading_track.is_none(), "live song must not restart");
+    assert_eq!(s.queue.position(), Some(0));
+    assert_eq!(s.queue.len(), 2);
+    assert!(s.playing_from.is_some());
+    // Replacing the queue drops the "Playing from" context.
+    let _ = s.update(Message::QueueClear);
+    assert!(s.playing_from.is_none());
 }
 
 #[test]
@@ -1510,17 +1597,9 @@ fn route_navigation() {
     assert_eq!(s.route, Route::PlaylistDetail(pid));
     let _ = s.update(Message::OpenLyrics("m4".into()));
     assert_eq!(s.route, Route::Lyrics("m4".into()));
+    // Starting a mix never leaves the current page.
     let _ = s.update(Message::StartRadio("m1".into()));
-    #[cfg(feature = "innertube")]
-    assert_eq!(s.route, Route::Radio("m1".into()));
-    #[cfg(not(feature = "innertube"))]
     assert_eq!(s.route, Route::Lyrics("m4".into()));
-    assert!(s.queue.is_empty());
-    let _ = s.update(Message::RadioReady {
-        seed: "m1".into(),
-        result: Ok(vec![mk_track("v1", "Yesterday", "The Beatles")]),
-    });
-    assert_eq!(s.queue.len(), 1);
 }
 
 #[test]
@@ -3457,6 +3536,61 @@ fn queue_session_persists_and_restores_across_restart() {
     }
 }
 
+// Offline builds never start a mix (StartRadio only reports).
+#[cfg(feature = "innertube")]
+#[test]
+fn mix_of_stopped_current_song_starts_it() {
+    let mut s = test_state();
+    let _ = s.update(Message::PlayNow("m1".into()));
+    // Stopped: nothing loading, not paused, no live backend file.
+    s.loading_track = None;
+    s.paused = false;
+    let _ = s.update(Message::StartRadio("m1".into()));
+    let gen = s.mix_gen;
+    let _ = s.update(Message::MixReady {
+        gen,
+        seed: "m1".into(),
+        result: Ok(vec![
+            mk_track("m1", "Seed Song", "Seed Artist"),
+            mk_track("v9", "Come Together", "The Beatles"),
+        ]),
+    });
+    assert_eq!(s.loading_track.as_deref(), Some("m1"));
+    assert_eq!(s.queue.len(), 2);
+}
+
+#[test]
+fn playing_from_persists_across_restart() {
+    let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+    let path = std::env::temp_dir()
+        .join(format!("yutu-queue-{}-{}.db", std::process::id(), n))
+        .to_string_lossy()
+        .into_owned();
+    let (mut s, _) = AppState::with_library_path(path.clone());
+    let tracks = yutu_core::MockBackend::fixture_tracks();
+    s.register_tracks(tracks.clone());
+    for t in &tracks {
+        s.queue.push(t.clone());
+    }
+    s.playing_from = Some("Mix of Song - Artist".into());
+    s.persist_queue();
+    drop(s);
+    let (s2, _) = AppState::with_library_path(path);
+    assert_eq!(s2.playing_from.as_deref(), Some("Mix of Song - Artist"));
+}
+
+#[test]
+fn fit_lines_truncates_past_the_line_budget() {
+    let short = "Mix of Song - Artist";
+    assert_eq!(fit_lines(short, 2000.0, 14.0, 2), short);
+    let long = "Mix of 21 de septiembre - El Cuarteto de Nos ".repeat(6);
+    let fitted = fit_lines(&long, 220.0, 14.0, 2);
+    assert!(fitted.ends_with('…'), "{fitted}");
+    assert!(fitted.chars().count() < long.chars().count());
+    // Unknown widths (first layout pass) leave the text alone.
+    assert_eq!(fit_lines(short, 0.0, 14.0, 2), short);
+}
+
 #[test]
 fn muted_session_restores_silenced() {
     let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
@@ -3498,6 +3632,7 @@ fn queue_restore_drops_unknown_ids() {
             repeat: "off".into(),
             volume: 0.8,
             muted: false,
+            playing_from: None,
         })
         .unwrap();
     let (s, _) = AppState::with_library_path(path);

@@ -476,30 +476,6 @@ pub(crate) async fn live_playlist_tracks(id: &str) -> Result<Vec<Track>, String>
     backend.playlist_tracks(id).await
 }
 
-/// Radio sequence for a seed: the seed first, same-artist tracks next,
-/// everything else after.
-#[cfg(feature = "innertube")]
-pub(crate) async fn live_radio(seed: &str, artist: &str) -> Result<Vec<Track>, String> {
-    use yutu_core::InnertubeBackend;
-    let backend = InnertubeBackend::connect_anonymous().await?;
-    let found = backend.search_tracks(artist).await?;
-    let mut seq: Vec<Track> = Vec::with_capacity(found.len());
-    if let Some(t) = found.iter().find(|t| t.id == seed).cloned() {
-        seq.push(t);
-    }
-    for t in &found {
-        if t.id != seed && t.artist == artist && !seq.iter().any(|x| x.id == t.id) {
-            seq.push(t.clone());
-        }
-    }
-    for t in &found {
-        if t.id != seed && !seq.iter().any(|x| x.id == t.id) {
-            seq.push(t.clone());
-        }
-    }
-    Ok(seq)
-}
-
 /// Hydrate one bare id (liked/history rows from installs that only
 /// stored ids, or catalog rows missing art) into a full Track: a
 /// watch-playlist probe whose panel contains the seed, keeping only the

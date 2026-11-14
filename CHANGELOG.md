@@ -4,23 +4,22 @@
 
 ### Added
 
-- In-app updates: when a new version is out, a dialog offers Update and
-  restart, Omit this version, or Update later. Downloads are checksum
-  verified, and Settings shows the update button too (#97).
-- Rename playlists from the right-click menu. The new name syncs to
-  YouTube Music while signed in (#96).
-- Windows media keys and the Windows media flyout now control playback
-  and show the current song (#99).
+- In-app updates with Update and restart, Omit this version, or Update
+  later (#97).
+- Rename playlists from the right-click menu, synced while signed in (#96).
+- Windows media keys and media flyout support (#99).
 
 ### Changed
 
-- The Now Playing toggle uses a microphone icon that fills in while the
-  panel is open.
+- Now Playing toggle uses a microphone icon that fills while open.
+- Start mix plays YouTube Music's own mix in the queue, labeled
+  "Playing from" (#100).
+- Autoplay uses the same YouTube Music mix and plays all of it (#100).
+- Radio buttons are now Start mix, matching the Play/Shuffle size (#100).
 
 ### Fixed
 
-- Hovering a song that appears in several lists at once highlights
-  only the row under the cursor (#98).
+- Hovering a song shown in several lists highlights only that row (#98).
 
 ## 0.1.0
 

@@ -599,7 +599,7 @@ impl AppState {
             }
             Message::QueueClear => {
                 self.cancel_drag();
-                self.queue.clear();
+                self.clear_queue();
                 self.status = if self.autoplay.is_empty() {
                     "Queue cleared.".into()
                 } else {
@@ -795,53 +795,41 @@ impl AppState {
             }
             Message::StartRadio(seed) => {
                 self.close_menu();
-                match self.find_track(&seed) {
-                    None => {
-                        self.status = self.language.fetching_info(&seed);
-                        self.publish_mpris();
-                        return Self::hydrate_task(vec![seed]);
-                    }
-                    Some(t) => {
-                        let artist = t.artist.clone();
-                        #[cfg(feature = "innertube")]
-                        {
-                            self.status = self.language.starting_radio(&t.title, &t.artist);
-                            self.go(Route::Radio(seed.clone()));
-                            self.publish_mpris();
-                            return Self::radio_task(seed, artist);
-                        }
-                        #[cfg(not(feature = "innertube"))]
-                        {
-                            let _ = artist;
-                            self.status = self.language.needs_innertube_radio();
-                        }
+                #[cfg(feature = "innertube")]
+                {
+                    // No view change: the mix lands in the queue (see
+                    // `MixReady`). The response carries the seed's own
+                    // metadata, so unknown seeds need no hydration first.
+                    self.mix_gen = self.mix_gen.wrapping_add(1);
+                    self.mix_from = self.queue.current().map(|t| t.id.clone());
+                    self.status = match self.find_track(&seed) {
+                        Some(t) => self.language.starting_mix(&t.title, &t.artist),
+                        None => self.language.fetching_info(&seed),
+                    };
+                    self.publish_mpris();
+                    return Self::mix_task(self.mix_gen, seed);
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = seed;
+                    self.status = self.language.needs_innertube_radio();
+                }
+            }
+            Message::MixReady { gen, seed, result } => {
+                // Superseded mix, the queue was replaced meanwhile, or
+                // the user moved to another song while it loaded.
+                let cur = self.queue.current().map(|t| t.id.clone());
+                if gen != self.mix_gen || cur != self.mix_from {
+                    return iced::Task::none();
+                }
+                match result {
+                    Ok(tracks) => return self.play_mix(&seed, tracks),
+                    Err(e) => {
+                        yutu_core::app_log::warn("yutu-mix", format!("{seed}: {e}"));
+                        self.status = Self::failure_status(self.language.fail_mix(), &e);
                     }
                 }
             }
-            Message::RadioReady { seed, result } => match result {
-                Ok(tracks) => {
-                    let tracks: Vec<Track> = self
-                        .register_tracks(tracks)
-                        .into_iter()
-                        .filter(|t| !self.disliked.contains(&t.id))
-                        .collect();
-                    let n = tracks.len();
-                    self.radio_tracks = tracks.clone();
-                    self.go(Route::Radio(seed.clone()));
-                    let mut tasks = self.artwork_tasks(&tracks);
-                    tasks.push(self.queue_many(tracks, self.language.radio_seed_label(&seed)));
-                    tasks.push(self.sweep_visible_art("body", true));
-                    if n == 0 {
-                        self.status = self.language.radio_no_results(&seed);
-                    }
-                    self.publish_mpris();
-                    return iced::Task::batch(tasks);
-                }
-                Err(e) => {
-                    yutu_core::app_log::warn("yutu-radio", format!("{seed}: {e}"));
-                    self.status = Self::failure_status(self.language.fail_radio(), &e);
-                }
-            },
             Message::QueueTrack(id) => {
                 self.show_suggest = false;
                 self.close_menu();
@@ -928,7 +916,7 @@ impl AppState {
                 }
                 // Fresh context like PlayNow: the old queue and tail go
                 // away, then the playlist plays from the clicked song on.
-                self.queue.clear();
+                self.clear_queue();
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 self.drag = None;
@@ -966,7 +954,7 @@ impl AppState {
                     self.status = self.language.nothing_to_play(&label);
                     return iced::Task::none();
                 }
-                self.queue.clear();
+                self.clear_queue();
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 return self.queue_many(tracks, &label);
@@ -1000,7 +988,7 @@ impl AppState {
                     self.status = self.language.nothing_to_play(&label);
                     return iced::Task::none();
                 }
-                self.queue.clear();
+                self.clear_queue();
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 return self.queue_many(tracks, &label);
@@ -1487,8 +1475,7 @@ impl AppState {
                         return self.unknown_track_task(&id);
                     }
                     Some(t) => {
-                        let artist = t.artist.clone();
-                        self.queue.clear();
+                        self.clear_queue();
                         self.queue.push(t);
                         self.queue.jump_to(0);
                         self.autoplay_for = Some(id.clone());
@@ -1498,12 +1485,12 @@ impl AppState {
                         let play = self.play_current_task();
                         #[cfg(feature = "innertube")]
                         {
-                            let auto = Self::autoplay_task(id, artist);
+                            let auto = Self::autoplay_task(id);
                             return iced::Task::batch([play, auto]);
                         }
                         #[cfg(not(feature = "innertube"))]
                         {
-                            let _ = artist;
+                            let _ = id;
                             return play;
                         }
                     }
@@ -1535,7 +1522,6 @@ impl AppState {
                                     && !known.contains(&t.id)
                                     && !self.disliked.contains(&t.id)
                             })
-                            .take(10)
                             .collect();
                         if fresh.is_empty() {
                             return iced::Task::none();
@@ -2286,7 +2272,7 @@ impl AppState {
                     self.status = self.language.playlist_nothing_to_queue(&p.title);
                     return iced::Task::none();
                 }
-                self.queue.clear();
+                self.clear_queue();
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 self.cancel_drag();

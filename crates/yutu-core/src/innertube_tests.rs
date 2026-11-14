@@ -1159,3 +1159,20 @@ async fn live_song_lyrics() {
     let lines = backend.song_lyrics(&video_id).await.expect("lyrics");
     assert!(!lines.is_empty(), "expected lyric lines for {video_id}");
 }
+
+#[tokio::test]
+#[ignore = "live network: YouTube Music mix (RDAMVM watch radio) for a seed"]
+async fn live_mix_for_seed() {
+    let seed = std::env::var("YUTU_TEST_VIDEO_ID").unwrap_or_else(|_| "JWW8KK8kd1I".into());
+    let backend = InnertubeBackend::connect_anonymous()
+        .await
+        .expect("anonymous connect");
+    let mix = backend.recommendations_for(&seed).await.expect("mix");
+    // The web "Start radio" queue: seed first, then a long curated tail.
+    assert_eq!(mix.first().map(|t| t.id.as_str()), Some(seed.as_str()));
+    assert!(mix.len() >= 20, "short mix: {}", mix.len());
+    for t in mix.iter().take(10) {
+        eprintln!("{} · {}", t.title, t.artist);
+    }
+    eprintln!("total: {}", mix.len());
+}

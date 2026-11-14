@@ -183,3 +183,67 @@ pub(crate) fn truncate_title(title: &str, max: usize) -> String {
         format!("{}…", title.chars().take(max).collect::<String>())
     }
 }
+
+/// Fit `s` into at most `max_lines` wrapped lines `width` px wide at
+/// `size` px (default font, word-or-glyph wrapping), cutting it with
+/// "…" when it would spill onto another line. Measured with the
+/// renderer's own font system, so the cut matches what is drawn.
+/// The last (text, width, size, lines) result is memoized: the view
+/// re-runs on every frame and the inputs rarely change.
+pub(crate) fn fit_lines(s: &str, width: f32, size: f32, max_lines: usize) -> String {
+    use iced::advanced::text::Paragraph as _;
+    use std::cell::RefCell;
+    type Key = (String, u32, u32, usize);
+    thread_local! {
+        static LAST: RefCell<Option<(Key, String)>> = const { RefCell::new(None) };
+    }
+    if !width.is_finite() || width <= 0.0 || max_lines == 0 {
+        return s.to_owned();
+    }
+    let key: Key = (s.to_owned(), width.to_bits(), size.to_bits(), max_lines);
+    if let Some(hit) = LAST.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    }) {
+        return hit;
+    }
+    let line_h = iced::widget::text::LineHeight::default()
+        .to_absolute(iced::Pixels(size))
+        .0;
+    let fits = |content: &str| -> bool {
+        let p = iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
+            content,
+            bounds: iced::Size::new(width, f32::INFINITY),
+            size: iced::Pixels(size),
+            line_height: iced::widget::text::LineHeight::default(),
+            font: crate::fonts::effective_font().to_iced_font(),
+            align_x: iced::advanced::text::Alignment::Default,
+            align_y: iced::alignment::Vertical::Top,
+            shaping: iced::widget::text::Shaping::default(),
+            wrapping: iced::widget::text::Wrapping::WordOrGlyph,
+        });
+        p.min_bounds().height <= line_h * max_lines as f32 + 0.5
+    };
+    let out = if fits(s) {
+        s.to_owned()
+    } else {
+        // Longest char prefix that still fits with the ellipsis.
+        let chars: Vec<char> = s.chars().collect();
+        let (mut lo, mut hi) = (0usize, chars.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            let cand: String = chars[..mid].iter().collect();
+            if fits(&format!("{}…", cand.trim_end())) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let head: String = chars[..lo].iter().collect();
+        format!("{}…", head.trim_end())
+    };
+    LAST.with(|c| *c.borrow_mut() = Some((key, out.clone())));
+    out
+}

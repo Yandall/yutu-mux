@@ -8,8 +8,9 @@ play-pill-label = PLAY
 shuffle-label = Shuffle
 shuffle-play = Shuffle play
 shuffle-pill-label = SHUFFLE
-radio-label = Radio
-start-radio = Start radio
+mix-pill-label = START MIX
+playing-from = Playing from
+mix-of = Mix of { $title } - { $artist }
 start-mix = Start mix
 add-to-queue = Add to queue
 remove-from-queue = Remove from queue
@@ -124,7 +125,6 @@ instrumental = [Instrumental]
 no-lyrics = No lyrics for this track yet.
 loading-lyrics = Loading lyrics ({ $provider })
 no-track-selected = Nothing selected: pick a song to see its lyrics.
-radio-seed-label = Radio (seed { $seed })
 
 ## History page
 
@@ -340,8 +340,8 @@ playlist-name-empty = Playlist name is empty.
 no-album-for = No album for { $title } · { $artist }.
 undislike-removed = Removed don't-recommend for { $id }.
 disliked = Won't recommend { $id } again.
-starting-radio = Starting radio for { $title } · { $artist }…
-radio-no-results = Radio (seed { $seed }): nothing found.
+starting-mix = Starting mix for { $title } · { $artist }…
+mix-no-results = Mix (seed { $seed }): nothing found.
 scrobbled-to = Scrobbled to { $target }.
 restored-songs = Restored { $n } saved song(s).
 
@@ -384,7 +384,7 @@ reading-library = Reading library + contacting YouTube Music…
 ## Errors (status bar, shown in all builds)
 
 fail-search = Search failed
-fail-radio = Radio failed
+fail-mix = Mix failed
 fail-sync = Sync failed
 fail-signout = Sign-out failed
 fail-export-delete = Could not delete export file

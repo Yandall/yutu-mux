@@ -214,6 +214,7 @@ fn queue_snapshot_round_trips() {
         repeat: "all".into(),
         volume: 0.5,
         muted: true,
+        playing_from: Some("Mix of Song - Artist".into()),
     })
     .unwrap();
     let snap = s.load_queue().unwrap().expect("saved");
@@ -224,6 +225,7 @@ fn queue_snapshot_round_trips() {
     assert_eq!(snap.repeat, "all");
     assert!((snap.volume - 0.5).abs() < 1e-6);
     assert!(snap.muted);
+    assert_eq!(snap.playing_from.as_deref(), Some("Mix of Song - Artist"));
     // Overwrite replaces wholesale (no stale ids or meta).
     s.save_queue(&QueueSnapshot {
         ids: vec!["m9".into()],
@@ -233,11 +235,13 @@ fn queue_snapshot_round_trips() {
         repeat: "off".into(),
         volume: 0.8,
         muted: false,
+        playing_from: None,
     })
     .unwrap();
     let snap = s.load_queue().unwrap().expect("saved");
     assert_eq!(snap.ids, vec!["m9"]);
     assert_eq!(snap.index, None);
+    assert_eq!(snap.playing_from, None);
     // Clearing reads back as nothing saved.
     s.clear_queue().unwrap();
     assert!(s.load_queue().unwrap().is_none());
@@ -254,6 +258,7 @@ fn queue_snapshot_parsing_is_lenient() {
         repeat: "bogus".into(),
         volume: 99.0,
         muted: false,
+        playing_from: None,
     })
     .unwrap();
     // NaN parses to 0, unknown repeat falls back to off, volume clamps.

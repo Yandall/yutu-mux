@@ -282,7 +282,9 @@ impl AppState {
             searching: false,
             search_gen: 0,
             search_filter: SearchFilter::All,
-            radio_tracks: Vec::new(),
+            playing_from: None,
+            mix_gen: 0,
+            mix_from: None,
             mpris: None,
         };
         // Sync prefs: auto-sync toggle + last-sync label survive restarts.

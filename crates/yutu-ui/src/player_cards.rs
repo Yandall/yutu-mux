@@ -159,6 +159,25 @@ impl AppState {
         .into()
     }
 
+    /// Start-mix pill for hero headers: the ghost companion of
+    /// play_pill/shuffle_pill with the exact same metrics (16px icon,
+    /// 13px bold label, padding 9) so the pills line up at one height.
+    pub(crate) fn mix_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
+        use iced::widget::{button, row, text};
+        button(
+            row![
+                btn_icon("radio", 16.0, iced::Color::WHITE),
+                text(label).size(13).font(bold_font()),
+            ]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(ghost_button)
+        .on_press(msg)
+        .padding(9)
+        .into()
+    }
+
     /// Spotify-style numbered row: rank + art + play + title + time + actions.
     /// Row art wrapped in a click-to-play button: on hover the art
     /// dims behind a backdrop with a white play icon on top.

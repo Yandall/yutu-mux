@@ -224,7 +224,9 @@ cargo test -p yutu-ui --no-default-features
   as the change itself. Group lines under `### Added`, `### Changed`,
   `### Fixed`, `### Removed`; one plain-language line per change, written
   for users (what changed for them, not how), with the PR number when
-  known. Create the `## Unreleased` section if it is missing. Pure
+  known. Keep each entry short: **1 or 2 lines maximum** (wrapped at
+  ~72 cols), no detail on edge cases or internals; split a change in
+  two entries rather than writing a paragraph. Create the `## Unreleased` section if it is missing. Pure
   refactors, tests, and CI-only changes may skip it. At release, rename
   `## Unreleased` to the version heading so the release notes are ready.
 - Only committer. New features go on a branch per feature
