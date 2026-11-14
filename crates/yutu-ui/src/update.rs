@@ -2195,8 +2195,21 @@ impl AppState {
                     }
                 }
             }
-            Message::DrawerScrolled(y) => {
+            Message::LyricRowMeasured(g) => return self.apply_lyric_row(g),
+            Message::DrawerScrolled(y, view_h) => {
                 self.drawer_scroll = y.max(0.0);
+                if view_h > 0.0 {
+                    // A resized viewport (window resize, sticky header
+                    // showing up) moves the centering point: drop the
+                    // recorded verse so the next tick retargets.
+                    let resized = self
+                        .drawer_view_h
+                        .is_some_and(|old| (old - view_h).abs() > 1.0);
+                    self.drawer_view_h = Some(view_h);
+                    if resized && self.lyrics_follow {
+                        self.lyrics_follow_at = None;
+                    }
+                }
                 self.lit_scroll("drawer");
                 // Follow takeover: anything but a recent command echo
                 // is a real user scroll (echoes match the ring exactly,

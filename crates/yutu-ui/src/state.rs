@@ -636,8 +636,12 @@ pub enum Message {
     Animate,
     /// Bottom drawer open/close.
     ToggleDrawer,
-    /// Drawer lyrics scroll offset (sticky header past 200px).
-    DrawerScrolled(f32),
+    /// Drawer lyrics scroll offset (sticky header past 200px) and the
+    /// viewport height it was measured in (0 = unknown).
+    DrawerScrolled(f32, f32),
+    /// Live layout of the followed lyric row (see [`LyricRowProbe`]):
+    /// replaces the estimated follow target with the exact center.
+    LyricRowMeasured(LyricRowGeom),
     /// A scrollable moved: lights its scrollbar fade, which the ticker
     /// eases out after idle (the key matches a `scroll_hint` entry), and
     /// carries the y offset so art fetches follow the viewport.

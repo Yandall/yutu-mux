@@ -301,6 +301,11 @@ pub struct AppState {
     pub(crate) artist_expanded: bool,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     pub(crate) drawer_scroll: f32,
+    /// Measured drawer lyrics viewport height (the scrollable's own
+    /// bounds, reported with every scroll and every resize). None
+    /// until the first report; follow centering falls back to a
+    /// window-height estimate then.
+    pub(crate) drawer_view_h: Option<f32>,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
     /// scroll motion lights the bar, the ticker fades it after idle.
     /// Never persisted; missing keys read as invisible.

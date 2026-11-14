@@ -662,3 +662,88 @@ pub(crate) fn song_meta_text(
         .wrapping(Wrapping::None)
         .into()
 }
+
+/// Container id of visible lyric row `vi` (drawer follow probe target).
+pub(crate) fn lyric_row_id(vi: usize) -> iced::widget::Id {
+    iced::widget::Id::from(format!("lyric-row-{vi}"))
+}
+
+/// Measured drawer geometry for one verse: the row's offset and height
+/// inside the scrolled content, the viewport height, and the furthest
+/// reachable scroll offset. Read from the live layout, so wrapping and
+/// fonts are exact (the estimate in `lyric_follow_y` is only a first
+/// guess until this lands).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LyricRowGeom {
+    pub(crate) track: String,
+    pub(crate) at: usize,
+    pub(crate) top: f32,
+    pub(crate) h: f32,
+    pub(crate) view_h: f32,
+    pub(crate) max_y: f32,
+}
+
+impl LyricRowGeom {
+    /// Scroll offset that centers the row, clamped to the content.
+    pub(crate) fn center_y(&self) -> f32 {
+        (self.top + self.h / 2.0 - self.view_h / 2.0).clamp(0.0, self.max_y.max(0.0))
+    }
+}
+
+/// Widget operation that finds the drawer lyrics scrollable and the
+/// container of one lyric row inside it, yielding [`LyricRowGeom`].
+/// Child layout bounds inside a scrollable are unscrolled, so the row
+/// offset is its y minus the content's y.
+pub(crate) struct LyricRowProbe {
+    pub(crate) track: String,
+    pub(crate) at: usize,
+    pub(crate) row_id: iced::widget::Id,
+    pub(crate) scroll_id: iced::widget::Id,
+    pub(crate) scroll: Option<(iced::Rectangle, iced::Rectangle)>,
+    pub(crate) row: Option<iced::Rectangle>,
+}
+
+impl iced::advanced::widget::Operation<LyricRowGeom> for LyricRowProbe {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<LyricRowGeom>),
+    ) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        // Only rows inside the drawer scrollable count (it is visited
+        // before its children).
+        if self.scroll.is_some() && self.row.is_none() && id == Some(&self.row_id) {
+            self.row = Some(bounds);
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: iced::Rectangle,
+        content_bounds: iced::Rectangle,
+        _translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if self.scroll.is_none() && id == Some(&self.scroll_id) {
+            self.scroll = Some((bounds, content_bounds));
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<LyricRowGeom> {
+        use iced::advanced::widget::operation::Outcome;
+        match (self.scroll, self.row) {
+            (Some((bounds, content)), Some(row)) => Outcome::Some(LyricRowGeom {
+                track: self.track.clone(),
+                at: self.at,
+                top: row.y - content.y,
+                h: row.height,
+                view_h: bounds.height,
+                max_y: content.height - bounds.height,
+            }),
+            _ => Outcome::None,
+        }
+    }
+}
