@@ -1578,6 +1578,15 @@ impl AppState {
     /// Pill geometry shared by the header pill, the suggest popup and
     /// the scrim hole (same left + width everywhere, so popup edges
     /// match the input exactly and only the input stays clickable).
+    /// Playlist search width: placeholder-sized at rest, eased up to
+    /// [`PL_SEARCH_EXPANDED_W`] while focused.
+    pub(crate) fn pl_search_width(&self) -> f32 {
+        let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
+            + PL_SEARCH_CHROME)
+            .min(PL_SEARCH_EXPANDED_W);
+        collapsed + (PL_SEARCH_EXPANDED_W - collapsed) * self.pl_search_expand
+    }
+
     pub(crate) fn search_pill_geom(&self) -> (f32, f32) {
         let search_w = self.search_width();
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
@@ -1593,8 +1602,10 @@ impl AppState {
         } else {
             search_w
         };
-        // Collapsed at rest, grows to full while focused (eased).
-        let collapsed = (full * SEARCH_COLLAPSED_FRAC).max(140.0).min(full);
+        // Collapsed at rest (just wide enough for the whole
+        // placeholder), grows to full while focused (eased).
+        let collapsed =
+            (text_line_width(self.language.search_placeholder()) + SEARCH_PILL_CHROME).min(full);
         let w = collapsed + (full - collapsed) * self.search_expand;
         let left = self.search_pill_left().clamp(0.0, ww.max(0.0));
         (left, w.min(ww).max(0.0))
@@ -2894,11 +2905,7 @@ impl AppState {
                         .style(rounded_input)
                         .id(PL_SEARCH_INPUT_ID)
                         .on_input(Message::PlaylistFilterChanged)
-                        .width(iced::Length::Fixed(
-                            PL_SEARCH_COLLAPSED_W
-                                + (PL_SEARCH_EXPANDED_W - PL_SEARCH_COLLAPSED_W)
-                                    * self.pl_search_expand
-                        ))
+                        .width(iced::Length::Fixed(self.pl_search_width()))
                         .padding(10),
                         list,
                     ]

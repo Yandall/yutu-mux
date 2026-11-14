@@ -7832,6 +7832,13 @@ fn search_fields_grow_while_focused() {
     let (_, rest) = s.search_pill_geom();
     let full = s.search_width();
     assert!(rest < full);
+    // Collapsed widths fit the whole placeholder (measured text plus
+    // the field chrome), never a share of the expanded width.
+    let ph = text_line_width(s.language.search_placeholder());
+    assert!(ph > 50.0, "placeholder measured {ph}");
+    assert!((rest - (ph + SEARCH_PILL_CHROME)).abs() < 0.5);
+    let pl_ph = text_line_width(s.language.playlist_filter_placeholder());
+    assert!((s.pl_search_width() - (pl_ph + PL_SEARCH_CHROME)).abs() < 0.5);
     // Focus grows it to full width; blur collapses it again.
     let _ = s.update(Message::SearchFocused(true));
     assert!(s.animating());

@@ -276,12 +276,16 @@ pub(crate) const CENTER_MARGIN_BREAK: f32 = 1600.0;
 pub(crate) const SEARCH_INPUT_ID: &str = "yutu-search";
 /// Widget id of the playlist page search input (focus probe).
 pub(crate) const PL_SEARCH_INPUT_ID: &str = "yutu-pl-search";
-/// Playlist search width when collapsed / expanded (px, clamped to
-/// the available row width by layout).
-pub(crate) const PL_SEARCH_COLLAPSED_W: f32 = 240.0;
+/// Playlist search width when expanded (px, clamped to the available
+/// row width by layout). Collapsed width fits the placeholder.
 pub(crate) const PL_SEARCH_EXPANDED_W: f32 = 520.0;
-/// Header search collapsed width as a share of its expanded width.
-pub(crate) const SEARCH_COLLAPSED_FRAC: f32 = 0.6;
+/// Header pill chrome around the placeholder text: pill padding
+/// (8 + 4), magnifier (14), input padding (2 x 10), row gaps (3 x 4),
+/// empty clear slot (1), submit button (14 + 2 x 6), plus breathing
+/// room so the placeholder never touches the button.
+pub(crate) const SEARCH_PILL_CHROME: f32 = 8.0 + 4.0 + 14.0 + 20.0 + 12.0 + 1.0 + 26.0 + 16.0;
+/// Playlist input chrome: padding (2 x 10), border, breathing room.
+pub(crate) const PL_SEARCH_CHROME: f32 = 20.0 + 2.0 + 16.0;
 
 /// Ease `current` toward `target` by `step` (frame tick for drawer and
 /// sidebar transitions). Snaps when closer than one step.
