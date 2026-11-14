@@ -23,7 +23,7 @@
 - Autoplay uses the same YouTube Music mix and plays all of it (#100).
 - Radio buttons are now Start mix, matching the Play/Shuffle size (#100).
 - The Search tab and the / key focus the top search bar and select its
-  text, so typing replaces the old query.
+  text, so typing replaces the old query (#106).
 
 ### Fixed
 
