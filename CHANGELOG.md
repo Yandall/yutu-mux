@@ -19,6 +19,7 @@
 
 ### Changed
 
+- The collapsed library rail now shows the app logo at the top.
 - The player on narrow windows is more compact: one-line title, and the
   volume sits next to the playback buttons (#109).
 - The History search matches the playlist search: a compact pill that
