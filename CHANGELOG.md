@@ -9,7 +9,7 @@
 - Rename playlists from the right-click menu, synced while signed in (#96).
 - Windows media keys and media flyout support (#99).
 - The computer no longer goes to sleep while music is playing; the
-  screen can still turn off.
+  screen can still turn off (#104).
 
 ### Changed
 
