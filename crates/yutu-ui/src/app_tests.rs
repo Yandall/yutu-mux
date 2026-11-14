@@ -8062,6 +8062,60 @@ fn narrow_mode_uses_drawers() {
     assert_eq!(s.route, Route::History);
 }
 
+/// Click at `at` on the real view (headless) and return the messages.
+fn click_view(s: &AppState, size: iced::Size, at: iced::Point) -> Vec<Message> {
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    sim.point_at(at);
+    let _ = sim.simulate(iced_test::simulator::click());
+    sim.into_messages().collect()
+}
+
+#[test]
+fn narrow_window_stays_clickable_without_a_drawer() {
+    let mut s = test_state();
+    let size = iced::Size::new(420.0, 800.0);
+    let _ = s.update(Message::WindowResized(size));
+    settle(&mut s);
+    assert!(!s.drawers_open());
+    // Header menu button (left edge, header row): with no drawer open
+    // the click reaches it instead of a leftover scrim.
+    let menu = iced::Point::new(8.0 + 21.0, 16.0 + 21.0);
+    let msgs = click_view(&s, size, menu);
+    assert!(
+        msgs.iter()
+            .any(|m| matches!(m, Message::ToggleLibraryDrawer)),
+        "menu click swallowed: {msgs:?}"
+    );
+    assert!(!msgs.iter().any(|m| matches!(m, Message::CloseDrawers)));
+    // With the drawer open, the dimmed content closes it.
+    let _ = s.update(Message::ToggleLibraryDrawer);
+    settle(&mut s);
+    let msgs = click_view(&s, size, iced::Point::new(400.0, 300.0));
+    assert!(
+        msgs.iter().any(|m| matches!(m, Message::CloseDrawers)),
+        "scrim click missed: {msgs:?}"
+    );
+}
+
+#[test]
+fn tiny_windows_compact_the_library_and_rows() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    assert!(!s.sidebar_short());
+    // Smallest window: the library panel scrolls as a whole, and song
+    // rows drop the play count so the title keeps its room.
+    let _ = s.update(Message::WindowResized(iced::Size::new(
+        MIN_WINDOW_W,
+        MIN_WINDOW_H,
+    )));
+    assert!(s.sidebar_short());
+    let mut t = mk_track("pc1", "Song", "A");
+    t.plays = Some("220K plays".into());
+    assert_eq!(s.row_plays(&t), None);
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    assert_eq!(s.row_plays(&t), Some("220K plays"));
+}
+
 #[test]
 fn narrow_header_swaps_gear_for_drawer_buttons() {
     let mut s = test_state();
@@ -8299,6 +8353,28 @@ fn playlist_glow_is_ready_on_open() {
 }
 
 #[test]
+fn history_search_follows_the_playlist_search_rules() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    s.navigate(Route::History);
+    settle(&mut s);
+    // Compact at rest: just the placeholder plus field chrome.
+    let ph = text_line_width(s.language.history_filter_placeholder());
+    let rest = s.history_search_width();
+    assert!((rest - (ph + PL_SEARCH_CHROME)).abs() < 0.5);
+    // Typing counts as focus and grows it, within the content width.
+    let _ = s.update(Message::HistoryFilterChanged("a".into()));
+    settle(&mut s);
+    let open = s.history_search_width();
+    assert!(open > rest);
+    assert!(open <= s.content_width() + 0.5);
+    // Leaving the page drops the focus, so it starts compact next time.
+    s.navigate(Route::Home);
+    settle(&mut s);
+    assert_eq!(s.pl_search_expand, 0.0);
+}
+
+#[test]
 fn collection_total_length_format() {
     assert_eq!(fmt_total(0), "0 min");
     assert_eq!(fmt_total(20), "1 min");
@@ -8361,10 +8437,14 @@ fn layout_snapshots() {
         });
     std::fs::create_dir_all(&dir).unwrap();
     let only = std::env::var("YUTU_SNAPSHOT_ONLY").unwrap_or_default();
-    let sizes: [(f32, f32); 7] = [
+    let sizes: [(f32, f32); 9] = [
+        // Smallest allowed window (short: the library panel scrolls).
+        (MIN_WINDOW_W, MIN_WINDOW_H),
         (360.0, 720.0),
         (420.0, 800.0),
         (600.0, 800.0),
+        // Narrow layout with the full-width player bar (tightest bar).
+        (720.0, 800.0),
         (900.0, 800.0),
         (1280.0, 800.0),
         (1920.0, 1000.0),
@@ -8377,6 +8457,7 @@ fn layout_snapshots() {
         "album",
         "settings",
         "nowplaying",
+        "history",
         "library",
         "queue",
     ];
@@ -8395,6 +8476,7 @@ fn layout_snapshots() {
                     );
                     t.album = Some("A Rather Long Album Title".into());
                     t.thumbnail_url = Some(format!("https://example.invalid/t{i}.jpg"));
+                    t.plays = Some("220K plays".into());
                     t
                 })
                 .collect();
@@ -8428,6 +8510,7 @@ fn layout_snapshots() {
                     let _ = s.update(Message::OpenAlbum("A Rather Long Album Title".into()));
                 }
                 "settings" => s.navigate(Route::Settings),
+                "history" => s.navigate(Route::History),
                 "nowplaying" => {
                     s.drawer_open = true;
                     let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();
@@ -8474,10 +8557,15 @@ fn layout_snapshots() {
             let snap = sim.snapshot(&theme).unwrap();
             // The renderer suffixes the file name (e.g. `-wgpu`), and an
             // existing file is compared instead of rewritten: clear both.
-            let path = dir.join(format!("{name}-{w}.png"));
+            let tag = if h < 600.0 {
+                format!("{w}x{h}")
+            } else {
+                format!("{w}")
+            };
+            let path = dir.join(format!("{name}-{tag}.png"));
             for f in std::fs::read_dir(&dir).unwrap().flatten() {
                 let n = f.file_name().to_string_lossy().into_owned();
-                if n.starts_with(&format!("{name}-{w}-")) || n == format!("{name}-{w}.png") {
+                if n.starts_with(&format!("{name}-{tag}-")) || n == format!("{name}-{tag}.png") {
                     let _ = std::fs::remove_file(f.path());
                 }
             }

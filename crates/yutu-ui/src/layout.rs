@@ -203,7 +203,7 @@ pub(crate) const RAIL_MAX_CAP: usize = 50;
 /// The stacked minimal player is taller (see player_zone_h).
 pub(crate) const PLAYER_ZONE_H: f32 = 105.0;
 /// Minimal stacked player reserve (4 rows + status + padding).
-pub(crate) const PLAYER_ZONE_MINIMAL_H: f32 = 210.0;
+pub(crate) const PLAYER_ZONE_MINIMAL_H: f32 = 150.0;
 /// Player breakpoints on window width: single row down to 700,
 /// tight single row down to 500, stacked below that.
 pub(crate) const PLAYER_COMPACT_BELOW: f32 = 700.0;
@@ -269,6 +269,10 @@ pub(crate) const PAGE_BACKDROP_H: f32 = 460.0;
 pub(crate) const PAGE_BACKDROP_OPACITY: f32 = 0.65;
 /// How strongly the stretched cover shows through the sheet.
 pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
+/// Stacked player: horizontal chrome beside the title (art, padding,
+/// heart and Now Playing buttons) and the volume slider's width cap.
+pub(crate) const MINI_INFO_CHROME: f32 = 160.0;
+pub(crate) const MINI_VOLUME_W: f32 = 110.0;
 /// Side slot width in the stacked player: holds the time labels on the
 /// seek row and the mute button on the volume row, so both bars line up.
 pub(crate) const MINI_SIDE_W: f32 = 40.0;
@@ -279,6 +283,9 @@ pub(crate) const HERO_STACKED_ART: f32 = 140.0;
 /// Lyrics follow never resumes while the drawer sits within this many
 /// pixels of the top (the user scrolled up on purpose).
 pub(crate) const LYRIC_TOP_HOLD_PX: f32 = 8.0;
+/// Library panel height below which the whole panel scrolls (fixed
+/// header, nav, filter and new-playlist parts plus ~3 playlist rows).
+pub(crate) const SIDEBAR_SHORT_BELOW: f32 = 540.0;
 /// Header control height: pills, pill inputs and round buttons share
 /// it (the 20px button radius makes a 40px button a true circle).
 pub(crate) const PILL_H: f32 = 40.0;
@@ -454,6 +461,24 @@ impl AppState {
         } else {
             CENTER_MAX_W
         }
+    }
+
+    /// Play count beside a song row's length, dropped on narrow content
+    /// (the title needs the room more).
+    pub(crate) fn row_plays<'t>(&self, t: &'t Track) -> Option<&'t str> {
+        if self.rows_show_heart() {
+            t.plays.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Library panel too short for its fixed parts plus a few playlist
+    /// rows: the whole panel scrolls instead of only the list.
+    pub(crate) fn sidebar_short(&self) -> bool {
+        let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+        let avail = wh - 16.0 - 8.0 - PANEL_GAP - self.player_zone_h();
+        avail < SIDEBAR_SHORT_BELOW
     }
 
     /// Song rows keep their heart button only with room to spare.

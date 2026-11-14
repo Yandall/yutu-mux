@@ -27,8 +27,7 @@ impl AppState {
     /// Rows render newest-first inside a render window ("Show more"
     /// pages in older plays); the header counts every match.
     pub(crate) fn history_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, text_input};
-        use iced::Fill;
+        use iced::widget::{button, column, text};
         let (groups, total) = self.history_groups(now_unix(), self.history_limit);
         let shown: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
         let head: iced::Element<'_, Message> = if self.history_filter.trim().is_empty() {
@@ -45,14 +44,14 @@ impl AppState {
         let mut body = column![
             text(self.language.nav_history()).size(22),
             head,
-            text_input(
+            // Same rules as the playlist search: compact pill at rest,
+            // grows while focused.
+            pill_search_input(
                 self.language.history_filter_placeholder(),
-                &self.history_filter
-            )
-            .style(rounded_input)
-            .on_input(Message::HistoryFilterChanged)
-            .width(Fill)
-            .padding(10),
+                &self.history_filter,
+                Message::HistoryFilterChanged,
+                self.history_search_width(),
+            ),
         ]
         .spacing(10);
         if groups.is_empty() {
@@ -274,6 +273,9 @@ impl AppState {
             .size(12)
             .color(MUTED)
             .into()
+        } else if self.sidebar_short() {
+            // Short window: the whole panel scrolls instead (below).
+            column(rows).spacing(2).into()
         } else {
             // Scrolls on its own between the filter and the new
             // playlist row, so both stay reachable on short windows.
@@ -287,7 +289,7 @@ impl AppState {
             .height(Fill)
             .into()
         };
-        container(
+        let panel = container(
             column![
                 row![
                     logo_mark(34.0),
@@ -384,12 +386,31 @@ impl AppState {
                 .align_y(iced::alignment::Vertical::Center),
             ]
             .spacing(10),
-        )
-        .style(sidebar_bg)
-        .padding(12)
-        .width(iced::Length::Fixed(w))
-        .height(Fill)
-        .into()
+        );
+        // Too short for the header, nav, filter and new-playlist row plus
+        // a few playlists: the whole panel scrolls as one list so every
+        // playlist stays reachable (a Fill list would get no height).
+        let panel: iced::Element<'_, Message> = if self.sidebar_short() {
+            container(
+                iced::widget::scrollable(panel.padding(iced::Padding {
+                    right: 10.0,
+                    ..iced::Padding::ZERO
+                }))
+                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("sidebar")))
+                .on_scroll(|v| Message::Scrolled("sidebar", v.absolute_offset().y))
+                .height(Fill),
+            )
+            .into()
+        } else {
+            panel.into()
+        };
+        container(panel)
+            .style(sidebar_bg)
+            .padding(12)
+            .width(iced::Length::Fixed(w))
+            .height(Fill)
+            .into()
     }
 
     /// Queue row (plain visuals only): while live-dragging the origin is
@@ -524,13 +545,15 @@ impl AppState {
         // switching Row <-> Stack here would rebuild the center and reset
         // its scroll whenever a rail expands.
         let mut layers: Vec<iced::Element<'a, Message>> = vec![row_layer];
-        if self.layout() == LayoutMode::Narrow {
+        // Scrim only behind an open Narrow drawer: without one it would
+        // dim the window and swallow every click.
+        if self.layout() == LayoutMode::Narrow && (left.is_some() || right.is_some()) {
             layers.push(
                 mouse_area(
                     container(Space::new())
                         .width(Fill)
                         .height(Fill)
-                        .style(modal_dim),
+                        .style(drawer_scrim),
                 )
                 .on_press(Message::CloseDrawers)
                 .on_right_press(Message::CloseDrawers)
@@ -1094,14 +1117,20 @@ impl AppState {
                     .padding(7)
                     .into()
             };
+            // One line each for title and artist (ellipsized to the
+            // room beside the art and the two buttons) keeps the bar short.
+            let budget = (((ww - MINI_INFO_CHROME) / 7.0) as usize).clamp(12, 80);
             let info = row![
                 info_art,
                 column![
-                    text(title.clone())
+                    text(truncate_title(&title, budget))
                         .size(13)
                         .width(Fill)
-                        .wrapping(Wrapping::WordOrGlyph),
-                    text(artist.clone()).size(12).color(MUTED),
+                        .wrapping(Wrapping::None),
+                    text(truncate_title(&artist, budget))
+                        .size(12)
+                        .color(MUTED)
+                        .wrapping(Wrapping::None),
                 ]
                 .spacing(1)
                 .width(Fill),
@@ -1143,10 +1172,23 @@ impl AppState {
             ]
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center);
-            let transport_centered: iced::Element<'_, Message> = container(transport)
+            // Transport on the left, volume on the right: one row
+            // instead of two (the slider shrinks first, never the icons).
+            let controls = row![
+                transport,
+                iced::widget::Space::new().width(Fill),
+                self.mute_button(),
+                container(
+                    pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                        .step(0.01_f32)
+                        .style(themed_slider)
+                        .width(Fill),
+                )
                 .width(Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .into();
+                .max_width(MINI_VOLUME_W),
+            ]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center);
             let mut bar_col = iced::widget::Column::new().spacing(6);
             if let Some(status) = self.status_row() {
                 bar_col = bar_col.push(status);
@@ -1154,10 +1196,9 @@ impl AppState {
             return container(
                 bar_col
                     .push(info)
-                    .push(transport_centered)
+                    // Fixed side slots keep the seek bar centered on the
+                    // same column as the bar above it.
                     .push(
-                        // Fixed side slots shared with the volume row, so
-                        // both bars start and end at the same x.
                         row![
                             container(text(fmt_time(shown_pos)).size(11).color(MUTED))
                                 .width(iced::Length::Fixed(MINI_SIDE_W))
@@ -1170,20 +1211,7 @@ impl AppState {
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .push(
-                        row![
-                            container(self.mute_button())
-                                .width(iced::Length::Fixed(MINI_SIDE_W))
-                                .align_x(iced::alignment::Horizontal::Center),
-                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                .step(0.01_f32)
-                                .style(themed_slider)
-                                .width(Fill),
-                            iced::widget::Space::new().width(iced::Length::Fixed(MINI_SIDE_W)),
-                        ]
-                        .spacing(6)
-                        .align_y(iced::alignment::Vertical::Center),
-                    ),
+                    .push(controls),
             )
             .style(player_bg)
             .padding(10)
@@ -1268,39 +1296,52 @@ impl AppState {
                     .spacing(2)
                     .align_x(iced::alignment::Horizontal::Center)
                     .width(iced::Length::FillPortion(center_part)),
-                    row![
-                        iced::widget::Space::new().width(Fill),
-                        self.mute_button(),
-                        tooltip(
-                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                .step(0.01_f32)
-                                .style(themed_slider)
-                                .width(volume_w),
-                            text(if self.muted {
-                                self.language.volume_muted(self.volume * 100.0)
-                            } else {
-                                self.language.volume(self.volume * 100.0)
-                            })
-                            .size(12),
-                            tooltip::Position::Top,
-                        )
-                        .gap(8),
-                        {
-                            if self.drawer_open {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+                    // Right-aligned group: on a tight bar only the volume
+                    // slider gives up width (capped at its normal size),
+                    // so the mute and Now Playing icons never shrink.
+                    container(
+                        row![
+                            self.mute_button(),
+                            tooltip(
+                                container(
+                                    pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                        .step(0.01_f32)
+                                        .style(themed_slider)
+                                        .width(Fill),
+                                )
+                                .width(Fill)
+                                .max_width(volume_w as f32),
+                                text(if self.muted {
+                                    self.language.volume_muted(self.volume * 100.0)
+                                } else {
+                                    self.language.volume(self.volume * 100.0)
+                                })
+                                .size(12),
+                                tooltip::Position::Top,
+                            )
+                            .gap(8),
+                            {
+                                if self.drawer_open {
+                                    button(ctrl_box(btn_icon(
+                                        "mic-vocal",
+                                        14.0,
+                                        iced::Color::WHITE,
+                                    )))
                                     .style(accent_button)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
-                            } else {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                    .style(icon_hover)
-                                    .on_press(Message::ToggleDrawer)
-                                    .padding(7)
-                            }
-                        },
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center)
+                                } else {
+                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                                        .style(icon_hover)
+                                        .on_press(Message::ToggleDrawer)
+                                        .padding(7)
+                                }
+                            },
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                    )
+                    .align_x(iced::alignment::Horizontal::Right)
                     .width(iced::Length::FillPortion(2)),
                 ]
                 .spacing(main_gap)
@@ -1837,6 +1878,20 @@ impl AppState {
             search_w
         };
         full.min(ww).max(0.0)
+    }
+
+    /// History search width: the playlist search's rule (placeholder
+    /// sized at rest, eased up to the header pill's width while
+    /// focused) within the page's content width.
+    pub(crate) fn history_search_width(&self) -> f32 {
+        let full = self
+            .search_full_width()
+            .min(self.content_width())
+            .max(160.0);
+        let collapsed = (text_line_width(self.language.history_filter_placeholder())
+            + PL_SEARCH_CHROME)
+            .min(full);
+        collapsed + (full - collapsed) * ease_in_out(self.pl_search_expand)
     }
 
     /// Playlist search width: placeholder-sized at rest, eased up to
@@ -3177,20 +3232,12 @@ impl AppState {
                             self.language.shuffle_label(),
                             Message::PlayAllShuffled,
                         ),
-                        iced::widget::text_input(
+                        pill_search_input(
                             self.language.playlist_filter_placeholder(),
                             &self.playlist_filter,
-                        )
-                        .style(pill_input)
-                        .id(PL_SEARCH_INPUT_ID)
-                        .on_input(Message::PlaylistFilterChanged)
-                        .size(13)
-                        .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(
-                            PILL_H - 2.0 * PILL_INPUT_PAD_Y,
-                        )))
-                        .width(iced::Length::Fixed(self.pl_search_width()))
-                        .padding([PILL_INPUT_PAD_Y, 16.0])
-                        .into(),
+                            Message::PlaylistFilterChanged,
+                            self.pl_search_width(),
+                        ),
                         round_button(
                             btn_icon("ellipsis", 16.0, iced::Color::WHITE),
                             ghost_button,

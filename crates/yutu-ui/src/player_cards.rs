@@ -251,7 +251,7 @@ impl AppState {
                     text(format!("{n}")).size(13).color(MUTED).width(28),
                     self.art_play_button(t, hovered, play_msg),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
+                    song_meta_text(self.row_plays(t), self.track_secs(t)),
                     heart,
                     more,
                 ]
