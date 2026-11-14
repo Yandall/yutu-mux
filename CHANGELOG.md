@@ -52,9 +52,9 @@
 ### Fixed
 
 - Narrow windows no longer dim and stop responding to clicks when no
-  drawer is open.
+  drawer is open (#109).
 - The Now Playing button in the player no longer shrinks on tight
-  windows; the volume slider gets shorter instead.
+  windows; the volume slider gets shorter instead (#109).
 - Hovering a song shown in several lists highlights only that row (#98).
 - The library playlist list scrolls when it is longer than the window (#108).
 - On narrow windows the volume slider lines up with the seek bar (#108).
