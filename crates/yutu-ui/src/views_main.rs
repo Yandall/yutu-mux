@@ -1012,10 +1012,51 @@ impl AppState {
         .into()
     }
 
-    pub(crate) fn player_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{
-            button, column, container, mouse_area, row, text, text::Wrapping, tooltip,
+    /// Mute button + volume slider, right-aligned in whatever width the
+    /// parent row leaves, the slider capped at `slider_w`. The cap lives
+    /// on an inner container laid out with loose limits: iced hands a
+    /// `Fill` row child min = max = the leftover space, and
+    /// `Limits::max_width` never drops below that min, so a cap set
+    /// directly on the row child is silently ignored.
+    fn volume_group(&self, slider_w: f32, spacing: f32, tip: bool) -> iced::Element<'_, Message> {
+        use iced::widget::{container, row, text, tooltip};
+        use iced::Fill;
+        let slider = pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+            .step(0.01_f32)
+            .style(themed_slider)
+            .width(Fill);
+        let slider: iced::Element<'_, Message> = if tip {
+            tooltip(
+                slider,
+                text(if self.muted {
+                    self.language.volume_muted(self.volume * 100.0)
+                } else {
+                    self.language.volume(self.volume * 100.0)
+                })
+                .size(12),
+                tooltip::Position::Top,
+            )
+            .gap(8)
+            .into()
+        } else {
+            slider.into()
         };
+        container(
+            container(
+                row![self.mute_button(), slider]
+                    .spacing(spacing)
+                    .align_y(iced::alignment::Vertical::Center),
+            )
+            .width(Fill)
+            .max_width(MUTE_BUTTON_W + spacing + slider_w),
+        )
+        .width(Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .into()
+    }
+
+    pub(crate) fn player_view(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, mouse_area, row, text, text::Wrapping};
         use iced::Fill;
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let mode = player_layout_mode(ww);
@@ -1049,7 +1090,7 @@ impl AppState {
         let transport_gap = if tight { 4.0 } else { 6.0 };
         let pad_side = if tight { 6 } else { 8 };
         let pad_play = if tight { 8 } else { 10 };
-        let volume_w = if tight { 80 } else { 120 };
+        let volume_w = if tight { 80.0 } else { 120.0 };
         let main_gap = if tight { 8.0 } else { 12.0 };
         let like_button: iced::Element<'_, Message> = match &current {
             Some(t) => {
@@ -1188,21 +1229,9 @@ impl AppState {
             .align_y(iced::alignment::Vertical::Center);
             // Transport on the left, volume on the right: one row
             // instead of two (the slider shrinks first, never the icons).
-            let controls = row![
-                transport,
-                iced::widget::Space::new().width(Fill),
-                self.mute_button(),
-                container(
-                    pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                        .step(0.01_f32)
-                        .style(themed_slider)
-                        .width(Fill),
-                )
-                .width(Fill)
-                .max_width(MINI_VOLUME_W),
-            ]
-            .spacing(6)
-            .align_y(iced::alignment::Vertical::Center);
+            let controls = row![transport, self.volume_group(MINI_VOLUME_W, 6.0, false),]
+                .spacing(6)
+                .align_y(iced::alignment::Vertical::Center);
             let mut bar_col = iced::widget::Column::new().spacing(6);
             if let Some(status) = self.status_row() {
                 bar_col = bar_col.push(status);
@@ -1314,44 +1343,19 @@ impl AppState {
                     // slider gives up width (capped at its normal size),
                     // so the mute and Now Playing icons never shrink.
                     container(
-                        row![
-                            self.mute_button(),
-                            tooltip(
-                                container(
-                                    pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                        .step(0.01_f32)
-                                        .style(themed_slider)
-                                        .width(Fill),
-                                )
-                                .width(Fill)
-                                .max_width(volume_w as f32),
-                                text(if self.muted {
-                                    self.language.volume_muted(self.volume * 100.0)
-                                } else {
-                                    self.language.volume(self.volume * 100.0)
-                                })
-                                .size(12),
-                                tooltip::Position::Top,
-                            )
-                            .gap(8),
-                            {
-                                if self.drawer_open {
-                                    button(ctrl_box(btn_icon(
-                                        "mic-vocal",
-                                        14.0,
-                                        iced::Color::WHITE,
-                                    )))
+                        row![self.volume_group(volume_w, 8.0, true), {
+                            if self.drawer_open {
+                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
                                     .style(accent_button)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
-                                } else {
-                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                        .style(icon_hover)
-                                        .on_press(Message::ToggleDrawer)
-                                        .padding(7)
-                                }
-                            },
-                        ]
+                            } else {
+                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                                    .style(icon_hover)
+                                    .on_press(Message::ToggleDrawer)
+                                    .padding(7)
+                            }
+                        },]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
                     )
