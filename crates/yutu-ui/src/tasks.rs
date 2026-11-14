@@ -1036,6 +1036,16 @@ impl AppState {
         iced::widget::operation::move_cursor_to_end(SEARCH_INPUT_ID)
     }
 
+    /// Focus the top search field and select its whole query, so the
+    /// Search tab and the `/` key let typing replace it at once (an
+    /// empty field just gets the caret). Probes focus after so the
+    /// pill takes its expanded width.
+    pub(crate) fn focus_search_select_all() -> iced::Task<Message> {
+        iced::widget::operation::focus(SEARCH_INPUT_ID)
+            .chain(iced::widget::operation::select_all(SEARCH_INPUT_ID))
+            .chain(Self::focus_probe())
+    }
+
     /// Drop keyboard focus (one place): arming any modal returns this
     /// so a background input never keeps its focus ring (or keystrokes)
     /// behind the dialog. There is no Task-level unfocus helper, so

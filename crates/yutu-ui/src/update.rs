@@ -33,9 +33,16 @@ impl AppState {
                 unreachable!("scrobble results are dispatched in update()")
             }
             Message::Navigate(r) => {
+                // Search tab and `/` both land here: focus the top
+                // search field with its query selected for replacing.
+                let focus = if r == Route::Search {
+                    Self::focus_search_select_all()
+                } else {
+                    iced::Task::none()
+                };
                 self.navigate(r);
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                return iced::Task::batch([self.ensure_visible_tasks(), focus]);
             }
             Message::OpenUrl(url) => {
                 // Best effort: a missing opener only logs (stderr
