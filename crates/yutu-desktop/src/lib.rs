@@ -3,6 +3,7 @@
 //!
 //! * [`mpris`] : Linux MPRIS2 D-Bus service skeleton (`zbus`-based).
 //! * [`tray`] : toolkit-free tray state model feeding a future tray backend.
+//! * [`media`] : shared souvlaki driver behind the macOS/Windows shims.
 //! * [`macos`] : macOS Now Playing + media keys driver (souvlaki).
 //! * [`windows`] : Windows SMTC + media keys driver (souvlaki).
 //! * [`macos_notes`] : macOS integration plan (kept: design constraints).
@@ -12,6 +13,7 @@ pub const MPRIS_IDENTITY: &str = "yutu-mux";
 
 pub mod macos;
 pub mod macos_notes;
+pub mod media;
 pub mod mpris;
 #[cfg(test)]
 mod mpris_tests;
