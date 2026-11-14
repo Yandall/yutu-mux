@@ -956,16 +956,9 @@ impl Language {
     pub fn file_picker_title(self) -> String {
         self.tr("file-picker-title")
     }
-    /// Hero play pill (uppercase like the design).
-    pub fn play_pill_label(self) -> String {
-        self.tr("play-pill-label")
-    }
-    /// Hero shuffle pill (uppercase like the design).
+    /// Hero start-mix pill.
     pub fn mix_pill_label(self) -> String {
         self.tr("mix-pill-label")
-    }
-    pub fn shuffle_pill_label(self) -> String {
-        self.tr("shuffle-pill-label")
     }
     // Queue action labels (doubled as status heads).
     pub fn search_results_label(self) -> String {

@@ -41,6 +41,10 @@
 - Now Playing shows a soft blur of the cover's colors behind it, and
   playlist, album and artist pages glow with their cover at the top (#108).
 - All text fields, search bars and pickers share one rounded style (#108).
+- Play buttons are one round red button everywhere; Shuffle and Start
+  mix are matching grey pills with icons, and all pills share one height (#108).
+- Icon buttons get a round hover, and Settings uses switches instead of
+  checkboxes (#108).
 - Playlist pages get a new header: cover, bold title, song count and
   total length, a round play button, and Shuffle and search as pills;
   sorting moves above the song list (#108).

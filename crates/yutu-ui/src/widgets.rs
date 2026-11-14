@@ -156,19 +156,48 @@ pub(crate) fn round_button<'a>(
     .into()
 }
 
-/// Text pill button (`ghost_button` look), `PILL_H` tall, label
-/// vertically centered, so it lines up with `pill_input` fields.
-pub(crate) fn pill_button<'a>(label: String, on_press: Message) -> iced::Element<'a, Message> {
+/// Grey pill with a leading glyph (Shuffle, Start mix): same height and
+/// look as `pill_button`.
+pub(crate) fn icon_pill_button<'a>(
+    icon: &str,
+    label: String,
+    on_press: Message,
+) -> iced::Element<'a, Message> {
     iced::widget::button(
-        iced::widget::container(btn_text(label, 13))
-            .height(iced::Fill)
+        iced::widget::container(
+            iced::widget::row![
+                btn_icon(icon, 14.0, iced::Color::WHITE),
+                btn_text(label, 13)
+            ]
+            .spacing(8)
             .align_y(iced::alignment::Vertical::Center),
+        )
+        .height(iced::Fill)
+        .align_y(iced::alignment::Vertical::Center),
     )
     .style(ghost_button)
     .on_press(on_press)
     .padding([0, 16])
     .height(iced::Length::Fixed(PILL_H))
     .into()
+}
+
+/// Icon-only button: transparent at rest, a round soft hover (the
+/// square icon plus even padding makes it a circle).
+pub(crate) fn icon_hover(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let hovered = matches!(
+        status,
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+    );
+    iced::widget::button::Style {
+        background: hovered.then_some(iced::Background::Color(CARD_BG_HOVER)),
+        text_color: iced::Color::WHITE,
+        border: iced::Border::default().rounded(999),
+        ..Default::default()
+    }
 }
 
 /// Pill input that reads as a quiet button at rest (same fill, border
@@ -397,7 +426,7 @@ pub(crate) fn nav_arrow(
     iced::widget::button::Style {
         background: None,
         text_color: iced::Color::WHITE,
-        border: iced::Border::default().rounded(12),
+        border: iced::Border::default().rounded(999),
         ..Default::default()
     }
 }

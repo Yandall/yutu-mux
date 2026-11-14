@@ -62,7 +62,7 @@ impl AppState {
         }
         let liked = self.liked.contains(&t.id);
         button(heart_icon(liked, 15.0, if liked { ACCENT } else { MUTED }))
-            .style(hover_row)
+            .style(icon_hover)
             .on_press(Message::Like(t.id.clone()))
             .padding(6)
             .into()
@@ -85,7 +85,7 @@ impl AppState {
                     song_meta_text(t.plays.as_deref(), self.track_secs(t)),
                     self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
+                        .style(icon_hover)
                         .on_press(Message::OpenContext(t.id.clone()))
                         .padding(6),
                 ]
@@ -149,7 +149,7 @@ impl AppState {
                     text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
                     self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
+                        .style(icon_hover)
                         .on_press(Message::OpenContext(t.id.clone()))
                         .padding(6),
                 ]
@@ -204,7 +204,7 @@ impl AppState {
         // queue row.
         let heart_btn: iced::Element<'_, Message> = self.row_heart(t);
         let more_btn: iced::Element<'_, Message> = button(btn_icon("ellipsis", 15.0, MUTED))
-            .style(hover_row)
+            .style(icon_hover)
             .on_press(Message::OpenContext(t.id.clone()))
             .padding(6)
             .into();
@@ -501,23 +501,13 @@ impl AppState {
                         .size(13)
                         .color(MUTED),
                         row![
-                            button(
-                                row![
-                                    btn_icon("play", 13.0, iced::Color::WHITE),
-                                    btn_text(self.language.play_label(), 13),
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                            )
-                            .style(accent_button)
-                            .on_press(Message::PlayNow(t.id.clone()))
-                            .padding(8),
+                            Self::play_pill(Message::PlayNow(t.id.clone())),
                             button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::Like(t.id.clone()))
                                 .padding(8),
                             button(btn_icon("ellipsis", 15.0, MUTED))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::OpenContext(t.id.clone()))
                                 .padding(8),
                         ]
@@ -554,7 +544,7 @@ impl AppState {
             let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
             row![
                 Self::shuffle_pill(
-                    self.language.shuffle_pill_label(),
+                    self.language.shuffle_label(),
                     Message::PlayAlbumShuffled(a.id.clone())
                 ),
                 Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
@@ -606,7 +596,7 @@ impl AppState {
             let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
             row![
                 Self::shuffle_pill(
-                    self.language.shuffle_pill_label(),
+                    self.language.shuffle_label(),
                     Message::PlayArtistShuffled(a.name.clone())
                 ),
                 Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
@@ -843,10 +833,7 @@ impl AppState {
                         .width(Fill),
                     text(sub).size(13).color(MUTED),
                     row![
-                        Self::play_pill(
-                            self.language.play_pill_label(),
-                            Message::PlaySearchPlaylist(p.id.clone())
-                        ),
+                        Self::play_pill(Message::PlaySearchPlaylist(p.id.clone())),
                         Self::shuffle_pill(
                             "SHUFFLE".into(),
                             Message::PlaySearchPlaylistShuffled(p.id.clone())

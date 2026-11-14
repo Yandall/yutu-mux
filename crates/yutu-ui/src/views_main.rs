@@ -80,7 +80,8 @@ impl AppState {
                 button(btn_text(self.language.show_more_older(total - shown), 12))
                     .style(ghost_button)
                     .on_press(Message::HistoryMore)
-                    .padding(8),
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
             );
         }
         body.into()
@@ -140,7 +141,7 @@ impl AppState {
         // drawer gets a close button instead.
         let pin_btn: iced::Element<'_, Message> = match mode {
             LayoutMode::Narrow => button(btn_icon("x", 16.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CloseDrawers)
                 .padding(8)
                 .into(),
@@ -228,7 +229,8 @@ impl AppState {
                     button(btn_icon("play", 14.0, iced::Color::WHITE))
                         .style(accent_button)
                         .on_press(Message::PlayPlaylist(pl.id.clone()))
-                        .padding(8)
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H))
                         .into()
                 } else {
                     iced::widget::Space::new()
@@ -838,7 +840,8 @@ impl AppState {
                     button(btn_text(self.language.clear_queue(self.queue.len()), 12))
                         .style(ghost_button)
                         .on_press(Message::QueueClear)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
@@ -871,7 +874,7 @@ impl AppState {
         };
         let pin_btn: iced::Element<'_, Message> = match self.layout() {
             LayoutMode::Narrow => button(btn_icon("x", 16.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CloseDrawers)
                 .padding(6)
                 .into(),
@@ -1039,7 +1042,7 @@ impl AppState {
                 .into()
         } else {
             button(ctrl_box(btn_icon("shuffle", 14.0, MUTED)))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::ToggleShuffle)
                 .padding(pad_side)
                 .into()
@@ -1087,7 +1090,7 @@ impl AppState {
                     .into()
             } else {
                 button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::ToggleDrawer)
                     .padding(7)
                     .into()
@@ -1118,7 +1121,7 @@ impl AppState {
                             .into()
                     } else {
                         button(ctrl_box(btn_icon("shuffle", 14.0, MUTED)))
-                            .style(hover_row)
+                            .style(icon_hover)
                             .on_press(Message::ToggleShuffle)
                             .padding(6)
                             .into()
@@ -1126,15 +1129,16 @@ impl AppState {
                     shuffle_btn
                 },
                 button(ctrl_box(btn_icon("skip-back", 18.0, iced::Color::WHITE)))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::Prev)
                     .padding(6),
                 button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
                     .style(accent_button)
                     .on_press(Message::TogglePause)
-                    .padding(8),
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
                 button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::Next)
                     .padding(6),
                 repeat_button(repeat_icon, repeat_active, 6),
@@ -1240,7 +1244,7 @@ impl AppState {
                         row![
                             shuffle_button,
                             button(ctrl_box(btn_icon("skip-back", 18.0, iced::Color::WHITE)))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::Prev)
                                 .padding(pad_side),
                             button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
@@ -1248,7 +1252,7 @@ impl AppState {
                                 .on_press(Message::TogglePause)
                                 .padding(pad_play),
                             button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::Next)
                                 .padding(pad_side),
                             repeat_button(repeat_icon, repeat_active, pad_side),
@@ -1291,7 +1295,7 @@ impl AppState {
                                     .padding(7)
                             } else {
                                 button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                    .style(hover_row)
+                                    .style(icon_hover)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
                             }
@@ -1590,7 +1594,7 @@ impl AppState {
         let label = self.lyrics_shown_provider(track_id).label();
         let items: Vec<iced::Element<'_, Message>> = vec![
             button(btn_icon("chevron-left", 14.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CycleLyricsProvider(-1))
                 .padding(4)
                 .into(),
@@ -1601,7 +1605,7 @@ impl AppState {
                 .align_x(iced::alignment::Horizontal::Center)
                 .into(),
             button(btn_icon("chevron-right", 14.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CycleLyricsProvider(1))
                 .padding(4)
                 .into(),
@@ -1904,7 +1908,7 @@ impl AppState {
             text("").size(1).into()
         } else {
             button(btn_icon("x", 13.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::HomeSearchChanged(String::new()))
                 .padding(6)
                 .into()
@@ -1913,7 +1917,7 @@ impl AppState {
         // clicking it and pressing Enter always do the same thing.
         let go_btn: iced::Element<'_, Message> =
             button(btn_icon("search", 14.0, iced::Color::WHITE))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::SuggestPick)
                 .padding(6)
                 .into();
@@ -1947,7 +1951,7 @@ impl AppState {
         .into();
         let gear: iced::Element<'_, Message> =
             button(btn_icon("settings", 14.0, iced::Color::WHITE))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::Navigate(Route::Settings))
                 .padding(6)
                 .into();
@@ -2115,9 +2119,7 @@ impl AppState {
 
     pub(crate) fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{
-            button, checkbox, column, container, mouse_area, row, scrollable, text, toggler,
-        };
+        use iced::widget::{button, column, container, mouse_area, row, scrollable, text, toggler};
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
             Route::Home => {
@@ -2220,17 +2222,7 @@ impl AppState {
                     column![
                         row![
                             text(self.language.quick_picks()).size(19).width(Fill),
-                            button(
-                                row![
-                                    btn_icon("play", 13.0, iced::Color::WHITE),
-                                    btn_text(self.language.play_all(), 13)
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                            )
-                            .style(accent_button)
-                            .on_press(Message::PlayQuickPicks)
-                            .padding(7),
+                            Self::play_pill(Message::PlayQuickPicks),
                         ]
                         .align_y(iced::alignment::Vertical::Center),
                         if right.is_empty() {
@@ -2359,7 +2351,8 @@ impl AppState {
                         )
                         .style(ghost_button)
                         .on_press(Message::Navigate(Route::Discovery))
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row![
@@ -2545,33 +2538,13 @@ impl AppState {
                     text(self.language.made_for_you()).size(22),
                     row![
                         text(self.language.weekly_mix()).size(17).width(Fill),
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_all(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center)
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayWeeklyMix)
-                        .padding(7),
+                        Self::play_pill(Message::PlayWeeklyMix),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     weekly_section,
                     row![
                         text(self.language.forgotten()).size(17).width(Fill),
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_all(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center)
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayForgotten)
-                        .padding(7),
+                        Self::play_pill(Message::PlayForgotten),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     forgotten_section,
@@ -2671,7 +2644,8 @@ impl AppState {
                         button(btn_text(self.language.relaunch_to_apply(), 12))
                             .style(ghost_button)
                             .on_press(Message::RelaunchNow)
-                            .padding(8)
+                            .padding([12, 16])
+                            .height(iced::Length::Fixed(PILL_H))
                             .into()
                     } else {
                         text("").size(1).into()
@@ -2781,9 +2755,10 @@ impl AppState {
                     ]
                     .spacing(4),
                     text(self.language.animations_section()).size(17),
-                    checkbox(self.animations_enabled)
+                    toggler(self.animations_enabled)
                         .label(self.language.enable_animations())
-                        .on_toggle(Message::AnimationsToggled),
+                        .on_toggle(Message::AnimationsToggled)
+                        .style(red_toggle),
                     column![
                         text(self.language.animation_duration(self.anim_ms)).size(13),
                         settings_input(
@@ -2803,7 +2778,8 @@ impl AppState {
                     button(btn_text(self.language.setup_scrobbling(), 12))
                         .style(accent_button)
                         .on_press(Message::OpenScrobbleModal)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     text(self.language.cookie_section_title()).size(17),
                     self.cookie_section(),
                     {
@@ -2833,7 +2809,8 @@ impl AppState {
                         button(btn_text(self.language.about_source(), 12))
                             .style(ghost_button)
                             .on_press(Message::OpenUrl(GITHUB_URL.to_string()))
-                            .padding(8),
+                            .padding([12, 16])
+                            .height(iced::Length::Fixed(PILL_H)),
                         text(self.language.about_notices()).size(12).color(MUTED),
                         text(self.language.about_backend()).size(12).color(MUTED),
                     ]
@@ -2891,14 +2868,16 @@ impl AppState {
                         button(btn_text(self.language.show_more(), 12))
                             .style(ghost_button)
                             .on_press(Message::ArtistTopExpand)
-                            .padding(8)
+                            .padding([12, 16])
+                            .height(iced::Length::Fixed(PILL_H))
                             .into()
                     } else if fetching_full {
                         row![
                             button(btn_text(self.language.show_more(), 12))
                                 .style(ghost_button)
                                 .on_press(Message::ArtistTopExpand)
-                                .padding(8),
+                                .padding([12, 16])
+                                .height(iced::Length::Fixed(PILL_H)),
                             Self::spinner_frame(self.spin_frame, 12.0, MUTED),
                         ]
                         .spacing(6)
@@ -2945,7 +2924,7 @@ impl AppState {
                         160.0,
                         column![
                             text(self.language.artist_label()).size(12).color(MUTED),
-                            text(name.clone()).size(30),
+                            text(name.clone()).size(34).font(bold_font()),
                             text(self.language.artist_songs_albums(
                                 tracks.len(),
                                 albums.len(),
@@ -2954,9 +2933,9 @@ impl AppState {
                             .size(12)
                             .color(MUTED),
                             row![
-                                Self::play_pill(self.language.play_pill_label(), Message::PlayAll),
+                                Self::play_pill(Message::PlayAll),
                                 Self::shuffle_pill(
-                                    self.language.shuffle_pill_label(),
+                                    self.language.shuffle_label(),
                                     Message::PlayAllShuffled
                                 ),
                                 radio_btn,
@@ -3039,12 +3018,12 @@ impl AppState {
                         180.0,
                         column![
                             text(self.language.album_label()).size(12).color(MUTED),
-                            text(title.clone()).size(28),
+                            text(title.clone()).size(34).font(bold_font()),
                             text(meta).size(12).color(MUTED),
                             row![
-                                Self::play_pill(self.language.play_pill_label(), Message::PlayAll),
+                                Self::play_pill(Message::PlayAll),
                                 Self::shuffle_pill(
-                                    self.language.shuffle_pill_label(),
+                                    self.language.shuffle_label(),
                                     Message::PlayAllShuffled
                                 ),
                             ]
@@ -3195,7 +3174,11 @@ impl AppState {
                             accent_button,
                             Message::PlayAll,
                         ),
-                        pill_button(self.language.shuffle_label(), Message::PlayAllShuffled),
+                        icon_pill_button(
+                            "shuffle",
+                            self.language.shuffle_label(),
+                            Message::PlayAllShuffled,
+                        ),
                         iced::widget::text_input(
                             self.language.playlist_filter_placeholder(),
                             &self.playlist_filter,
@@ -3271,10 +3254,7 @@ impl AppState {
                 column![
                     text(title).size(22),
                     row![
-                        Self::play_pill(
-                            self.language.play_pill_label(),
-                            Message::PlayNow(id.clone())
-                        ),
+                        Self::play_pill(Message::PlayNow(id.clone())),
                         Self::mix_pill(
                             self.language.mix_pill_label(),
                             Message::StartRadio(id.clone())
@@ -4400,7 +4380,7 @@ impl AppState {
             column![
                 row![
                     button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
-                        .style(hover_row)
+                        .style(icon_hover)
                         .on_press(Message::ToggleDrawer)
                         .padding(7),
                     text(self.language.now_playing())
