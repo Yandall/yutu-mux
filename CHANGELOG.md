@@ -38,14 +38,14 @@
   stays in the right-click menu (#108).
 - Very wide windows use more of the screen, and Now Playing shows the
   cover beside the lyrics (#108).
-- Now Playing shows a soft blur of the cover's colors behind it.
-- Playlist pages show the playlist cover next to the title.
+- Now Playing shows a soft blur of the cover's colors behind it (#108).
+- Playlist pages show the playlist cover next to the title (#108).
 
 ### Fixed
 
 - Hovering a song shown in several lists highlights only that row (#98).
-- The library playlist list scrolls when it is longer than the window.
-- On narrow windows the volume slider lines up with the seek bar.
+- The library playlist list scrolls when it is longer than the window (#108).
+- On narrow windows the volume slider lines up with the seek bar (#108).
 - Typing in the search bar no longer freezes the app (#102).
 - Search waits until you pause typing for 300ms (#102).
 - Songs no longer show a 0:00 length in playlists, history, and search (#103).
