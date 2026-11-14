@@ -1578,7 +1578,9 @@ impl AppState {
     /// Pill geometry shared by the header pill, the suggest popup and
     /// the scrim hole (same left + width everywhere, so popup edges
     /// match the input exactly and only the input stays clickable).
-    pub(crate) fn search_pill_geom(&self) -> (f32, f32) {
+    /// Expanded search width shared by both search fields: the header
+    /// pill target, shrunk to the room the header center leaves.
+    pub(crate) fn search_full_width(&self) -> f32 {
         let search_w = self.search_width();
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
@@ -1588,11 +1590,32 @@ impl AppState {
             8.0
         };
         let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
-        let w = if center_avail < search_w {
+        let full = if center_avail < search_w {
             center_avail.max(140.0)
         } else {
             search_w
         };
+        full.min(ww).max(0.0)
+    }
+
+    /// Playlist search width: placeholder-sized at rest, eased up to
+    /// the header pill's expanded width while focused (same max).
+    pub(crate) fn pl_search_width(&self) -> f32 {
+        let full = self.search_full_width();
+        let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
+            + PL_SEARCH_CHROME)
+            .min(full);
+        collapsed + (full - collapsed) * ease_in_out(self.pl_search_expand)
+    }
+
+    pub(crate) fn search_pill_geom(&self) -> (f32, f32) {
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let full = self.search_full_width();
+        // Collapsed at rest (just wide enough for the whole
+        // placeholder), grows to full while focused (eased).
+        let collapsed =
+            (text_line_width(self.language.search_placeholder()) + SEARCH_PILL_CHROME).min(full);
+        let w = collapsed + (full - collapsed) * ease_in_out(self.search_expand);
         let left = self.search_pill_left().clamp(0.0, ww.max(0.0));
         (left, w.min(ww).max(0.0))
     }
@@ -1654,7 +1677,7 @@ impl AppState {
                 icon("search", 14.0, MUTED),
                 text_input(self.language.search_placeholder(), &self.search_query)
                     .style(search_inner_input)
-                    .id("yutu-search")
+                    .id(SEARCH_INPUT_ID)
                     .on_input(Message::HomeSearchChanged)
                     .on_submit(Message::SuggestPick)
                     .width(Fill)
@@ -2766,10 +2789,32 @@ impl AppState {
                     // full-row gap at the commit target (siblings shift to
                     // make room); only the transparent slot lanes appear
                     // on top of that.
-                    let list: iced::Element<'_, Message> = if !is_fav
-                        && sort == PlaylistSort::Manual
-                        && ordered.len() >= 2
-                    {
+                    // Search: display-only filter on title/artist. Rows
+                    // keep their full-list index, so a click queues the
+                    // whole playlist from that song on exactly like the
+                    // unfiltered view. Drag reorder pauses while filtered
+                    // (a partial list has no honest drop slots).
+                    let q = self.playlist_filter.trim().to_lowercase();
+                    let filtering = !q.is_empty();
+                    let list: iced::Element<'_, Message> = if filtering {
+                        let rows: Vec<iced::Element<'_, Message>> = ordered
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, t)| {
+                                t.title.to_lowercase().contains(&q)
+                                    || t.artist.to_lowercase().contains(&q)
+                            })
+                            .map(|(i, t)| self.playlist_track_row(&pid, t, i))
+                            .collect();
+                        if rows.is_empty() {
+                            text(self.language.no_songs_for(self.playlist_filter.trim()))
+                                .size(12)
+                                .color(MUTED)
+                                .into()
+                        } else {
+                            column(rows).spacing(2).into()
+                        }
+                    } else if !is_fav && sort == PlaylistSort::Manual && ordered.len() >= 2 {
                         let len = ordered.len();
                         let from = self.pl_drag.map(|d| d.from).unwrap_or(0);
                         let live = self.pl_dragging()
@@ -2862,6 +2907,15 @@ impl AppState {
                         iced::widget::Row::with_children(actions)
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center),
+                        iced::widget::text_input(
+                            self.language.playlist_filter_placeholder(),
+                            &self.playlist_filter
+                        )
+                        .style(rounded_input)
+                        .id(PL_SEARCH_INPUT_ID)
+                        .on_input(Message::PlaylistFilterChanged)
+                        .width(iced::Length::Fixed(self.pl_search_width()))
+                        .padding(10),
                         list,
                     ]
                     .spacing(10)

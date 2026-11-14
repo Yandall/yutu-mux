@@ -953,10 +953,31 @@ impl AppState {
     /// does the artist full-shelf fetch (its Show-more spinner turns).
     /// An update probe or download/install keeps the About and modal
     /// spinners turning the same way.
+    /// Top search expand target: open while focused or while its
+    /// suggest popup shows (the popup hangs off the pill edges).
+    pub(crate) fn search_expand_target(&self) -> f32 {
+        if self.search_focused || self.show_suggest {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Playlist search expand target: open while focused.
+    pub(crate) fn pl_search_expand_target(&self) -> f32 {
+        if self.pl_search_focused {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
     pub(crate) fn animating(&self) -> bool {
         self.sidebar_w != self.sidebar_target()
             || self.right_w != self.right_target()
             || self.drawer_anim != if self.drawer_open { 1.0 } else { 0.0 }
+            || self.search_expand != self.search_expand_target()
+            || self.pl_search_expand != self.pl_search_expand_target()
             || self.drag_gap != self.drag_gap_target()
             || self.scroll_fading()
             || self.pipeline_busy()

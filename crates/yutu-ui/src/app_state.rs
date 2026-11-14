@@ -41,6 +41,9 @@ pub struct AppState {
     pub history_full: Vec<HistoryEntry>,
     /// History page search text (in-memory only, never persisted).
     pub history_filter: String,
+    /// Playlist detail search text (in-memory only, cleared on any
+    /// navigation). Display-only: clicks still queue the full list.
+    pub playlist_filter: String,
     /// History page render window (newest first; "Show more" pages in
     /// older plays). Full rows are built on every view, so an uncapped
     /// multi-thousand log stalls frames.
@@ -223,6 +226,13 @@ pub struct AppState {
     /// Bottom drawer (Now Playing + lyrics): open flag + slide 0..1.
     pub(crate) drawer_open: bool,
     pub(crate) drawer_anim: f32,
+    /// Search fields grow while focused: focus flags come from the
+    /// focus probe (Iced 0.14 text inputs have no focus callbacks),
+    /// and the 0..1 expand values ease toward them on `Animate`.
+    pub(crate) search_focused: bool,
+    pub(crate) search_expand: f32,
+    pub(crate) pl_search_focused: bool,
+    pub(crate) pl_search_expand: f32,
     /// Animation prefs (in-memory; never persisted): master toggle plus
     /// a duration in ms for panel glides.
     pub(crate) animations_enabled: bool,

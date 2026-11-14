@@ -187,6 +187,37 @@ pub(crate) fn is_font_missing(family: FontFamily, system: &[String]) -> bool {
 /// pending pick never mixes two families in one session.
 pub(crate) static EFFECTIVE_FONT: std::sync::OnceLock<FontFamily> = std::sync::OnceLock::new();
 
+/// Rendered width of one line of default-size (16px) text in the
+/// effective font, measured by the same text system the renderer
+/// draws with (so collapsed search fields fit their placeholder in
+/// any font or language). Memoized per string: views call it on
+/// every frame.
+pub(crate) fn text_line_width(s: &str) -> f32 {
+    use iced::advanced::text::Paragraph as _;
+    static MEMO: std::sync::Mutex<Option<HashMap<String, f32>>> = std::sync::Mutex::new(None);
+    let mut memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    let memo = memo.get_or_insert_with(HashMap::new);
+    if let Some(w) = memo.get(s) {
+        return *w;
+    }
+    let paragraph = <iced::Renderer as iced::advanced::text::Renderer>::Paragraph::with_text(
+        iced::advanced::Text {
+            content: s,
+            bounds: iced::Size::INFINITE,
+            size: iced::Pixels(16.0),
+            line_height: iced::widget::text::LineHeight::default(),
+            font: effective_font().to_iced_font(),
+            align_x: iced::advanced::text::Alignment::Default,
+            align_y: iced::alignment::Vertical::Top,
+            shaping: iced::widget::text::Shaping::Advanced,
+            wrapping: iced::widget::text::Wrapping::None,
+        },
+    );
+    let w = paragraph.min_width().ceil();
+    memo.insert(s.to_string(), w);
+    w
+}
+
 pub(crate) fn effective_font() -> FontFamily {
     *EFFECTIVE_FONT.get_or_init(|| FontFamily::Adwaita)
 }

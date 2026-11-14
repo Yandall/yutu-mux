@@ -1711,6 +1711,48 @@ fn playlist_click_plays_from_clicked_row() {
 }
 
 #[test]
+fn playlist_search_click_queues_the_full_playlist() {
+    let mut s = test_state();
+    let tracks: Vec<Track> = ["Alpha", "Bravo", "Charlie", "Delta"]
+        .iter()
+        .enumerate()
+        .map(|(i, title)| mk_track(&format!("t{i}"), title, "Artist"))
+        .collect();
+    s.user_playlists.push(Playlist {
+        id: "u1".into(),
+        title: "Gym".into(),
+        tracks,
+    });
+    s.navigate(Route::PlaylistDetail("u1".into()));
+    let _ = s.update(Message::PlaylistFilterChanged("charl".into()));
+    // Filtered page renders (match and no-match) with no panic.
+    let _ = s.view();
+    // A click in the filtered view queues as if there were no search:
+    // the clicked song plus the rest of the full list after it.
+    let _ = s.update(Message::PlayPlaylistAt {
+        playlist_id: "u1".into(),
+        index: 2,
+        track_id: "t2".into(),
+    });
+    assert_eq!(
+        s.queue
+            .items()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>(),
+        vec!["t2".to_string(), "t3".to_string()]
+    );
+    let _ = s.update(Message::PlaylistFilterChanged("zzz".into()));
+    let _ = s.view();
+    // Leaving the page drops the search text.
+    s.navigate(Route::History);
+    assert!(s.playlist_filter.is_empty());
+    s.playlist_filter = "x".into();
+    s.go_back();
+    assert!(s.playlist_filter.is_empty());
+}
+
+#[test]
 fn playlist_sort_orders_tracks_all_picks() {
     let mut s = test_state();
     let mut t1 = mk_track("t1", "Banana", "Zebra");
@@ -7771,6 +7813,62 @@ fn search_geometry_tracks_sidebar() {
     assert!(pop + w <= 1280.0);
     // Wide window: popup sits exactly at the pill left edge.
     assert_eq!(pop, left);
+}
+
+#[test]
+fn search_fields_grow_while_focused() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    let settle = |s: &mut AppState| {
+        for _ in 0..200 {
+            if !s.animating() {
+                break;
+            }
+            let _ = s.update(Message::Animate);
+        }
+    };
+    settle(&mut s);
+    // Collapsed at rest: narrower than the full pill.
+    let (_, rest) = s.search_pill_geom();
+    let full = s.search_width();
+    assert!(rest < full);
+    // Collapsed widths fit the whole placeholder (measured text plus
+    // the field chrome), never a share of the expanded width.
+    let ph = text_line_width(s.language.search_placeholder());
+    assert!(ph > 50.0, "placeholder measured {ph}");
+    assert!((rest - (ph + SEARCH_PILL_CHROME)).abs() < 0.5);
+    let pl_ph = text_line_width(s.language.playlist_filter_placeholder());
+    assert!((s.pl_search_width() - (pl_ph + PL_SEARCH_CHROME)).abs() < 0.5);
+    // Focus grows it to full width; blur collapses it again.
+    let _ = s.update(Message::SearchFocused(true));
+    assert!(s.animating());
+    // Fixed clock, independent of the Settings speed: one tick moves
+    // exactly tick/duration, and the eased width starts gently.
+    s.anim_ms = ANIM_MAX_MS;
+    let _ = s.update(Message::Animate);
+    assert!((s.search_expand - ANIM_TICK_MS as f32 / SEARCH_ANIM_MS).abs() < 1e-4);
+    let (_, first) = s.search_pill_geom();
+    assert!(first > rest && first - rest < (full - rest) * s.search_expand);
+    settle(&mut s);
+    let (_, open) = s.search_pill_geom();
+    assert!((open - full).abs() < 0.5);
+    let _ = s.update(Message::SearchFocused(false));
+    settle(&mut s);
+    assert!((s.search_pill_geom().1 - rest).abs() < 0.5);
+    // Typing in the top search counts as focus.
+    let _ = s.update(Message::HomeSearchChanged("a".into()));
+    assert!(s.search_focused);
+    // Playlist search: focus expands, navigation drops the flag.
+    let _ = s.update(Message::PlaylistSearchFocused(true));
+    settle(&mut s);
+    assert_eq!(s.pl_search_expand, 1.0);
+    // Both fields share one max width (the header pill's).
+    assert!((s.pl_search_width() - s.search_full_width()).abs() < 0.5);
+    assert!((s.search_full_width() - full).abs() < 0.5);
+    s.navigate(Route::History);
+    assert!(!s.pl_search_focused);
+    settle(&mut s);
+    assert_eq!(s.pl_search_expand, 0.0);
 }
 
 #[test]
