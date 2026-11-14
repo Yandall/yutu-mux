@@ -7805,6 +7805,52 @@ fn same_titled_albums_by_different_artists_stay_apart() {
 }
 
 #[test]
+fn album_page_cover_matches_the_card_not_a_video_frame() {
+    let mut s = test_state();
+    // Library holds the album's music video (video-frame thumbnail).
+    let mut v = mk_track("vid", "Every Breath You Take", "The Police");
+    v.album = Some("Greatest Hits".into());
+    v.is_video = true;
+    v.thumbnail_url = Some("https://example.invalid/video-frame.jpg".into());
+    s.catalog.insert(v.id.clone(), v);
+    let route = AppState::album_route("Greatest Hits", "The Police");
+    // Video art only stands in when nothing better exists.
+    assert_eq!(
+        s.album_header_cover(&route).as_deref(),
+        Some("https://example.invalid/video-frame.jpg")
+    );
+    // A song from the album beats the video.
+    let mut song = mk_track("song", "Roxanne", "The Police");
+    song.album = Some("Greatest Hits".into());
+    song.thumbnail_url = Some("https://example.invalid/song.jpg".into());
+    s.catalog.insert(song.id.clone(), song);
+    assert_eq!(
+        s.album_header_cover(&route).as_deref(),
+        Some("https://example.invalid/song.jpg")
+    );
+    // The searched album's own art (what the card shows) wins.
+    s.results.albums = vec![Album {
+        id: "MPRE_police".into(),
+        title: "Greatest Hits".into(),
+        artist: "The Police".into(),
+        year: Some(1992),
+        thumbnail_url: Some("https://example.invalid/cover.jpg".into()),
+    }];
+    let card = s.album_cover(&s.results.albums[0].clone());
+    assert_eq!(s.album_header_cover(&route), card);
+    assert_eq!(s.album_header_cover("MPRE_police"), card);
+    // A same-titled album by someone else never lends its art.
+    let cure = Album {
+        id: AppState::album_route("Greatest Hits", "The Cure"),
+        title: "Greatest Hits".into(),
+        artist: "The Cure".into(),
+        year: None,
+        thumbnail_url: None,
+    };
+    assert_eq!(s.album_cover(&cure), None);
+}
+
+#[test]
 fn track_album_owner_accepts_featured_credits() {
     assert!(AppState::artist_matches_owner("Queen", "Queen"));
     assert!(AppState::artist_matches_owner(

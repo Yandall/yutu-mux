@@ -1002,14 +1002,18 @@ impl AppState {
             .or(hero)
     }
 
+    /// Album page cover, same rule as the search card: the album's
+    /// own art first, then the official tracklist's songs, then the
+    /// library's (songs before music videos, whose thumbnails are
+    /// video frames).
     pub(crate) fn album_header_cover(&self, id: &str) -> Option<String> {
-        self.album_tracks(id)
-            .first()
-            .and_then(|t| t.thumbnail_url.clone())
+        self.album_search_hit(id)
+            .and_then(|a| a.thumbnail_url.clone())
             .or_else(|| {
-                self.album_search_hit(id)
-                    .and_then(|a| a.thumbnail_url.clone())
+                self.album_live_tracks(id)
+                    .and_then(|live| Self::album_art_from_tracks(&live))
             })
+            .or_else(|| Self::album_art_from_tracks(&self.album_tracks(id)))
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 

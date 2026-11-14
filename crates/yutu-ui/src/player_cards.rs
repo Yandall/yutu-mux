@@ -352,16 +352,43 @@ impl AppState {
         .into()
     }
 
-    /// Cover source for an album: API art first, else the first known
-    /// track's. Shared by the card-size and row-size keys below so the
-    /// source never drifts.
+    /// Cover source for an album: API art first, else a known track's
+    /// from the same album and artist (songs before videos, see
+    /// [`Self::album_art_from_tracks`]). Shared by the card-size and
+    /// row-size keys below so the source never drifts.
     pub(crate) fn album_cover_source(&self, album: &Album) -> Option<String> {
         album.thumbnail_url.clone().or_else(|| {
-            self.catalog
+            let mut tracks: Vec<&Track> = self
+                .catalog
                 .values()
-                .find(|t| t.album.as_deref() == Some(album.title.as_str()))
-                .and_then(|t| t.thumbnail_url.clone())
+                .filter(|t| t.album.as_deref() == Some(album.title.as_str()))
+                .filter(|t| {
+                    album.artist.is_empty() || Self::artist_matches_owner(&t.artist, &album.artist)
+                })
+                .collect();
+            // Stable pick across frames (catalog order is a HashMap's).
+            tracks.sort_by(|a, b| a.title.cmp(&b.title));
+            Self::album_art_from_tracks(tracks)
         })
+    }
+
+    /// Album art from its songs: a song's thumbnail is the album
+    /// cover, a music video's is a video frame, so songs win and a
+    /// video only stands in when nothing else has art.
+    pub(crate) fn album_art_from_tracks<'a>(
+        tracks: impl IntoIterator<Item = &'a Track>,
+    ) -> Option<String> {
+        let mut video = None;
+        for t in tracks {
+            let Some(url) = t.thumbnail_url.as_ref() else {
+                continue;
+            };
+            if !t.is_video {
+                return Some(url.clone());
+            }
+            video.get_or_insert_with(|| url.clone());
+        }
+        video
     }
 
     /// Cover for an album: API art first, else the first known track's.

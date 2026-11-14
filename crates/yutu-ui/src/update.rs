@@ -2817,12 +2817,24 @@ impl AppState {
                         );
                         let ids = self.merge_live_tracks(tracks);
                         if !ids.is_empty() {
+                            let showing = self.route_shows_browse(&album_id, false);
                             let _ = Self::capped_detail_insert(
                                 &mut self.album_live,
                                 &mut self.album_live_order,
                                 album_id,
                                 ids,
                             );
+                            // The tracklist can change the header pick
+                            // (song art over a library video): warm it.
+                            if showing {
+                                if let Route::Album(rid) = self.route.clone() {
+                                    if let Some(url) = self.album_header_cover(&rid) {
+                                        return iced::Task::batch(
+                                            self.artwork_tasks_for_urls(&[url]),
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => {
