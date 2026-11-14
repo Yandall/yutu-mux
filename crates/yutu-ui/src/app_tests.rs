@@ -8274,6 +8274,31 @@ fn song_glow_uses_row_art_when_hero_is_missing() {
 }
 
 #[test]
+fn playlist_glow_is_ready_on_open() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Ready".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Ready")
+        .unwrap();
+    let mut t = mk_track("rd1", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/rd1.jpg".into());
+    s.user_playlists[i].tracks = vec![t.clone()];
+    let pid = s.user_playlists[i].id.clone();
+    // Decoded ahead (here: from the row art) before the page opens.
+    let small = s.art_url_for(&t, 40.0).unwrap();
+    s.art_blur.insert(
+        small,
+        iced::widget::image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]),
+    );
+    let _ = s.update(Message::OpenPlaylist(pid));
+    // The first frame already has the glow.
+    assert!(s.page_backdrop_handle().is_some());
+    assert!(s.page_backdrop_layer().is_some());
+}
+
+#[test]
 fn collection_total_length_format() {
     assert_eq!(fmt_total(0), "0 min");
     assert_eq!(fmt_total(20), "1 min");

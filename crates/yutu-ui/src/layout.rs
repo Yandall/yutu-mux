@@ -261,7 +261,9 @@ pub(crate) const NP_COL_GAP: f32 = 40.0;
 pub(crate) const LYRIC_STEPPER_H: f32 = 30.0;
 /// Now Playing backdrop: downscale edge (pixels) and cache size.
 pub(crate) const ART_BLUR_PX: u32 = 8;
-pub(crate) const ART_BLUR_CAP: usize = 64;
+pub(crate) const ART_BLUR_CAP: usize = 256;
+/// Library playlist glows decoded ahead per Tick.
+pub(crate) const BLUR_PREFETCH_PER_TICK: usize = 4;
 /// Collection page backdrop band height and cover strength.
 pub(crate) const PAGE_BACKDROP_H: f32 = 460.0;
 pub(crate) const PAGE_BACKDROP_OPACITY: f32 = 0.65;

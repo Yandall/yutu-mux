@@ -127,21 +127,11 @@ pub(crate) fn thumbs_down_icon(
 /// Rounded text input (search bar pill, filter fields): dark fill, soft
 /// border, comfortable radius. One style for every input in the app.
 pub(crate) fn rounded_input(
-    _: &iced::Theme,
-    _: iced::widget::text_input::Status,
+    theme: &iced::Theme,
+    status: iced::widget::text_input::Status,
 ) -> iced::widget::text_input::Style {
-    iced::widget::text_input::Style {
-        background: iced::Background::Color(iced::Color::from_rgb8(0x1E, 0x1E, 0x1E)),
-        border: iced::Border {
-            color: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
-            width: 1.0,
-            radius: 14.0.into(),
-        },
-        icon: MUTED,
-        placeholder: MUTED,
-        value: iced::Color::WHITE,
-        selection: ACCENT,
-    }
+    // One field look app-wide (see `field_look`).
+    pill_input(theme, status)
 }
 
 /// Round icon button, exactly `PILL_H` wide and tall (a true circle
@@ -193,23 +183,12 @@ pub(crate) fn pill_input(
         iced::widget::text_input::Status::Hovered
             | iced::widget::text_input::Status::Focused { .. }
     );
+    let (background, border) = field_look(active);
     iced::widget::text_input::Style {
-        background: iced::Background::Color(if active {
-            iced::Color::from_rgb8(0x2A, 0x2A, 0x2A)
-        } else {
-            iced::Color::from_rgb8(0x22, 0x22, 0x22)
-        }),
-        border: iced::Border {
-            color: if active {
-                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
-            } else {
-                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
-            },
-            width: 1.0,
-            radius: 20.0.into(),
-        },
+        background,
+        border,
         icon: MUTED,
-        placeholder: iced::Color::from_rgb8(0xDD, 0xDD, 0xDD),
+        placeholder: FIELD_PLACEHOLDER,
         value: iced::Color::WHITE,
         selection: ACCENT,
     }
@@ -223,21 +202,15 @@ pub(crate) fn file_pick(
     _: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let hovered = matches!(status, iced::widget::button::Status::Hovered);
+    let active = matches!(
+        status,
+        iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+    );
+    let (background, border) = field_look(active);
     iced::widget::button::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(
-            0x1E, 0x1E, 0x1E,
-        ))),
+        background: Some(background),
         text_color: iced::Color::WHITE,
-        border: iced::Border {
-            color: if hovered {
-                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
-            } else {
-                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
-            },
-            width: 1.0,
-            radius: 14.0.into(),
-        },
+        border,
         ..Default::default()
     }
 }
@@ -250,24 +223,15 @@ pub(crate) fn select_face(
     _: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let hovered = matches!(
+    let active = matches!(
         status,
         iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
     );
+    let (background, border) = field_look(active);
     iced::widget::button::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(
-            0x1E, 0x1E, 0x1E,
-        ))),
+        background: Some(background),
         text_color: iced::Color::WHITE,
-        border: iced::Border {
-            color: if hovered {
-                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
-            } else {
-                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
-            },
-            width: 1.0,
-            radius: 14.0.into(),
-        },
+        border,
         ..Default::default()
     }
 }

@@ -1937,7 +1937,7 @@ impl AppState {
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center),
         )
-        .style(search_pill)
+        .style(search_pill(self.search_focused))
         .padding(iced::Padding {
             left: 8.0,
             right: 4.0,
@@ -4364,9 +4364,7 @@ impl AppState {
     pub(crate) fn page_backdrop_layer(&self) -> Option<iced::Element<'_, Message>> {
         use iced::widget::{container, image, pin, Space, Stack};
         use iced::Fill;
-        let handle = self
-            .page_backdrop_url()
-            .and_then(|u| self.art_blur.get(&u).cloned())?;
+        let handle = self.page_backdrop_handle()?;
         let scroll = self.scroll_offsets.get("body").copied().unwrap_or(0.0);
         if scroll >= PAGE_BACKDROP_H {
             return None;

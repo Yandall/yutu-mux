@@ -39,6 +39,20 @@ impl AppState {
         Self::hero_art_url(merged)
     }
 
+    /// Decoded glow for the current collection page: a playlist glows
+    /// with its cover song's glow (any decoded source, so it never
+    /// swaps when the large cover lands), albums and artists by URL.
+    pub(crate) fn page_backdrop_handle(&self) -> Option<iced::widget::image::Handle> {
+        match &self.route {
+            Route::PlaylistDetail(id) => self
+                .playlist_cover_track(id)
+                .and_then(|t| self.track_blur(&t)),
+            _ => self
+                .page_backdrop_url()
+                .and_then(|u| self.art_blur.get(&u).cloned()),
+        }
+    }
+
     /// Decoded glow for a song: its hero cover's, else its row art's.
     pub(crate) fn track_blur(&self, t: &Track) -> Option<iced::widget::image::Handle> {
         [self.hero_art_for(t), self.art_url_for(t, 40.0)]
@@ -60,7 +74,9 @@ impl AppState {
     /// album cover, artist photo); `None` on every other page.
     pub(crate) fn page_backdrop_url(&self) -> Option<String> {
         match &self.route {
-            Route::PlaylistDetail(id) => self.playlist_cover_url(id),
+            Route::PlaylistDetail(id) => self
+                .playlist_cover_track(id)
+                .and_then(|t| self.blur_source_url(&t).or_else(|| self.hero_art_for(&t))),
             Route::Album(id) => self.album_header_cover(id),
             Route::Artist(id) => self.artist_photo(&self.resolve_artist_name(id)),
             _ => None,
@@ -91,7 +107,33 @@ impl AppState {
                 wanted.extend(self.blur_source_url(t));
             }
         }
-        wanted.extend(self.page_backdrop_url());
+        if self.page_backdrop_handle().is_none() {
+            wanted.extend(self.page_backdrop_url());
+        }
+        // Every library playlist's glow, a few per call, so opening one
+        // paints its glow on the first frame (row covers are on disk).
+        let mut ahead = 0;
+        for pl in self.all_playlists() {
+            if ahead >= BLUR_PREFETCH_PER_TICK {
+                break;
+            }
+            let Some(t) = pl
+                .tracks
+                .first()
+                .map(|f| self.find_track(&f.id).unwrap_or_else(|| f.clone()))
+            else {
+                continue;
+            };
+            if self.track_blur(&t).is_some() {
+                continue;
+            }
+            if let Some(u) = self.blur_source_url(&t) {
+                if !self.art_blur_loading.contains(&u) && !wanted.contains(&u) {
+                    wanted.push(u);
+                    ahead += 1;
+                }
+            }
+        }
         iced::Task::batch(
             wanted
                 .into_iter()

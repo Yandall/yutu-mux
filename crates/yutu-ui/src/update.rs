@@ -634,7 +634,11 @@ impl AppState {
                     .and_then(|t| self.large_art_task(&t));
                 self.go(Route::PlaylistDetail(id));
                 self.publish_mpris();
-                return iced::Task::batch([self.ensure_visible_tasks()].into_iter().chain(cover));
+                // Glow decode now (a frame later at most), not next Tick.
+                let glow = self.art_blur_task();
+                return iced::Task::batch(
+                    [self.ensure_visible_tasks(), glow].into_iter().chain(cover),
+                );
             }
             Message::OpenLyrics(id) => {
                 self.close_menu();

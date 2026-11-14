@@ -40,6 +40,7 @@
   cover beside the lyrics (#108).
 - Now Playing shows a soft blur of the cover's colors behind it, and
   playlist, album and artist pages glow with their cover at the top (#108).
+- All text fields, search bars and pickers share one rounded style (#108).
 - Playlist pages get a new header: cover, bold title, song count and
   total length, a round play button, and Shuffle and search as pills;
   sorting moves above the song list (#108).
