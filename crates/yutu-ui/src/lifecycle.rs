@@ -109,6 +109,7 @@ impl AppState {
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             home_shelves: HomeShelves::default(),
+            home_shelves_key: None,
             pre_shuffle: None,
             pre_shuffle_cur: None,
             suggest: Vec::new(),

@@ -144,6 +144,10 @@ pub struct AppState {
     /// history query, so views read this instead of recomputing per
     /// frame. Refreshed on navigation and on Tick while visible.
     pub(crate) home_shelves: HomeShelves,
+    /// Input fingerprint and time of the last shelf refresh: Tick
+    /// skips the ranking (catalog scans plus SQLite history reads on
+    /// the GUI thread) while the inputs are unchanged.
+    pub(crate) home_shelves_key: Option<(u64, std::time::Instant)>,
     /// Queue id order before shuffle was turned on. Toggling off restores
     /// it (ids added while shuffled append at the end); the playing song
     /// never skips: [`Queue::reorder`] retargets its index by identity.

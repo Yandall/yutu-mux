@@ -437,9 +437,8 @@ impl AppState {
                         if query.trim() == self.search_query.trim() {
                             return self.apply_search_hit(&query, *search);
                         }
-                        let (_, tasks) = self.stage_search(*search);
-                        self.publish_mpris();
-                        return iced::Task::batch(tasks);
+                        self.stage_stale_search(*search);
+                        return iced::Task::none();
                     }
                     Err(e) => {
                         // Stale-query errors stay silent; current ones report.
@@ -3460,10 +3459,11 @@ impl AppState {
                     tasks.push(self.ensure_visible_tasks());
                 }
                 // Home/Discovery shelves rank the whole catalog on every
-                // view build otherwise; refresh the memo at tick cadence
-                // instead so frames stay cheap while data stays fresh.
+                // view build otherwise; the tick re-ranks the memo only
+                // when its inputs changed (or it aged out), so frames and
+                // keystrokes stay cheap while data stays fresh.
                 if matches!(self.route, Route::Home | Route::Discovery) {
-                    self.refresh_home_shelves();
+                    self.refresh_home_shelves_if_stale(now);
                 }
                 // Position clock: manual advance while a user seek settles
                 // (the backend reports the stale pre-seek position for a
