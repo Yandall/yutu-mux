@@ -53,14 +53,24 @@ impl AppState {
 
     /// One compact track row: green play, title/artist, heart. All other
     /// actions live on detail screens: this killed the button-soup.
+    /// Song row heart: hidden on narrow content (the title needs the
+    /// room; Add to favorites stays in the right-click menu).
+    pub(crate) fn row_heart(&self, t: &Track) -> iced::Element<'_, Message> {
+        use iced::widget::button;
+        if !self.rows_show_heart() {
+            return iced::widget::Space::new().into();
+        }
+        let liked = self.liked.contains(&t.id);
+        button(heart_icon(liked, 15.0, if liked { ACCENT } else { MUTED }))
+            .style(icon_hover)
+            .on_press(Message::Like(t.id.clone()))
+            .padding(6)
+            .into()
+    }
+
     pub(crate) fn track_row(&self, scope: &str, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{button, container, mouse_area, row};
         use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
-        } else {
-            MUTED
-        };
         let hover_id = track_hover_key(scope, &t.id);
         let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         mouse_area(
@@ -73,12 +83,9 @@ impl AppState {
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
                     song_meta_text(t.plays.as_deref(), self.track_secs(t)),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
+                    self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
+                        .style(icon_hover)
                         .on_press(Message::OpenContext(t.id.clone()))
                         .padding(6),
                 ]
@@ -109,11 +116,6 @@ impl AppState {
     ) -> iced::Element<'_, Message> {
         use iced::widget::{button, container, mouse_area, row, text};
         use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
-        } else {
-            MUTED
-        };
         let hover_id = track_hover_key("playlist", &t.id);
         let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str())
             || self.pl_hover == Some(index);
@@ -145,12 +147,9 @@ impl AppState {
                     .padding(3)
                     .width(Fill),
                     text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
+                    self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
-                        .style(hover_row)
+                        .style(icon_hover)
                         .on_press(Message::OpenContext(t.id.clone()))
                         .padding(6),
                 ]
@@ -194,11 +193,6 @@ impl AppState {
         // No live-origin branch: while live-dragging the origin is held by
         // the floating ghost and the list shows a gap instead, so this
         // always renders the plain row.
-        let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
-        } else {
-            MUTED
-        };
         let hover_id = track_hover_key("playlist", &t.id);
         let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str())
             || self.pl_hover == Some(index);
@@ -208,14 +202,9 @@ impl AppState {
         // clean press/release plays via the DragEnd snapshot; a move to
         // a slot reorders instead. Same one-press-path contract as the
         // queue row.
-        let heart_btn: iced::Element<'_, Message> =
-            button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                .style(hover_row)
-                .on_press(Message::Like(t.id.clone()))
-                .padding(6)
-                .into();
+        let heart_btn: iced::Element<'_, Message> = self.row_heart(t);
         let more_btn: iced::Element<'_, Message> = button(btn_icon("ellipsis", 15.0, MUTED))
-            .style(hover_row)
+            .style(icon_hover)
             .on_press(Message::OpenContext(t.id.clone()))
             .padding(6)
             .into();
@@ -512,23 +501,13 @@ impl AppState {
                         .size(13)
                         .color(MUTED),
                         row![
-                            button(
-                                row![
-                                    btn_icon("play", 13.0, iced::Color::WHITE),
-                                    btn_text(self.language.play_label(), 13),
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                            )
-                            .style(accent_button)
-                            .on_press(Message::PlayNow(t.id.clone()))
-                            .padding(8),
+                            Self::play_pill(Message::PlayNow(t.id.clone())),
                             button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::Like(t.id.clone()))
                                 .padding(8),
                             button(btn_icon("ellipsis", 15.0, MUTED))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::OpenContext(t.id.clone()))
                                 .padding(8),
                         ]
@@ -565,7 +544,7 @@ impl AppState {
             let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
             row![
                 Self::shuffle_pill(
-                    self.language.shuffle_pill_label(),
+                    self.language.shuffle_label(),
                     Message::PlayAlbumShuffled(a.id.clone())
                 ),
                 Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
@@ -617,7 +596,7 @@ impl AppState {
             let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
             row![
                 Self::shuffle_pill(
-                    self.language.shuffle_pill_label(),
+                    self.language.shuffle_label(),
                     Message::PlayArtistShuffled(a.name.clone())
                 ),
                 Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
@@ -854,10 +833,7 @@ impl AppState {
                         .width(Fill),
                     text(sub).size(13).color(MUTED),
                     row![
-                        Self::play_pill(
-                            self.language.play_pill_label(),
-                            Message::PlaySearchPlaylist(p.id.clone())
-                        ),
+                        Self::play_pill(Message::PlaySearchPlaylist(p.id.clone())),
                         Self::shuffle_pill(
                             "SHUFFLE".into(),
                             Message::PlaySearchPlaylistShuffled(p.id.clone())

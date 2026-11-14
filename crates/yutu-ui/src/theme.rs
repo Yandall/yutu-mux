@@ -63,6 +63,41 @@ pub(crate) fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Now Playing backdrop veil: the card surface fading in from light
+/// at the top (cover colors show) to heavy at the bottom (lyrics read
+/// on a near-plain surface).
+pub(crate) fn np_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
+    let top = iced::Color { a: 0.25, ..CARD_BG };
+    let bottom = iced::Color { a: 0.85, ..CARD_BG };
+    iced::widget::container::Style {
+        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                .add_stop(0.0, top)
+                .add_stop(1.0, bottom),
+        ))),
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
+/// Collection page backdrop veil: light at the top so the cover's
+/// colors show, ending in exactly the app background so the band melts
+/// into the page with no visible edge.
+pub(crate) fn page_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                .add_stop(0.0, iced::Color { a: 0.30, ..APP_BG })
+                .add_stop(0.4, iced::Color { a: 0.60, ..APP_BG })
+                .add_stop(0.7, iced::Color { a: 0.90, ..APP_BG })
+                .add_stop(0.88, APP_BG)
+                .add_stop(1.0, APP_BG),
+        ))),
+        // Window-level band: square edges, the panels cover the sides.
+        ..Default::default()
+    }
+}
+
 /// Floating side panel (Medium hover expand, Narrow drawer): the panel
 /// surface plus a soft shadow so it reads as above the content.
 pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Style {
@@ -166,19 +201,43 @@ pub(crate) fn slim_scroll_alpha(
     base
 }
 
-/// Search pill: the rounded-input look for the container that wraps the
-/// icon + borderless input (the icon sits visually inside the field).
-pub(crate) fn search_pill(_: &iced::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(
-            0x1E, 0x1E, 0x1E,
-        ))),
-        border: iced::Border {
-            color: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+/// Shared field look (every text input, the top search pill, the file
+/// picker and select faces): one fill, border, radius and placeholder,
+/// with a lighter fill and border while hovered or focused.
+pub(crate) const FIELD_BG: iced::Color = iced::Color::from_rgb8(0x22, 0x22, 0x22);
+pub(crate) const FIELD_BG_ACTIVE: iced::Color = iced::Color::from_rgb8(0x2A, 0x2A, 0x2A);
+pub(crate) const FIELD_BORDER: iced::Color = iced::Color::from_rgb8(0x3A, 0x3A, 0x3A);
+pub(crate) const FIELD_BORDER_ACTIVE: iced::Color = iced::Color::from_rgb8(0x6E, 0x6E, 0x6E);
+pub(crate) const FIELD_PLACEHOLDER: iced::Color = iced::Color::from_rgb8(0xDD, 0xDD, 0xDD);
+pub(crate) const FIELD_RADIUS: f32 = 20.0;
+
+/// Field fill + border for the active (hovered/focused) or resting state.
+pub(crate) fn field_look(active: bool) -> (iced::Background, iced::Border) {
+    (
+        iced::Background::Color(if active { FIELD_BG_ACTIVE } else { FIELD_BG }),
+        iced::Border {
+            color: if active {
+                FIELD_BORDER_ACTIVE
+            } else {
+                FIELD_BORDER
+            },
             width: 1.0,
-            radius: 14.0.into(),
+            radius: FIELD_RADIUS.into(),
         },
-        ..Default::default()
+    )
+}
+
+/// Top search pill: the shared field look on the container that wraps
+/// the icon + borderless input (the icon sits visually inside the
+/// field); active while the input is focused.
+pub(crate) fn search_pill(active: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
+    move |_| {
+        let (background, border) = field_look(active);
+        iced::widget::container::Style {
+            background: Some(background),
+            border,
+            ..Default::default()
+        }
     }
 }
 
@@ -192,7 +251,7 @@ pub(crate) fn search_inner_input(
         background: iced::Background::Color(iced::Color::TRANSPARENT),
         border: iced::Border::default(),
         icon: MUTED,
-        placeholder: MUTED,
+        placeholder: FIELD_PLACEHOLDER,
         value: iced::Color::WHITE,
         selection: ACCENT,
     }

@@ -124,58 +124,23 @@ impl AppState {
             .push_str(" | Scrobble-ready (rebuild with `--features submit`)");
     }
 
-    /// Big green PLAY pill for hero headers (Spotify-style).
-    pub(crate) fn play_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
-        use iced::widget::{button, row, text};
-        button(
-            row![
-                btn_icon("play", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(bold_font()),
-            ]
-            .spacing(6)
-            .align_y(iced::alignment::Vertical::Center),
+    /// Hero play control: the app-wide round red play button.
+    pub(crate) fn play_pill(msg: Message) -> iced::Element<'static, Message> {
+        round_button(
+            btn_icon("play", 18.0, iced::Color::WHITE),
+            accent_button,
+            msg,
         )
-        .style(accent_button)
-        .on_press(msg)
-        .padding(9)
-        .into()
     }
 
-    /// Shuffle pill for hero headers: same red pill as play_pill with a
-    /// shuffle glyph (search heroes).
+    /// Hero shuffle control: grey pill with the shuffle glyph.
     pub(crate) fn shuffle_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
-        use iced::widget::{button, row, text};
-        button(
-            row![
-                btn_icon("shuffle", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(bold_font()),
-            ]
-            .spacing(6)
-            .align_y(iced::alignment::Vertical::Center),
-        )
-        .style(accent_button)
-        .on_press(msg)
-        .padding(9)
-        .into()
+        icon_pill_button("shuffle", label, msg)
     }
 
-    /// Start-mix pill for hero headers: the ghost companion of
-    /// play_pill/shuffle_pill with the exact same metrics (16px icon,
-    /// 13px bold label, padding 9) so the pills line up at one height.
+    /// Hero start-mix control: grey pill with the radio glyph.
     pub(crate) fn mix_pill(label: String, msg: Message) -> iced::Element<'static, Message> {
-        use iced::widget::{button, row, text};
-        button(
-            row![
-                btn_icon("radio", 16.0, iced::Color::WHITE),
-                text(label).size(13).font(bold_font()),
-            ]
-            .spacing(6)
-            .align_y(iced::alignment::Vertical::Center),
-        )
-        .style(ghost_button)
-        .on_press(msg)
-        .padding(9)
-        .into()
+        icon_pill_button("radio", label, msg)
     }
 
     /// Spotify-style numbered row: rank + art + play + title + time + actions.
@@ -233,7 +198,7 @@ impl AppState {
         let heart_color = if liked { ACCENT } else { MUTED };
         let heart: iced::Element<'_, Message> = if hovered || liked {
             button(heart_icon(liked, 15.0, heart_color))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::Like(t.id.clone()))
                 .padding(6)
                 .into()
@@ -242,7 +207,7 @@ impl AppState {
         };
         let more: iced::Element<'_, Message> = if hovered {
             button(btn_icon("ellipsis", 15.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::OpenContext(t.id.clone()))
                 .padding(6)
                 .into()
@@ -258,7 +223,7 @@ impl AppState {
         use iced::widget::button;
         if hovered {
             button(btn_icon("ellipsis", 15.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(open)
                 .padding(6)
                 .into()

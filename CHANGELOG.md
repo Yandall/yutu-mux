@@ -30,10 +30,30 @@
   rails that expand over the content on hover (#107).
 - The back and forward arrows hide when the window is too narrow (#107).
 - The window can no longer be shrunk below 360 x 480 (#107).
+- On narrow windows, song titles end in "…", quick picks use one column,
+  and album and artist headers stack the cover above the title (#108).
+- Playlist, album and artist buttons wrap onto a second line instead of
+  being cut off on narrow windows (#108).
+- Song rows hide the heart button on narrow windows; Add to favorites
+  stays in the right-click menu (#108).
+- Very wide windows use more of the screen, and Now Playing shows the
+  cover beside the lyrics (#108).
+- Now Playing shows a soft blur of the cover's colors behind it, and
+  playlist, album and artist pages glow with their cover at the top (#108).
+- All text fields, search bars and pickers share one rounded style (#108).
+- Play buttons are one round red button everywhere; Shuffle and Start
+  mix are matching grey pills with icons, and all pills share one height (#108).
+- Icon buttons get a round hover, and Settings uses switches instead of
+  checkboxes (#108).
+- Playlist pages get a new header: cover, bold title, song count and
+  total length, a round play button, and Shuffle and search as pills;
+  sorting moves above the song list (#108).
 
 ### Fixed
 
 - Hovering a song shown in several lists highlights only that row (#98).
+- The library playlist list scrolls when it is longer than the window (#108).
+- On narrow windows the volume slider lines up with the seek bar (#108).
 - Typing in the search bar no longer freezes the app (#102).
 - Search waits until you pause typing for 300ms (#102).
 - Songs no longer show a 0:00 length in playlists, history, and search (#103).

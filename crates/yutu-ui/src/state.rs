@@ -823,6 +823,11 @@ pub enum Message {
         provider: LyricsProvider,
         result: Result<LyricsResult, String>,
     },
+    /// Backdrop downscale finished (`None`: the cover did not decode).
+    ArtBlurReady {
+        url: String,
+        rgba: Option<Vec<u8>>,
+    },
     ArtworkReady {
         url: String,
         result: Result<Vec<u8>, String>,

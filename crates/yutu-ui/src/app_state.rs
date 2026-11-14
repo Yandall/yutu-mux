@@ -420,6 +420,10 @@ pub struct AppState {
     /// still bounds the map, expiry only decides what renders.
     pub(crate) artwork: HashMap<String, (iced::widget::image::Handle, std::time::Instant)>,
     pub(crate) artwork_loading: HashSet<String>,
+    /// Now Playing backdrops: cover URL to a tiny (8x8) downscale that
+    /// the drawer stretches with linear filtering into soft color blobs.
+    pub(crate) art_blur: HashMap<String, iced::widget::image::Handle>,
+    pub(crate) art_blur_loading: HashSet<String>,
     /// Failed artwork URLs with the failure instant: sketchy or removed
     /// covers are not refetched for a cooldown (stops retry loops when
     /// completion chaining re-scans the visible screenful).

@@ -226,6 +226,8 @@ impl AppState {
             scrobble_modal_open: false,
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
+            art_blur: HashMap::new(),
+            art_blur_loading: HashSet::new(),
             artwork_failed: HashMap::new(),
             hydrate_cooldown: HashMap::new(),
             // Ids with a metadata probe in flight (dedups lazy batches

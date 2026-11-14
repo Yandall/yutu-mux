@@ -39,6 +39,139 @@ impl AppState {
         Self::hero_art_url(merged)
     }
 
+    /// Decoded glow for the current collection page: a playlist glows
+    /// with its cover song's glow (any decoded source, so it never
+    /// swaps when the large cover lands), albums and artists by URL.
+    pub(crate) fn page_backdrop_handle(&self) -> Option<iced::widget::image::Handle> {
+        match &self.route {
+            Route::PlaylistDetail(id) => self
+                .playlist_cover_track(id)
+                .and_then(|t| self.track_blur(&t)),
+            _ => self
+                .page_backdrop_url()
+                .and_then(|u| self.art_blur.get(&u).cloned()),
+        }
+    }
+
+    /// Decoded glow for a song: its hero cover's, else its row art's.
+    pub(crate) fn track_blur(&self, t: &Track) -> Option<iced::widget::image::Handle> {
+        [self.hero_art_for(t), self.art_url_for(t, 40.0)]
+            .into_iter()
+            .flatten()
+            .find_map(|u| self.art_blur.get(&u).cloned())
+    }
+
+    /// Cover file to decode a song's glow from: the hero art when it is
+    /// on disk, else the row art (already cached from the lists).
+    pub(crate) fn blur_source_url(&self, t: &Track) -> Option<String> {
+        [self.hero_art_for(t), self.art_url_for(t, 40.0)]
+            .into_iter()
+            .flatten()
+            .find(|u| artwork_file_exists(u))
+    }
+
+    /// Cover behind the top of a collection page (playlist cover,
+    /// album cover, artist photo); `None` on every other page.
+    pub(crate) fn page_backdrop_url(&self) -> Option<String> {
+        match &self.route {
+            Route::PlaylistDetail(id) => self
+                .playlist_cover_track(id)
+                .and_then(|t| self.blur_source_url(&t).or_else(|| self.hero_art_for(&t))),
+            Route::Album(id) => self.album_header_cover(id),
+            Route::Artist(id) => self.artist_photo(&self.resolve_artist_name(id)),
+            _ => None,
+        }
+    }
+
+    /// Backdrops: once a wanted cover is on disk (the Now Playing cover
+    /// while the drawer is open, the current page's cover), decode it on
+    /// a blocking thread and keep an 8x8 downscale (a few bytes; views
+    /// stretch it with linear filtering, which reads as a heavy blur of
+    /// the cover's colors). Polled from Tick, so it lands whenever the
+    /// cover does.
+    pub(crate) fn art_blur_task(&mut self) -> iced::Task<Message> {
+        let mut wanted: Vec<String> = Vec::with_capacity(5);
+        // Now Playing glow for the live song and its neighbors, decoded
+        // ahead so a song change shows its glow instantly (8x8 each, so
+        // whichever cover is on disk serves: hero or row art).
+        let items = self.queue.items();
+        let pos = self.queue.position();
+        let picks: Vec<Track> = match pos {
+            Some(p) => (p.saturating_sub(1)..(p + 3).min(items.len()))
+                .filter_map(|i| items.get(i).cloned())
+                .collect(),
+            None => Vec::new(),
+        };
+        for t in &picks {
+            if self.track_blur(t).is_none() {
+                wanted.extend(self.blur_source_url(t));
+            }
+        }
+        if self.page_backdrop_handle().is_none() {
+            wanted.extend(self.page_backdrop_url());
+        }
+        // Every library playlist's glow, a few per call, so opening one
+        // paints its glow on the first frame (row covers are on disk).
+        let mut ahead = 0;
+        for pl in self.all_playlists() {
+            if ahead >= BLUR_PREFETCH_PER_TICK {
+                break;
+            }
+            let Some(t) = pl
+                .tracks
+                .first()
+                .map(|f| self.find_track(&f.id).unwrap_or_else(|| f.clone()))
+            else {
+                continue;
+            };
+            if self.track_blur(&t).is_some() {
+                continue;
+            }
+            if let Some(u) = self.blur_source_url(&t) {
+                if !self.art_blur_loading.contains(&u) && !wanted.contains(&u) {
+                    wanted.push(u);
+                    ahead += 1;
+                }
+            }
+        }
+        iced::Task::batch(
+            wanted
+                .into_iter()
+                .map(|url| self.art_blur_decode(url))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn art_blur_decode(&mut self, url: String) -> iced::Task<Message> {
+        if self.art_blur.contains_key(&url) || self.art_blur_loading.contains(&url) {
+            return iced::Task::none();
+        }
+        let Some(path) = artwork_path_for(&url).filter(|p| std::path::Path::new(p).exists()) else {
+            return iced::Task::none();
+        };
+        self.art_blur_loading.insert(url.clone());
+        iced::Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let img = image::open(&path).ok()?;
+                    let small = img.resize_exact(
+                        ART_BLUR_PX,
+                        ART_BLUR_PX,
+                        image::imageops::FilterType::Triangle,
+                    );
+                    Some(small.to_rgba8().into_raw())
+                })
+                .await
+                .ok()
+                .flatten()
+            },
+            move |rgba| Message::ArtBlurReady {
+                url: url.clone(),
+                rgba,
+            },
+        )
+    }
+
     /// Fetch the hero artwork unless cached/in-flight/cooled (drawer
     /// hero): the large URL first, falling back to the small one like
     /// the hero does. Catalog-aware so stale rows warm the same key

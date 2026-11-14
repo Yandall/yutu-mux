@@ -627,9 +627,18 @@ impl AppState {
                 self.cancel_pl_drag();
                 self.pl_hover = None;
                 self.pl_action_hover = None;
+                // Header cover: the first song's large art (same pick as
+                // the Home card), warmed here so it lands with the page.
+                let cover = self
+                    .playlist_cover_track(&id)
+                    .and_then(|t| self.large_art_task(&t));
                 self.go(Route::PlaylistDetail(id));
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                // Glow decode now (a frame later at most), not next Tick.
+                let glow = self.art_blur_task();
+                return iced::Task::batch(
+                    [self.ensure_visible_tasks(), glow].into_iter().chain(cover),
+                );
             }
             Message::OpenLyrics(id) => {
                 self.close_menu();
@@ -737,6 +746,18 @@ impl AppState {
                 }
                 return self.update(Message::SetLyricsProvider(next));
             }
+            Message::ArtBlurReady { url, rgba } => {
+                self.art_blur_loading.remove(&url);
+                if let Some(rgba) = rgba {
+                    // Tiny entries, but a long session plays many songs.
+                    if self.art_blur.len() >= ART_BLUR_CAP {
+                        self.art_blur.clear();
+                    }
+                    let handle =
+                        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba);
+                    self.art_blur.insert(url, handle);
+                }
+            }
             Message::ArtworkReady { url, result } => {
                 self.artwork_loading.remove(&url);
                 match &result {
@@ -795,7 +816,8 @@ impl AppState {
                 // Self-terminating: memory, in-flight, disk, and cooldown
                 // gates make this a no-op when done.
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                // A wanted backdrop may decode now instead of next Tick.
+                return iced::Task::batch([self.ensure_visible_tasks(), self.art_blur_task()]);
             }
             Message::StartRadio(seed) => {
                 self.close_menu();
@@ -3534,7 +3556,15 @@ impl AppState {
             }
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
-                let mut tasks = vec![self.drain_player_commands()];
+                let mut tasks = vec![self.drain_player_commands(), self.art_blur_task()];
+                // Playlist page cover: keep asking for the large art (the
+                // fetch itself skips cached, in-flight and cooled URLs),
+                // so a cover that missed the open warm still lands.
+                if let Route::PlaylistDetail(id) = &self.route {
+                    if let Some(t) = self.playlist_cover_track(&id.clone()) {
+                        tasks.extend(self.large_art_task(&t));
+                    }
+                }
                 // First frame after launch: lazily fetch only the Home
                 // screenful (cached titles + disk covers already painted).
                 // Startup itself does zero network so the window opens fast.

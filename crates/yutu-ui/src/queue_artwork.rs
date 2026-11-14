@@ -595,6 +595,27 @@ impl AppState {
                 slots
             }
             "body" => self.body_art_slots(),
+            // Library playlist list: one first-song thumb per row
+            // (40px art + 2x8 padding, 2px spacing), filter applied.
+            "sidebar" => {
+                // Empty playlists keep their row (placeholder art), so
+                // positions follow the row index, not the art count.
+                const PITCH: f32 = 58.0;
+                let q = self.sidebar_filter.to_lowercase();
+                let mut slots = Vec::new();
+                for (i, pl) in self
+                    .all_playlists()
+                    .into_iter()
+                    .filter(|pl| q.is_empty() || pl.title.to_lowercase().contains(&q))
+                    .enumerate()
+                {
+                    if let Some(t) = pl.tracks.first() {
+                        let t = self.find_track(&t.id).unwrap_or_else(|| t.clone());
+                        slots.extend(Self::track_row_slots(&[t], i as f32 * PITCH, PITCH));
+                    }
+                }
+                slots
+            }
             // Horizontal strip + flyout need no sweeps (warmed on open).
             _ => Vec::new(),
         }
@@ -774,8 +795,21 @@ impl AppState {
                 slots
             }
             Route::PlaylistDetail(id) => {
-                let y0 =
-                    BODY_PAD + Self::text_h(24.0) + 2.0 + Self::text_h(12.0) + 10.0 + 32.0 + 10.0;
+                // Cover header (art beside or above the title block,
+                // search pill inside it), a spacer, then rows.
+                let header_h = if self.hero_stacked() {
+                    HERO_STACKED_ART + 12.0 + 140.0
+                } else {
+                    PLAYLIST_COVER_PX
+                };
+                // Sort bar (own lists) is a 36px select; Favorites keeps
+                // an 8px spacer in its place.
+                let bar_h = if Some(id.as_str()) == Some(Self::FAVORITES_ID) {
+                    8.0
+                } else {
+                    36.0
+                };
+                let y0 = BODY_PAD + header_h + 10.0 + bar_h + 10.0;
                 match self.find_playlist(id) {
                     None => Vec::new(),
                     Some(p) => {
@@ -956,7 +990,7 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{column, text};
         use iced::Fill;
-        let title = text(truncate_title(title, 45))
+        let title = text(truncate_title(title, row_title_chars()))
             .size(f32::from(title_size))
             .color(color)
             .width(Fill)
@@ -966,7 +1000,7 @@ impl AppState {
         } else {
             title
         };
-        let artist = text(truncate_title(artist, 40))
+        let artist = text(truncate_title(artist, row_title_chars().min(40)))
             .size(f32::from(title_size.saturating_sub(2).max(11)))
             .color(MUTED)
             .width(Fill)

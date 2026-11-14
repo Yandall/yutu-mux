@@ -920,6 +920,29 @@ impl AppState {
     /// Album header cover (180px): hires of the first track thumb, else
     /// the album thumb. Shared by the album view and `OpenAlbum` warming
     /// so the key never drifts (row slots only warm row rasters now).
+    /// Playlist header cover source: the first song (catalog copy when
+    /// known, for fresher art), same pick as the Home card.
+    pub(crate) fn playlist_cover_track(&self, id: &str) -> Option<Track> {
+        let p = self.find_playlist(id)?;
+        let first = p.tracks.first()?;
+        Some(self.find_track(&first.id).unwrap_or_else(|| first.clone()))
+    }
+
+    /// Playlist header cover URL: the large art once it is loaded,
+    /// otherwise the first song's row art (already cached from the
+    /// lists), so the header never sits on a placeholder while the
+    /// large cover is missing, failed, or still on its way.
+    pub(crate) fn playlist_cover_url(&self, id: &str) -> Option<String> {
+        let t = self.playlist_cover_track(id)?;
+        let hero = self.hero_art_for(&t);
+        if hero.as_deref().and_then(|u| self.art_handle(u)).is_some() {
+            return hero;
+        }
+        self.art_url_for(&t, 40.0)
+            .filter(|u| self.art_handle(u).is_some())
+            .or(hero)
+    }
+
     pub(crate) fn album_header_cover(&self, id: &str) -> Option<String> {
         let title = self.resolve_album_title(id);
         self.album_tracks(id)

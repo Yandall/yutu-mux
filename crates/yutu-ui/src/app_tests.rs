@@ -7862,8 +7862,10 @@ fn search_fields_grow_while_focused() {
     let _ = s.update(Message::PlaylistSearchFocused(true));
     settle(&mut s);
     assert_eq!(s.pl_search_expand, 1.0);
-    // Both fields share one max width (the header pill's).
-    assert!((s.pl_search_width() - s.search_full_width()).abs() < 0.5);
+    // It grows past its placeholder width but never past the header
+    // pill's max (and its own action row caps it further).
+    assert!(s.pl_search_width() > pl_ph + PL_SEARCH_CHROME);
+    assert!(s.pl_search_width() <= s.search_full_width() + 0.5);
     assert!((s.search_full_width() - full).abs() < 0.5);
     s.navigate(Route::History);
     assert!(!s.pl_search_focused);
@@ -8080,11 +8082,267 @@ fn narrow_header_swaps_gear_for_drawer_buttons() {
 }
 
 #[test]
+fn content_adapts_to_width() {
+    let mut s = test_state();
+    // Narrow phone-sized window: one quick-picks column, no row
+    // heart, stacked headers, short titles, stacked Now Playing.
+    let _ = s.update(Message::WindowResized(iced::Size::new(360.0, 720.0)));
+    settle(&mut s);
+    assert_eq!(s.quick_picks_cols(), 1);
+    assert!(!s.rows_show_heart());
+    assert!(s.hero_stacked());
+    assert!(!s.np_two_col());
+    assert!(row_title_budget(s.content_width()) < 45);
+    // Normal window with both panels pinned: today's layout.
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    settle(&mut s);
+    assert_eq!(s.quick_picks_cols(), 2);
+    assert!(s.rows_show_heart());
+    assert!(!s.hero_stacked());
+    assert!(!s.np_two_col());
+    assert_eq!(row_title_budget(s.content_width()), 45);
+    assert_eq!(s.content_cap(), CENTER_MAX_W);
+    // Wide: raised cap, side-by-side Now Playing.
+    let _ = s.update(Message::WindowResized(iced::Size::new(1920.0, 1000.0)));
+    settle(&mut s);
+    assert_eq!(s.content_cap(), CENTER_MAX_W_WIDE);
+    assert!(s.np_two_col());
+    assert!(s.lyrics_col_w() <= 640.0 && s.lyrics_col_w() >= 280.0);
+    let _ = s.update(Message::WindowResized(iced::Size::new(2560.0, 1080.0)));
+    settle(&mut s);
+    assert!((s.content_width() - (CENTER_MAX_W_WIDE - 2.0 * BODY_PAD_X)).abs() < 0.01);
+}
+
+#[test]
+fn now_playing_backdrop_caches_and_caps() {
+    let mut s = test_state();
+    let px = ART_BLUR_PX as usize;
+    let rgba = vec![128u8; px * px * 4];
+    // A decode failure stores nothing and clears the in-flight mark.
+    s.art_blur_loading.insert("u0".into());
+    let _ = s.update(Message::ArtBlurReady {
+        url: "u0".into(),
+        rgba: None,
+    });
+    assert!(s.art_blur.is_empty());
+    assert!(!s.art_blur_loading.contains("u0"));
+    for i in 0..ART_BLUR_CAP + 1 {
+        let _ = s.update(Message::ArtBlurReady {
+            url: format!("u{i}"),
+            rgba: Some(rgba.clone()),
+        });
+    }
+    // Never grows past the cap; the latest cover is always kept.
+    assert!(s.art_blur.len() <= ART_BLUR_CAP);
+    assert!(s.art_blur.contains_key(&format!("u{ART_BLUR_CAP}")));
+}
+
+#[test]
+fn backdrop_only_decodes_while_now_playing_is_open() {
+    let mut s = test_state();
+    let mut t = mk_track("bd1", "Song", "A");
+    t.thumbnail_url = Some("https://example.invalid/bd1.jpg".into());
+    s.queue.push(t);
+    s.drawer_open = false;
+    let _ = s.art_blur_task();
+    assert!(s.art_blur_loading.is_empty());
+    // Open but the cover is not on disk yet: nothing to decode.
+    s.drawer_open = true;
+    let _ = s.art_blur_task();
+    assert!(s.art_blur_loading.is_empty());
+}
+
+#[test]
+fn playlist_cover_is_the_first_song() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Covers".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Covers")
+        .unwrap();
+    let pid = s.user_playlists[i].id.clone();
+    assert!(s.playlist_cover_track(&pid).is_none());
+    s.user_playlists[i].tracks = vec![mk_track("c1", "First", "A"), mk_track("c2", "Second", "B")];
+    assert_eq!(s.playlist_cover_track(&pid).unwrap().id, "c1");
+}
+
+#[test]
+fn page_backdrop_follows_collection_pages() {
+    let mut s = test_state();
+    assert!(s.page_backdrop_url().is_none());
+    let _ = s.update(Message::CreatePlaylist("Glow".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Glow")
+        .unwrap();
+    let mut t = mk_track("g1", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/g1.jpg".into());
+    s.user_playlists[i].tracks = vec![t.clone()];
+    let pid = s.user_playlists[i].id.clone();
+    let _ = s.update(Message::OpenPlaylist(pid));
+    // The playlist page glows with its cover (the first song's hero art).
+    assert_eq!(s.page_backdrop_url(), s.hero_art_for(&t));
+    assert!(s.page_backdrop_url().is_some());
+    // Other pages have no backdrop.
+    s.navigate(Route::Settings);
+    assert!(s.page_backdrop_url().is_none());
+}
+
+#[test]
+fn page_backdrop_scrolls_away_with_the_page() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    let _ = s.update(Message::CreatePlaylist("Glow".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Glow")
+        .unwrap();
+    let mut t = mk_track("g2", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/g2.jpg".into());
+    s.user_playlists[i].tracks = vec![t];
+    let pid = s.user_playlists[i].id.clone();
+    let _ = s.update(Message::OpenPlaylist(pid));
+    // Nothing decoded yet: no layer.
+    assert!(s.page_backdrop_layer().is_none());
+    let url = s.page_backdrop_url().unwrap();
+    s.art_blur.insert(
+        url,
+        iced::widget::image::Handle::from_rgba(1, 1, vec![200, 40, 40, 255]),
+    );
+    assert!(s.page_backdrop_layer().is_some());
+    // Scrolled past the band: the layer is gone.
+    let _ = s.update(Message::Scrolled("body", PAGE_BACKDROP_H + 1.0));
+    assert!(s.page_backdrop_layer().is_none());
+}
+
+#[test]
+fn playlist_cover_falls_back_to_row_art() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Fallback".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Fallback")
+        .unwrap();
+    let mut t = mk_track("f1", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/f1.jpg".into());
+    s.user_playlists[i].tracks = vec![t.clone()];
+    let pid = s.user_playlists[i].id.clone();
+    // Neither loaded: the large URL (placeholder until it lands).
+    assert_eq!(s.playlist_cover_url(&pid), s.hero_art_for(&t));
+    // Only the row art is cached: the header uses it meanwhile.
+    let small = s.art_url_for(&t, 40.0).unwrap();
+    s.artwork.insert(
+        small.clone(),
+        (
+            iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
+            std::time::Instant::now(),
+        ),
+    );
+    assert_eq!(s.playlist_cover_url(&pid), Some(small));
+}
+
+#[test]
+fn playlist_search_never_outgrows_its_row() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    settle(&mut s);
+    // Fully expanded (focused) it still leaves room for play, Shuffle
+    // and the menu beside the cover.
+    s.pl_search_expand = 1.0;
+    let row = s.content_width() - PLAYLIST_COVER_PX - 20.0;
+    let shuffle = text_line_width(&s.language.shuffle_label()) + 32.0;
+    let used = s.pl_search_width() + 2.0 * PILL_H + shuffle + 3.0 * 8.0;
+    assert!(used <= row, "row overflows: {used} > {row}");
+}
+
+#[test]
+fn song_glow_uses_row_art_when_hero_is_missing() {
+    let mut s = test_state();
+    let mut t = mk_track("gl1", "Song", "A");
+    t.thumbnail_url = Some("https://example.invalid/gl1.jpg".into());
+    assert!(s.track_blur(&t).is_none());
+    let small = s.art_url_for(&t, 40.0).unwrap();
+    s.art_blur.insert(
+        small,
+        iced::widget::image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255]),
+    );
+    assert!(s.track_blur(&t).is_some());
+}
+
+#[test]
+fn playlist_glow_is_ready_on_open() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Ready".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Ready")
+        .unwrap();
+    let mut t = mk_track("rd1", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/rd1.jpg".into());
+    s.user_playlists[i].tracks = vec![t.clone()];
+    let pid = s.user_playlists[i].id.clone();
+    // Decoded ahead (here: from the row art) before the page opens.
+    let small = s.art_url_for(&t, 40.0).unwrap();
+    s.art_blur.insert(
+        small,
+        iced::widget::image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]),
+    );
+    let _ = s.update(Message::OpenPlaylist(pid));
+    // The first frame already has the glow.
+    assert!(s.page_backdrop_handle().is_some());
+    assert!(s.page_backdrop_layer().is_some());
+}
+
+#[test]
+fn collection_total_length_format() {
+    assert_eq!(fmt_total(0), "0 min");
+    assert_eq!(fmt_total(20), "1 min");
+    assert_eq!(fmt_total(46 * 60 + 40), "46 min");
+    assert_eq!(fmt_total(2 * 3600 + 51 * 60), "2 h 51 min");
+}
+
+#[test]
+fn row_title_budget_bounds() {
+    assert_eq!(row_title_budget(0.0), 12);
+    assert_eq!(row_title_budget(2000.0), 45);
+    let mid = row_title_budget(400.0);
+    assert!(mid > 12 && mid < 45);
+}
+
+#[test]
 fn window_has_a_minimum_size() {
     let settings = window_settings();
     assert_eq!(
         settings.min_size,
         Some(iced::Size::new(MIN_WINDOW_W, MIN_WINDOW_H))
+    );
+}
+
+/// Fake cover backdrop for screenshots (no network): a warm-to-cool
+/// 8x8 ramp stored under `url`.
+fn fake_backdrop(s: &mut AppState, url: String) {
+    let px = ART_BLUR_PX as usize;
+    let mut rgba = Vec::with_capacity(px * px * 4);
+    for y in 0..px {
+        for x in 0..px {
+            let fx = x as f32 / (px - 1) as f32;
+            let fy = y as f32 / (px - 1) as f32;
+            rgba.extend_from_slice(&[
+                (230.0 * (1.0 - fx)) as u8,
+                (60.0 + 120.0 * fy) as u8,
+                (200.0 * fx) as u8,
+                255,
+            ]);
+        }
+    }
+    s.art_blur.insert(
+        url,
+        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba),
     );
 }
 
@@ -8116,6 +8374,7 @@ fn layout_snapshots() {
         "home",
         "search",
         "playlist",
+        "album",
         "settings",
         "nowplaying",
         "library",
@@ -8129,11 +8388,14 @@ fn layout_snapshots() {
             let mut s = test_state();
             let tracks: Vec<Track> = (0..14)
                 .map(|i| {
-                    mk_track(
+                    let mut t = mk_track(
                         &format!("t{i}"),
                         &format!("Song title number {i} with a longer name"),
                         &format!("Artist {i}"),
-                    )
+                    );
+                    t.album = Some("A Rather Long Album Title".into());
+                    t.thumbnail_url = Some(format!("https://example.invalid/t{i}.jpg"));
+                    t
                 })
                 .collect();
             for t in &tracks {
@@ -8162,12 +8424,22 @@ fn layout_snapshots() {
                     let pid = s.user_playlists[1].id.clone();
                     let _ = s.update(Message::OpenPlaylist(pid));
                 }
+                "album" => {
+                    let _ = s.update(Message::OpenAlbum("A Rather Long Album Title".into()));
+                }
                 "settings" => s.navigate(Route::Settings),
-                "nowplaying" => s.drawer_open = true,
+                "nowplaying" => {
+                    s.drawer_open = true;
+                    let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();
+                    fake_backdrop(&mut s, url);
+                }
                 "library" => {
                     if s.layout().panels_overlay() {
                         s.sidebar_latched = true;
                     }
+                    // Hovered row shows its play button.
+                    s.user_playlists[1].tracks = tracks.clone();
+                    s.hovered_playlist = Some(s.user_playlists[1].id.clone());
                 }
                 "queue" => {
                     if s.layout().panels_overlay() {
@@ -8175,6 +8447,16 @@ fn layout_snapshots() {
                     }
                 }
                 _ => s.navigate(Route::Home),
+            }
+            if let Some(url) = s.page_backdrop_url() {
+                fake_backdrop(&mut s, url);
+            }
+            // Optional body scroll (px) to check the backdrop scrolls away.
+            if let Some(y) = std::env::var("YUTU_SNAPSHOT_SCROLL")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+            {
+                s.scroll_offsets.insert("body", y);
             }
             for _ in 0..80 {
                 let _ = s.update(Message::Animate);

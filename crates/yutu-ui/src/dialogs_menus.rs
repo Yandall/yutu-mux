@@ -60,7 +60,8 @@ impl AppState {
                 button(btn_text(self.language.sign_out(), 12))
                     .style(ghost_button)
                     .on_press(Message::RequestSignOut)
-                    .padding(8),
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
             ]
             .spacing(4)
             .into();
@@ -119,7 +120,8 @@ impl AppState {
                 button(self.busy_content(self.language.import_button(), 12.0))
                     .style(accent_button)
                     .on_press(Message::CookieImport)
-                    .padding(8)
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H))
                     .into(),
             );
         }
@@ -203,11 +205,13 @@ impl AppState {
                     button(btn_text(self.language.delete_export(), 12))
                         .style(accent_button)
                         .on_press(Message::CookieCleanupDelete)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     button(btn_text(self.language.keep_file(), 12))
                         .style(ghost_button)
                         .on_press(Message::CookieCleanupKeep)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8),
             ]
@@ -237,11 +241,13 @@ impl AppState {
                     button(btn_text(self.language.sign_out(), 12))
                         .style(accent_button)
                         .on_press(Message::CookieLogout)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     button(btn_text(self.language.stay_signed_in(), 12))
                         .style(ghost_button)
                         .on_press(Message::CancelSignOut)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8),
             ]
@@ -275,11 +281,13 @@ impl AppState {
                     button(btn_text(self.language.delete_playlist(), 12))
                         .style(accent_button)
                         .on_press(Message::DeletePlaylist(id))
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     button(btn_text(self.language.keep_playlist(), 12))
                         .style(ghost_button)
                         .on_press(Message::CancelDeletePlaylist)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8),
             ]
@@ -322,7 +330,8 @@ impl AppState {
                     button(btn_text(self.language.rename_playlist_cancel(), 12))
                         .style(ghost_button)
                         .on_press(Message::CancelRenamePlaylist)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8),
             ]
@@ -347,7 +356,8 @@ impl AppState {
                 button(btn_text(self.language.update_and_restart(), 12))
                     .style(accent_button)
                     .on_press(Message::UpdateAndRestart)
-                    .padding(8),
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
                 link_row(
                     self.language.update_available(&info.latest_tag),
                     12.0,
@@ -362,7 +372,8 @@ impl AppState {
                 vec![button(btn_text(self.language.check_for_updates(), 12))
                     .style(ghost_button)
                     .on_press(Message::CheckForUpdates)
-                    .padding(8)
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H))
                     .into()];
             if self.update_checking {
                 items.push(Self::spinner_frame(self.spin_frame, 12.0, MUTED));
@@ -476,15 +487,18 @@ impl AppState {
                     button(btn_text(self.language.update_and_restart(), 12))
                         .style(accent_button)
                         .on_press(Message::UpdateAndRestart)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     button(btn_text(self.language.omit_version(), 12))
                         .style(ghost_button)
                         .on_press(Message::UpdateOmitVersion)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     button(btn_text(self.language.update_later(), 12))
                         .style(ghost_button)
                         .on_press(Message::UpdateLater)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8)
                 .into(),
@@ -536,16 +550,17 @@ impl AppState {
     /// ListenBrainz/Last.fm fields, same controls as the old inline
     /// section. Scrim/Esc closes it, edits are kept.
     pub(crate) fn scrobble_dialog(&self) -> Option<iced::Element<'_, Message>> {
-        use iced::widget::{button, checkbox, column, container, text, text_input};
+        use iced::widget::{button, column, container, text, text_input, toggler};
         if !self.scrobble_modal_open {
             return None;
         }
         let card: iced::Element<'_, Message> = container(
             column![
                 text(self.language.scrobbling_section()).size(16),
-                checkbox(self.scrobble_enabled)
+                toggler(self.scrobble_enabled)
                     .label(self.language.enable_scrobbling())
-                    .on_toggle(Message::ScrobbleToggled),
+                    .on_toggle(Message::ScrobbleToggled)
+                    .style(red_toggle),
                 text_input(
                     self.language.scrobble_user_placeholder(),
                     &self.scrobble_user
@@ -587,7 +602,8 @@ impl AppState {
                 button(btn_text(self.language.done_button(), 12))
                     .style(accent_button)
                     .on_press(Message::CloseScrobbleModal)
-                    .padding(8),
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
             ]
             .spacing(8),
         )
@@ -604,7 +620,7 @@ impl AppState {
     /// never dropped by the pull.
     #[cfg(feature = "innertube")]
     pub(crate) fn sync_section(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, checkbox, column, row, text};
+        use iced::widget::{button, column, row, text, toggler};
         if !self.logged_in && !self.cookie_logged_in {
             return text("").size(1).into();
         }
@@ -619,10 +635,12 @@ impl AppState {
                 button(self.busy_content(self.language.sync_now(), 12.0))
                     .style(accent_button)
                     .on_press(Message::SyncNow)
-                    .padding(8),
-                checkbox(self.auto_sync)
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
+                toggler(self.auto_sync)
                     .label(self.language.auto_sync_label())
-                    .on_toggle(Message::AutoSyncToggled),
+                    .on_toggle(Message::AutoSyncToggled)
+                    .style(red_toggle),
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center),

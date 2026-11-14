@@ -80,7 +80,8 @@ impl AppState {
                 button(btn_text(self.language.show_more_older(total - shown), 12))
                     .style(ghost_button)
                     .on_press(Message::HistoryMore)
-                    .padding(8),
+                    .padding([12, 16])
+                    .height(iced::Length::Fixed(PILL_H)),
             );
         }
         body.into()
@@ -140,7 +141,7 @@ impl AppState {
         // drawer gets a close button instead.
         let pin_btn: iced::Element<'_, Message> = match mode {
             LayoutMode::Narrow => button(btn_icon("x", 16.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CloseDrawers)
                 .padding(8)
                 .into(),
@@ -204,7 +205,6 @@ impl AppState {
             .all_playlists()
             .into_iter()
             .filter(|pl| q.is_empty() || pl.title.to_lowercase().contains(&q))
-            .take(20)
             .map(|pl| {
                 let art: iced::Element<'_, Message> = pl
                     .tracks
@@ -275,7 +275,17 @@ impl AppState {
             .color(MUTED)
             .into()
         } else {
-            column(rows).spacing(2).into()
+            // Scrolls on its own between the filter and the new
+            // playlist row, so both stay reachable on short windows.
+            iced::widget::scrollable(column(rows).spacing(2).padding(iced::Padding {
+                right: 10.0,
+                ..iced::Padding::ZERO
+            }))
+            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("sidebar")))
+            .on_scroll(|v| Message::Scrolled("sidebar", v.absolute_offset().y))
+            .height(Fill)
+            .into()
         };
         container(
             column![
@@ -510,9 +520,9 @@ impl AppState {
         use iced::Fill;
         let left = self.sidebar_overlay_w();
         let right = self.right_overlay_w();
-        if left.is_none() && right.is_none() {
-            return row_layer;
-        }
+        // Always a Stack with the row first, even with nothing floating:
+        // switching Row <-> Stack here would rebuild the center and reset
+        // its scroll whenever a rail expands.
         let mut layers: Vec<iced::Element<'a, Message>> = vec![row_layer];
         if self.layout() == LayoutMode::Narrow {
             layers.push(
@@ -829,7 +839,8 @@ impl AppState {
                     button(btn_text(self.language.clear_queue(self.queue.len()), 12))
                         .style(ghost_button)
                         .on_press(Message::QueueClear)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                 ]
                 .spacing(8)
                 .align_y(iced::alignment::Vertical::Center)
@@ -862,7 +873,7 @@ impl AppState {
         };
         let pin_btn: iced::Element<'_, Message> = match self.layout() {
             LayoutMode::Narrow => button(btn_icon("x", 16.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CloseDrawers)
                 .padding(6)
                 .into(),
@@ -1030,7 +1041,7 @@ impl AppState {
                 .into()
         } else {
             button(ctrl_box(btn_icon("shuffle", 14.0, MUTED)))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::ToggleShuffle)
                 .padding(pad_side)
                 .into()
@@ -1078,7 +1089,7 @@ impl AppState {
                     .into()
             } else {
                 button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::ToggleDrawer)
                     .padding(7)
                     .into()
@@ -1109,7 +1120,7 @@ impl AppState {
                             .into()
                     } else {
                         button(ctrl_box(btn_icon("shuffle", 14.0, MUTED)))
-                            .style(hover_row)
+                            .style(icon_hover)
                             .on_press(Message::ToggleShuffle)
                             .padding(6)
                             .into()
@@ -1117,7 +1128,7 @@ impl AppState {
                     shuffle_btn
                 },
                 button(ctrl_box(btn_icon("skip-back", 18.0, iced::Color::WHITE)))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::Prev)
                     .padding(6),
                 button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
@@ -1125,7 +1136,7 @@ impl AppState {
                     .on_press(Message::TogglePause)
                     .padding(8),
                 button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::Next)
                     .padding(6),
                 repeat_button(repeat_icon, repeat_active, 6),
@@ -1145,21 +1156,30 @@ impl AppState {
                     .push(info)
                     .push(transport_centered)
                     .push(
+                        // Fixed side slots shared with the volume row, so
+                        // both bars start and end at the same x.
                         row![
-                            text(fmt_time(shown_pos)).size(11).color(MUTED),
+                            container(text(fmt_time(shown_pos)).size(11).color(MUTED))
+                                .width(iced::Length::Fixed(MINI_SIDE_W))
+                                .align_x(iced::alignment::Horizontal::Center),
                             seek_bar::seek_bar(shown_pos as f32, slider_max as f32),
-                            text(fmt_time(duration)).size(11).color(MUTED),
+                            container(text(fmt_time(duration)).size(11).color(MUTED))
+                                .width(iced::Length::Fixed(MINI_SIDE_W))
+                                .align_x(iced::alignment::Horizontal::Center),
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
                     .push(
                         row![
-                            self.mute_button(),
+                            container(self.mute_button())
+                                .width(iced::Length::Fixed(MINI_SIDE_W))
+                                .align_x(iced::alignment::Horizontal::Center),
                             pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(Fill),
+                            iced::widget::Space::new().width(iced::Length::Fixed(MINI_SIDE_W)),
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
@@ -1222,7 +1242,7 @@ impl AppState {
                         row![
                             shuffle_button,
                             button(ctrl_box(btn_icon("skip-back", 18.0, iced::Color::WHITE)))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::Prev)
                                 .padding(pad_side),
                             button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
@@ -1230,7 +1250,7 @@ impl AppState {
                                 .on_press(Message::TogglePause)
                                 .padding(pad_play),
                             button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
-                                .style(hover_row)
+                                .style(icon_hover)
                                 .on_press(Message::Next)
                                 .padding(pad_side),
                             repeat_button(repeat_icon, repeat_active, pad_side),
@@ -1273,7 +1293,7 @@ impl AppState {
                                     .padding(7)
                             } else {
                                 button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                    .style(hover_row)
+                                    .style(icon_hover)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
                             }
@@ -1343,7 +1363,13 @@ impl AppState {
         // Window minus header/player chrome (approximate: only shifts
         // the center, never loses the verse).
         let viewport = (wh - LYRIC_VIEWPORT_PAD).max(320.0);
-        let mut y = LYRIC_HERO_H + LYRIC_LIST_GAP;
+        // Two-column Now Playing: only the provider stepper sits above
+        // the lyrics inside the scroll (the hero lives beside it).
+        let mut y = if self.np_two_col() {
+            LYRIC_STEPPER_H + LYRIC_LIST_GAP
+        } else {
+            LYRIC_HERO_H + LYRIC_LIST_GAP
+        };
         let mut vi = 0usize;
         let mut target = None;
         for l in &cached.synced {
@@ -1389,7 +1415,13 @@ impl AppState {
         if !self.lyrics_follow {
             // Proximity resume: the user scrolled back near the verse,
             // so follow picks up silently (already centered: no snap).
-            if let Some(y) = self.lyric_follow_y(&id, at) {
+            // Never while parked at the very top: the user scrolled up
+            // to see the cover and title, and early verses sit close
+            // enough to the top that resuming would drag them back down.
+            if let Some(y) = self
+                .lyric_follow_y(&id, at)
+                .filter(|_| self.drawer_scroll > LYRIC_TOP_HOLD_PX)
+            {
                 if (self.drawer_scroll - y).abs() <= LYRIC_RESUME_PX {
                     self.lyrics_follow = true;
                 }
@@ -1560,7 +1592,7 @@ impl AppState {
         let label = self.lyrics_shown_provider(track_id).label();
         let items: Vec<iced::Element<'_, Message>> = vec![
             button(btn_icon("chevron-left", 14.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CycleLyricsProvider(-1))
                 .padding(4)
                 .into(),
@@ -1571,7 +1603,7 @@ impl AppState {
                 .align_x(iced::alignment::Horizontal::Center)
                 .into(),
             button(btn_icon("chevron-right", 14.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::CycleLyricsProvider(1))
                 .padding(4)
                 .into(),
@@ -1643,6 +1675,50 @@ impl AppState {
             text("").size(1).into()
         };
         let stepper = self.lyrics_provider_stepper(&t.id);
+        // Wide content: art and titles stay put on the left while only
+        // the lyrics column scrolls (no sticky header needed).
+        if self.np_two_col() {
+            let lyrics_col = scrollable(
+                column![
+                    container(stepper)
+                        .width(Fill)
+                        .align_x(iced::alignment::Horizontal::Center),
+                    container(self.lyrics_content(&t.id))
+                        .width(iced::Length::Fixed(self.lyrics_col_w())),
+                ]
+                .spacing(LYRIC_LIST_GAP)
+                .width(iced::Length::Fixed(self.lyrics_col_w()))
+                .padding(iced::Padding {
+                    bottom: 40.0,
+                    ..iced::Padding::ZERO
+                }),
+            )
+            .height(Fill)
+            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
+            .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
+            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y));
+            let body: iced::Element<'_, Message> = container(
+                row![
+                    container(hero).width(iced::Length::Fixed(NP_HERO_COL_W)),
+                    lyrics_col,
+                ]
+                .spacing(NP_COL_GAP)
+                .height(Fill),
+            )
+            .width(Fill)
+            .height(Fill)
+            .padding(iced::Padding {
+                top: 24.0,
+                ..iced::Padding::ZERO
+            })
+            .align_x(iced::alignment::Horizontal::Center)
+            .into();
+            let track_id = t.id.clone();
+            return mouse_area(body)
+                .on_right_press(Message::OpenContext(track_id))
+                .into();
+        }
         let body: iced::Element<'_, Message> = column![
             sticky,
             scrollable(
@@ -1766,7 +1842,17 @@ impl AppState {
     /// Playlist search width: placeholder-sized at rest, eased up to
     /// the header pill's expanded width while focused (same max).
     pub(crate) fn pl_search_width(&self) -> f32 {
-        let full = self.search_full_width();
+        // Grows only into the room its action row has left (play,
+        // Shuffle, menu and gaps beside it), so focusing it never
+        // wraps the menu onto a second line.
+        let info_w = if self.hero_stacked() {
+            self.content_width()
+        } else {
+            self.content_width() - PLAYLIST_COVER_PX - 20.0
+        };
+        let shuffle_w = text_line_width(&self.language.shuffle_label()) + 32.0;
+        let room = info_w - 2.0 * PILL_H - shuffle_w - 3.0 * 8.0 - 8.0;
+        let full = self.search_full_width().min(room.max(160.0));
         let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
             + PL_SEARCH_CHROME)
             .min(full);
@@ -1820,7 +1906,7 @@ impl AppState {
             text("").size(1).into()
         } else {
             button(btn_icon("x", 13.0, MUTED))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::HomeSearchChanged(String::new()))
                 .padding(6)
                 .into()
@@ -1829,7 +1915,7 @@ impl AppState {
         // clicking it and pressing Enter always do the same thing.
         let go_btn: iced::Element<'_, Message> =
             button(btn_icon("search", 14.0, iced::Color::WHITE))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::SuggestPick)
                 .padding(6)
                 .into();
@@ -1853,7 +1939,7 @@ impl AppState {
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center),
         )
-        .style(search_pill)
+        .style(search_pill(self.search_focused))
         .padding(iced::Padding {
             left: 8.0,
             right: 4.0,
@@ -1863,7 +1949,7 @@ impl AppState {
         .into();
         let gear: iced::Element<'_, Message> =
             button(btn_icon("settings", 14.0, iced::Color::WHITE))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::Navigate(Route::Settings))
                 .padding(6)
                 .into();
@@ -2007,11 +2093,31 @@ impl AppState {
         .into()
     }
 
+    /// Album/artist page header: art beside the title block, or
+    /// stacked (smaller art on top) when the content is too narrow for
+    /// both side by side.
+    pub(crate) fn hero_header<'a>(
+        &'a self,
+        art_url: Option<&str>,
+        size: f32,
+        info: iced::Element<'a, Message>,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{column, row};
+        if self.hero_stacked() {
+            column![self.art_thumb(art_url, HERO_STACKED_ART), info]
+                .spacing(12)
+                .into()
+        } else {
+            row![self.art_thumb(art_url, size), info]
+                .spacing(16)
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        }
+    }
+
     pub(crate) fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
-        use iced::widget::{
-            button, checkbox, column, container, mouse_area, row, scrollable, text, toggler,
-        };
+        use iced::widget::{button, column, container, mouse_area, row, scrollable, text, toggler};
         use iced::Fill;
         let body: iced::Element<'_, Message> = match &self.route {
             Route::Home => {
@@ -2094,37 +2200,37 @@ impl AppState {
                 let quick_section: iced::Element<'_, Message> = if quick.is_empty() {
                     text("").size(1).into()
                 } else {
+                    // Two interleaved columns, or one on narrow content.
+                    let cols = self.quick_picks_cols();
                     let left: Vec<iced::Element<'_, Message>> = quick
                         .iter()
-                        .step_by(2)
+                        .step_by(cols)
                         .map(|t| self.home_song_row("quick", t))
                         .collect();
-                    let right: Vec<iced::Element<'_, Message>> = quick
-                        .iter()
-                        .skip(1)
-                        .step_by(2)
-                        .map(|t| self.home_song_row("quick", t))
-                        .collect();
+                    let right: Vec<iced::Element<'_, Message>> = if cols == 2 {
+                        quick
+                            .iter()
+                            .skip(1)
+                            .step_by(2)
+                            .map(|t| self.home_song_row("quick", t))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     column![
                         row![
                             text(self.language.quick_picks()).size(19).width(Fill),
-                            button(
-                                row![
-                                    btn_icon("play", 13.0, iced::Color::WHITE),
-                                    btn_text(self.language.play_all(), 13)
-                                ]
-                                .spacing(6)
-                                .align_y(iced::alignment::Vertical::Center)
-                            )
-                            .style(accent_button)
-                            .on_press(Message::PlayQuickPicks)
-                            .padding(7),
+                            Self::play_pill(Message::PlayQuickPicks),
                         ]
                         .align_y(iced::alignment::Vertical::Center),
-                        row![
-                            column(left).spacing(2).width(Fill),
-                            column(right).spacing(2).width(Fill),
-                        ]
+                        if right.is_empty() {
+                            row![column(left).spacing(2).width(Fill)]
+                        } else {
+                            row![
+                                column(left).spacing(2).width(Fill),
+                                column(right).spacing(2).width(Fill),
+                            ]
+                        }
                         .spacing(8),
                     ]
                     .spacing(10)
@@ -2243,7 +2349,8 @@ impl AppState {
                         )
                         .style(ghost_button)
                         .on_press(Message::Navigate(Route::Discovery))
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     row![
@@ -2429,33 +2536,13 @@ impl AppState {
                     text(self.language.made_for_you()).size(22),
                     row![
                         text(self.language.weekly_mix()).size(17).width(Fill),
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_all(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center)
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayWeeklyMix)
-                        .padding(7),
+                        Self::play_pill(Message::PlayWeeklyMix),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     weekly_section,
                     row![
                         text(self.language.forgotten()).size(17).width(Fill),
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_all(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center)
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayForgotten)
-                        .padding(7),
+                        Self::play_pill(Message::PlayForgotten),
                     ]
                     .align_y(iced::alignment::Vertical::Center),
                     forgotten_section,
@@ -2555,7 +2642,8 @@ impl AppState {
                         button(btn_text(self.language.relaunch_to_apply(), 12))
                             .style(ghost_button)
                             .on_press(Message::RelaunchNow)
-                            .padding(8)
+                            .padding([12, 16])
+                            .height(iced::Length::Fixed(PILL_H))
                             .into()
                     } else {
                         text("").size(1).into()
@@ -2665,9 +2753,10 @@ impl AppState {
                     ]
                     .spacing(4),
                     text(self.language.animations_section()).size(17),
-                    checkbox(self.animations_enabled)
+                    toggler(self.animations_enabled)
                         .label(self.language.enable_animations())
-                        .on_toggle(Message::AnimationsToggled),
+                        .on_toggle(Message::AnimationsToggled)
+                        .style(red_toggle),
                     column![
                         text(self.language.animation_duration(self.anim_ms)).size(13),
                         settings_input(
@@ -2687,7 +2776,8 @@ impl AppState {
                     button(btn_text(self.language.setup_scrobbling(), 12))
                         .style(accent_button)
                         .on_press(Message::OpenScrobbleModal)
-                        .padding(8),
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H)),
                     text(self.language.cookie_section_title()).size(17),
                     self.cookie_section(),
                     {
@@ -2717,7 +2807,8 @@ impl AppState {
                         button(btn_text(self.language.about_source(), 12))
                             .style(ghost_button)
                             .on_press(Message::OpenUrl(GITHUB_URL.to_string()))
-                            .padding(8),
+                            .padding([12, 16])
+                            .height(iced::Length::Fixed(PILL_H)),
                         text(self.language.about_notices()).size(12).color(MUTED),
                         text(self.language.about_backend()).size(12).color(MUTED),
                     ]
@@ -2775,14 +2866,16 @@ impl AppState {
                         button(btn_text(self.language.show_more(), 12))
                             .style(ghost_button)
                             .on_press(Message::ArtistTopExpand)
-                            .padding(8)
+                            .padding([12, 16])
+                            .height(iced::Length::Fixed(PILL_H))
                             .into()
                     } else if fetching_full {
                         row![
                             button(btn_text(self.language.show_more(), 12))
                                 .style(ghost_button)
                                 .on_press(Message::ArtistTopExpand)
-                                .padding(8),
+                                .padding([12, 16])
+                                .height(iced::Length::Fixed(PILL_H)),
                             Self::spinner_frame(self.spin_frame, 12.0, MUTED),
                         ]
                         .spacing(6)
@@ -2822,12 +2915,14 @@ impl AppState {
                         Message::StartRadio(seed.id.clone()),
                     ),
                 };
+                let photo = self.artist_photo(&name);
                 column![
-                    row![
-                        self.art_thumb(self.artist_photo(&name).as_deref(), 160.0),
+                    self.hero_header(
+                        photo.as_deref(),
+                        160.0,
                         column![
                             text(self.language.artist_label()).size(12).color(MUTED),
-                            text(name.clone()).size(30),
+                            text(name.clone()).size(34).font(bold_font()),
                             text(self.language.artist_songs_albums(
                                 tracks.len(),
                                 albums.len(),
@@ -2836,21 +2931,22 @@ impl AppState {
                             .size(12)
                             .color(MUTED),
                             row![
-                                Self::play_pill(self.language.play_pill_label(), Message::PlayAll),
+                                Self::play_pill(Message::PlayAll),
                                 Self::shuffle_pill(
-                                    self.language.shuffle_pill_label(),
+                                    self.language.shuffle_label(),
                                     Message::PlayAllShuffled
                                 ),
                                 radio_btn,
                             ]
                             .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                         ]
                         .spacing(6)
-                        .width(Fill),
-                    ]
-                    .spacing(16)
-                    .align_y(iced::alignment::Vertical::Center),
+                        .width(Fill)
+                        .into(),
+                    ),
                     Self::section(self.language, self.language.popular(), popular),
                     show_all,
                     Self::section(
@@ -2915,27 +3011,29 @@ impl AppState {
                     )
                 };
                 column![
-                    row![
-                        self.art_thumb(cover.as_deref(), 180.0),
+                    self.hero_header(
+                        cover.as_deref(),
+                        180.0,
                         column![
                             text(self.language.album_label()).size(12).color(MUTED),
-                            text(title.clone()).size(28),
+                            text(title.clone()).size(34).font(bold_font()),
                             text(meta).size(12).color(MUTED),
                             row![
-                                Self::play_pill(self.language.play_pill_label(), Message::PlayAll),
+                                Self::play_pill(Message::PlayAll),
                                 Self::shuffle_pill(
-                                    self.language.shuffle_pill_label(),
+                                    self.language.shuffle_label(),
                                     Message::PlayAllShuffled
                                 ),
                             ]
                             .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                         ]
                         .spacing(6)
-                        .width(Fill),
-                    ]
-                    .spacing(16)
-                    .align_y(iced::alignment::Vertical::Center),
+                        .width(Fill)
+                        .into(),
+                    ),
                     column(rows).spacing(2),
                 ]
                 .spacing(12)
@@ -2960,6 +3058,7 @@ impl AppState {
                     let sort_button: iced::Element<'_, Message> = if is_fav {
                         text("").size(1).into()
                     } else {
+                        // Same pill as Shuffle and the search field.
                         let face: iced::Element<'_, Message> = button(
                             row![
                                 btn_icon("arrow-up-down", 13.0, MUTED),
@@ -2967,12 +3066,14 @@ impl AppState {
                             ]
                             .spacing(6)
                             .align_y(iced::alignment::Vertical::Center)
-                            .width(Fill),
+                            .width(Fill)
+                            .height(Fill),
                         )
-                        .style(select_face)
+                        .style(ghost_button)
                         .on_press(Message::OpenSelectMenu(SelectMenu::Sort(pid.clone())))
-                        .padding(8)
+                        .padding([0, 16])
                         .width(iced::Length::Fixed(SORT_BUTTON_W))
+                        .height(iced::Length::Fixed(PILL_H))
                         .into();
                         let menu = (self.sort_menu == Some(SelectMenu::Sort(pid.clone())))
                             .then(|| self.select_menu_card(&SelectMenu::Sort(pid.clone()), 220.0));
@@ -3056,66 +3157,89 @@ impl AppState {
                             .collect();
                         column(rows).spacing(2).into()
                     };
-                    // Actions: play, shuffle, sort (own lists only), menu.
-                    // Built as a vec so Favorites simply omits the sort
-                    // slot instead of leaving an empty gap in the row.
-                    let mut actions: Vec<iced::Element<'_, Message>> = vec![
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_all(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayAll)
-                        .padding(8)
-                        .into(),
-                        button(
-                            row![
-                                btn_icon("shuffle", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.shuffle_label(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayAllShuffled)
-                        .padding(8)
-                        .into(),
-                    ];
-                    if !is_fav {
-                        actions.push(sort_button);
-                    }
-                    actions.push(
-                        button(btn_icon("ellipsis", 15.0, MUTED))
-                            .style(hover_row)
-                            .on_press(Message::OpenPlaylistMenu(p.id.clone()))
-                            .padding(8)
-                            .into(),
-                    );
-                    column![
-                        text(p.title.clone()).size(24),
-                        text(self.language.playlist_sub(p.tracks.len()))
-                            .size(12)
-                            .color(MUTED),
-                        iced::widget::Row::with_children(actions)
-                            .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
+                    // Header (YouTube Music style): cover beside a small
+                    // label, bold title, count + length, then a round play
+                    // button, Shuffle and the playlist search as pills
+                    // (the search grows while focused) and the menu. The
+                    // sort picker (own lists only) sits right-aligned in
+                    // a bar above the songs, so the action row fits.
+                    let total: u64 = p.tracks.iter().map(|t| u64::from(self.track_secs(t))).sum();
+                    // Every control is PILL_H tall: a true circle for play
+                    // and the menu, matching pills for the rest.
+                    let actions: Vec<iced::Element<'_, Message>> = vec![
+                        round_button(
+                            btn_icon("play", 18.0, iced::Color::WHITE),
+                            accent_button,
+                            Message::PlayAll,
+                        ),
+                        icon_pill_button(
+                            "shuffle",
+                            self.language.shuffle_label(),
+                            Message::PlayAllShuffled,
+                        ),
                         iced::widget::text_input(
                             self.language.playlist_filter_placeholder(),
-                            &self.playlist_filter
+                            &self.playlist_filter,
                         )
-                        .style(rounded_input)
+                        .style(pill_input)
                         .id(PL_SEARCH_INPUT_ID)
                         .on_input(Message::PlaylistFilterChanged)
+                        .size(13)
+                        .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(
+                            PILL_H - 2.0 * PILL_INPUT_PAD_Y,
+                        )))
                         .width(iced::Length::Fixed(self.pl_search_width()))
-                        .padding(10),
-                        list,
+                        .padding([PILL_INPUT_PAD_Y, 16.0])
+                        .into(),
+                        round_button(
+                            btn_icon("ellipsis", 16.0, iced::Color::WHITE),
+                            ghost_button,
+                            Message::OpenPlaylistMenu(p.id.clone()),
+                        ),
+                    ];
+                    let cover = self.playlist_cover_url(&p.id);
+                    let info: iced::Element<'_, Message> = column![
+                        text(self.language.playlist_label()).size(12).color(MUTED),
+                        text(p.title.clone()).size(34).font(bold_font()),
+                        text(
+                            self.language
+                                .playlist_meta(p.tracks.len(), &fmt_total(total))
+                        )
+                        .size(12)
+                        .color(MUTED),
+                        iced::widget::Space::new().height(iced::Length::Fixed(6.0)),
+                        // Wraps onto a second line on narrow windows
+                        // instead of pushing the menu button off-screen.
+                        iced::widget::Row::with_children(actions)
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                     ]
-                    .spacing(10)
-                    .into()
+                    .spacing(4)
+                    .width(Fill)
+                    .into();
+                    let header: iced::Element<'_, Message> = if self.hero_stacked() {
+                        column![self.art_thumb(cover.as_deref(), HERO_STACKED_ART), info]
+                            .spacing(12)
+                            .into()
+                    } else {
+                        // Title block sits on the cover's bottom edge.
+                        row![self.art_thumb(cover.as_deref(), PLAYLIST_COVER_PX), info]
+                            .spacing(20)
+                            .align_y(iced::alignment::Vertical::Bottom)
+                            .into()
+                    };
+                    let list_bar: iced::Element<'_, Message> = if is_fav {
+                        iced::widget::Space::new()
+                            .height(iced::Length::Fixed(8.0))
+                            .into()
+                    } else {
+                        row![iced::widget::Space::new().width(Fill), sort_button]
+                            .align_y(iced::alignment::Vertical::Center)
+                            .into()
+                    };
+                    column![header, list_bar, list,].spacing(10).into()
                 }
             },
             Route::Lyrics(id) => {
@@ -3128,10 +3252,7 @@ impl AppState {
                 column![
                     text(title).size(22),
                     row![
-                        Self::play_pill(
-                            self.language.play_pill_label(),
-                            Message::PlayNow(id.clone())
-                        ),
+                        Self::play_pill(Message::PlayNow(id.clone())),
                         Self::mix_pill(
                             self.language.mix_pill_label(),
                             Message::StartRadio(id.clone())
@@ -3153,17 +3274,12 @@ impl AppState {
         // Rendered at window level (above the drawer), not here.
         // Very wide windows center a capped body so rows stop gluing
         // to the far edges; normal windows stay full bleed.
-        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-        let scrolled: iced::Element<'_, Message> = if ww > CENTER_MARGIN_BREAK {
+        let cap = self.content_cap();
+        let scrolled: iced::Element<'_, Message> = if self.center_width() > cap {
             scrollable(
-                container(
-                    container(body)
-                        .padding(20)
-                        .width(Fill)
-                        .max_width(CENTER_MAX_W),
-                )
-                .width(Fill)
-                .align_x(iced::alignment::Horizontal::Center),
+                container(container(body).padding(20).width(Fill).max_width(cap))
+                    .width(Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
             )
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("body")))
@@ -3267,6 +3383,7 @@ impl AppState {
     pub(crate) fn view_inner(&self) -> iced::Element<'_, Message> {
         use iced::widget::{column, container, mouse_area, row, text, Row, Stack};
         use iced::Fill;
+        set_row_title_chars(row_title_budget(self.content_width()));
         // The drawer covers the center body only: header (search) stays
         // visible at all times. Fully open it replaces the body so
         // nothing behind scrolls or clicks.
@@ -3316,7 +3433,6 @@ impl AppState {
                 .spacing(8)
                 .height(Fill),
         )
-        .style(app_bg)
         // Roomier top padding so the header never hugs the window
         // edge (sides/bottom stay tight).
         .padding(iced::Padding {
@@ -3326,7 +3442,22 @@ impl AppState {
             bottom: 8.0,
         })
         .into();
-        let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
+        // Background first, then the collection page cover glow (behind
+        // every panel: sidebars and the player draw over it), then the
+        // app itself.
+        let mut layers: Vec<iced::Element<'_, Message>> =
+            vec![container(iced::widget::Space::new())
+                .style(app_bg)
+                .width(Fill)
+                .height(Fill)
+                .into()];
+        // Always one slot (empty when there is no glow): a changing layer
+        // count would shift `base` and reset every scroll position in it.
+        layers.push(
+            self.page_backdrop_layer()
+                .unwrap_or_else(|| iced::widget::Space::new().into()),
+        );
+        layers.push(base);
         // Floating drag ghost right above the base (modal layers cover it):
         // `None` unless a drag is live with a known cursor.
         if let Some(ghost) = self.drag_ghost_layer() {
@@ -4203,25 +4334,51 @@ impl AppState {
         Stack::with_children(layers).into()
     }
 
-    /// Now Playing sheet that overlays the center column (drawer slide).
-    /// Gated on `drawer_anim` by the caller.
-    pub(crate) fn drawer_layer(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+    /// Collection page cover glow at window level: a band across the
+    /// whole window top (sidebars and header draw over it) that scrolls
+    /// away with the page body, fading into the app background. `None`
+    /// off collection pages, before the backdrop is decoded, or once it
+    /// has scrolled out of view.
+    pub(crate) fn page_backdrop_layer(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{container, image, pin, Space, Stack};
         use iced::Fill;
-        let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
-        // The sheet lives in the center column below the header: a fixed
-        // top reserve keeps the header (nav + search) always visible, and
-        // the sheet runs to the bottom with no trailing gap. The open
-        // animation shrinks the sheet upward instead of pushing past the
-        // bottom edge, so the column height stays constant mid-glide.
-        let center_h = (win_h - 148.0).max(300.0);
-        let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
-        let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
-        let sheet: iced::Element<'_, Message> = container(
+        let handle = self.page_backdrop_handle()?;
+        let scroll = self.scroll_offsets.get("body").copied().unwrap_or(0.0);
+        if scroll >= PAGE_BACKDROP_H {
+            return None;
+        }
+        let band: iced::Element<'_, Message> = Stack::with_children(vec![
+            image(handle)
+                .content_fit(iced::ContentFit::Cover)
+                .filter_method(image::FilterMethod::Linear)
+                .opacity(PAGE_BACKDROP_OPACITY)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+            container(Space::new())
+                .style(page_backdrop_veil)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+        ])
+        .width(Fill)
+        .height(iced::Length::Fixed(PAGE_BACKDROP_H))
+        .into();
+        Some(pin(band).y(-scroll).width(Fill).height(Fill).into())
+    }
+
+    /// Now Playing sheet (shared by the sliding and fully open layers):
+    /// the cover's colors stretched into soft blobs behind the content,
+    /// darkened toward the bottom so lyrics stay readable. Falls back to
+    /// the plain card surface until the backdrop is ready.
+    pub(crate) fn drawer_sheet(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, image, row, text, Space, Stack};
+        use iced::Fill;
+        let content = container(
             column![
                 row![
                     button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
-                        .style(hover_row)
+                        .style(icon_hover)
                         .on_press(Message::ToggleDrawer)
                         .padding(7),
                     text(self.language.now_playing())
@@ -4234,11 +4391,59 @@ impl AppState {
             ]
             .spacing(8),
         )
-        .style(card_bg)
         .padding(16)
         .width(Fill)
-        .height(Fill)
-        .into();
+        .height(Fill);
+        let blur = self.queue.current().and_then(|t| self.track_blur(t));
+        // Fixed four slots (surface, glow, veil, content): a changing
+        // layer count would rebuild the content and reset the lyrics
+        // scroll on every song change.
+        let (glow, veil): (iced::Element<'_, Message>, iced::Element<'_, Message>) = match blur {
+            Some(handle) => (
+                image(handle)
+                    .content_fit(iced::ContentFit::Cover)
+                    .filter_method(image::FilterMethod::Linear)
+                    .opacity(NP_BACKDROP_OPACITY)
+                    .border_radius(8.0)
+                    .width(Fill)
+                    .height(Fill)
+                    .into(),
+                container(Space::new())
+                    .style(np_backdrop_veil)
+                    .width(Fill)
+                    .height(Fill)
+                    .into(),
+            ),
+            None => (Space::new().into(), Space::new().into()),
+        };
+        let layers: Vec<iced::Element<'_, Message>> = vec![
+            container(Space::new())
+                .style(card_bg)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+            glow,
+            veil,
+            content.into(),
+        ];
+        Stack::with_children(layers).width(Fill).height(Fill).into()
+    }
+
+    /// Now Playing sheet that overlays the center column (drawer slide).
+    /// Gated on `drawer_anim` by the caller.
+    pub(crate) fn drawer_layer(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{column, container};
+        use iced::Fill;
+        let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
+        // The sheet lives in the center column below the header: a fixed
+        // top reserve keeps the header (nav + search) always visible, and
+        // the sheet runs to the bottom with no trailing gap. The open
+        // animation shrinks the sheet upward instead of pushing past the
+        // bottom edge, so the column height stays constant mid-glide.
+        let center_h = (win_h - 148.0).max(300.0);
+        let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
+        let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
+        let sheet = self.drawer_sheet();
         // Spacer plus Fill sheet: bottom leftover is always 0 at rest so
         // the drawer meets the player bar exactly like the sidebars.
         container(column![
@@ -4253,34 +4458,13 @@ impl AppState {
     /// Drawer body without the header reserve (used under the persistent
     /// header when fully open, so no double gap appears).
     pub(crate) fn drawer_body_layer(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{column, container};
         use iced::Fill;
         let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
         let center_h = (win_h - 148.0).max(300.0);
         let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
         let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
-        let sheet: iced::Element<'_, Message> = container(
-            column![
-                row![
-                    button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
-                        .style(hover_row)
-                        .on_press(Message::ToggleDrawer)
-                        .padding(7),
-                    text(self.language.now_playing())
-                        .size(13)
-                        .color(MUTED)
-                        .width(Fill),
-                ]
-                .align_y(iced::alignment::Vertical::Center),
-                self.drawer_view(),
-            ]
-            .spacing(8),
-        )
-        .style(card_bg)
-        .padding(16)
-        .width(Fill)
-        .height(Fill)
-        .into();
+        let sheet = self.drawer_sheet();
         container(column![
             iced::widget::Space::new().height(iced::Length::Fixed(offset)),
             sheet,
