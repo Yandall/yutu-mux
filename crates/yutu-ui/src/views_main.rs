@@ -554,7 +554,7 @@ impl AppState {
                     container(Space::new())
                         .width(Fill)
                         .height(Fill)
-                        .style(modal_dim),
+                        .style(drawer_scrim),
                 )
                 .on_press(Message::CloseDrawers)
                 .on_right_press(Message::CloseDrawers)

@@ -59,6 +59,8 @@
   windows; the volume slider gets shorter instead (#109).
 - On very small windows the library drawer scrolls again, search top
   results stack, and song rows keep room for the title (#109).
+- The dimmed area behind a narrow-window drawer has rounded corners like
+  the panels around it (#109).
 - Hovering a song shown in several lists highlights only that row (#98).
 - The library playlist list scrolls when it is longer than the window (#108).
 - On narrow windows the volume slider lines up with the seek bar (#108).

@@ -113,6 +113,18 @@ pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Sty
     }
 }
 
+/// Narrow drawer scrim: the modal dim, rounded like the panels it
+/// covers so its corners never stick out square.
+pub(crate) fn drawer_scrim(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgba(
+            0.0, 0.0, 0.0, 0.55,
+        ))),
+        border: iced::Border::default().rounded(12),
+        ..Default::default()
+    }
+}
+
 /// Collapsed rail thumb wrapper: red border for the live song, transparent
 /// same-size border otherwise so the pitch never shifts on highlight.
 pub(crate) fn rail_thumb_bg(
