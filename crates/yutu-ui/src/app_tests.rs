@@ -5662,6 +5662,39 @@ fn stale_search_completion_never_clobbers_newer_query() {
 }
 
 #[test]
+fn stale_search_completion_fetches_no_art_and_persists_off_thread() {
+    let mut s = test_state();
+    let _ = s.update(Message::HomeSearchChanged("bonobo".into()));
+    let mut old = mk_track("stale-art", "Old Song", "Someone");
+    old.thumbnail_url = Some("https://lh3.googleusercontent.com/stale=w60-h60".into());
+    let _ = s.update(Message::SearchCompleted {
+        query: "bon".into(),
+        result: Ok(Box::new(bundle_of(SearchResults {
+            tracks: vec![old],
+            albums: vec![],
+            artists: vec![],
+            playlists: vec![],
+        }))),
+    });
+    // Nobody sees stale rows: no artwork fetches queued for them.
+    assert!(s.artwork_loading.is_empty());
+    assert!(s.find_track("stale-art").is_some());
+    // The SQLite write-through lands from the background thread.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        if store.cached_track("stale-art").unwrap().is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background track cache write never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn sidebar_and_right_tabs_switch() {
     let mut s = test_state();
     assert!(s.sidebar_pinned);
@@ -9248,4 +9281,22 @@ async fn live_ui_search_returns_tracks() {
             .all(|t| !t.id.is_empty() && !t.title.is_empty()),
         "tracks must carry playable ids + titles"
     );
+}
+
+#[test]
+fn tick_skips_home_shelf_ranking_until_inputs_change() {
+    let mut s = test_state();
+    s.route = Route::Home;
+    let t0 = std::time::Instant::now();
+    let _ = s.update(Message::Tick(t0));
+    let key = s.home_shelves_key.expect("first tick ranks the shelves");
+    // Nothing changed: the next tick keeps the memo (same stamp).
+    let _ = s.update(Message::Tick(t0 + std::time::Duration::from_millis(500)));
+    assert_eq!(s.home_shelves_key.map(|(_, at)| at), Some(key.1));
+    // A new play moves the fingerprint: the next tick re-ranks.
+    s.history.push("fresh-play".into());
+    let _ = s.update(Message::Tick(t0 + std::time::Duration::from_millis(1000)));
+    let (k2, _) = s.home_shelves_key.unwrap();
+    assert_ne!(k2, key.0);
+    assert_eq!(k2, s.home_shelves_fingerprint());
 }

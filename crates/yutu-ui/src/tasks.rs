@@ -20,15 +20,21 @@ use yutu_player::MpvBackend;
 #[allow(unused_imports)]
 use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
+/// Search input debounce: both the live search and the suggestion
+/// fetch wait this long after the last keystroke, so typing or
+/// deleting characters one by one fires nothing until the user pauses.
+#[cfg(feature = "innertube")]
+pub(crate) const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
 impl AppState {
-    /// Debounced keystroke: wait 200ms for the user to keep typing, then
-    /// fire (suggest path waits 150ms); repeats are cache-served. Only
-    /// the latest generation fires a real search.
+    /// Debounced keystroke: wait [`SEARCH_DEBOUNCE`] for the user to keep
+    /// typing, then fire; repeats are cache-served. Only the latest
+    /// generation fires a real search.
     #[cfg(feature = "innertube")]
     pub(crate) fn search_debounce_task(gen: u64, query: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(SEARCH_DEBOUNCE).await;
                 (gen, query)
             },
             |(gen, query)| Message::SearchDebounced { gen, query },
@@ -931,12 +937,13 @@ impl AppState {
         backend.search_suggestions(query).await
     }
 
-    /// Suggestion debounce (shorter than search: the popup must feel instant).
+    /// Suggestion debounce (same [`SEARCH_DEBOUNCE`] as the search, so a
+    /// typing burst fetches nothing mid-word).
     #[cfg(feature = "innertube")]
     pub(crate) fn suggest_debounce_task(gen: u64, query: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                tokio::time::sleep(SEARCH_DEBOUNCE).await;
                 let result = Self::live_suggest(&query).await;
                 (gen, result)
             },

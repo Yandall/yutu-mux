@@ -482,7 +482,51 @@ impl AppState {
     /// whole catalog plus a history query, so views read the cache
     /// instead of paying that on every frame. Called on navigation
     /// and on Tick while the shelves are visible.
+    /// Cheap fingerprint of the shelf inputs (sizes and newest
+    /// entries): changes whenever a play, like, dislike, playlist
+    /// edit, catalog growth, or language switch could move a shelf.
+    pub(crate) fn home_shelves_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.catalog.len().hash(&mut h);
+        self.liked.len().hash(&mut h);
+        self.liked_order.last().hash(&mut h);
+        self.disliked.len().hash(&mut h);
+        self.history.len().hash(&mut h);
+        self.history.last().hash(&mut h);
+        self.history_full.len().hash(&mut h);
+        self.history_full
+            .last()
+            .map(|e| (&e.track_id, e.played_at_unix))
+            .hash(&mut h);
+        self.user_playlists.len().hash(&mut h);
+        self.user_playlists
+            .iter()
+            .map(|p| p.tracks.len())
+            .sum::<usize>()
+            .hash(&mut h);
+        format!("{:?}", self.language).hash(&mut h);
+        h.finish()
+    }
+
+    /// Tick-cadence refresh: re-rank only when the inputs changed, or
+    /// after [`HOME_SHELVES_MAX_AGE`] as a safety net for in-place
+    /// catalog edits the fingerprint cannot see. Every-tick ranking
+    /// opened SQLite three times per tick on the GUI thread, which
+    /// stalled typing (and waited on any concurrent writer's lock).
+    pub(crate) fn refresh_home_shelves_if_stale(&mut self, now: std::time::Instant) {
+        const HOME_SHELVES_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+        let key = self.home_shelves_fingerprint();
+        let fresh = self
+            .home_shelves_key
+            .is_some_and(|(k, at)| k == key && now.duration_since(at) < HOME_SHELVES_MAX_AGE);
+        if !fresh {
+            self.refresh_home_shelves();
+        }
+    }
+
     pub(crate) fn refresh_home_shelves(&mut self) {
+        self.home_shelves_key = Some((self.home_shelves_fingerprint(), std::time::Instant::now()));
         let more_artist = self.top_artist();
         let more = more_artist
             .as_deref()

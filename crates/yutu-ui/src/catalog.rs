@@ -80,8 +80,15 @@ impl AppState {
         &mut self,
         bundle: SearchBundle,
     ) -> (SearchBundle, Vec<iced::Task<Message>>) {
-        let all_tracks = self.register_tracks(bundle.all.tracks);
-        let filtered_tracks = self.register_tracks(bundle.filtered.tracks);
+        let all_tracks = self.register_tracks_mem(bundle.all.tracks);
+        let filtered_tracks = self.register_tracks_mem(bundle.filtered.tracks);
+        // Search completions land on every typing pause: the SQLite
+        // write-through (open + migrate + write lock, which can wait
+        // on a background import) runs off the GUI thread so typing
+        // never freezes. Same order as above: filtered rows win.
+        let mut persist = all_tracks.clone();
+        persist.extend(filtered_tracks.iter().cloned());
+        self.cache_tracks_background(persist);
         let bundle = SearchBundle {
             all: SearchAll {
                 tracks: all_tracks,
@@ -228,6 +235,15 @@ impl AppState {
         }
         self.cache_tracks(&tracks);
         tracks
+    }
+
+    /// Stale search completion (the user typed on): keep the rows in
+    /// the catalog and the DB cache, but fetch no artwork for results
+    /// nobody sees. A later cache hit paints and warms them.
+    pub(crate) fn stage_stale_search(&mut self, bundle: SearchBundle) {
+        let mut tracks = self.register_tracks_mem(bundle.all.tracks);
+        tracks.extend(self.register_tracks_mem(bundle.filtered.tracks));
+        self.cache_tracks_background(tracks);
     }
 
     /// Memory-only catalog seed (startup path): inserts without touching
@@ -485,6 +501,28 @@ impl AppState {
         }
     }
 
+    /// [`Self::cache_tracks`] on a background thread: for hot paths
+    /// (search completions) where a GUI-thread SQLite write, possibly
+    /// waiting on another writer's lock, would stall input. Best
+    /// effort like the sync version; the in-memory catalog is already
+    /// current, the cache only serves the next launch.
+    pub(crate) fn cache_tracks_background(&self, tracks: Vec<Track>) {
+        if tracks.is_empty() {
+            return;
+        }
+        let path = self.library_path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("yutu-track-cache".into())
+            .spawn(move || {
+                if let Ok(store) = LibraryStore::open(&path) {
+                    let _ = store.upsert_tracks(&tracks);
+                }
+            });
+        if let Err(e) = spawned {
+            yutu_core::app_log::warn("yutu-cache", format_args!("track cache write skipped: {e}"));
+        }
+    }
+
     /// Background fetch for ids the catalog lacks. Small lazy batches
     /// only (callers cap to the visible screenful): never a library sweep.
     /// One concurrent probe per id (not one sequential task): covers on a
@@ -572,9 +610,8 @@ impl AppState {
         self.artwork_tasks(&tracks)
     }
 
-    /// Memory-only track registration (no SQLite): the import path
-    /// persists separately in background tasks.
-    #[cfg(feature = "innertube")]
+    /// Memory-only track registration (no SQLite): the import and
+    /// search paths persist separately, off the GUI thread.
     pub(crate) fn register_tracks_mem(&mut self, tracks: Vec<Track>) -> Vec<Track> {
         for t in &tracks {
             self.catalog.insert(t.id.clone(), t.clone());
