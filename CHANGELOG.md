@@ -61,7 +61,7 @@
 ### Fixed
 
 - Lyrics auto-scroll keeps the highlighted verse centered in short or
-  narrow windows, even when lines wrap.
+  narrow windows, even when lines wrap (#114).
 - Albums with the same name by different artists (like two "Greatest
   Hits") no longer open each other's page or mix their songs (#112).
 - An album page now shows the same cover as its card, instead of a
