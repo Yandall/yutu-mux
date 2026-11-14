@@ -559,7 +559,7 @@ impl AppState {
                 artist: t.artist.clone(),
                 album: t.album.clone().unwrap_or_default(),
                 track_id: t.id.clone(),
-                length_secs: t.duration_secs,
+                length_secs: self.track_secs(t),
                 art_url,
             });
         }

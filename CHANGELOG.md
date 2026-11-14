@@ -22,6 +22,8 @@
 - Hovering a song shown in several lists highlights only that row (#98).
 - Typing in the search bar no longer freezes the app (#102).
 - Search waits until you pause typing for 300ms (#102).
+- Songs no longer show a 0:00 length in playlists, history, and search.
+- Videos without a known length learn it the first time they play.
 
 ### Removed
 

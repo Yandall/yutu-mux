@@ -109,7 +109,7 @@ impl AppState {
                     .on_press(Message::PlayNow(t.id.clone()))
                     .padding(3)
                     .width(Fill),
-                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                    text(fmt_len(self.track_secs(t))).size(11).color(MUTED),
                 ]
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center)
@@ -375,7 +375,7 @@ impl AppState {
             ))
             .padding(1)
             .width(Fill),
-            container(text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED)).padding(3),
+            container(text(fmt_len(self.track_secs(t))).size(11).color(MUTED)).padding(3),
             remove_btn,
         ]
         .spacing(6)
@@ -521,7 +521,7 @@ impl AppState {
                         ))
                         .padding(3)
                         .width(Fill),
-                        text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                        text(fmt_len(self.track_secs(&t))).size(12).color(MUTED),
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center)
@@ -640,7 +640,7 @@ impl AppState {
                             .on_press(Message::PlayAutoplay(i))
                             .padding(3)
                             .width(Fill),
-                            text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                            text(fmt_len(self.track_secs(t))).size(11).color(MUTED),
                             remove_btn,
                         ]
                         .spacing(6)
@@ -1768,7 +1768,7 @@ impl AppState {
                     .on_press(Message::PlayNow(t.id.clone()))
                     .padding(3)
                     .width(Fill),
-                    text(fmt_time(t.duration_secs as f64)).size(11).color(MUTED),
+                    text(fmt_len(self.track_secs(t))).size(11).color(MUTED),
                 ]
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center)
@@ -2512,7 +2512,7 @@ impl AppState {
                 let name = self.resolve_artist_name(id);
                 let tracks = self.artist_tracks(&name);
                 let albums = self.artist_albums(&name);
-                let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
+                let total: u32 = tracks.iter().map(|t| self.track_secs(t)).sum();
                 // Popular prefers the live server rank (true popularity
                 // with counts); the catalog fallback is alphabetical.
                 // A pending fetch with nothing cached yet shows the
@@ -2659,7 +2659,7 @@ impl AppState {
                     Some(songs) => songs,
                     None => self.album_tracks(id),
                 };
-                let total: u32 = tracks.iter().map(|t| t.duration_secs).sum();
+                let total: u32 = tracks.iter().map(|t| self.track_secs(t)).sum();
                 let artist = tracks.first().map(|t| t.artist.clone()).unwrap_or_default();
                 let year = self
                     .results

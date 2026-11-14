@@ -426,6 +426,9 @@ impl AppState {
                         if e.plays.is_none() && t.plays.is_some() {
                             e.plays = t.plays.clone();
                         }
+                        if e.duration_secs == 0 && t.duration_secs > 0 {
+                            e.duration_secs = t.duration_secs;
+                        }
                         if e.title.is_empty() && !t.title.is_empty() {
                             e.title = t.title.clone();
                             e.artist = t.artist.clone();

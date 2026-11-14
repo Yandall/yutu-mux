@@ -590,7 +590,7 @@ impl AppState {
                         14,
                         iced::Color::WHITE
                     ),
-                    song_meta_text(t.plays.as_deref(), t.duration_secs),
+                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
                     heart,
                     more,
                 ]

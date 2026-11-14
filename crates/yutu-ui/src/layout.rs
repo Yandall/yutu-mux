@@ -288,6 +288,16 @@ pub(crate) fn fmt_time(secs: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
+/// Song length for list rows: blank when unknown (0), never a fake
+/// "0:00" (several YouTube sources carry no duration).
+pub(crate) fn fmt_len(secs: u32) -> String {
+    if secs == 0 {
+        String::new()
+    } else {
+        fmt_time(secs as f64)
+    }
+}
+
 /// Play count plus duration for song rows ("213M plays · 3:45",
 /// muted): raw All results carry no durations, so a zero one never
 /// appends "· 0:00" (bare count instead). Blank count renders the
