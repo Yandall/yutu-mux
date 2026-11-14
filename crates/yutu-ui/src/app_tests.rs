@@ -7842,6 +7842,13 @@ fn search_fields_grow_while_focused() {
     // Focus grows it to full width; blur collapses it again.
     let _ = s.update(Message::SearchFocused(true));
     assert!(s.animating());
+    // Fixed clock, independent of the Settings speed: one tick moves
+    // exactly tick/duration, and the eased width starts gently.
+    s.anim_ms = ANIM_MAX_MS;
+    let _ = s.update(Message::Animate);
+    assert!((s.search_expand - ANIM_TICK_MS as f32 / SEARCH_ANIM_MS).abs() < 1e-4);
+    let (_, first) = s.search_pill_geom();
+    assert!(first > rest && first - rest < (full - rest) * s.search_expand);
     settle(&mut s);
     let (_, open) = s.search_pill_geom();
     assert!((open - full).abs() < 0.5);

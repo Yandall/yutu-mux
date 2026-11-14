@@ -1584,7 +1584,7 @@ impl AppState {
         let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
             + PL_SEARCH_CHROME)
             .min(PL_SEARCH_EXPANDED_W);
-        collapsed + (PL_SEARCH_EXPANDED_W - collapsed) * self.pl_search_expand
+        collapsed + (PL_SEARCH_EXPANDED_W - collapsed) * ease_in_out(self.pl_search_expand)
     }
 
     pub(crate) fn search_pill_geom(&self) -> (f32, f32) {
@@ -1606,7 +1606,7 @@ impl AppState {
         // placeholder), grows to full while focused (eased).
         let collapsed =
             (text_line_width(self.language.search_placeholder()) + SEARCH_PILL_CHROME).min(full);
-        let w = collapsed + (full - collapsed) * self.search_expand;
+        let w = collapsed + (full - collapsed) * ease_in_out(self.search_expand);
         let left = self.search_pill_left().clamp(0.0, ww.max(0.0));
         (left, w.min(ww).max(0.0))
     }

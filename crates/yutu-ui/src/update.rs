@@ -2034,12 +2034,15 @@ impl AppState {
                     self.right_w = ease_toward(self.right_w, self.right_target(), right_step);
                     let target = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drawer_anim = ease_toward(self.drawer_anim, target, unit_step);
+                    // Search fields run on their own fixed clock (the
+                    // eased curve is applied at render time).
+                    let search_step = ANIM_TICK_MS as f32 / SEARCH_ANIM_MS;
                     self.search_expand =
-                        ease_toward(self.search_expand, self.search_expand_target(), unit_step);
+                        ease_toward(self.search_expand, self.search_expand_target(), search_step);
                     self.pl_search_expand = ease_toward(
                         self.pl_search_expand,
                         self.pl_search_expand_target(),
-                        unit_step,
+                        search_step,
                     );
                     self.modal_anim = ease_toward(self.modal_anim, self.modal_target(), unit_step);
                     self.drag_gap = ease_toward(self.drag_gap, self.drag_gap_target(), unit_step);

@@ -287,6 +287,22 @@ pub(crate) const SEARCH_PILL_CHROME: f32 = 8.0 + 4.0 + 14.0 + 20.0 + 12.0 + 1.0 
 /// Playlist input chrome: padding (2 x 10), border, breathing room.
 pub(crate) const PL_SEARCH_CHROME: f32 = 20.0 + 2.0 + 16.0;
 
+/// Search field grow/shrink duration: fixed (not the Settings speed,
+/// which is tuned for sidebar travel and reads as a jump on a field),
+/// still instant when animations are off.
+pub(crate) const SEARCH_ANIM_MS: f32 = 220.0;
+
+/// Cubic ease-in-out on 0..1 (search field widths): gentle start and
+/// landing, symmetric so a mid-flight reversal never jumps.
+pub(crate) fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
 /// Ease `current` toward `target` by `step` (frame tick for drawer and
 /// sidebar transitions). Snaps when closer than one step.
 pub(crate) fn ease_toward(current: f32, target: f32, step: f32) -> f32 {
