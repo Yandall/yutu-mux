@@ -42,6 +42,7 @@ pub(crate) fn window_settings() -> iced::window::Settings {
     {
         iced::window::Settings {
             icon,
+            min_size: Some(iced::Size::new(MIN_WINDOW_W, MIN_WINDOW_H)),
             platform_specific: iced::window::settings::PlatformSpecific {
                 application_id: "yutu-mux".into(),
                 ..Default::default()
@@ -53,6 +54,7 @@ pub(crate) fn window_settings() -> iced::window::Settings {
     {
         iced::window::Settings {
             icon,
+            min_size: Some(iced::Size::new(MIN_WINDOW_W, MIN_WINDOW_H)),
             ..Default::default()
         }
     }

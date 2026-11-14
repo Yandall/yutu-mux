@@ -127,19 +127,42 @@ impl AppState {
         .into()
     }
 
-    pub(crate) fn sidebar_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, mouse_area, row, text, text_input};
+    /// Library panel drawn at width `w`: the icon rail below 150px,
+    /// the full panel above. A Narrow drawer always draws the full
+    /// panel at its final width and reveals it through a clip while
+    /// it glides, so the content never reflows mid-animation.
+    pub(crate) fn sidebar_view_at(&self, w: f32) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container};
         use iced::Fill;
-        let pin_btn: iced::Element<'_, Message> = button(btn_icon(
-            "panel-left",
-            16.0,
-            if self.sidebar_pinned { ACCENT } else { MUTED },
-        ))
-        .style(hover_row)
-        .on_press(Message::ToggleSidebarPin)
-        .padding(8)
-        .into();
-        if self.sidebar_w < 150.0 {
+        let mode = self.layout();
+        let drawer = mode == LayoutMode::Narrow;
+        // Pin only where it means something (push modes); the Narrow
+        // drawer gets a close button instead.
+        let pin_btn: iced::Element<'_, Message> = match mode {
+            LayoutMode::Narrow => button(btn_icon("x", 16.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::CloseDrawers)
+                .padding(8)
+                .into(),
+            LayoutMode::Medium => iced::widget::Space::new().into(),
+            _ => button(btn_icon(
+                "panel-left",
+                16.0,
+                if self.sidebar_pinned { ACCENT } else { MUTED },
+            ))
+            .style(hover_row)
+            .on_press(Message::ToggleSidebarPin)
+            .padding(8)
+            .into(),
+        };
+        if drawer {
+            return container(self.sidebar_full(self.sidebar_full_w(), pin_btn))
+                .width(iced::Length::Fixed(w))
+                .height(Fill)
+                .clip(true)
+                .into();
+        }
+        if w < 150.0 {
             return container(
                 column![
                     button(btn_icon("house", 18.0, iced::Color::WHITE))
@@ -159,10 +182,22 @@ impl AppState {
             )
             .style(sidebar_bg)
             .padding(8)
-            .width(iced::Length::Fixed(self.sidebar_w))
+            .width(iced::Length::Fixed(w))
             .height(Fill)
             .into();
         }
+        self.sidebar_full(w, pin_btn)
+    }
+
+    /// Full library panel (logo, nav, playlist filter and list, new
+    /// playlist row) at width `w`.
+    fn sidebar_full<'a>(
+        &'a self,
+        w: f32,
+        pin_btn: iced::Element<'a, Message>,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{button, column, container, mouse_area, row, text, text_input};
+        use iced::Fill;
         let q = self.sidebar_filter.to_lowercase();
         let new_name = self.new_playlist_name.clone();
         let rows: Vec<iced::Element<'_, Message>> = self
@@ -293,6 +328,24 @@ impl AppState {
                     .padding(8)
                     .width(Fill),
                 ]
+                .push(
+                    // The Narrow header has no room for the gear:
+                    // Settings lives in the library drawer instead.
+                    (self.layout() == LayoutMode::Narrow).then(|| {
+                        button(
+                            row![
+                                btn_icon("settings", 14.0, iced::Color::WHITE),
+                                btn_text(self.language.settings_title(), 14),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center),
+                        )
+                        .style(nav_style(self.is_nav(&Route::Settings)))
+                        .on_press(Message::Navigate(Route::Settings))
+                        .padding(8)
+                        .width(Fill)
+                    }),
+                )
                 .spacing(2),
                 text_input(
                     self.language.sidebar_filter_placeholder(),
@@ -324,7 +377,7 @@ impl AppState {
         )
         .style(sidebar_bg)
         .padding(12)
-        .width(iced::Length::Fixed(self.sidebar_w))
+        .width(iced::Length::Fixed(w))
         .height(Fill)
         .into()
     }
@@ -443,6 +496,60 @@ impl AppState {
         .into()
     }
 
+    /// Main area with the floating side panels stacked above the slot
+    /// row (Medium hover expand, Narrow drawers). The layers cover only
+    /// the main area, so the player bar below stays usable. A floating
+    /// panel swallows the pointer over its own bounds (never leaking
+    /// hover or clicks to the rows underneath); a Narrow drawer also
+    /// dims the content behind a scrim that closes it on click.
+    pub(crate) fn with_panel_overlays<'a>(
+        &'a self,
+        row_layer: iced::Element<'a, Message>,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{container, mouse_area, row, Space, Stack};
+        use iced::Fill;
+        let left = self.sidebar_overlay_w();
+        let right = self.right_overlay_w();
+        if left.is_none() && right.is_none() {
+            return row_layer;
+        }
+        let mut layers: Vec<iced::Element<'a, Message>> = vec![row_layer];
+        if self.layout() == LayoutMode::Narrow {
+            layers.push(
+                mouse_area(
+                    container(Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(modal_dim),
+                )
+                .on_press(Message::CloseDrawers)
+                .on_right_press(Message::CloseDrawers)
+                .interaction(iced::mouse::Interaction::Idle)
+                .into(),
+            );
+        }
+        let float = |panel: iced::Element<'a, Message>| -> iced::Element<'a, Message> {
+            mouse_area(container(panel).style(floating_panel_bg).height(Fill))
+                .interaction(iced::mouse::Interaction::Idle)
+                .into()
+        };
+        if let Some(w) = left {
+            layers.push(
+                row![float(self.sidebar_view_at(w)), Space::new().width(Fill)]
+                    .height(Fill)
+                    .into(),
+            );
+        }
+        if let Some(w) = right {
+            layers.push(
+                row![Space::new().width(Fill), float(self.right_panel_view_at(w))]
+                    .height(Fill)
+                    .into(),
+            );
+        }
+        Stack::with_children(layers).width(Fill).height(Fill).into()
+    }
+
     /// Floating held row while live-dragging (YouTube-style): the dragged
     /// song as art + text on the elevated card, gliding per-pixel at the
     /// cursor (Space-offset idiom shared with the context menu, grab offset
@@ -499,16 +606,17 @@ impl AppState {
                 let p = self.find_playlist(&pid)?;
                 let ordered = self.playlist_ordered_tracks(&p);
                 let t = ordered.get(drag.from)?.clone();
-                let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-                let gw = (ww - self.sidebar_w - self.right_w - 64.0).clamp(240.0, 760.0);
+                let gw = (self.center_width() - 32.0).clamp(240.0, 760.0);
                 let press_x = self.pl_press_snap.as_ref().and_then(|s| s.pos.map(|p| p.x));
+                let slot = self.sidebar_slot_w();
+                let left = WINDOW_PAD_X / 2.0 + slot + if slot > 0.0 { PANEL_GAP } else { 0.0 };
                 let (gx, gy) = drag_ghost_pos(
                     self.cursor,
                     self.window,
                     gw,
                     TRACK_ROW_H,
                     press_x,
-                    self.sidebar_w + 24.0,
+                    left + 8.0,
                 )?;
                 let ghost: iced::Element<'_, Message> = container(
                     row![
@@ -549,7 +657,22 @@ impl AppState {
         )
     }
 
-    pub(crate) fn right_panel_view(&self) -> iced::Element<'_, Message> {
+    /// Queue panel drawn at width `w` (thumbnail rail below 140px).
+    /// The Narrow drawer draws the full panel at its final width and
+    /// reveals it through a clip, like the library drawer.
+    pub(crate) fn right_panel_view_at(&self, w: f32) -> iced::Element<'_, Message> {
+        let mode = self.layout();
+        if mode == LayoutMode::Narrow {
+            return iced::widget::container(self.right_panel_inner(self.right_full_w()))
+                .width(iced::Length::Fixed(w))
+                .height(iced::Fill)
+                .clip(true)
+                .into();
+        }
+        self.right_panel_inner(w)
+    }
+
+    fn right_panel_inner(&self, w: f32) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, scrollable, text};
         use iced::Fill;
         let current = self.queue.current().cloned();
@@ -737,16 +860,26 @@ impl AppState {
             );
             column(parts).spacing(4).into()
         };
-        let pin_btn: iced::Element<'_, Message> = button(btn_icon(
-            "panel-right",
-            16.0,
-            if self.right_pinned { ACCENT } else { MUTED },
-        ))
-        .style(hover_row)
-        .on_press(Message::ToggleRightPin)
-        .padding(6)
-        .into();
-        if self.right_w < 140.0 {
+        let pin_btn: iced::Element<'_, Message> = match self.layout() {
+            LayoutMode::Narrow => button(btn_icon("x", 16.0, MUTED))
+                .style(hover_row)
+                .on_press(Message::CloseDrawers)
+                .padding(6)
+                .into(),
+            LayoutMode::Medium => container(icon("list-music", 16.0, ACCENT))
+                .padding(6)
+                .into(),
+            _ => button(btn_icon(
+                "panel-right",
+                16.0,
+                if self.right_pinned { ACCENT } else { MUTED },
+            ))
+            .style(hover_row)
+            .on_press(Message::ToggleRightPin)
+            .padding(6)
+            .into(),
+        };
+        if w < 140.0 && self.layout() != LayoutMode::Narrow {
             // Collapsed rail fills the available height: a queue window
             // anchored on the live song plus autoplay with what is left.
             // Same jump targets as the expanded rows.
@@ -804,14 +937,14 @@ impl AppState {
             )
             .style(sidebar_bg)
             .padding(8)
-            .width(iced::Length::Fixed(self.right_w))
+            .width(iced::Length::Fixed(w))
             .height(Fill)
             .into();
         }
         container(column![row![pin_btn, queue_title].spacing(4), now, list,].spacing(8))
             .style(sidebar_bg)
             .padding(12)
-            .width(iced::Length::Fixed(self.right_w))
+            .width(iced::Length::Fixed(w))
             .height(Fill)
             .into()
     }
@@ -1204,10 +1337,9 @@ impl AppState {
         if cached.synced.is_empty() || cached.instrumental {
             return None;
         }
-        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let wh = self.window.map(|s| s.height).unwrap_or(800.0);
         // Same width formula as the drawer lyrics column.
-        let col_w = (ww - self.sidebar_w - self.right_w - 96.0).clamp(280.0, 560.0);
+        let col_w = self.lyrics_col_w();
         // Window minus header/player chrome (approximate: only shifts
         // the center, never loses the verse).
         let viewport = (wh - LYRIC_VIEWPORT_PAD).max(320.0);
@@ -1523,13 +1655,8 @@ impl AppState {
                         .align_x(iced::alignment::Horizontal::Center),
                     // Narrow centered lyrics column that never overflows
                     // the available center space (window minus sidebars).
-                    container(self.lyrics_content(&t.id)).width(iced::Length::Fixed(
-                        (self.window.map(|s| s.width).unwrap_or(1280.0)
-                            - self.sidebar_w
-                            - self.right_w
-                            - 96.0)
-                            .clamp(280.0, 560.0),
-                    )),
+                    container(self.lyrics_content(&t.id))
+                        .width(iced::Length::Fixed(self.lyrics_col_w())),
                 ]
                 .spacing(16)
                 .width(Fill)
@@ -1570,9 +1697,45 @@ impl AppState {
             .unwrap_or(560.0)
     }
 
-    /// Pill left edge in window coords (base pad + sidebar + gaps + navs).
+    /// Back/forward arrows show only when the center has room for
+    /// them next to a usable search field (mouse buttons and the
+    /// keyboard still navigate without them).
+    pub(crate) fn header_nav_arrows(&self) -> bool {
+        self.center_width() >= HEADER_ARROWS_MIN_CENTER
+    }
+
+    /// Header items left of the search pill (each plus its 4px gap):
+    /// the Narrow menu button, then the nav arrows.
+    pub(crate) fn header_lead_w(&self) -> f32 {
+        let menu = if self.layout() == LayoutMode::Narrow {
+            Self::NAV_BTN_W + 4.0
+        } else {
+            0.0
+        };
+        let arrows = if self.header_nav_arrows() {
+            2.0 * (Self::NAV_BTN_W + 4.0)
+        } else {
+            0.0
+        };
+        menu + arrows
+    }
+
+    /// Header items right of the pill: the Narrow queue button or the
+    /// settings gear (plus the gap before it).
+    pub(crate) fn header_trail_w(&self) -> f32 {
+        if self.layout() == LayoutMode::Narrow {
+            Self::NAV_BTN_W + 4.0
+        } else {
+            Self::SETTINGS_W + 4.0
+        }
+    }
+
+    /// Pill left edge in window coords (base pad + left slot + gap +
+    /// leading header buttons).
     pub(crate) fn search_pill_left(&self) -> f32 {
-        8.0 + self.sidebar_w + 8.0 + Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0
+        let slot = self.sidebar_slot_w();
+        let gap = if slot > 0.0 { PANEL_GAP } else { 0.0 };
+        WINDOW_PAD_X / 2.0 + slot + gap + self.header_lead_w()
     }
 
     /// Pill geometry shared by the header pill, the suggest popup and
@@ -1582,14 +1745,16 @@ impl AppState {
     /// pill target, shrunk to the room the header center leaves.
     pub(crate) fn search_full_width(&self) -> f32 {
         let search_w = self.search_width();
-        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-        let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
-        let gaps = if self.right_target() != 0.0 {
-            16.0
+        let ww = self.window_w();
+        // Push modes size against the right panel's target, not its
+        // animated width, so the pill never jitters while it glides.
+        let right_glide = if self.layout().panels_overlay() {
+            0.0
         } else {
-            8.0
+            self.right_target() - self.right_slot_w()
         };
-        let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
+        let chrome = self.header_lead_w() + self.header_trail_w();
+        let center_avail = self.center_width() - right_glide - chrome - 16.0;
         let full = if center_avail < search_w {
             center_avail.max(140.0)
         } else {
@@ -1703,11 +1868,44 @@ impl AppState {
                 .padding(6)
                 .into();
         // Fixed pill always (shared geometry with the popup): Fill
-        // space docks the gear to the header right edge.
-        let mut h = iced::widget::Row::with_children(vec![back_btn, fwd_btn, pill]);
+        // space docks the gear to the header right edge. Narrow swaps
+        // the gear for the queue drawer button (Settings moves into the
+        // library drawer) and leads with the library menu button. The
+        // items here must match `header_lead_w` / `header_trail_w`.
+        let narrow = self.layout() == LayoutMode::Narrow;
+        let mut h = iced::widget::Row::new();
+        if narrow {
+            h = h.push(
+                button(btn_icon("menu", 18.0, iced::Color::WHITE))
+                    .style(nav_arrow)
+                    .on_press(Message::ToggleLibraryDrawer)
+                    .padding(12),
+            );
+        }
+        if self.header_nav_arrows() {
+            h = h.push(back_btn).push(fwd_btn);
+        }
+        h = h.push(pill);
         let spacer: iced::Element<'_, Message> = iced::widget::Space::new().width(Fill).into();
         h = h.push(spacer);
-        h = h.push(gear);
+        if narrow {
+            h = h.push(
+                button(btn_icon(
+                    "list-music",
+                    18.0,
+                    if self.right_latched {
+                        ACCENT
+                    } else {
+                        iced::Color::WHITE
+                    },
+                ))
+                .style(nav_arrow)
+                .on_press(Message::ToggleQueueDrawer)
+                .padding(12),
+            );
+        } else {
+            h = h.push(gear);
+        }
         h.spacing(4)
             .align_y(iced::alignment::Vertical::Center)
             .into()
@@ -2275,9 +2473,7 @@ impl AppState {
                 // the on/off state). Rows flow like flex-wrap: greedy
                 // fill per row, so short presets join the first row even
                 // when the full strip cannot fit.
-                let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
-                let body_w =
-                    (win_w - self.sidebar_w - self.right_w - 32.0).min(CENTER_MAX_W) - 40.0;
+                let body_w = self.content_width();
                 let eq_body_w = body_w.min(SETTINGS_INPUT_W);
                 let eq_group: iced::Element<'_, Message> = container(
                     iced::widget::Column::with_children(
@@ -3085,9 +3281,24 @@ impl AppState {
         };
         let center: iced::Element<'_, Message> =
             container(center_body).width(Fill).height(Fill).into();
-        // The collapsed rail always reserves its strip, even when empty.
-        let main_children = vec![self.sidebar_view(), center, self.right_panel_view()];
-        let main = Row::with_children(main_children).spacing(8).height(Fill);
+        // Panel slots: push modes reserve the animated panel (the
+        // collapsed rail always keeps its strip, even when empty),
+        // Medium reserves the rail and floats the expanded panel above,
+        // Narrow reserves nothing (drawers only).
+        let mut main_children: Vec<iced::Element<'_, Message>> = Vec::with_capacity(3);
+        let left_slot = self.sidebar_slot_w();
+        if left_slot > 0.0 {
+            main_children.push(self.sidebar_view_at(left_slot));
+        }
+        main_children.push(center);
+        let right_slot = self.right_slot_w();
+        if right_slot > 0.0 {
+            main_children.push(self.right_panel_view_at(right_slot));
+        }
+        let row_layer = Row::with_children(main_children)
+            .spacing(PANEL_GAP)
+            .height(Fill);
+        let main = self.with_panel_overlays(row_layer.into());
         // Import banner first (in-flow, pushes content down): `None`
         // when idle, so the layout is untouched outside imports.
         #[cfg(feature = "innertube")]
@@ -3098,7 +3309,7 @@ impl AppState {
         if let Some(banner) = banner {
             base_children.push(banner);
         }
-        base_children.push(main.into());
+        base_children.push(main);
         base_children.push(self.player_view());
         let base: iced::Element<'_, Message> = container(
             iced::widget::Column::with_children(base_children)

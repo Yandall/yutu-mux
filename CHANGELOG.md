@@ -14,6 +14,8 @@
   playlist from that song on (#105).
 - The top search bar and playlist search start compact and grow when
   you click into them (#105).
+- Narrow windows (under 800px) open the library and queue as drawers
+  from new header buttons, and Settings moves into the library drawer.
 
 ### Changed
 
@@ -24,6 +26,10 @@
 - Radio buttons are now Start mix, matching the Play/Shuffle size (#100).
 - The Search tab and the / key focus the top search bar and select its
   text, so typing replaces the old query (#106).
+- Medium windows (800 to 1100px) show the library and queue as slim
+  rails that expand over the content on hover.
+- The back and forward arrows hide when the window is too narrow.
+- The window can no longer be shrunk below 360 x 480.
 
 ### Fixed
 

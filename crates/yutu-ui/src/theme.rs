@@ -63,6 +63,21 @@ pub(crate) fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Floating side panel (Medium hover expand, Narrow drawer): the panel
+/// surface plus a soft shadow so it reads as above the content.
+pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Color(SIDEBAR_BG)),
+        border: iced::Border::default().rounded(12),
+        shadow: iced::Shadow {
+            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6),
+            offset: iced::Vector::new(0.0, 0.0),
+            blur_radius: 28.0,
+        },
+        ..Default::default()
+    }
+}
+
 /// Collapsed rail thumb wrapper: red border for the live song, transparent
 /// same-size border otherwise so the pitch never shifts on highlight.
 pub(crate) fn rail_thumb_bg(

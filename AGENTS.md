@@ -112,6 +112,15 @@
   only failures surface (human labels, never provider internals), in
   dev builds just like release. In-app error panel, cache census, and
   FPS meter are flag-only UI too (stderr/log file always).
+- **Layout modes** (`layout_mode`, window width): Narrow < 800 <
+  Medium < 1100 <= Normal < 1600 <= Wide. Narrow: no rails, library
+  and queue are drawers (header menu/queue buttons, scrim, Esc and
+  navigation close them), Settings lives in the library drawer.
+  Medium: both panels are rails that hover-expand **over** the
+  content (pins ignored, restored when wide again). Normal/Wide push
+  the content like before. All center geometry goes through
+  `center_width()` / `content_width()`: never re-derive it from
+  `sidebar_w` / `right_w`. Minimum window 360 x 480.
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -190,6 +199,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy -p yutu-ui --all-targets --no-default-features -- -D warnings
 cargo test --workspace
 cargo test -p yutu-ui --no-default-features
+# headless layout screenshots at every width (no display needed),
+# written to target/layout-snapshots (YUTU_SNAPSHOT_ONLY=home,queue):
+cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 # live (needs network + yt-dlp): YUTU_YTDLP_BIN=/path/to/yt-dlp cargo test -p yutu-ui --lib -- --ignored
 ```
 
@@ -275,7 +287,8 @@ cargo test -p yutu-ui --no-default-features
 
 ## 10. Known judgment calls / quirks (don't "fix" blindly)
 
-- Unpinned sidebars shift layout instead of overlaying.
+- Unpinned sidebars shift layout instead of overlaying in Normal and
+  Wide; Medium and Narrow overlay on purpose (no room to shift).
 - Shuffle with current-last visibly does little (tail already ordered).
 - Widget seek-while-paused applies silently until resume.
 - Repeat All/One starves autoplay by design.

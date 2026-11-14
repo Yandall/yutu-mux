@@ -53,5 +53,7 @@ update = ["yutu-core/update"]
 debug-panel = []
 
 [dev-dependencies]
+# Headless renderer for the `layout_snapshots` screenshot test.
+iced_test = "0.14"
 tokio = { version = "1", features = ["rt", "macros"] }
 yutu-core = { path = "../yutu-core", features = ["test-fixtures"] }
