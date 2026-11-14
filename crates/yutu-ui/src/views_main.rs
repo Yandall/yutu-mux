@@ -977,19 +977,19 @@ impl AppState {
                 }
                 None => text("").size(1).into(),
             };
-            let drawer_btn: iced::Element<'_, Message> = button(ctrl_box(btn_icon(
-                if self.drawer_open {
-                    "chevron-down"
-                } else {
-                    "chevron-up"
-                },
-                14.0,
-                iced::Color::WHITE,
-            )))
-            .style(hover_row)
-            .on_press(Message::ToggleDrawer)
-            .padding(7)
-            .into();
+            let drawer_btn: iced::Element<'_, Message> = if self.drawer_open {
+                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+                    .style(accent_button)
+                    .on_press(Message::ToggleDrawer)
+                    .padding(7)
+                    .into()
+            } else {
+                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                    .style(hover_row)
+                    .on_press(Message::ToggleDrawer)
+                    .padding(7)
+                    .into()
+            };
             let info = row![
                 info_art,
                 column![
@@ -1172,18 +1172,19 @@ impl AppState {
                             tooltip::Position::Top,
                         )
                         .gap(8),
-                        button(ctrl_box(btn_icon(
+                        {
                             if self.drawer_open {
-                                "chevron-down"
+                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+                                    .style(accent_button)
+                                    .on_press(Message::ToggleDrawer)
+                                    .padding(7)
                             } else {
-                                "chevron-up"
-                            },
-                            14.0,
-                            iced::Color::WHITE
-                        )))
-                        .style(hover_row)
-                        .on_press(Message::ToggleDrawer)
-                        .padding(7),
+                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                                    .style(hover_row)
+                                    .on_press(Message::ToggleDrawer)
+                                    .padding(7)
+                            }
+                        },
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center)
