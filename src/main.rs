@@ -83,6 +83,9 @@ fn main() -> iced::Result {
     spawn_mpris(Arc::clone(&state));
     #[cfg(target_os = "windows")]
     yutu_desktop::windows::spawn_media_integration(Arc::clone(&state));
+    // Block idle system sleep while music plays (the screen may still
+    // turn off): suspend would otherwise cut the song mid-play.
+    yutu_desktop::sleep_guard::spawn_sleep_guard(Arc::clone(&state));
     // Windows: pin the GPU backend to DX12 unless the user chose one.
     // wgpu's default backend probe hangs on machines with a broken
     // Vulkan/GL stack (no window ever appears, no error either); DX12 is
