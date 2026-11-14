@@ -2,6 +2,7 @@
 //! SMTC on Windows).
 //!
 //! * [`mpris`] : Linux MPRIS2 D-Bus service skeleton (`zbus`-based).
+//! * [`sleep_guard`] : blocks idle system sleep while music plays.
 //! * [`tray`] : toolkit-free tray state model feeding a future tray backend.
 //! * [`media`] : shared souvlaki driver behind the macOS/Windows shims.
 //! * [`macos`] : macOS Now Playing + media keys driver (souvlaki).
@@ -17,6 +18,7 @@ pub mod media;
 pub mod mpris;
 #[cfg(test)]
 mod mpris_tests;
+pub mod sleep_guard;
 pub mod tray;
 pub mod windows;
 

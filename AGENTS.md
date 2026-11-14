@@ -216,8 +216,6 @@ cargo test -p yutu-ui --no-default-features
 - **Parallelize with subagents**: fan out independent workstreams to
   background subagents (read-only specs or isolated tasks), integrate
   sequentially when they share files (especially the single-file UI).
-  Then run adversarial reviewer agents over the final diff before
-  pushing; fix every med+ finding, cheap lows too.
 - **Changelog on every change (hard rule)**: every user-visible change
   (feature, fix, behavior change, removal) adds a line to `CHANGELOG.md`
   under the `## Unreleased` section at the top, in the **same commit/PR**
@@ -232,7 +230,7 @@ cargo test -p yutu-ui --no-default-features
 - Only committer. New features go on a branch per feature
   (`feat/<name>`, `fix/<name>`), pushed for review as a PR; merge to
   `main` only once the feature is complete (3-config clippy + fmt +
-  workspace tests green, adversarial review med+ findings fixed).
+  workspace tests green).
   NEVER merge a PR (via gh or otherwise) unless the user explicitly
   asked for that merge: the user tests every feature on their machine
   before it lands on `main`. Opening the PR is fine; merging is not.
