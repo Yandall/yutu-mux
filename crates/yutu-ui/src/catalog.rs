@@ -214,6 +214,10 @@ impl AppState {
                     full.plays = t.plays.clone();
                     healed = true;
                 }
+                if full.duration_secs == 0 && t.duration_secs > 0 {
+                    full.duration_secs = t.duration_secs;
+                    healed = true;
+                }
                 if healed {
                     self.catalog.insert(full.id.clone(), full.clone());
                 }
@@ -230,11 +234,34 @@ impl AppState {
     /// Also upserts into the SQLite track cache so restarts rebuild the
     /// catalog (Favorites/history) with no search-first step.
     pub(crate) fn register_tracks(&mut self, tracks: Vec<Track>) -> Vec<Track> {
-        for t in &tracks {
-            self.catalog.insert(t.id.clone(), t.clone());
-        }
+        let tracks = self.register_tracks_mem(tracks);
         self.cache_tracks(&tracks);
         tracks
+    }
+
+    /// Known length for a row: its own, else the catalog's (stored
+    /// playlist/history rows and duration-less search rows keep the
+    /// copy they were saved with; the catalog learns lengths later,
+    /// e.g. from playback). 0 means unknown.
+    pub(crate) fn track_secs(&self, t: &Track) -> u32 {
+        if t.duration_secs > 0 {
+            return t.duration_secs;
+        }
+        self.catalog.get(&t.id).map_or(0, |c| c.duration_secs)
+    }
+
+    /// Record a length the backend reported for a playing track whose
+    /// metadata had none (videos and flat search rows carry no
+    /// duration): fixes every row showing it, now and after restart.
+    /// No-op when the catalog already knows a length.
+    pub(crate) fn learn_duration(&mut self, track: &Track, secs: f64) {
+        if !secs.is_finite() || secs < 1.0 || self.track_secs(track) > 0 {
+            return;
+        }
+        let mut learned = self.find_track(&track.id).unwrap_or_else(|| track.clone());
+        learned.duration_secs = secs.round() as u32;
+        self.catalog.insert(learned.id.clone(), learned.clone());
+        self.cache_tracks_background(vec![learned]);
     }
 
     /// Stale search completion (the user typed on): keep the rows in
@@ -612,11 +639,22 @@ impl AppState {
 
     /// Memory-only track registration (no SQLite): the import and
     /// search paths persist separately, off the GUI thread.
+    /// A row without a length (flat search items, top hits, artist
+    /// top songs) never erases one the catalog already knows; the
+    /// returned rows carry the kept length too.
     pub(crate) fn register_tracks_mem(&mut self, tracks: Vec<Track>) -> Vec<Track> {
-        for t in &tracks {
-            self.catalog.insert(t.id.clone(), t.clone());
-        }
         tracks
+            .into_iter()
+            .map(|mut t| {
+                if t.duration_secs == 0 {
+                    if let Some(known) = self.catalog.get(&t.id) {
+                        t.duration_secs = known.duration_secs;
+                    }
+                }
+                self.catalog.insert(t.id.clone(), t.clone());
+                t
+            })
+            .collect()
     }
 
     /// SQLite half of an import merge (runs inside background tasks, not

@@ -43,7 +43,7 @@ impl AppState {
         let fallback = self
             .queue
             .current()
-            .map(|t| t.duration_secs as f64)
+            .map(|t| self.track_secs(t) as f64)
             .unwrap_or(0.0);
         self.audio
             .as_ref()
@@ -286,7 +286,7 @@ impl AppState {
                     text(format!("{n}")).size(13).color(MUTED).width(28),
                     self.art_play_button(t, hovered, play_msg),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    song_meta_text(t.plays.as_deref(), t.duration_secs),
+                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
                     heart,
                     more,
                 ]

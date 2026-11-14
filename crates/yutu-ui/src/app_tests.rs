@@ -9300,3 +9300,60 @@ fn tick_skips_home_shelf_ranking_until_inputs_change() {
     assert_ne!(k2, key.0);
     assert_eq!(k2, s.home_shelves_fingerprint());
 }
+
+#[test]
+fn durationless_rows_never_erase_a_known_length() {
+    let mut s = test_state();
+    let _ = s.register_tracks(vec![mk_track("len-1", "Song", "A")]);
+    let mut flat = mk_track("len-1", "Song", "A");
+    flat.duration_secs = 0;
+    let out = s.register_tracks_mem(vec![flat]);
+    assert_eq!(out[0].duration_secs, 200);
+    assert_eq!(s.find_track("len-1").unwrap().duration_secs, 200);
+}
+
+#[test]
+fn stored_rows_borrow_the_catalog_length_and_unknown_is_blank() {
+    let mut s = test_state();
+    let _ = s.register_tracks(vec![mk_track("len-2", "Song", "A")]);
+    // A playlist/history row saved before the length was known.
+    let mut stored = mk_track("len-2", "Song", "A");
+    stored.duration_secs = 0;
+    assert_eq!(s.track_secs(&stored), 200);
+    let mut unknown = mk_track("len-none", "Video", "B");
+    unknown.duration_secs = 0;
+    assert_eq!(s.track_secs(&unknown), 0);
+    assert_eq!(fmt_len(0), "");
+    assert_eq!(fmt_len(301), "5:01");
+}
+
+#[test]
+fn playback_teaches_a_missing_length_once() {
+    let mut s = test_state();
+    let mut video = mk_track("len-3", "Video", "B");
+    video.duration_secs = 0;
+    let _ = s.register_tracks(vec![video.clone()]);
+    s.learn_duration(&video, 143.4);
+    assert_eq!(s.find_track("len-3").unwrap().duration_secs, 143);
+    assert_eq!(s.track_secs(&video), 143);
+    // A known length is never overwritten by a later backend report.
+    s.learn_duration(&video, 999.0);
+    assert_eq!(s.find_track("len-3").unwrap().duration_secs, 143);
+    // Persisted for the next launch (background write).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let store = LibraryStore::open(&s.library_path).unwrap();
+        if store
+            .cached_track("len-3")
+            .unwrap()
+            .is_some_and(|t| t.duration_secs == 143)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "learned length never persisted"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}

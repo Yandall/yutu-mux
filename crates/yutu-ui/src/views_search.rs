@@ -72,7 +72,7 @@ impl AppState {
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    song_meta_text(t.plays.as_deref(), t.duration_secs),
+                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
                     button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                         .style(hover_row)
                         .on_press(Message::Like(t.id.clone()))
@@ -144,7 +144,7 @@ impl AppState {
                     .on_press(play_here_text)
                     .padding(3)
                     .width(Fill),
-                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
                     button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                         .style(hover_row)
                         .on_press(Message::Like(t.id.clone()))
@@ -239,7 +239,7 @@ impl AppState {
                     ))
                     .padding(3)
                     .width(Fill),
-                    text(fmt_time(t.duration_secs as f64)).size(12).color(MUTED),
+                    text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
                     heart_cell,
                     more_cell,
                 ]
@@ -315,10 +315,7 @@ impl AppState {
         let play_id = t.id.clone();
         let menu_id = t.id.clone();
         let plays = t.plays.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let meta = match plays {
-            Some(p) => format!("{p} · {}", fmt_time(t.duration_secs as f64)),
-            None => fmt_time(t.duration_secs as f64),
-        };
+        let meta = song_meta(plays, self.track_secs(t));
         mouse_area(
             container(
                 row_button(
@@ -689,7 +686,7 @@ impl AppState {
                         14,
                         iced::Color::WHITE
                     ),
-                    song_meta_text(t.plays.as_deref(), t.duration_secs),
+                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
                     heart,
                     more,
                 ]

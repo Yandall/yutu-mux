@@ -3579,6 +3579,14 @@ impl AppState {
                     self.heard_audio = true;
                     self.stream_opened_at = None;
                 }
+                // Length learning: a playing track whose metadata had no
+                // duration takes the backend's (only once audio is heard
+                // for this load, so a stale previous file never counts).
+                if self.heard_audio && self.loading_track.is_none() && raw_dur > 1.0 {
+                    if let Some(t) = self.queue.current().cloned() {
+                        self.learn_duration(&t, raw_dur);
+                    }
+                }
                 // Stream that never opened (edge refused the URL): mpv
                 // went idle with nothing heard. Drop the dead URL and
                 // take the normal retry/skip path (fresh resolve).
