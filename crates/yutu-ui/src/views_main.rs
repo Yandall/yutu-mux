@@ -163,8 +163,19 @@ impl AppState {
                 .into();
         }
         if w < 150.0 {
+            // Logo header mirrors the full panel's: same 12px top inset,
+            // same 34px row and 10px gap, so the logo and the nav stay
+            // put when the rail expands.
+            let header = container(logo_mark(34.0))
+                .width(Fill)
+                .height(iced::Length::Fixed(34.0))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center);
             return container(
                 column![
+                    header,
+                    // 6 + 2 + 2 column spacing = the full panel's 10px gap.
+                    iced::widget::Space::new().height(iced::Length::Fixed(6.0)),
                     button(btn_icon("house", 18.0, iced::Color::WHITE))
                         .style(nav_style(self.is_nav(&Route::Home)))
                         .on_press(Message::Navigate(Route::Home))
@@ -181,7 +192,10 @@ impl AppState {
                 .spacing(2),
             )
             .style(sidebar_bg)
-            .padding(8)
+            .padding(iced::Padding {
+                top: 12.0,
+                ..iced::Padding::new(8.0)
+            })
             .width(iced::Length::Fixed(w))
             .height(Fill)
             .into();
