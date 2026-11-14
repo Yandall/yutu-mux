@@ -519,9 +519,9 @@ impl AppState {
         use iced::Fill;
         let left = self.sidebar_overlay_w();
         let right = self.right_overlay_w();
-        if left.is_none() && right.is_none() {
-            return row_layer;
-        }
+        // Always a Stack with the row first, even with nothing floating:
+        // switching Row <-> Stack here would rebuild the center and reset
+        // its scroll whenever a rail expands.
         let mut layers: Vec<iced::Element<'a, Message>> = vec![row_layer];
         if self.layout() == LayoutMode::Narrow {
             layers.push(
@@ -1413,7 +1413,13 @@ impl AppState {
         if !self.lyrics_follow {
             // Proximity resume: the user scrolled back near the verse,
             // so follow picks up silently (already centered: no snap).
-            if let Some(y) = self.lyric_follow_y(&id, at) {
+            // Never while parked at the very top: the user scrolled up
+            // to see the cover and title, and early verses sit close
+            // enough to the top that resuming would drag them back down.
+            if let Some(y) = self
+                .lyric_follow_y(&id, at)
+                .filter(|_| self.drawer_scroll > LYRIC_TOP_HOLD_PX)
+            {
                 if (self.drawer_scroll - y).abs() <= LYRIC_RESUME_PX {
                     self.lyrics_follow = true;
                 }
@@ -1834,7 +1840,17 @@ impl AppState {
     /// Playlist search width: placeholder-sized at rest, eased up to
     /// the header pill's expanded width while focused (same max).
     pub(crate) fn pl_search_width(&self) -> f32 {
-        let full = self.search_full_width();
+        // Grows only into the room its action row has left (play,
+        // Shuffle, menu and gaps beside it), so focusing it never
+        // wraps the menu onto a second line.
+        let info_w = if self.hero_stacked() {
+            self.content_width()
+        } else {
+            self.content_width() - PLAYLIST_COVER_PX - 20.0
+        };
+        let shuffle_w = text_line_width(&self.language.shuffle_label()) + 32.0;
+        let room = info_w - 2.0 * PILL_H - shuffle_w - 3.0 * 8.0 - 8.0;
+        let full = self.search_full_width().min(room.max(160.0));
         let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
             + PL_SEARCH_CHROME)
             .min(full);
@@ -3457,7 +3473,12 @@ impl AppState {
                 .width(Fill)
                 .height(Fill)
                 .into()];
-        layers.extend(self.page_backdrop_layer());
+        // Always one slot (empty when there is no glow): a changing layer
+        // count would shift `base` and reset every scroll position in it.
+        layers.push(
+            self.page_backdrop_layer()
+                .unwrap_or_else(|| iced::widget::Space::new().into()),
+        );
         layers.push(base);
         // Floating drag ghost right above the base (modal layers cover it):
         // `None` unless a drag is live with a known cursor.
@@ -4397,18 +4418,12 @@ impl AppState {
         .padding(16)
         .width(Fill)
         .height(Fill);
-        let blur = self
-            .queue
-            .current()
-            .and_then(|t| self.hero_art_for(t))
-            .and_then(|u| self.art_blur.get(&u).cloned());
-        let mut layers: Vec<iced::Element<'_, Message>> = vec![container(Space::new())
-            .style(card_bg)
-            .width(Fill)
-            .height(Fill)
-            .into()];
-        if let Some(handle) = blur {
-            layers.push(
+        let blur = self.queue.current().and_then(|t| self.track_blur(t));
+        // Fixed four slots (surface, glow, veil, content): a changing
+        // layer count would rebuild the content and reset the lyrics
+        // scroll on every song change.
+        let (glow, veil): (iced::Element<'_, Message>, iced::Element<'_, Message>) = match blur {
+            Some(handle) => (
                 image(handle)
                     .content_fit(iced::ContentFit::Cover)
                     .filter_method(image::FilterMethod::Linear)
@@ -4417,16 +4432,24 @@ impl AppState {
                     .width(Fill)
                     .height(Fill)
                     .into(),
-            );
-            layers.push(
                 container(Space::new())
                     .style(np_backdrop_veil)
                     .width(Fill)
                     .height(Fill)
                     .into(),
-            );
-        }
-        layers.push(content.into());
+            ),
+            None => (Space::new().into(), Space::new().into()),
+        };
+        let layers: Vec<iced::Element<'_, Message>> = vec![
+            container(Space::new())
+                .style(card_bg)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+            glow,
+            veil,
+            content.into(),
+        ];
         Stack::with_children(layers).width(Fill).height(Fill).into()
     }
 

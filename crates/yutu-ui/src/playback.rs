@@ -39,6 +39,23 @@ impl AppState {
         Self::hero_art_url(merged)
     }
 
+    /// Decoded glow for a song: its hero cover's, else its row art's.
+    pub(crate) fn track_blur(&self, t: &Track) -> Option<iced::widget::image::Handle> {
+        [self.hero_art_for(t), self.art_url_for(t, 40.0)]
+            .into_iter()
+            .flatten()
+            .find_map(|u| self.art_blur.get(&u).cloned())
+    }
+
+    /// Cover file to decode a song's glow from: the hero art when it is
+    /// on disk, else the row art (already cached from the lists).
+    pub(crate) fn blur_source_url(&self, t: &Track) -> Option<String> {
+        [self.hero_art_for(t), self.art_url_for(t, 40.0)]
+            .into_iter()
+            .flatten()
+            .find(|u| artwork_file_exists(u))
+    }
+
     /// Cover behind the top of a collection page (playlist cover,
     /// album cover, artist photo); `None` on every other page.
     pub(crate) fn page_backdrop_url(&self) -> Option<String> {
@@ -57,9 +74,22 @@ impl AppState {
     /// the cover's colors). Polled from Tick, so it lands whenever the
     /// cover does.
     pub(crate) fn art_blur_task(&mut self) -> iced::Task<Message> {
-        let mut wanted: Vec<String> = Vec::with_capacity(2);
-        if self.drawer_open {
-            wanted.extend(self.queue.current().and_then(|t| self.hero_art_for(t)));
+        let mut wanted: Vec<String> = Vec::with_capacity(5);
+        // Now Playing glow for the live song and its neighbors, decoded
+        // ahead so a song change shows its glow instantly (8x8 each, so
+        // whichever cover is on disk serves: hero or row art).
+        let items = self.queue.items();
+        let pos = self.queue.position();
+        let picks: Vec<Track> = match pos {
+            Some(p) => (p.saturating_sub(1)..(p + 3).min(items.len()))
+                .filter_map(|i| items.get(i).cloned())
+                .collect(),
+            None => Vec::new(),
+        };
+        for t in &picks {
+            if self.track_blur(t).is_none() {
+                wanted.extend(self.blur_source_url(t));
+            }
         }
         wanted.extend(self.page_backdrop_url());
         iced::Task::batch(

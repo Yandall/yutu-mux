@@ -812,7 +812,8 @@ impl AppState {
                 // Self-terminating: memory, in-flight, disk, and cooldown
                 // gates make this a no-op when done.
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                // A wanted backdrop may decode now instead of next Tick.
+                return iced::Task::batch([self.ensure_visible_tasks(), self.art_blur_task()]);
             }
             Message::StartRadio(seed) => {
                 self.close_menu();

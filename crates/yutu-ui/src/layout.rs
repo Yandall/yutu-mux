@@ -274,6 +274,9 @@ pub(crate) const MINI_SIDE_W: f32 = 40.0;
 /// stacked art size.
 pub(crate) const HERO_STACK_BELOW: f32 = 560.0;
 pub(crate) const HERO_STACKED_ART: f32 = 140.0;
+/// Lyrics follow never resumes while the drawer sits within this many
+/// pixels of the top (the user scrolled up on purpose).
+pub(crate) const LYRIC_TOP_HOLD_PX: f32 = 8.0;
 /// Header control height: pills, pill inputs and round buttons share
 /// it (the 20px button radius makes a 40px button a true circle).
 pub(crate) const PILL_H: f32 = 40.0;

@@ -7862,8 +7862,10 @@ fn search_fields_grow_while_focused() {
     let _ = s.update(Message::PlaylistSearchFocused(true));
     settle(&mut s);
     assert_eq!(s.pl_search_expand, 1.0);
-    // Both fields share one max width (the header pill's).
-    assert!((s.pl_search_width() - s.search_full_width()).abs() < 0.5);
+    // It grows past its placeholder width but never past the header
+    // pill's max (and its own action row caps it further).
+    assert!(s.pl_search_width() > pl_ph + PL_SEARCH_CHROME);
+    assert!(s.pl_search_width() <= s.search_full_width() + 0.5);
     assert!((s.search_full_width() - full).abs() < 0.5);
     s.navigate(Route::History);
     assert!(!s.pl_search_focused);
@@ -8241,6 +8243,34 @@ fn playlist_cover_falls_back_to_row_art() {
         ),
     );
     assert_eq!(s.playlist_cover_url(&pid), Some(small));
+}
+
+#[test]
+fn playlist_search_never_outgrows_its_row() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    settle(&mut s);
+    // Fully expanded (focused) it still leaves room for play, Shuffle
+    // and the menu beside the cover.
+    s.pl_search_expand = 1.0;
+    let row = s.content_width() - PLAYLIST_COVER_PX - 20.0;
+    let shuffle = text_line_width(&s.language.shuffle_label()) + 32.0;
+    let used = s.pl_search_width() + 2.0 * PILL_H + shuffle + 3.0 * 8.0;
+    assert!(used <= row, "row overflows: {used} > {row}");
+}
+
+#[test]
+fn song_glow_uses_row_art_when_hero_is_missing() {
+    let mut s = test_state();
+    let mut t = mk_track("gl1", "Song", "A");
+    t.thumbnail_url = Some("https://example.invalid/gl1.jpg".into());
+    assert!(s.track_blur(&t).is_none());
+    let small = s.art_url_for(&t, 40.0).unwrap();
+    s.art_blur.insert(
+        small,
+        iced::widget::image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255]),
+    );
+    assert!(s.track_blur(&t).is_some());
 }
 
 #[test]
