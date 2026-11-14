@@ -34,7 +34,7 @@ impl AppState {
         } else {
             Self::empty_slot_icon(11.0)
         };
-        let mut btn = button(glyph).style(hover_row).padding(3);
+        let mut btn = button(glyph).style(icon_hover).padding(3);
         if let Some(msg) = armed {
             btn = btn.on_press(msg);
         }

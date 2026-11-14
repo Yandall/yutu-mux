@@ -150,6 +150,9 @@
   Apply `.style(themed_slider)` explicitly at every slider site.
   Stock sliders hardcode Grab/Grabbing cursors (no style knob), so all
   slider sites use `pointing_slider` (maps grab votes to Pointer).
+- Icon-only buttons use `icon_hover` (round hover, `ctrl_box` keeps
+  it a circle) or `accent_button` when active; never `hover_row`,
+  which is the rounded-square hover for rows and menu items.
 - Cursor: every clickable component shows the pointing hand
   (`RowButton` votes Pointer when pressable, plain buttons/toggles/
   checkboxes/pick lists already do, `PointingSlider` maps the stock
