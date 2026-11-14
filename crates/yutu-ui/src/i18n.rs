@@ -311,9 +311,6 @@ impl Language {
     pub fn queue_tab(self) -> String {
         self.tr("queue-tab")
     }
-    pub fn recent_tab(self) -> String {
-        self.tr("recent-tab")
-    }
     pub fn now_playing(self) -> String {
         self.tr("now-playing")
     }
@@ -325,9 +322,6 @@ impl Language {
     }
     pub fn autoplay(self) -> String {
         self.tr("autoplay")
-    }
-    pub fn no_recent_plays(self) -> String {
-        self.tr("no-recent-plays")
     }
     pub fn clear_queue(self, n: usize) -> String {
         self.tr_args("clear-queue", &[("n", &n.to_string())])

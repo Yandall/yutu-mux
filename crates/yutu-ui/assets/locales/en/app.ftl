@@ -164,12 +164,10 @@ month-12 = December
 ## Queue panel & player bar
 
 queue-tab = Queue
-recent-tab = Recent
 now-playing = Now playing
 nothing-queued = Nothing queued
 up-next = Up next
 autoplay = Autoplay
-no-recent-plays = No recent plays yet.
 clear-queue = Clear queue ({ $n })
 nothing-playing = Nothing playing
 loading-ellipsis = Loading…

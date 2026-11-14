@@ -5672,9 +5672,6 @@ fn sidebar_and_right_tabs_switch() {
     assert!(!s.right_pinned);
     let _ = s.update(Message::SidebarFilterChanged("gym".into()));
     assert_eq!(s.sidebar_filter, "gym");
-    assert_eq!(s.right_tab, RightTab::Queue);
-    let _ = s.update(Message::SetRightTab(RightTab::Recent));
-    assert_eq!(s.right_tab, RightTab::Recent);
 }
 
 #[cfg(feature = "innertube")]

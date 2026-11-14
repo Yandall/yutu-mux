@@ -613,14 +613,9 @@ impl AppState {
                 upcoming.push(self.queue_row(k));
             }
         }
-        let tab_queue = button(btn_text(self.language.queue_tab(), 12))
-            .style(nav_style(self.right_tab == RightTab::Queue))
-            .on_press(Message::SetRightTab(RightTab::Queue))
-            .padding(8);
-        let tab_recent = button(btn_text(self.language.recent_tab(), 12))
-            .style(nav_style(self.right_tab == RightTab::Recent))
-            .on_press(Message::SetRightTab(RightTab::Recent))
-            .padding(8);
+        // Single panel (Recent moved to the History page): a plain
+        // heading where the tab row used to be, same height.
+        let queue_title = container(btn_text(self.language.queue_tab(), 12)).padding(8);
         let auto_mini: Vec<iced::Element<'_, Message>> = self
             .autoplay
             .iter()
@@ -699,115 +694,48 @@ impl AppState {
                 .clip(true)
                 .into()
             });
-        let list: iced::Element<'_, Message> = match self.right_tab {
-            RightTab::Queue => {
-                let mut parts: Vec<iced::Element<'_, Message>> = Vec::new();
-                parts.extend(playing_from);
-                parts.push(
-                    row![
-                        text(self.language.up_next())
-                            .size(13)
-                            .color(MUTED)
-                            .width(Fill),
-                        button(btn_text(self.language.clear_queue(self.queue.len()), 12))
-                            .style(ghost_button)
-                            .on_press(Message::QueueClear)
-                            .padding(8),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center)
-                    .into(),
-                );
-                parts.push(
-                    scrollable(
-                        column![
-                            column(if live {
-                                upcoming
-                            } else {
-                                with_dividers(upcoming)
-                            })
-                            .spacing(0),
-                            auto_block,
-                        ]
-                        .spacing(2)
-                        .padding(iced::Padding {
-                            right: 14.0,
-                            ..iced::Padding::ZERO
-                        }),
-                    )
-                    .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                    .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
-                    .on_scroll(|v| Message::Scrolled("queue", v.absolute_offset().y))
-                    .height(Fill)
-                    .into(),
-                );
-                column(parts).spacing(4).into()
-            }
-            RightTab::Recent => {
-                let mut seen = std::collections::HashSet::new();
-                let mut recent: Vec<Track> = Vec::new();
-                for id in self.history.iter().rev() {
-                    if recent.len() >= 9 {
-                        break;
-                    }
-                    if seen.insert(id.clone()) {
-                        if let Some(t) = self.find_track(id) {
-                            recent.push(t);
-                        }
-                    }
-                }
-                if recent.is_empty() {
-                    text(self.language.no_recent_plays())
-                        .size(12)
+        let list: iced::Element<'_, Message> = {
+            let mut parts: Vec<iced::Element<'_, Message>> = Vec::new();
+            parts.extend(playing_from);
+            parts.push(
+                row![
+                    text(self.language.up_next())
+                        .size(13)
                         .color(MUTED)
-                        .into()
-                } else {
-                    column(
-                        recent
-                            .iter()
-                            .map(|t| {
-                                let menu_id = t.id.clone();
-                                let hover_id = t.id.clone();
-                                let hovered = self.hovered_recent.as_deref() == Some(t.id.as_str());
-                                mouse_area(
-                                    container(
-                                        row![
-                                            self.thumb(t),
-                                            row_button(Self::btn_track_text_single(
-                                                &t.title,
-                                                &t.artist,
-                                                12,
-                                                iced::Color::WHITE
-                                            ))
-                                            .style(row_click)
-                                            .on_press(Message::PlayNow(t.id.clone()))
-                                            .padding(3)
-                                            .width(Fill),
-                                            text(fmt_time(t.duration_secs as f64))
-                                                .size(11)
-                                                .color(MUTED),
-                                        ]
-                                        .spacing(6)
-                                        .align_y(iced::alignment::Vertical::Center)
-                                        .padding(8),
-                                    )
-                                    .style(row_bg(hovered))
-                                    .width(Fill)
-                                    .height(iced::Length::Fixed(TRACK_ROW_H))
-                                    .clip(true)
-                                    .align_y(iced::alignment::Vertical::Center),
-                                )
-                                .on_right_press(Message::OpenContext(menu_id))
-                                .on_enter(Message::RecentHover(Some(hover_id.clone())))
-                                .on_exit(Message::RecentExit(hover_id))
-                                .into()
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .spacing(0)
-                    .into()
-                }
-            }
+                        .width(Fill),
+                    button(btn_text(self.language.clear_queue(self.queue.len()), 12))
+                        .style(ghost_button)
+                        .on_press(Message::QueueClear)
+                        .padding(8),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .into(),
+            );
+            parts.push(
+                scrollable(
+                    column![
+                        column(if live {
+                            upcoming
+                        } else {
+                            with_dividers(upcoming)
+                        })
+                        .spacing(0),
+                        auto_block,
+                    ]
+                    .spacing(2)
+                    .padding(iced::Padding {
+                        right: 14.0,
+                        ..iced::Padding::ZERO
+                    }),
+                )
+                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
+                .on_scroll(|v| Message::Scrolled("queue", v.absolute_offset().y))
+                .height(Fill)
+                .into(),
+            );
+            column(parts).spacing(4).into()
         };
         let pin_btn: iced::Element<'_, Message> = button(btn_icon(
             "panel-right",
@@ -880,7 +808,7 @@ impl AppState {
             .height(Fill)
             .into();
         }
-        container(column![row![pin_btn, tab_queue, tab_recent].spacing(4), now, list,].spacing(8))
+        container(column![row![pin_btn, queue_title].spacing(4), now, list,].spacing(8))
             .style(sidebar_bg)
             .padding(12)
             .width(iced::Length::Fixed(self.right_w))

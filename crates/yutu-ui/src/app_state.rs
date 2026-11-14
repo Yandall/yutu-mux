@@ -139,8 +139,6 @@ pub struct AppState {
     /// Browser-style back/forward stacks (Route history, capped).
     pub(crate) nav_back: Vec<Route>,
     pub(crate) nav_forward: Vec<Route>,
-    /// Right-panel tab (view-only state).
-    pub(crate) right_tab: RightTab,
     /// Memoized Home/Discovery shelves (quick picks, albums, more-from,
     /// weekly mix, forgotten): ranking scans the whole catalog plus a
     /// history query, so views read this instead of recomputing per
@@ -314,10 +312,6 @@ pub struct AppState {
     /// own hover so the same track in the sidebar and the center never
     /// light up together.
     pub(crate) hovered_track: Option<String>,
-    /// Right-panel Recent row under the cursor (id-keyed: the list
-    /// dedupes, so one id names one row; separate from hovered_track
-    /// so center rows with the same id stay at rest).
-    pub(crate) hovered_recent: Option<String>,
     /// Search collection hover by id (album/artist/playlist rows).
     pub(crate) hovered_album: Option<String>,
     pub(crate) hovered_artist: Option<String>,
