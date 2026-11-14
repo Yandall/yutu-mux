@@ -8189,6 +8189,61 @@ fn page_backdrop_follows_collection_pages() {
 }
 
 #[test]
+fn page_backdrop_scrolls_away_with_the_page() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    let _ = s.update(Message::CreatePlaylist("Glow".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Glow")
+        .unwrap();
+    let mut t = mk_track("g2", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/g2.jpg".into());
+    s.user_playlists[i].tracks = vec![t];
+    let pid = s.user_playlists[i].id.clone();
+    let _ = s.update(Message::OpenPlaylist(pid));
+    // Nothing decoded yet: no layer.
+    assert!(s.page_backdrop_layer().is_none());
+    let url = s.page_backdrop_url().unwrap();
+    s.art_blur.insert(
+        url,
+        iced::widget::image::Handle::from_rgba(1, 1, vec![200, 40, 40, 255]),
+    );
+    assert!(s.page_backdrop_layer().is_some());
+    // Scrolled past the band: the layer is gone.
+    let _ = s.update(Message::Scrolled("body", PAGE_BACKDROP_H + 1.0));
+    assert!(s.page_backdrop_layer().is_none());
+}
+
+#[test]
+fn playlist_cover_falls_back_to_row_art() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Fallback".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Fallback")
+        .unwrap();
+    let mut t = mk_track("f1", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/f1.jpg".into());
+    s.user_playlists[i].tracks = vec![t.clone()];
+    let pid = s.user_playlists[i].id.clone();
+    // Neither loaded: the large URL (placeholder until it lands).
+    assert_eq!(s.playlist_cover_url(&pid), s.hero_art_for(&t));
+    // Only the row art is cached: the header uses it meanwhile.
+    let small = s.art_url_for(&t, 40.0).unwrap();
+    s.artwork.insert(
+        small.clone(),
+        (
+            iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
+            std::time::Instant::now(),
+        ),
+    );
+    assert_eq!(s.playlist_cover_url(&pid), Some(small));
+}
+
+#[test]
 fn collection_total_length_format() {
     assert_eq!(fmt_total(0), "0 min");
     assert_eq!(fmt_total(20), "1 min");
@@ -8337,6 +8392,13 @@ fn layout_snapshots() {
             }
             if let Some(url) = s.page_backdrop_url() {
                 fake_backdrop(&mut s, url);
+            }
+            // Optional body scroll (px) to check the backdrop scrolls away.
+            if let Some(y) = std::env::var("YUTU_SNAPSHOT_SCROLL")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+            {
+                s.scroll_offsets.insert("body", y);
             }
             for _ in 0..80 {
                 let _ = s.update(Message::Animate);

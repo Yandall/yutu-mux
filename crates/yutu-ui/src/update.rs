@@ -3552,6 +3552,14 @@ impl AppState {
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
                 let mut tasks = vec![self.drain_player_commands(), self.art_blur_task()];
+                // Playlist page cover: keep asking for the large art (the
+                // fetch itself skips cached, in-flight and cooled URLs),
+                // so a cover that missed the open warm still lands.
+                if let Route::PlaylistDetail(id) = &self.route {
+                    if let Some(t) = self.playlist_cover_track(&id.clone()) {
+                        tasks.extend(self.large_art_task(&t));
+                    }
+                }
                 // First frame after launch: lazily fetch only the Home
                 // screenful (cached titles + disk covers already painted).
                 // Startup itself does zero network so the window opens fast.

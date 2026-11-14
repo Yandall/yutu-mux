@@ -263,7 +263,7 @@ pub(crate) const LYRIC_STEPPER_H: f32 = 30.0;
 pub(crate) const ART_BLUR_PX: u32 = 8;
 pub(crate) const ART_BLUR_CAP: usize = 64;
 /// Collection page backdrop band height and cover strength.
-pub(crate) const PAGE_BACKDROP_H: f32 = 380.0;
+pub(crate) const PAGE_BACKDROP_H: f32 = 460.0;
 pub(crate) const PAGE_BACKDROP_OPACITY: f32 = 0.65;
 /// How strongly the stretched cover shows through the sheet.
 pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
@@ -274,6 +274,11 @@ pub(crate) const MINI_SIDE_W: f32 = 40.0;
 /// stacked art size.
 pub(crate) const HERO_STACK_BELOW: f32 = 560.0;
 pub(crate) const HERO_STACKED_ART: f32 = 140.0;
+/// Header control height: pills, pill inputs and round buttons share
+/// it (the 20px button radius makes a 40px button a true circle).
+pub(crate) const PILL_H: f32 = 40.0;
+/// Pill input vertical padding (line height fills the rest).
+pub(crate) const PILL_INPUT_PAD_Y: f32 = 10.0;
 /// Playlist header cover edge (side-by-side layout).
 pub(crate) const PLAYLIST_COVER_PX: f32 = 190.0;
 /// Content width below which song rows drop the heart button.

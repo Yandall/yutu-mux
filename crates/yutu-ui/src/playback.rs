@@ -43,9 +43,7 @@ impl AppState {
     /// album cover, artist photo); `None` on every other page.
     pub(crate) fn page_backdrop_url(&self) -> Option<String> {
         match &self.route {
-            Route::PlaylistDetail(id) => self
-                .playlist_cover_track(id)
-                .and_then(|t| self.hero_art_for(&t)),
+            Route::PlaylistDetail(id) => self.playlist_cover_url(id),
             Route::Album(id) => self.album_header_cover(id),
             Route::Artist(id) => self.artist_photo(&self.resolve_artist_name(id)),
             _ => None,

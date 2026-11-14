@@ -93,8 +93,7 @@ pub(crate) fn page_backdrop_veil(_: &iced::Theme) -> iced::widget::container::St
                 .add_stop(0.88, APP_BG)
                 .add_stop(1.0, APP_BG),
         ))),
-        // Top corners only: the bottom edge is plain app background.
-        border: iced::Border::default().rounded(iced::border::top(12)),
+        // Window-level band: square edges, the panels cover the sides.
         ..Default::default()
     }
 }

@@ -144,6 +144,43 @@ pub(crate) fn rounded_input(
     }
 }
 
+/// Round icon button, exactly `PILL_H` wide and tall (a true circle
+/// with the 20px-radius button styles), icon centered.
+pub(crate) fn round_button<'a>(
+    icon: impl Into<iced::Element<'a, Message>>,
+    style: impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style + 'a,
+    on_press: Message,
+) -> iced::Element<'a, Message> {
+    iced::widget::button(
+        iced::widget::container(icon)
+            .width(iced::Fill)
+            .height(iced::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .style(style)
+    .on_press(on_press)
+    .padding(0)
+    .width(iced::Length::Fixed(PILL_H))
+    .height(iced::Length::Fixed(PILL_H))
+    .into()
+}
+
+/// Text pill button (`ghost_button` look), `PILL_H` tall, label
+/// vertically centered, so it lines up with `pill_input` fields.
+pub(crate) fn pill_button<'a>(label: String, on_press: Message) -> iced::Element<'a, Message> {
+    iced::widget::button(
+        iced::widget::container(btn_text(label, 13))
+            .height(iced::Fill)
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .style(ghost_button)
+    .on_press(on_press)
+    .padding([0, 16])
+    .height(iced::Length::Fixed(PILL_H))
+    .into()
+}
+
 /// Pill input that reads as a quiet button at rest (same fill, border
 /// and radius as `ghost_button`, light placeholder), so the playlist
 /// search sits in the action row next to Shuffle and grows on focus.

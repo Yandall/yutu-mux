@@ -3065,6 +3065,7 @@ impl AppState {
                     let sort_button: iced::Element<'_, Message> = if is_fav {
                         text("").size(1).into()
                     } else {
+                        // Same pill as Shuffle and the search field.
                         let face: iced::Element<'_, Message> = button(
                             row![
                                 btn_icon("arrow-up-down", 13.0, MUTED),
@@ -3072,12 +3073,14 @@ impl AppState {
                             ]
                             .spacing(6)
                             .align_y(iced::alignment::Vertical::Center)
-                            .width(Fill),
+                            .width(Fill)
+                            .height(Fill),
                         )
-                        .style(select_face)
+                        .style(ghost_button)
                         .on_press(Message::OpenSelectMenu(SelectMenu::Sort(pid.clone())))
-                        .padding(8)
+                        .padding([0, 16])
                         .width(iced::Length::Fixed(SORT_BUTTON_W))
+                        .height(iced::Length::Fixed(PILL_H))
                         .into();
                         let menu = (self.sort_menu == Some(SelectMenu::Sort(pid.clone())))
                             .then(|| self.select_menu_card(&SelectMenu::Sort(pid.clone()), 220.0));
@@ -3168,17 +3171,15 @@ impl AppState {
                     // sort picker (own lists only) sits right-aligned in
                     // a bar above the songs, so the action row fits.
                     let total: u64 = p.tracks.iter().map(|t| u64::from(self.track_secs(t))).sum();
-                    let mut actions: Vec<iced::Element<'_, Message>> = vec![
-                        button(ctrl_box(btn_icon("play", 18.0, iced::Color::WHITE)))
-                            .style(accent_button)
-                            .on_press(Message::PlayAll)
-                            .padding(13)
-                            .into(),
-                        button(btn_text(self.language.shuffle_label(), 13))
-                            .style(ghost_button)
-                            .on_press(Message::PlayAllShuffled)
-                            .padding([9, 16])
-                            .into(),
+                    // Every control is PILL_H tall: a true circle for play
+                    // and the menu, matching pills for the rest.
+                    let actions: Vec<iced::Element<'_, Message>> = vec![
+                        round_button(
+                            btn_icon("play", 18.0, iced::Color::WHITE),
+                            accent_button,
+                            Message::PlayAll,
+                        ),
+                        pill_button(self.language.shuffle_label(), Message::PlayAllShuffled),
                         iced::widget::text_input(
                             self.language.playlist_filter_placeholder(),
                             &self.playlist_filter,
@@ -3187,20 +3188,19 @@ impl AppState {
                         .id(PL_SEARCH_INPUT_ID)
                         .on_input(Message::PlaylistFilterChanged)
                         .size(13)
+                        .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(
+                            PILL_H - 2.0 * PILL_INPUT_PAD_Y,
+                        )))
                         .width(iced::Length::Fixed(self.pl_search_width()))
-                        .padding([9, 16])
+                        .padding([PILL_INPUT_PAD_Y, 16.0])
                         .into(),
+                        round_button(
+                            btn_icon("ellipsis", 16.0, iced::Color::WHITE),
+                            ghost_button,
+                            Message::OpenPlaylistMenu(p.id.clone()),
+                        ),
                     ];
-                    actions.push(
-                        button(btn_icon("ellipsis", 15.0, MUTED))
-                            .style(hover_row)
-                            .on_press(Message::OpenPlaylistMenu(p.id.clone()))
-                            .padding(8)
-                            .into(),
-                    );
-                    let cover = self
-                        .playlist_cover_track(&p.id)
-                        .and_then(|t| self.hero_art_for(&t));
+                    let cover = self.playlist_cover_url(&p.id);
                     let info: iced::Element<'_, Message> = column![
                         text(self.language.playlist_label()).size(12).color(MUTED),
                         text(p.title.clone()).size(34).font(bold_font()),
@@ -3300,40 +3300,7 @@ impl AppState {
                 .height(Fill)
                 .into()
         };
-        let page: iced::Element<'_, Message> = column![header, scrolled,].spacing(4).into();
-        // Collection pages: the cover's colors glow behind the top of the
-        // column (header included) and fade into the app background.
-        match self
-            .page_backdrop_url()
-            .and_then(|u| self.art_blur.get(&u).cloned())
-        {
-            Some(handle) => {
-                use iced::widget::{image, Space, Stack};
-                let band: iced::Element<'_, Message> = Stack::with_children(vec![
-                    image(handle)
-                        .content_fit(iced::ContentFit::Cover)
-                        .filter_method(image::FilterMethod::Linear)
-                        .opacity(PAGE_BACKDROP_OPACITY)
-                        .border_radius(iced::border::top(12))
-                        .width(Fill)
-                        .height(Fill)
-                        .into(),
-                    container(Space::new())
-                        .style(page_backdrop_veil)
-                        .width(Fill)
-                        .height(Fill)
-                        .into(),
-                ])
-                .width(Fill)
-                .height(iced::Length::Fixed(PAGE_BACKDROP_H))
-                .into();
-                Stack::with_children(vec![column![band, Space::new().height(Fill)].into(), page])
-                    .width(Fill)
-                    .height(Fill)
-                    .into()
-            }
-            None => page,
-        }
+        column![header, scrolled,].spacing(4).into()
     }
 
     /// Search popup content, if the gate holds (window-level layer above
@@ -3472,7 +3439,6 @@ impl AppState {
                 .spacing(8)
                 .height(Fill),
         )
-        .style(app_bg)
         // Roomier top padding so the header never hugs the window
         // edge (sides/bottom stay tight).
         .padding(iced::Padding {
@@ -3482,7 +3448,17 @@ impl AppState {
             bottom: 8.0,
         })
         .into();
-        let mut layers: Vec<iced::Element<'_, Message>> = vec![base];
+        // Background first, then the collection page cover glow (behind
+        // every panel: sidebars and the player draw over it), then the
+        // app itself.
+        let mut layers: Vec<iced::Element<'_, Message>> =
+            vec![container(iced::widget::Space::new())
+                .style(app_bg)
+                .width(Fill)
+                .height(Fill)
+                .into()];
+        layers.extend(self.page_backdrop_layer());
+        layers.push(base);
         // Floating drag ghost right above the base (modal layers cover it):
         // `None` unless a drag is live with a known cursor.
         if let Some(ghost) = self.drag_ghost_layer() {
@@ -4357,6 +4333,41 @@ impl AppState {
         // content and Stack would rebuild all widget state (search focus
         // and cursor included) every time a popup appears or vanishes.
         Stack::with_children(layers).into()
+    }
+
+    /// Collection page cover glow at window level: a band across the
+    /// whole window top (sidebars and header draw over it) that scrolls
+    /// away with the page body, fading into the app background. `None`
+    /// off collection pages, before the backdrop is decoded, or once it
+    /// has scrolled out of view.
+    pub(crate) fn page_backdrop_layer(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{container, image, pin, Space, Stack};
+        use iced::Fill;
+        let handle = self
+            .page_backdrop_url()
+            .and_then(|u| self.art_blur.get(&u).cloned())?;
+        let scroll = self.scroll_offsets.get("body").copied().unwrap_or(0.0);
+        if scroll >= PAGE_BACKDROP_H {
+            return None;
+        }
+        let band: iced::Element<'_, Message> = Stack::with_children(vec![
+            image(handle)
+                .content_fit(iced::ContentFit::Cover)
+                .filter_method(image::FilterMethod::Linear)
+                .opacity(PAGE_BACKDROP_OPACITY)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+            container(Space::new())
+                .style(page_backdrop_veil)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+        ])
+        .width(Fill)
+        .height(iced::Length::Fixed(PAGE_BACKDROP_H))
+        .into();
+        Some(pin(band).y(-scroll).width(Fill).height(Fill).into())
     }
 
     /// Now Playing sheet (shared by the sliding and fully open layers):
