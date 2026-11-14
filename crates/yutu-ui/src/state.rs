@@ -33,7 +33,6 @@ pub enum Route {
     Album(String),
     PlaylistDetail(String),
     Lyrics(String),
-    Radio(String),
 }
 
 /// In-progress right-panel drag: source index + insertion slot.
@@ -477,7 +476,11 @@ pub enum Message {
         query: String,
         result: Result<Box<SearchBundle>, String>,
     },
-    RadioReady {
+    /// YouTube Music mix (watch radio `RDAMVM<seed>`) arrived. `gen`
+    /// pins it to the request: a reply for a superseded mix, or after
+    /// the queue was replaced meanwhile, is dropped.
+    MixReady {
+        gen: u64,
         seed: String,
         result: Result<Vec<Track>, String>,
     },

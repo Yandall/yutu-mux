@@ -16,6 +16,11 @@
 
 - The Now Playing toggle uses a microphone icon that fills in while the
   panel is open.
+- Start mix now plays the same curated mix YouTube Music builds for a
+  song (personalized when signed in) instead of a same-artist search.
+  It fills the queue right away without leaving the current page, and
+  the queue shows "Playing from: Mix of Song - Artist". Starting a mix
+  of the song already playing keeps it playing.
 
 ### Fixed
 

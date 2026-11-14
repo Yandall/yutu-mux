@@ -674,43 +674,69 @@ impl AppState {
             .spacing(2)
             .into()
         };
-        let list: iced::Element<'_, Message> = match self.right_tab {
-            RightTab::Queue => column![
-                row![
-                    text(self.language.up_next())
-                        .size(13)
-                        .color(MUTED)
-                        .width(Fill),
-                    button(btn_text(self.language.clear_queue(self.queue.len()), 12))
-                        .style(ghost_button)
-                        .on_press(Message::QueueClear)
-                        .padding(8),
+        // "Playing from" context (a started mix), YouTube Music style:
+        // small muted caption over the source name, above Up next.
+        let playing_from: Option<iced::Element<'_, Message>> = self
+            .playing_from
+            .as_deref()
+            .filter(|_| !self.queue.is_empty())
+            .map(|ctx| {
+                column![
+                    text(self.language.playing_from()).size(11).color(MUTED),
+                    text(ctx)
+                        .size(14)
+                        .color(iced::Color::WHITE)
+                        .wrapping(iced::widget::text::Wrapping::None),
                 ]
-                .spacing(8)
-                .align_y(iced::alignment::Vertical::Center),
-                scrollable(
-                    column![
-                        column(if live {
-                            upcoming
-                        } else {
-                            with_dividers(upcoming)
-                        })
-                        .spacing(0),
-                        auto_block,
+                .spacing(2)
+                .width(Fill)
+                .clip(true)
+                .into()
+            });
+        let list: iced::Element<'_, Message> = match self.right_tab {
+            RightTab::Queue => {
+                let mut parts: Vec<iced::Element<'_, Message>> = Vec::new();
+                parts.extend(playing_from);
+                parts.push(
+                    row![
+                        text(self.language.up_next())
+                            .size(13)
+                            .color(MUTED)
+                            .width(Fill),
+                        button(btn_text(self.language.clear_queue(self.queue.len()), 12))
+                            .style(ghost_button)
+                            .on_press(Message::QueueClear)
+                            .padding(8),
                     ]
-                    .spacing(2)
-                    .padding(iced::Padding {
-                        right: 14.0,
-                        ..iced::Padding::ZERO
-                    })
-                )
-                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
-                .on_scroll(|v| Message::Scrolled("queue", v.absolute_offset().y))
-                .height(Fill),
-            ]
-            .spacing(4)
-            .into(),
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .into(),
+                );
+                parts.push(
+                    scrollable(
+                        column![
+                            column(if live {
+                                upcoming
+                            } else {
+                                with_dividers(upcoming)
+                            })
+                            .spacing(0),
+                            auto_block,
+                        ]
+                        .spacing(2)
+                        .padding(iced::Padding {
+                            right: 14.0,
+                            ..iced::Padding::ZERO
+                        }),
+                    )
+                    .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                    .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
+                    .on_scroll(|v| Message::Scrolled("queue", v.absolute_offset().y))
+                    .height(Fill)
+                    .into(),
+                );
+                column(parts).spacing(4).into()
+            }
             RightTab::Recent => {
                 let mut seen = std::collections::HashSet::new();
                 let mut recent: Vec<Track> = Vec::new();
@@ -2945,35 +2971,6 @@ impl AppState {
                     .spacing(8),
                     stepper,
                     content,
-                ]
-                .spacing(10)
-                .into()
-            }
-            Route::Radio(seed) => {
-                let rows: Vec<iced::Element<'_, Message>> = self
-                    .radio_tracks
-                    .iter()
-                    .map(|t| self.track_row("radio", t))
-                    .collect();
-                let seed_label = self
-                    .find_track(seed)
-                    .map(|t| format!("{} · {}", t.title, t.artist))
-                    .unwrap_or_else(|| seed.clone());
-                column![
-                    text(seed_label).size(24),
-                    text(self.language.radio_label()).size(12).color(MUTED),
-                    button(
-                        row![
-                            btn_icon("play", 13.0, iced::Color::WHITE),
-                            btn_text(self.language.start_radio(), 13)
-                        ]
-                        .spacing(6)
-                        .align_y(iced::alignment::Vertical::Center)
-                    )
-                    .style(accent_button)
-                    .on_press(Message::StartRadio(seed.clone()))
-                    .padding(8),
-                    column(rows).spacing(2),
                 ]
                 .spacing(10)
                 .into()

@@ -367,7 +367,7 @@ impl AppState {
             return iced::Task::none();
         }
         self.close_menu();
-        self.queue.clear();
+        self.clear_queue();
         self.autoplay.clear();
         self.autoplay_for = None;
         self.drag = None;

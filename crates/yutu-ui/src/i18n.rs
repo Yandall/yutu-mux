@@ -493,8 +493,11 @@ impl Language {
     pub fn radio_label(self) -> String {
         self.tr("radio-label")
     }
-    pub fn start_radio(self) -> String {
-        self.tr("start-radio")
+    pub fn playing_from(self) -> String {
+        self.tr("playing-from")
+    }
+    pub fn mix_of(self, title: &str, artist: &str) -> String {
+        self.tr_args("mix-of", &[("title", title), ("artist", artist)])
     }
     pub fn artist_songs_albums(self, songs: usize, albums: usize, total: &str) -> String {
         self.tr_args(
@@ -1208,11 +1211,11 @@ impl Language {
     pub fn lyrics_failed(self, e: &str) -> String {
         self.tr_args("lyrics-failed", &[("e", e)])
     }
-    pub fn starting_radio(self, title: &str, artist: &str) -> String {
-        self.tr_args("starting-radio", &[("title", title), ("artist", artist)])
+    pub fn starting_mix(self, title: &str, artist: &str) -> String {
+        self.tr_args("starting-mix", &[("title", title), ("artist", artist)])
     }
-    pub fn radio_no_results(self, seed: &str) -> String {
-        self.tr_args("radio-no-results", &[("seed", seed)])
+    pub fn mix_no_results(self, seed: &str) -> String {
+        self.tr_args("mix-no-results", &[("seed", seed)])
     }
     pub fn playlist_nothing_playable(self, label: &str) -> String {
         self.tr_args("playlist-nothing-playable", &[("label", label)])
@@ -1371,9 +1374,6 @@ impl Language {
     pub fn reading_library(self) -> String {
         self.tr("reading-library")
     }
-    pub fn radio_seed_label(self, seed: &str) -> String {
-        self.tr_args("radio-seed-label", &[("seed", seed)])
-    }
     pub fn playlist_fetch_failed(self, title: &str, e: &str, done: usize, total: usize) -> String {
         self.tr_args(
             "playlist-fetch-failed",
@@ -1404,8 +1404,8 @@ impl Language {
     pub fn fail_search(self) -> String {
         self.tr("fail-search")
     }
-    pub fn fail_radio(self) -> String {
-        self.tr("fail-radio")
+    pub fn fail_mix(self) -> String {
+        self.tr("fail-mix")
     }
     pub fn fail_sync(self) -> String {
         self.tr("fail-sync")

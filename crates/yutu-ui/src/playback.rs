@@ -379,6 +379,79 @@ impl AppState {
         order
     }
 
+    /// Drop the queue together with its "Playing from" context. Bumps
+    /// the mix generation too, so a mix still in flight can never land
+    /// on top of a queue the user replaced or cleared meanwhile.
+    pub(crate) fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.playing_from = None;
+        self.mix_gen = self.mix_gen.wrapping_add(1);
+    }
+
+    /// Play a YouTube Music mix (the `RDAMVM<seed>` watch radio): the
+    /// seed leads, then the server's curated order (deduped, dislikes
+    /// dropped). Replaces the queue and autoplay tail like any fresh
+    /// context and labels it "Mix of Song - Artist" in the queue
+    /// sidebar; never navigates. A mix of the live song keeps it
+    /// playing (same-song no-op): only the rows around it change.
+    pub(crate) fn play_mix(&mut self, seed: &str, tracks: Vec<Track>) -> iced::Task<Message> {
+        let tracks = self.register_tracks(tracks);
+        let seed_track = tracks
+            .iter()
+            .find(|t| t.id == seed)
+            .cloned()
+            .or_else(|| self.find_track(seed));
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut seq: Vec<Track> = Vec::with_capacity(tracks.len() + 1);
+        if let Some(t) = seed_track {
+            seen.insert(t.id.clone());
+            seq.push(t);
+        }
+        for t in tracks {
+            if !self.disliked.contains(&t.id) && seen.insert(t.id.clone()) {
+                seq.push(t);
+            }
+        }
+        let Some(head) = seq.first() else {
+            self.status = self.language.mix_no_results(seed);
+            return iced::Task::none();
+        };
+        let label = self.language.mix_of(&head.title, &head.artist);
+        self.cancel_drag();
+        // The mix plays in the server's curated order: drop shuffle and
+        // the old queue's snapshot so toggling never resurrects it.
+        self.queue.shuffle = false;
+        self.pre_shuffle = None;
+        self.pre_shuffle_cur = None;
+        let live = self.queue.current().filter(|t| t.id == seed).cloned();
+        let task = match live {
+            Some(cur) => {
+                // Keep the live entry (already resolved) and its audio;
+                // only the queue around it is replaced.
+                self.clear_queue();
+                self.autoplay.clear();
+                self.autoplay_for = None;
+                let rest: Vec<Track> = seq[1..]
+                    .iter()
+                    .map(|t| self.resolve_for_play_mem(t))
+                    .collect();
+                self.cache_tracks(&rest);
+                let art = self.artwork_tasks(&rest);
+                self.queue.push(cur);
+                for t in rest {
+                    self.queue.push(t);
+                }
+                self.queue.jump_to(0);
+                self.status = self.language.queued_tracks(&label, seq.len());
+                iced::Task::batch(art)
+            }
+            None => self.play_fresh(seq, &label, false),
+        };
+        self.playing_from = Some(label);
+        self.publish_mpris();
+        task
+    }
+
     /// Fresh-context play with optional full shuffle: replaces the
     /// queue, snapshots the incoming order for toggle-off, shuffles the
     /// source list first (so the queued order - and its first fetch -
@@ -390,7 +463,7 @@ impl AppState {
         label: &str,
         shuffle: bool,
     ) -> iced::Task<Message> {
-        self.queue.clear();
+        self.clear_queue();
         self.autoplay.clear();
         self.autoplay_for = None;
         self.drag = None;

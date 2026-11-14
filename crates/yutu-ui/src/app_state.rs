@@ -532,8 +532,16 @@ pub struct AppState {
     pub(crate) search_gen: u64,
     /// Search page type filter (chip row): kept across queries.
     pub(crate) search_filter: SearchFilter,
-    /// Current radio sequence (filled by `RadioReady`).
-    pub(crate) radio_tracks: Vec<Track>,
+    /// "Playing from" context shown atop the queue sidebar (e.g. "Mix
+    /// of Song - Artist"). Set by a started mix, dropped whenever the
+    /// queue is replaced or cleared ([`AppState::clear_queue`]).
+    pub(crate) playing_from: Option<String>,
+    /// Mix request generation: bumped by every mix start and queue
+    /// replacement so only the latest in-flight mix may land.
+    pub(crate) mix_gen: u64,
+    /// Live track id when the pending mix was started: if playback
+    /// moved on (next/prev/jump) before the reply, the mix is dropped.
+    pub(crate) mix_from: Option<String>,
     /// MPRIS handle for live desktop propagation (`None` in tests/headless).
     pub(crate) mpris: Option<yutu_desktop::SharedPlayer>,
     /// Per-playlist sort pick (own playlists): display-only except Manual,

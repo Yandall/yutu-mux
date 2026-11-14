@@ -1352,15 +1352,28 @@ impl AppState {
         })
     }
 
-    /// Radio seed: same-artist tracks first, then the rest of the search.
+    /// YouTube Music mix for a seed: the same watch radio the web app's
+    /// "Start radio" plays (`next` with playlist `RDAMVM<seed>`), seed
+    /// first then the server's curated picks. Uses the saved login when
+    /// there is one, so the mix is personalized like the signed-in web
+    /// client; anonymous otherwise.
     #[cfg(feature = "innertube")]
-    pub(crate) fn radio_task(seed: String, artist: String) -> iced::Task<Message> {
+    pub(crate) fn mix_task(gen: u64, seed: String) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = live_radio(&seed, &artist).await;
+                let mut result = match Self::detail_backend().await {
+                    Ok(backend) => backend.recommendations_for(&seed).await,
+                    Err(e) => Err(e),
+                };
+                // Expired login: the mix is public, retry signed out.
+                if result.is_err() {
+                    if let Ok(anon) = yutu_core::InnertubeBackend::connect_anonymous().await {
+                        result = anon.recommendations_for(&seed).await;
+                    }
+                }
                 (seed, result)
             },
-            |(seed, result)| Message::RadioReady { seed, result },
+            move |(seed, result)| Message::MixReady { gen, seed, result },
         )
     }
 

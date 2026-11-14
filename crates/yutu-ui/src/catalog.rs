@@ -301,12 +301,6 @@ impl AppState {
                 }
                 ids
             }
-            Route::Radio(_) => self
-                .radio_tracks
-                .iter()
-                .take(15)
-                .map(|t| t.id.clone())
-                .collect(),
             Route::Lyrics(id) => vec![id.clone()],
             Route::Settings => Vec::new(),
         }

@@ -86,10 +86,6 @@ impl AppState {
                 ),
                 None => (Vec::new(), self.language.playlist_not_found_plain()),
             },
-            Route::Radio(_) => (
-                self.radio_tracks.clone(),
-                self.language.radio_label().to_string(),
-            ),
             Route::Discovery => (
                 self.weekly_mix_tracks(),
                 self.language.weekly_mix().to_string(),
@@ -800,11 +796,6 @@ impl AppState {
                 slots.extend(Self::track_row_slots(forgotten, fy0, ROW_PITCH));
                 slots
             }
-            Route::Radio(_) => Self::track_row_slots(
-                &self.radio_tracks,
-                BODY_PAD + Self::text_h(24.0) + 10.0 + Self::text_h(12.0) + 10.0 + 32.0 + 10.0,
-                ROW_PITCH,
-            ),
             Route::History => {
                 // Mirrors `history_view`: title + count + filter input,
                 // then one section column per month (header + uniform
