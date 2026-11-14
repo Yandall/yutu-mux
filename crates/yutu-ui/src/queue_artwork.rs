@@ -956,7 +956,7 @@ impl AppState {
         use iced::widget::text::Wrapping;
         use iced::widget::{column, text};
         use iced::Fill;
-        let title = text(truncate_title(title, 45))
+        let title = text(truncate_title(title, row_title_chars()))
             .size(f32::from(title_size))
             .color(color)
             .width(Fill)
@@ -966,7 +966,7 @@ impl AppState {
         } else {
             title
         };
-        let artist = text(truncate_title(artist, 40))
+        let artist = text(truncate_title(artist, row_title_chars().min(40)))
             .size(f32::from(title_size.saturating_sub(2).max(11)))
             .color(MUTED)
             .width(Fill)

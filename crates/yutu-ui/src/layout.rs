@@ -250,6 +250,52 @@ pub(crate) const WINDOW_PAD_X: f32 = 16.0;
 pub(crate) const PANEL_GAP: f32 = 8.0;
 /// Center width below which the header drops its back/forward arrows.
 pub(crate) const HEADER_ARROWS_MIN_CENTER: f32 = 480.0;
+/// Wide-mode body cap (Normal keeps `CENTER_MAX_W`).
+pub(crate) const CENTER_MAX_W_WIDE: f32 = 1400.0;
+/// Now Playing two-column layout: minimum content width, hero column
+/// width (300px art plus breathing room), and the gap to the lyrics.
+pub(crate) const NP_TWO_COL_MIN_CONTENT: f32 = 900.0;
+pub(crate) const NP_HERO_COL_W: f32 = 320.0;
+pub(crate) const NP_COL_GAP: f32 = 40.0;
+/// Provider stepper height above the lyrics (two-column follow math).
+pub(crate) const LYRIC_STEPPER_H: f32 = 30.0;
+/// Content width below which album/artist headers stack, and the
+/// stacked art size.
+pub(crate) const HERO_STACK_BELOW: f32 = 560.0;
+pub(crate) const HERO_STACKED_ART: f32 = 140.0;
+/// Content width below which song rows drop the heart button.
+pub(crate) const ROW_HEART_MIN_CONTENT: f32 = 480.0;
+/// Content width from which quick picks use two columns.
+pub(crate) const QUICK_TWO_COL_MIN_CONTENT: f32 = 600.0;
+/// Fixed chrome beside a song row's title (art, paddings, gaps,
+/// duration, ellipsis and heart buttons), for the title budget.
+pub(crate) const ROW_TITLE_CHROME: f32 = 200.0;
+
+thread_local! {
+    /// Per-frame title budget (chars) for the shared two-line row text:
+    /// set from the content width at the top of `view`, read by the
+    /// static text helpers, so narrow rows end in "…" instead of being
+    /// cut mid-glyph. The UI is single-threaded, so one cell suffices.
+    static ROW_TITLE_CHARS: std::cell::Cell<usize> = const { std::cell::Cell::new(45) };
+}
+
+/// Current row title budget in characters.
+pub(crate) fn row_title_chars() -> usize {
+    ROW_TITLE_CHARS.with(std::cell::Cell::get)
+}
+
+/// Title budget for a content width: the space left beside the row
+/// chrome at ~7.3px per 14px glyph, never above the 45-char default
+/// and never below a readable floor.
+pub(crate) fn row_title_budget(content_w: f32) -> usize {
+    let room = (content_w - ROW_TITLE_CHROME).max(0.0);
+    ((room / 7.3) as usize).clamp(12, 45)
+}
+
+pub(crate) fn set_row_title_chars(n: usize) {
+    ROW_TITLE_CHARS.with(|c| c.set(n));
+}
+
 /// Center body padding (each side), see `center_view`.
 pub(crate) const BODY_PAD_X: f32 = 20.0;
 
@@ -377,15 +423,48 @@ impl AppState {
             .max(0.0)
     }
 
-    /// Body width cap (very wide windows center a capped body).
+    /// Body width cap (very wide windows center a capped body). Wide
+    /// mode lets the body grow further before the margins start.
     pub(crate) fn content_cap(&self) -> f32 {
-        CENTER_MAX_W
+        if self.layout() == LayoutMode::Wide {
+            CENTER_MAX_W_WIDE
+        } else {
+            CENTER_MAX_W
+        }
+    }
+
+    /// Song rows keep their heart button only with room to spare.
+    pub(crate) fn rows_show_heart(&self) -> bool {
+        self.content_width() >= ROW_HEART_MIN_CONTENT
+    }
+
+    /// Album/artist headers stack art above the title when narrow.
+    pub(crate) fn hero_stacked(&self) -> bool {
+        self.content_width() < HERO_STACK_BELOW
+    }
+
+    /// Single-column quick picks on narrow content.
+    pub(crate) fn quick_picks_cols(&self) -> usize {
+        if self.content_width() < QUICK_TWO_COL_MIN_CONTENT {
+            1
+        } else {
+            2
+        }
     }
 
     /// Now Playing lyrics column: the center minus breathing room,
     /// held between a readable floor and a comfortable line length.
     pub(crate) fn lyrics_col_w(&self) -> f32 {
-        (self.center_width() - 64.0).clamp(280.0, 560.0)
+        if self.np_two_col() {
+            (self.content_width() - NP_HERO_COL_W - NP_COL_GAP).clamp(280.0, 640.0)
+        } else {
+            (self.center_width() - 64.0).clamp(280.0, 560.0)
+        }
+    }
+
+    /// Now Playing puts art and lyrics side by side on wide content.
+    pub(crate) fn np_two_col(&self) -> bool {
+        self.content_width() >= NP_TWO_COL_MIN_CONTENT
     }
 
     /// Usable body width inside the center padding, capped.
@@ -435,8 +514,6 @@ pub(crate) const DRAWER_TOP_RESERVE: f32 = 46.0;
 /// Center content cap on very wide windows (body only, header stays
 /// full bleed so search math never drifts).
 pub(crate) const CENTER_MAX_W: f32 = 1150.0;
-/// Window width past which the center body centers with margins.
-pub(crate) const CENTER_MARGIN_BREAK: f32 = 1600.0;
 
 /// Widget id of the header search input (focus probe + cursor ops).
 pub(crate) const SEARCH_INPUT_ID: &str = "yutu-search";

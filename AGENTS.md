@@ -121,6 +121,11 @@
   the content like before. All center geometry goes through
   `center_width()` / `content_width()`: never re-derive it from
   `sidebar_w` / `right_w`. Minimum window 360 x 480.
+  Content follows `content_width()`: rows drop the heart < 480,
+  headers stack < 560, quick picks single column < 600, Now Playing
+  two-column >= 900 (hero fixed, lyrics scroll alone; follow math
+  uses `LYRIC_STEPPER_H` there), Wide caps the body at 1400. Row
+  titles ellipsize to a per-frame char budget (`row_title_chars`).
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.

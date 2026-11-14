@@ -30,6 +30,14 @@
   rails that expand over the content on hover (#107).
 - The back and forward arrows hide when the window is too narrow (#107).
 - The window can no longer be shrunk below 360 x 480 (#107).
+- On narrow windows, song titles end in "…", quick picks use one column,
+  and album and artist headers stack the cover above the title.
+- Playlist, album and artist buttons wrap onto a second line instead of
+  being cut off on narrow windows.
+- Song rows hide the heart button on narrow windows; Add to favorites
+  stays in the right-click menu.
+- Very wide windows use more of the screen, and Now Playing shows the
+  cover beside the lyrics.
 
 ### Fixed
 

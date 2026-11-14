@@ -1343,7 +1343,13 @@ impl AppState {
         // Window minus header/player chrome (approximate: only shifts
         // the center, never loses the verse).
         let viewport = (wh - LYRIC_VIEWPORT_PAD).max(320.0);
-        let mut y = LYRIC_HERO_H + LYRIC_LIST_GAP;
+        // Two-column Now Playing: only the provider stepper sits above
+        // the lyrics inside the scroll (the hero lives beside it).
+        let mut y = if self.np_two_col() {
+            LYRIC_STEPPER_H + LYRIC_LIST_GAP
+        } else {
+            LYRIC_HERO_H + LYRIC_LIST_GAP
+        };
         let mut vi = 0usize;
         let mut target = None;
         for l in &cached.synced {
@@ -1643,6 +1649,50 @@ impl AppState {
             text("").size(1).into()
         };
         let stepper = self.lyrics_provider_stepper(&t.id);
+        // Wide content: art and titles stay put on the left while only
+        // the lyrics column scrolls (no sticky header needed).
+        if self.np_two_col() {
+            let lyrics_col = scrollable(
+                column![
+                    container(stepper)
+                        .width(Fill)
+                        .align_x(iced::alignment::Horizontal::Center),
+                    container(self.lyrics_content(&t.id))
+                        .width(iced::Length::Fixed(self.lyrics_col_w())),
+                ]
+                .spacing(LYRIC_LIST_GAP)
+                .width(iced::Length::Fixed(self.lyrics_col_w()))
+                .padding(iced::Padding {
+                    bottom: 40.0,
+                    ..iced::Padding::ZERO
+                }),
+            )
+            .height(Fill)
+            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
+            .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
+            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y));
+            let body: iced::Element<'_, Message> = container(
+                row![
+                    container(hero).width(iced::Length::Fixed(NP_HERO_COL_W)),
+                    lyrics_col,
+                ]
+                .spacing(NP_COL_GAP)
+                .height(Fill),
+            )
+            .width(Fill)
+            .height(Fill)
+            .padding(iced::Padding {
+                top: 24.0,
+                ..iced::Padding::ZERO
+            })
+            .align_x(iced::alignment::Horizontal::Center)
+            .into();
+            let track_id = t.id.clone();
+            return mouse_area(body)
+                .on_right_press(Message::OpenContext(track_id))
+                .into();
+        }
         let body: iced::Element<'_, Message> = column![
             sticky,
             scrollable(
@@ -2007,6 +2057,28 @@ impl AppState {
         .into()
     }
 
+    /// Album/artist page header: art beside the title block, or
+    /// stacked (smaller art on top) when the content is too narrow for
+    /// both side by side.
+    pub(crate) fn hero_header<'a>(
+        &'a self,
+        art_url: Option<&str>,
+        size: f32,
+        info: iced::Element<'a, Message>,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{column, row};
+        if self.hero_stacked() {
+            column![self.art_thumb(art_url, HERO_STACKED_ART), info]
+                .spacing(12)
+                .into()
+        } else {
+            row![self.art_thumb(art_url, size), info]
+                .spacing(16)
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        }
+    }
+
     pub(crate) fn center_view(&self) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{
@@ -2094,17 +2166,23 @@ impl AppState {
                 let quick_section: iced::Element<'_, Message> = if quick.is_empty() {
                     text("").size(1).into()
                 } else {
+                    // Two interleaved columns, or one on narrow content.
+                    let cols = self.quick_picks_cols();
                     let left: Vec<iced::Element<'_, Message>> = quick
                         .iter()
-                        .step_by(2)
+                        .step_by(cols)
                         .map(|t| self.home_song_row("quick", t))
                         .collect();
-                    let right: Vec<iced::Element<'_, Message>> = quick
-                        .iter()
-                        .skip(1)
-                        .step_by(2)
-                        .map(|t| self.home_song_row("quick", t))
-                        .collect();
+                    let right: Vec<iced::Element<'_, Message>> = if cols == 2 {
+                        quick
+                            .iter()
+                            .skip(1)
+                            .step_by(2)
+                            .map(|t| self.home_song_row("quick", t))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     column![
                         row![
                             text(self.language.quick_picks()).size(19).width(Fill),
@@ -2121,10 +2199,14 @@ impl AppState {
                             .padding(7),
                         ]
                         .align_y(iced::alignment::Vertical::Center),
-                        row![
-                            column(left).spacing(2).width(Fill),
-                            column(right).spacing(2).width(Fill),
-                        ]
+                        if right.is_empty() {
+                            row![column(left).spacing(2).width(Fill)]
+                        } else {
+                            row![
+                                column(left).spacing(2).width(Fill),
+                                column(right).spacing(2).width(Fill),
+                            ]
+                        }
                         .spacing(8),
                     ]
                     .spacing(10)
@@ -2822,9 +2904,11 @@ impl AppState {
                         Message::StartRadio(seed.id.clone()),
                     ),
                 };
+                let photo = self.artist_photo(&name);
                 column![
-                    row![
-                        self.art_thumb(self.artist_photo(&name).as_deref(), 160.0),
+                    self.hero_header(
+                        photo.as_deref(),
+                        160.0,
                         column![
                             text(self.language.artist_label()).size(12).color(MUTED),
                             text(name.clone()).size(30),
@@ -2844,13 +2928,14 @@ impl AppState {
                                 radio_btn,
                             ]
                             .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                         ]
                         .spacing(6)
-                        .width(Fill),
-                    ]
-                    .spacing(16)
-                    .align_y(iced::alignment::Vertical::Center),
+                        .width(Fill)
+                        .into(),
+                    ),
                     Self::section(self.language, self.language.popular(), popular),
                     show_all,
                     Self::section(
@@ -2915,8 +3000,9 @@ impl AppState {
                     )
                 };
                 column![
-                    row![
-                        self.art_thumb(cover.as_deref(), 180.0),
+                    self.hero_header(
+                        cover.as_deref(),
+                        180.0,
                         column![
                             text(self.language.album_label()).size(12).color(MUTED),
                             text(title.clone()).size(28),
@@ -2929,13 +3015,14 @@ impl AppState {
                                 ),
                             ]
                             .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                         ]
                         .spacing(6)
-                        .width(Fill),
-                    ]
-                    .spacing(16)
-                    .align_y(iced::alignment::Vertical::Center),
+                        .width(Fill)
+                        .into(),
+                    ),
                     column(rows).spacing(2),
                 ]
                 .spacing(12)
@@ -3100,9 +3187,13 @@ impl AppState {
                         text(self.language.playlist_sub(p.tracks.len()))
                             .size(12)
                             .color(MUTED),
+                        // Wraps onto a second line on narrow windows
+                        // instead of pushing the menu button off-screen.
                         iced::widget::Row::with_children(actions)
                             .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center),
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                         iced::widget::text_input(
                             self.language.playlist_filter_placeholder(),
                             &self.playlist_filter
@@ -3153,17 +3244,12 @@ impl AppState {
         // Rendered at window level (above the drawer), not here.
         // Very wide windows center a capped body so rows stop gluing
         // to the far edges; normal windows stay full bleed.
-        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-        let scrolled: iced::Element<'_, Message> = if ww > CENTER_MARGIN_BREAK {
+        let cap = self.content_cap();
+        let scrolled: iced::Element<'_, Message> = if self.center_width() > cap {
             scrollable(
-                container(
-                    container(body)
-                        .padding(20)
-                        .width(Fill)
-                        .max_width(CENTER_MAX_W),
-                )
-                .width(Fill)
-                .align_x(iced::alignment::Horizontal::Center),
+                container(container(body).padding(20).width(Fill).max_width(cap))
+                    .width(Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
             )
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("body")))
@@ -3267,6 +3353,7 @@ impl AppState {
     pub(crate) fn view_inner(&self) -> iced::Element<'_, Message> {
         use iced::widget::{column, container, mouse_area, row, text, Row, Stack};
         use iced::Fill;
+        set_row_title_chars(row_title_budget(self.content_width()));
         // The drawer covers the center body only: header (search) stays
         // visible at all times. Fully open it replaces the body so
         // nothing behind scrolls or clicks.

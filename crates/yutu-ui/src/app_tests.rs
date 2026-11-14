@@ -8080,6 +8080,46 @@ fn narrow_header_swaps_gear_for_drawer_buttons() {
 }
 
 #[test]
+fn content_adapts_to_width() {
+    let mut s = test_state();
+    // Narrow phone-sized window: one quick-picks column, no row
+    // heart, stacked headers, short titles, stacked Now Playing.
+    let _ = s.update(Message::WindowResized(iced::Size::new(360.0, 720.0)));
+    settle(&mut s);
+    assert_eq!(s.quick_picks_cols(), 1);
+    assert!(!s.rows_show_heart());
+    assert!(s.hero_stacked());
+    assert!(!s.np_two_col());
+    assert!(row_title_budget(s.content_width()) < 45);
+    // Normal window with both panels pinned: today's layout.
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    settle(&mut s);
+    assert_eq!(s.quick_picks_cols(), 2);
+    assert!(s.rows_show_heart());
+    assert!(!s.hero_stacked());
+    assert!(!s.np_two_col());
+    assert_eq!(row_title_budget(s.content_width()), 45);
+    assert_eq!(s.content_cap(), CENTER_MAX_W);
+    // Wide: raised cap, side-by-side Now Playing.
+    let _ = s.update(Message::WindowResized(iced::Size::new(1920.0, 1000.0)));
+    settle(&mut s);
+    assert_eq!(s.content_cap(), CENTER_MAX_W_WIDE);
+    assert!(s.np_two_col());
+    assert!(s.lyrics_col_w() <= 640.0 && s.lyrics_col_w() >= 280.0);
+    let _ = s.update(Message::WindowResized(iced::Size::new(2560.0, 1080.0)));
+    settle(&mut s);
+    assert!((s.content_width() - (CENTER_MAX_W_WIDE - 2.0 * BODY_PAD_X)).abs() < 0.01);
+}
+
+#[test]
+fn row_title_budget_bounds() {
+    assert_eq!(row_title_budget(0.0), 12);
+    assert_eq!(row_title_budget(2000.0), 45);
+    let mid = row_title_budget(400.0);
+    assert!(mid > 12 && mid < 45);
+}
+
+#[test]
 fn window_has_a_minimum_size() {
     let settings = window_settings();
     assert_eq!(
@@ -8116,6 +8156,7 @@ fn layout_snapshots() {
         "home",
         "search",
         "playlist",
+        "album",
         "settings",
         "nowplaying",
         "library",
@@ -8129,11 +8170,13 @@ fn layout_snapshots() {
             let mut s = test_state();
             let tracks: Vec<Track> = (0..14)
                 .map(|i| {
-                    mk_track(
+                    let mut t = mk_track(
                         &format!("t{i}"),
                         &format!("Song title number {i} with a longer name"),
                         &format!("Artist {i}"),
-                    )
+                    );
+                    t.album = Some("A Rather Long Album Title".into());
+                    t
                 })
                 .collect();
             for t in &tracks {
@@ -8161,6 +8204,9 @@ fn layout_snapshots() {
                     s.user_playlists[1].tracks = tracks.clone();
                     let pid = s.user_playlists[1].id.clone();
                     let _ = s.update(Message::OpenPlaylist(pid));
+                }
+                "album" => {
+                    let _ = s.update(Message::OpenAlbum("A Rather Long Album Title".into()));
                 }
                 "settings" => s.navigate(Route::Settings),
                 "nowplaying" => s.drawer_open = true,

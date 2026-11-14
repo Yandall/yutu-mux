@@ -53,14 +53,24 @@ impl AppState {
 
     /// One compact track row: green play, title/artist, heart. All other
     /// actions live on detail screens: this killed the button-soup.
+    /// Song row heart: hidden on narrow content (the title needs the
+    /// room; Add to favorites stays in the right-click menu).
+    pub(crate) fn row_heart(&self, t: &Track) -> iced::Element<'_, Message> {
+        use iced::widget::button;
+        if !self.rows_show_heart() {
+            return iced::widget::Space::new().into();
+        }
+        let liked = self.liked.contains(&t.id);
+        button(heart_icon(liked, 15.0, if liked { ACCENT } else { MUTED }))
+            .style(hover_row)
+            .on_press(Message::Like(t.id.clone()))
+            .padding(6)
+            .into()
+    }
+
     pub(crate) fn track_row(&self, scope: &str, t: &Track) -> iced::Element<'_, Message> {
         use iced::widget::{button, container, mouse_area, row};
         use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
-        } else {
-            MUTED
-        };
         let hover_id = track_hover_key(scope, &t.id);
         let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
         mouse_area(
@@ -73,10 +83,7 @@ impl AppState {
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
                     song_meta_text(t.plays.as_deref(), self.track_secs(t)),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
+                    self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
                         .style(hover_row)
                         .on_press(Message::OpenContext(t.id.clone()))
@@ -109,11 +116,6 @@ impl AppState {
     ) -> iced::Element<'_, Message> {
         use iced::widget::{button, container, mouse_area, row, text};
         use iced::Fill;
-        let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
-        } else {
-            MUTED
-        };
         let hover_id = track_hover_key("playlist", &t.id);
         let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str())
             || self.pl_hover == Some(index);
@@ -145,10 +147,7 @@ impl AppState {
                     .padding(3)
                     .width(Fill),
                     text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
-                    button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                        .style(hover_row)
-                        .on_press(Message::Like(t.id.clone()))
-                        .padding(6),
+                    self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
                         .style(hover_row)
                         .on_press(Message::OpenContext(t.id.clone()))
@@ -194,11 +193,6 @@ impl AppState {
         // No live-origin branch: while live-dragging the origin is held by
         // the floating ghost and the list shows a gap instead, so this
         // always renders the plain row.
-        let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
-        } else {
-            MUTED
-        };
         let hover_id = track_hover_key("playlist", &t.id);
         let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str())
             || self.pl_hover == Some(index);
@@ -208,12 +202,7 @@ impl AppState {
         // clean press/release plays via the DragEnd snapshot; a move to
         // a slot reorders instead. Same one-press-path contract as the
         // queue row.
-        let heart_btn: iced::Element<'_, Message> =
-            button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
-                .style(hover_row)
-                .on_press(Message::Like(t.id.clone()))
-                .padding(6)
-                .into();
+        let heart_btn: iced::Element<'_, Message> = self.row_heart(t);
         let more_btn: iced::Element<'_, Message> = button(btn_icon("ellipsis", 15.0, MUTED))
             .style(hover_row)
             .on_press(Message::OpenContext(t.id.clone()))
