@@ -56,6 +56,9 @@
 
 ### Fixed
 
+- Icon buttons (repeat, mute, like, panel pins) hover with a round
+  highlight like the other player buttons; the narrow-window menu
+  and queue buttons now show a hover too.
 - Narrow windows no longer dim and stop responding to clicks when no
   drawer is open (#109).
 - The Now Playing button in the player no longer shrinks on tight

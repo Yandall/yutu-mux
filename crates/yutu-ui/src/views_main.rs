@@ -150,7 +150,7 @@ impl AppState {
                 16.0,
                 if self.sidebar_pinned { ACCENT } else { MUTED },
             ))
-            .style(hover_row)
+            .style(icon_hover)
             .on_press(Message::ToggleSidebarPin)
             .padding(8)
             .into(),
@@ -922,7 +922,7 @@ impl AppState {
                 16.0,
                 if self.right_pinned { ACCENT } else { MUTED },
             ))
-            .style(hover_row)
+            .style(icon_hover)
             .on_press(Message::ToggleRightPin)
             .padding(6)
             .into(),
@@ -1006,7 +1006,7 @@ impl AppState {
             14.0,
             MUTED,
         )))
-        .style(hover_row)
+        .style(icon_hover)
         .on_press(Message::ToggleMute)
         .padding(6)
         .into()
@@ -1063,7 +1063,7 @@ impl AppState {
                     15.0,
                     heart_color,
                 )))
-                .style(hover_row)
+                .style(icon_hover)
                 .on_press(Message::Like(t.id.clone()))
                 .padding(6)
                 .into()
@@ -1111,7 +1111,7 @@ impl AppState {
                         15.0,
                         heart_color,
                     )))
-                    .style(hover_row)
+                    .style(icon_hover)
                     .on_press(Message::Like(t.id.clone()))
                     .padding(6)
                     .into()
@@ -1697,7 +1697,7 @@ impl AppState {
                     MUTED
                 }
             ))
-            .style(hover_row)
+            .style(icon_hover)
             .on_press(Message::Like(t.id.clone()))
             .padding(7),]
             .spacing(8)
@@ -2032,7 +2032,7 @@ impl AppState {
         if narrow {
             h = h.push(
                 button(btn_icon("menu", 18.0, iced::Color::WHITE))
-                    .style(nav_arrow)
+                    .style(icon_hover)
                     .on_press(Message::ToggleLibraryDrawer)
                     .padding(12),
             );
@@ -2054,7 +2054,7 @@ impl AppState {
                         iced::Color::WHITE
                     },
                 ))
-                .style(nav_arrow)
+                .style(icon_hover)
                 .on_press(Message::ToggleQueueDrawer)
                 .padding(12),
             );

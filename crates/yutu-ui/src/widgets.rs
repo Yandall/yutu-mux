@@ -316,7 +316,7 @@ pub(crate) fn ctrl_box(content: iced::Element<'_, Message>) -> iced::Element<'_,
 }
 
 /// Repeat transport button: icon only, never a text badge. Repeat Off
-/// renders the muted glyph on the transparent row hover; All renders
+/// renders the muted glyph on the round `icon_hover`; All renders
 /// the white repeat glyph on the red CTA (active); One renders the
 /// white `repeat-1` glyph (the 1 lives inside the icon) on the red CTA.
 /// Keeping every transport button the same 18px content width keeps
@@ -329,7 +329,7 @@ pub(crate) fn repeat_button<'a>(
 ) -> iced::Element<'a, Message> {
     use iced::widget::button;
     let style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style =
-        if active { accent_button } else { hover_row };
+        if active { accent_button } else { icon_hover };
     let color = if active { iced::Color::WHITE } else { MUTED };
     button(ctrl_box(btn_icon(repeat_icon, 14.0, color)))
         .style(style)
