@@ -63,6 +63,23 @@ pub(crate) fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Now Playing backdrop veil: the card surface fading in from light
+/// at the top (cover colors show) to heavy at the bottom (lyrics read
+/// on a near-plain surface).
+pub(crate) fn np_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
+    let top = iced::Color { a: 0.25, ..CARD_BG };
+    let bottom = iced::Color { a: 0.85, ..CARD_BG };
+    iced::widget::container::Style {
+        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                .add_stop(0.0, top)
+                .add_stop(1.0, bottom),
+        ))),
+        border: iced::Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
 /// Floating side panel (Medium hover expand, Narrow drawer): the panel
 /// surface plus a soft shadow so it reads as above the content.
 pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Style {

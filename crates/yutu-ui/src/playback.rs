@@ -39,6 +39,47 @@ impl AppState {
         Self::hero_art_url(merged)
     }
 
+    /// Now Playing backdrop: once the current cover is on disk, decode
+    /// it on a blocking thread and keep an 8x8 downscale (a few bytes;
+    /// the drawer stretches it with linear filtering, which reads as a
+    /// heavy blur of the cover's colors). Polled from Tick while the
+    /// drawer is open, so it lands whenever the cover does.
+    pub(crate) fn art_blur_task(&mut self) -> iced::Task<Message> {
+        if !self.drawer_open {
+            return iced::Task::none();
+        }
+        let Some(url) = self.queue.current().and_then(|t| self.hero_art_for(t)) else {
+            return iced::Task::none();
+        };
+        if self.art_blur.contains_key(&url) || self.art_blur_loading.contains(&url) {
+            return iced::Task::none();
+        }
+        let Some(path) = artwork_path_for(&url).filter(|p| std::path::Path::new(p).exists()) else {
+            return iced::Task::none();
+        };
+        self.art_blur_loading.insert(url.clone());
+        iced::Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let img = image::open(&path).ok()?;
+                    let small = img.resize_exact(
+                        ART_BLUR_PX,
+                        ART_BLUR_PX,
+                        image::imageops::FilterType::Triangle,
+                    );
+                    Some(small.to_rgba8().into_raw())
+                })
+                .await
+                .ok()
+                .flatten()
+            },
+            move |rgba| Message::ArtBlurReady {
+                url: url.clone(),
+                rgba,
+            },
+        )
+    }
+
     /// Fetch the hero artwork unless cached/in-flight/cooled (drawer
     /// hero): the large URL first, falling back to the small one like
     /// the hero does. Catalog-aware so stale rows warm the same key

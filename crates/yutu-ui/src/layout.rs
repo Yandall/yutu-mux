@@ -259,6 +259,14 @@ pub(crate) const NP_HERO_COL_W: f32 = 320.0;
 pub(crate) const NP_COL_GAP: f32 = 40.0;
 /// Provider stepper height above the lyrics (two-column follow math).
 pub(crate) const LYRIC_STEPPER_H: f32 = 30.0;
+/// Now Playing backdrop: downscale edge (pixels) and cache size.
+pub(crate) const ART_BLUR_PX: u32 = 8;
+pub(crate) const ART_BLUR_CAP: usize = 64;
+/// How strongly the stretched cover shows through the sheet.
+pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
+/// Side slot width in the stacked player: holds the time labels on the
+/// seek row and the mute button on the volume row, so both bars line up.
+pub(crate) const MINI_SIDE_W: f32 = 40.0;
 /// Content width below which album/artist headers stack, and the
 /// stacked art size.
 pub(crate) const HERO_STACK_BELOW: f32 = 560.0;

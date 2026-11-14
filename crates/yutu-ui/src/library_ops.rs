@@ -920,6 +920,14 @@ impl AppState {
     /// Album header cover (180px): hires of the first track thumb, else
     /// the album thumb. Shared by the album view and `OpenAlbum` warming
     /// so the key never drifts (row slots only warm row rasters now).
+    /// Playlist header cover source: the first song (catalog copy when
+    /// known, for fresher art), same pick as the Home card.
+    pub(crate) fn playlist_cover_track(&self, id: &str) -> Option<Track> {
+        let p = self.find_playlist(id)?;
+        let first = p.tracks.first()?;
+        Some(self.find_track(&first.id).unwrap_or_else(|| first.clone()))
+    }
+
     pub(crate) fn album_header_cover(&self, id: &str) -> Option<String> {
         let title = self.resolve_album_title(id);
         self.album_tracks(id)

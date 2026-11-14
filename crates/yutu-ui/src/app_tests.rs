@@ -8112,6 +8112,60 @@ fn content_adapts_to_width() {
 }
 
 #[test]
+fn now_playing_backdrop_caches_and_caps() {
+    let mut s = test_state();
+    let px = ART_BLUR_PX as usize;
+    let rgba = vec![128u8; px * px * 4];
+    // A decode failure stores nothing and clears the in-flight mark.
+    s.art_blur_loading.insert("u0".into());
+    let _ = s.update(Message::ArtBlurReady {
+        url: "u0".into(),
+        rgba: None,
+    });
+    assert!(s.art_blur.is_empty());
+    assert!(!s.art_blur_loading.contains("u0"));
+    for i in 0..ART_BLUR_CAP + 1 {
+        let _ = s.update(Message::ArtBlurReady {
+            url: format!("u{i}"),
+            rgba: Some(rgba.clone()),
+        });
+    }
+    // Never grows past the cap; the latest cover is always kept.
+    assert!(s.art_blur.len() <= ART_BLUR_CAP);
+    assert!(s.art_blur.contains_key(&format!("u{ART_BLUR_CAP}")));
+}
+
+#[test]
+fn backdrop_only_decodes_while_now_playing_is_open() {
+    let mut s = test_state();
+    let mut t = mk_track("bd1", "Song", "A");
+    t.thumbnail_url = Some("https://example.invalid/bd1.jpg".into());
+    s.queue.push(t);
+    s.drawer_open = false;
+    let _ = s.art_blur_task();
+    assert!(s.art_blur_loading.is_empty());
+    // Open but the cover is not on disk yet: nothing to decode.
+    s.drawer_open = true;
+    let _ = s.art_blur_task();
+    assert!(s.art_blur_loading.is_empty());
+}
+
+#[test]
+fn playlist_cover_is_the_first_song() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Covers".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Covers")
+        .unwrap();
+    let pid = s.user_playlists[i].id.clone();
+    assert!(s.playlist_cover_track(&pid).is_none());
+    s.user_playlists[i].tracks = vec![mk_track("c1", "First", "A"), mk_track("c2", "Second", "B")];
+    assert_eq!(s.playlist_cover_track(&pid).unwrap().id, "c1");
+}
+
+#[test]
 fn row_title_budget_bounds() {
     assert_eq!(row_title_budget(0.0), 12);
     assert_eq!(row_title_budget(2000.0), 45);
@@ -8209,7 +8263,33 @@ fn layout_snapshots() {
                     let _ = s.update(Message::OpenAlbum("A Rather Long Album Title".into()));
                 }
                 "settings" => s.navigate(Route::Settings),
-                "nowplaying" => s.drawer_open = true,
+                "nowplaying" => {
+                    s.drawer_open = true;
+                    // Fake cover backdrop (no network): a warm-to-cool
+                    // 8x8 ramp under the playing track's hero URL.
+                    let mut t = s.queue.current().cloned().unwrap();
+                    t.thumbnail_url = Some("https://example.invalid/cover.jpg".into());
+                    let url = AppState::hero_art_url(&t).unwrap();
+                    s.catalog.insert(t.id.clone(), t);
+                    let px = ART_BLUR_PX as usize;
+                    let mut rgba = Vec::with_capacity(px * px * 4);
+                    for y in 0..px {
+                        for x in 0..px {
+                            let fx = x as f32 / (px - 1) as f32;
+                            let fy = y as f32 / (px - 1) as f32;
+                            rgba.extend_from_slice(&[
+                                (230.0 * (1.0 - fx)) as u8,
+                                (60.0 + 120.0 * fy) as u8,
+                                (200.0 * fx) as u8,
+                                255,
+                            ]);
+                        }
+                    }
+                    s.art_blur.insert(
+                        url,
+                        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba),
+                    );
+                }
                 "library" => {
                     if s.layout().panels_overlay() {
                         s.sidebar_latched = true;

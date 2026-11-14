@@ -204,7 +204,6 @@ impl AppState {
             .all_playlists()
             .into_iter()
             .filter(|pl| q.is_empty() || pl.title.to_lowercase().contains(&q))
-            .take(20)
             .map(|pl| {
                 let art: iced::Element<'_, Message> = pl
                     .tracks
@@ -275,7 +274,17 @@ impl AppState {
             .color(MUTED)
             .into()
         } else {
-            column(rows).spacing(2).into()
+            // Scrolls on its own between the filter and the new
+            // playlist row, so both stay reachable on short windows.
+            iced::widget::scrollable(column(rows).spacing(2).padding(iced::Padding {
+                right: 10.0,
+                ..iced::Padding::ZERO
+            }))
+            .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+            .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("sidebar")))
+            .on_scroll(|v| Message::Scrolled("sidebar", v.absolute_offset().y))
+            .height(Fill)
+            .into()
         };
         container(
             column![
@@ -1145,21 +1154,30 @@ impl AppState {
                     .push(info)
                     .push(transport_centered)
                     .push(
+                        // Fixed side slots shared with the volume row, so
+                        // both bars start and end at the same x.
                         row![
-                            text(fmt_time(shown_pos)).size(11).color(MUTED),
+                            container(text(fmt_time(shown_pos)).size(11).color(MUTED))
+                                .width(iced::Length::Fixed(MINI_SIDE_W))
+                                .align_x(iced::alignment::Horizontal::Center),
                             seek_bar::seek_bar(shown_pos as f32, slider_max as f32),
-                            text(fmt_time(duration)).size(11).color(MUTED),
+                            container(text(fmt_time(duration)).size(11).color(MUTED))
+                                .width(iced::Length::Fixed(MINI_SIDE_W))
+                                .align_x(iced::alignment::Horizontal::Center),
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
                     .push(
                         row![
-                            self.mute_button(),
+                            container(self.mute_button())
+                                .width(iced::Length::Fixed(MINI_SIDE_W))
+                                .align_x(iced::alignment::Horizontal::Center),
                             pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
                                 .step(0.01_f32)
                                 .style(themed_slider)
                                 .width(Fill),
+                            iced::widget::Space::new().width(iced::Length::Fixed(MINI_SIDE_W)),
                         ]
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
@@ -3182,18 +3200,30 @@ impl AppState {
                             .padding(8)
                             .into(),
                     );
+                    let cover = self
+                        .playlist_cover_track(&p.id)
+                        .and_then(|t| self.hero_art_for(&t));
                     column![
-                        text(p.title.clone()).size(24),
-                        text(self.language.playlist_sub(p.tracks.len()))
-                            .size(12)
-                            .color(MUTED),
-                        // Wraps onto a second line on narrow windows
-                        // instead of pushing the menu button off-screen.
-                        iced::widget::Row::with_children(actions)
-                            .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center)
-                            .wrap()
-                            .vertical_spacing(8),
+                        self.hero_header(
+                            cover.as_deref(),
+                            180.0,
+                            column![
+                                text(p.title.clone()).size(28),
+                                text(self.language.playlist_sub(p.tracks.len()))
+                                    .size(12)
+                                    .color(MUTED),
+                                // Wraps onto a second line on narrow windows
+                                // instead of pushing the menu button off-screen.
+                                iced::widget::Row::with_children(actions)
+                                    .spacing(8)
+                                    .align_y(iced::alignment::Vertical::Center)
+                                    .wrap()
+                                    .vertical_spacing(8),
+                            ]
+                            .spacing(6)
+                            .width(Fill)
+                            .into(),
+                        ),
                         iced::widget::text_input(
                             self.language.playlist_filter_placeholder(),
                             &self.playlist_filter
@@ -4290,21 +4320,14 @@ impl AppState {
         Stack::with_children(layers).into()
     }
 
-    /// Now Playing sheet that overlays the center column (drawer slide).
-    /// Gated on `drawer_anim` by the caller.
-    pub(crate) fn drawer_layer(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+    /// Now Playing sheet (shared by the sliding and fully open layers):
+    /// the cover's colors stretched into soft blobs behind the content,
+    /// darkened toward the bottom so lyrics stay readable. Falls back to
+    /// the plain card surface until the backdrop is ready.
+    pub(crate) fn drawer_sheet(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{button, column, container, image, row, text, Space, Stack};
         use iced::Fill;
-        let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
-        // The sheet lives in the center column below the header: a fixed
-        // top reserve keeps the header (nav + search) always visible, and
-        // the sheet runs to the bottom with no trailing gap. The open
-        // animation shrinks the sheet upward instead of pushing past the
-        // bottom edge, so the column height stays constant mid-glide.
-        let center_h = (win_h - 148.0).max(300.0);
-        let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
-        let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
-        let sheet: iced::Element<'_, Message> = container(
+        let content = container(
             column![
                 row![
                     button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
@@ -4321,11 +4344,57 @@ impl AppState {
             ]
             .spacing(8),
         )
-        .style(card_bg)
         .padding(16)
         .width(Fill)
-        .height(Fill)
-        .into();
+        .height(Fill);
+        let blur = self
+            .queue
+            .current()
+            .and_then(|t| self.hero_art_for(t))
+            .and_then(|u| self.art_blur.get(&u).cloned());
+        let mut layers: Vec<iced::Element<'_, Message>> = vec![container(Space::new())
+            .style(card_bg)
+            .width(Fill)
+            .height(Fill)
+            .into()];
+        if let Some(handle) = blur {
+            layers.push(
+                image(handle)
+                    .content_fit(iced::ContentFit::Cover)
+                    .filter_method(image::FilterMethod::Linear)
+                    .opacity(NP_BACKDROP_OPACITY)
+                    .border_radius(8.0)
+                    .width(Fill)
+                    .height(Fill)
+                    .into(),
+            );
+            layers.push(
+                container(Space::new())
+                    .style(np_backdrop_veil)
+                    .width(Fill)
+                    .height(Fill)
+                    .into(),
+            );
+        }
+        layers.push(content.into());
+        Stack::with_children(layers).width(Fill).height(Fill).into()
+    }
+
+    /// Now Playing sheet that overlays the center column (drawer slide).
+    /// Gated on `drawer_anim` by the caller.
+    pub(crate) fn drawer_layer(&self) -> iced::Element<'_, Message> {
+        use iced::widget::{column, container};
+        use iced::Fill;
+        let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
+        // The sheet lives in the center column below the header: a fixed
+        // top reserve keeps the header (nav + search) always visible, and
+        // the sheet runs to the bottom with no trailing gap. The open
+        // animation shrinks the sheet upward instead of pushing past the
+        // bottom edge, so the column height stays constant mid-glide.
+        let center_h = (win_h - 148.0).max(300.0);
+        let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
+        let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
+        let sheet = self.drawer_sheet();
         // Spacer plus Fill sheet: bottom leftover is always 0 at rest so
         // the drawer meets the player bar exactly like the sidebars.
         container(column![
@@ -4340,34 +4409,13 @@ impl AppState {
     /// Drawer body without the header reserve (used under the persistent
     /// header when fully open, so no double gap appears).
     pub(crate) fn drawer_body_layer(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{column, container};
         use iced::Fill;
         let win_h = self.window.map(|s| s.height).unwrap_or(800.0);
         let center_h = (win_h - 148.0).max(300.0);
         let sheet_h = (center_h - DRAWER_TOP_RESERVE).max(0.0);
         let offset = (1.0 - self.drawer_anim).max(0.0) * sheet_h;
-        let sheet: iced::Element<'_, Message> = container(
-            column![
-                row![
-                    button(ctrl_box(btn_icon("chevron-down", 14.0, iced::Color::WHITE)))
-                        .style(hover_row)
-                        .on_press(Message::ToggleDrawer)
-                        .padding(7),
-                    text(self.language.now_playing())
-                        .size(13)
-                        .color(MUTED)
-                        .width(Fill),
-                ]
-                .align_y(iced::alignment::Vertical::Center),
-                self.drawer_view(),
-            ]
-            .spacing(8),
-        )
-        .style(card_bg)
-        .padding(16)
-        .width(Fill)
-        .height(Fill)
-        .into();
+        let sheet = self.drawer_sheet();
         container(column![
             iced::widget::Space::new().height(iced::Length::Fixed(offset)),
             sheet,

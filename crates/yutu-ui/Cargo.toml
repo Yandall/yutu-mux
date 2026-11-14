@@ -17,6 +17,9 @@ num-traits = "0.2"
 # System font enumeration for the Settings family picker (same
 # database iced resolves names through, so every row renders).
 fontdb = "0.23"
+# Now Playing backdrop: decode a cover and shrink it to a few pixels
+# (already in the tree through iced's image feature).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # tokio rt: the system font scan runs on a blocking thread at startup.
 tokio = { version = "1", features = ["time", "sync", "rt"] }
 futures = "0.3"

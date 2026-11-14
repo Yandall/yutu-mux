@@ -627,9 +627,14 @@ impl AppState {
                 self.cancel_pl_drag();
                 self.pl_hover = None;
                 self.pl_action_hover = None;
+                // Header cover: the first song's large art (same pick as
+                // the Home card), warmed here so it lands with the page.
+                let cover = self
+                    .playlist_cover_track(&id)
+                    .and_then(|t| self.large_art_task(&t));
                 self.go(Route::PlaylistDetail(id));
                 self.publish_mpris();
-                return self.ensure_visible_tasks();
+                return iced::Task::batch([self.ensure_visible_tasks()].into_iter().chain(cover));
             }
             Message::OpenLyrics(id) => {
                 self.close_menu();
@@ -736,6 +741,18 @@ impl AppState {
                     }
                 }
                 return self.update(Message::SetLyricsProvider(next));
+            }
+            Message::ArtBlurReady { url, rgba } => {
+                self.art_blur_loading.remove(&url);
+                if let Some(rgba) = rgba {
+                    // Tiny entries, but a long session plays many songs.
+                    if self.art_blur.len() >= ART_BLUR_CAP {
+                        self.art_blur.clear();
+                    }
+                    let handle =
+                        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba);
+                    self.art_blur.insert(url, handle);
+                }
             }
             Message::ArtworkReady { url, result } => {
                 self.artwork_loading.remove(&url);
@@ -3534,7 +3551,7 @@ impl AppState {
             }
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
-                let mut tasks = vec![self.drain_player_commands()];
+                let mut tasks = vec![self.drain_player_commands(), self.art_blur_task()];
                 // First frame after launch: lazily fetch only the Home
                 // screenful (cached titles + disk covers already painted).
                 // Startup itself does zero network so the window opens fast.
