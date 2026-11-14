@@ -277,6 +277,12 @@ impl Language {
             Self::Spanish => "Buscar en el historial…",
         }
     }
+    pub fn playlist_filter_placeholder(self) -> &'static str {
+        match self {
+            Self::English => "Search in playlist…",
+            Self::Spanish => "Buscar en la lista…",
+        }
+    }
     pub fn sidebar_filter_placeholder(self) -> &'static str {
         match self {
             Self::English => "Filter playlists…",

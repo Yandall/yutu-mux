@@ -1711,6 +1711,48 @@ fn playlist_click_plays_from_clicked_row() {
 }
 
 #[test]
+fn playlist_search_click_queues_the_full_playlist() {
+    let mut s = test_state();
+    let tracks: Vec<Track> = ["Alpha", "Bravo", "Charlie", "Delta"]
+        .iter()
+        .enumerate()
+        .map(|(i, title)| mk_track(&format!("t{i}"), title, "Artist"))
+        .collect();
+    s.user_playlists.push(Playlist {
+        id: "u1".into(),
+        title: "Gym".into(),
+        tracks,
+    });
+    s.navigate(Route::PlaylistDetail("u1".into()));
+    let _ = s.update(Message::PlaylistFilterChanged("charl".into()));
+    // Filtered page renders (match and no-match) with no panic.
+    let _ = s.view();
+    // A click in the filtered view queues as if there were no search:
+    // the clicked song plus the rest of the full list after it.
+    let _ = s.update(Message::PlayPlaylistAt {
+        playlist_id: "u1".into(),
+        index: 2,
+        track_id: "t2".into(),
+    });
+    assert_eq!(
+        s.queue
+            .items()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>(),
+        vec!["t2".to_string(), "t3".to_string()]
+    );
+    let _ = s.update(Message::PlaylistFilterChanged("zzz".into()));
+    let _ = s.view();
+    // Leaving the page drops the search text.
+    s.navigate(Route::History);
+    assert!(s.playlist_filter.is_empty());
+    s.playlist_filter = "x".into();
+    s.go_back();
+    assert!(s.playlist_filter.is_empty());
+}
+
+#[test]
 fn playlist_sort_orders_tracks_all_picks() {
     let mut s = test_state();
     let mut t1 = mk_track("t1", "Banana", "Zebra");

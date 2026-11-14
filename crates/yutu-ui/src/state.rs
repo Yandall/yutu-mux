@@ -742,6 +742,9 @@ pub enum Message {
     ArtistTopExpand,
     SidebarFilterChanged(String),
     HistoryFilterChanged(String),
+    /// Playlist detail search text (filters rows only; a click still
+    /// queues the whole playlist from that song on).
+    PlaylistFilterChanged(String),
     /// History page: render the next window of older plays.
     HistoryMore,
     CookiePathChanged(String),

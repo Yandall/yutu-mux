@@ -2766,10 +2766,32 @@ impl AppState {
                     // full-row gap at the commit target (siblings shift to
                     // make room); only the transparent slot lanes appear
                     // on top of that.
-                    let list: iced::Element<'_, Message> = if !is_fav
-                        && sort == PlaylistSort::Manual
-                        && ordered.len() >= 2
-                    {
+                    // Search: display-only filter on title/artist. Rows
+                    // keep their full-list index, so a click queues the
+                    // whole playlist from that song on exactly like the
+                    // unfiltered view. Drag reorder pauses while filtered
+                    // (a partial list has no honest drop slots).
+                    let q = self.playlist_filter.trim().to_lowercase();
+                    let filtering = !q.is_empty();
+                    let list: iced::Element<'_, Message> = if filtering {
+                        let rows: Vec<iced::Element<'_, Message>> = ordered
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, t)| {
+                                t.title.to_lowercase().contains(&q)
+                                    || t.artist.to_lowercase().contains(&q)
+                            })
+                            .map(|(i, t)| self.playlist_track_row(&pid, t, i))
+                            .collect();
+                        if rows.is_empty() {
+                            text(self.language.no_songs_for(self.playlist_filter.trim()))
+                                .size(12)
+                                .color(MUTED)
+                                .into()
+                        } else {
+                            column(rows).spacing(2).into()
+                        }
+                    } else if !is_fav && sort == PlaylistSort::Manual && ordered.len() >= 2 {
                         let len = ordered.len();
                         let from = self.pl_drag.map(|d| d.from).unwrap_or(0);
                         let live = self.pl_dragging()
@@ -2862,6 +2884,14 @@ impl AppState {
                         iced::widget::Row::with_children(actions)
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center),
+                        iced::widget::text_input(
+                            self.language.playlist_filter_placeholder(),
+                            &self.playlist_filter
+                        )
+                        .style(rounded_input)
+                        .on_input(Message::PlaylistFilterChanged)
+                        .width(Fill)
+                        .padding(10),
                         list,
                     ]
                     .spacing(10)

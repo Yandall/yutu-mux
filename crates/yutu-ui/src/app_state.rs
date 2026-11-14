@@ -41,6 +41,9 @@ pub struct AppState {
     pub history_full: Vec<HistoryEntry>,
     /// History page search text (in-memory only, never persisted).
     pub history_filter: String,
+    /// Playlist detail search text (in-memory only, cleared on any
+    /// navigation). Display-only: clicks still queue the full list.
+    pub playlist_filter: String,
     /// History page render window (newest first; "Show more" pages in
     /// older plays). Full rows are built on every view, so an uncapped
     /// multi-thousand log stalls frames.

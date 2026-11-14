@@ -2816,6 +2816,12 @@ impl AppState {
             Message::SidebarFilterChanged(f) => {
                 self.sidebar_filter = f;
             }
+            Message::PlaylistFilterChanged(f) => {
+                self.playlist_filter = f;
+                // Rows keep their full-list index, but the one under
+                // the cursor may have vanished: drop the stale hover.
+                self.pl_hover = None;
+            }
             Message::HistoryFilterChanged(f) => {
                 self.history_filter = f;
                 // A new query restarts the render window (and any stale

@@ -70,6 +70,7 @@ impl AppState {
                 .collect(),
             history_full,
             history_filter: String::new(),
+            playlist_filter: String::new(),
             history_limit: HISTORY_PAGE_SIZE,
             volume: 0.8,
             muted: false,
@@ -481,6 +482,7 @@ impl AppState {
         self.pl_hover = None;
         self.pl_action_hover = None;
         if route != self.route {
+            self.playlist_filter.clear();
             self.nav_back.push(self.route.clone());
             if self.nav_back.len() > 50 {
                 self.nav_back.remove(0);
@@ -499,6 +501,7 @@ impl AppState {
         self.pl_hover = None;
         self.pl_action_hover = None;
         if let Some(prev) = self.nav_back.pop() {
+            self.playlist_filter.clear();
             self.nav_forward.push(self.route.clone());
             self.route = prev;
         }
@@ -513,6 +516,7 @@ impl AppState {
         self.pl_hover = None;
         self.pl_action_hover = None;
         if let Some(next) = self.nav_forward.pop() {
+            self.playlist_filter.clear();
             self.nav_back.push(self.route.clone());
             self.route = next;
         }
