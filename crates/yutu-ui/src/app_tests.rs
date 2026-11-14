@@ -8437,6 +8437,9 @@ fn layout_snapshots() {
                     if s.layout().panels_overlay() {
                         s.sidebar_latched = true;
                     }
+                    // Hovered row shows its play button.
+                    s.user_playlists[1].tracks = tracks.clone();
+                    s.hovered_playlist = Some(s.user_playlists[1].id.clone());
                 }
                 "queue" => {
                     if s.layout().panels_overlay() {

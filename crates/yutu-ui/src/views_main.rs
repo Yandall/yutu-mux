@@ -229,8 +229,7 @@ impl AppState {
                     button(btn_icon("play", 14.0, iced::Color::WHITE))
                         .style(accent_button)
                         .on_press(Message::PlayPlaylist(pl.id.clone()))
-                        .padding([12, 16])
-                        .height(iced::Length::Fixed(PILL_H))
+                        .padding(8)
                         .into()
                 } else {
                     iced::widget::Space::new()
@@ -1135,8 +1134,7 @@ impl AppState {
                 button(ctrl_box(btn_icon(play_icon, 18.0, iced::Color::WHITE)))
                     .style(accent_button)
                     .on_press(Message::TogglePause)
-                    .padding([12, 16])
-                    .height(iced::Length::Fixed(PILL_H)),
+                    .padding(8),
                 button(ctrl_box(btn_icon("skip-forward", 18.0, iced::Color::WHITE)))
                     .style(icon_hover)
                     .on_press(Message::Next)
