@@ -16,9 +16,15 @@
   you click into them (#105).
 - Narrow windows (under 800px) open the library and queue as drawers
   from new header buttons; Settings moves into the library drawer (#107).
+- Album pages get a more button with Play, Shuffle, Add to queue, Add
+  to playlist, Start mix and Go to artist.
+- Right-click any album card, or the album shown as top search result,
+  for the same album menu, including Add the whole album to a playlist.
 
 ### Changed
 
+- Album pages list songs like YouTube Music: track number, title,
+  plays and length, without a cover or artist on every row.
 - Clicking a recommended album on Home opens its album page instead of
   playing it right away (#112).
 - Clicking a playlist in search results opens a playlist page with its
@@ -60,6 +66,9 @@
 
 ### Fixed
 
+- Album songs no longer lose their play counts after playing them.
+- Album songs that also have a music video show the album cover, in the
+  queue and the player too, instead of a video frame.
 - Albums with the same name by different artists (like two "Greatest
   Hits") no longer open each other's page or mix their songs (#112).
 - An album page now shows the same cover as its card, instead of a

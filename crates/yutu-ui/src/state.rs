@@ -410,6 +410,15 @@ pub enum Message {
         playlist_id: String,
         track_id: String,
     },
+    /// Add every song of an album (displayed tracklist order) to a
+    /// playlist, skipping songs already in it (album menu flyout).
+    AddAlbumToPlaylist {
+        playlist_id: String,
+        album_id: String,
+    },
+    /// Append an album to the queue (album menu): never hijacks
+    /// playback, like Add to queue everywhere else.
+    QueueAlbum(String),
     /// Delete the playlist, from its confirm dialog (the menu row only
     /// arms the dialog via [`Message::RequestDeletePlaylist`]).
     DeletePlaylist(String),

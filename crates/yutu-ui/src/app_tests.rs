@@ -8678,7 +8678,14 @@ fn layout_snapshots() {
                     let _ = s.update(Message::OpenPlaylist(pid));
                 }
                 "album" => {
+                    for t in &tracks {
+                        s.catalog.insert(t.id.clone(), t.clone());
+                    }
                     let _ = s.update(Message::OpenAlbum("A Rather Long Album Title".into()));
+                    // Offline: the title resolve never lands, so show
+                    // the catalog rows instead of the loading line.
+                    s.album_resolving = None;
+                    s.hovered_track = Some(track_hover_key("album", "t4"));
                 }
                 "settings" => s.navigate(Route::Settings),
                 "history" => s.navigate(Route::History),
@@ -10236,4 +10243,132 @@ fn playback_teaches_a_missing_length_once() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+/// Album page fixture: a searched album whose live tracklist carries
+/// the album cover, one song already known from search as a music
+/// video (video-frame art, no count).
+fn album_page_state() -> AppState {
+    let mut s = test_state();
+    s.results.albums.push(Album {
+        id: "MPREporf".into(),
+        title: "Porfiado".into(),
+        artist: "El Cuarteto de Nos".into(),
+        year: Some(2012),
+        thumbnail_url: Some("https://example.invalid/cover=w60-h60".into()),
+    });
+    let mut video = mk_track("al2", "Cuando sea grande", "El Cuarteto de Nos");
+    video.thumbnail_url = Some("https://i.ytimg.com/vi/al2/frame.jpg".into());
+    video.is_video = true;
+    s.catalog.insert("al2".into(), video);
+    let live: Vec<Track> = ["al1", "al2", "al3"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let mut t = mk_track(id, &format!("Song {i}"), "El Cuarteto de Nos");
+            t.album = Some("Porfiado".into());
+            t.plays = Some(format!("{}M plays", i + 1));
+            t.thumbnail_url = Some("https://example.invalid/cover=w60-h60".into());
+            t.thumbnail_large_url = Some("https://example.invalid/cover=w544-h544".into());
+            t
+        })
+        .collect();
+    let _ = s.update(Message::OpenAlbum("MPREporf".into()));
+    let _ = s.update(Message::AlbumLiveLoaded {
+        album_id: "MPREporf".into(),
+        result: Ok(live),
+    });
+    s
+}
+
+#[test]
+fn album_tracklist_art_wins_and_counts_survive_later_fetches() {
+    let mut s = album_page_state();
+    // The music-video copy adopts the album cover (rows, queue, and
+    // player all read catalog art) and gains its count.
+    let known = s.find_track("al2").unwrap();
+    assert_eq!(
+        known.thumbnail_url.as_deref(),
+        Some("https://example.invalid/cover=w60-h60")
+    );
+    assert_eq!(known.plays.as_deref(), Some("2M plays"));
+    // A later count-less, art-less fetch (radio rows) never erases
+    // what the catalog knows.
+    let mut bare = mk_track("al1", "Song 0", "El Cuarteto de Nos");
+    bare.duration_secs = 0;
+    let _ = s.register_tracks_mem(vec![bare]);
+    let kept = s.find_track("al1").unwrap();
+    assert_eq!(kept.plays.as_deref(), Some("1M plays"));
+    assert!(kept.thumbnail_url.is_some());
+    assert_eq!(kept.album.as_deref(), Some("Porfiado"));
+    let shown = s.album_display_tracks("MPREporf");
+    assert!(shown.iter().all(|t| t.plays.is_some()));
+    // The slim album rows render (idle, hovered, live).
+    let _ = s.view();
+    s.hovered_track = Some(track_hover_key("album", "al1"));
+    let _ = s.view();
+}
+
+#[test]
+fn album_menu_opens_from_page_and_adds_whole_album_to_playlist() {
+    let mut s = album_page_state();
+    // Not a search hit any more (results moved on): the album page
+    // and artist cards still open the menu.
+    s.results.albums.clear();
+    let _ = s.update(Message::OpenAlbumMenu("MPREporf".into()));
+    assert_eq!(s.coll_menu, Some(CollectionMenu::Album("MPREporf".into())));
+    let (title, artist, _) = s.album_menu_info("MPREporf");
+    assert_eq!(title, "Porfiado");
+    assert_eq!(artist, "El Cuarteto de Nos");
+    // The flyout opens for the album key only.
+    let key = AppState::album_submenu_key("MPREporf");
+    let _ = s.update(Message::SubmenuTriggerHot(Some("al1".into())));
+    assert!(s.submenu_playlists_for.is_none());
+    let _ = s.update(Message::SubmenuTriggerHot(Some(key.clone())));
+    assert_eq!(s.submenu_playlists_for.as_deref(), Some(key.as_str()));
+    let _ = s.view();
+    // One song already in the list: the rest append in album order,
+    // the menu stays open for multi-add.
+    let _ = s.update(Message::CreatePlaylist("Road".into()));
+    let pid = s.user_playlists[0].id.clone();
+    let _ = s.update(Message::AddToPlaylist {
+        playlist_id: pid.clone(),
+        track_id: "al2".into(),
+    });
+    let _ = s.update(Message::OpenAlbumMenu("MPREporf".into()));
+    let _ = s.update(Message::AddAlbumToPlaylist {
+        playlist_id: pid.clone(),
+        album_id: "MPREporf".into(),
+    });
+    let ids: Vec<&str> = s.user_playlists[0]
+        .tracks
+        .iter()
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["al2", "al1", "al3"]);
+    assert!(s.album_in_playlist(&pid, &s.album_display_tracks("MPREporf")));
+    assert!(s.coll_menu.is_some());
+    // Again: nothing doubles.
+    let _ = s.update(Message::AddAlbumToPlaylist {
+        playlist_id: pid.clone(),
+        album_id: "MPREporf".into(),
+    });
+    assert_eq!(s.user_playlists[0].tracks.len(), 3);
+    // Favorites maps to likes.
+    let _ = s.update(Message::AddAlbumToPlaylist {
+        playlist_id: AppState::FAVORITES_ID.into(),
+        album_id: "MPREporf".into(),
+    });
+    assert!(["al1", "al2", "al3"].iter().all(|id| s.liked.contains(*id)));
+}
+
+#[test]
+fn queue_album_appends_without_hijacking_playback() {
+    let mut s = album_page_state();
+    s.queue.push(mk_track("v1", "Live", "A"));
+    s.queue.jump_to(0);
+    let _ = s.update(Message::QueueAlbum("MPREporf".into()));
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("v1"));
+    let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["v1", "al1", "al2", "al3"]);
 }

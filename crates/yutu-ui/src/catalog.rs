@@ -644,16 +644,28 @@ impl AppState {
 
     /// Memory-only track registration (no SQLite): the import and
     /// search paths persist separately, off the GUI thread.
-    /// A row without a length (flat search items, top hits, artist
-    /// top songs) never erases one the catalog already knows; the
-    /// returned rows carry the kept length too.
+    /// A row without a length, play count, art, or album (flat search
+    /// items, top hits, radio rows) never erases one the catalog
+    /// already knows; the returned rows carry the kept fields too.
     pub(crate) fn register_tracks_mem(&mut self, tracks: Vec<Track>) -> Vec<Track> {
         tracks
             .into_iter()
             .map(|mut t| {
-                if t.duration_secs == 0 {
-                    if let Some(known) = self.catalog.get(&t.id) {
+                if let Some(known) = self.catalog.get(&t.id) {
+                    if t.duration_secs == 0 {
                         t.duration_secs = known.duration_secs;
+                    }
+                    if t.plays.is_none() {
+                        t.plays = known.plays.clone();
+                    }
+                    if t.thumbnail_url.is_none() {
+                        t.thumbnail_url = known.thumbnail_url.clone();
+                    }
+                    if t.thumbnail_large_url.is_none() {
+                        t.thumbnail_large_url = known.thumbnail_large_url.clone();
+                    }
+                    if t.album.is_none() {
+                        t.album = known.album.clone();
                     }
                 }
                 self.catalog.insert(t.id.clone(), t.clone());

@@ -30,6 +30,10 @@ rename-playlist-cancel = Cancel
 rename-playlist-placeholder = New name…
 done-button = Done
 playlists-toggle = Playlists ({ $n })
+add-to-playlist = Add to playlist
+flyout-tap-add = Tap to add
+flyout-tap-remove = Tap to remove
+flyout-all-added = Added
 
 ## Navigation & sidebar
 
@@ -332,6 +336,7 @@ removed-track-playlist = Removed { $id } from { $title }.
 playlist-readonly = Playlist { $id } is built-in (read-only) or missing.
 already-in-playlist = Already in { $list }: { $title }.
 added-to-playlist = Added { $title } to { $list }.
+album-added-to-playlist = Added { $n } songs from { $title } to { $list }.
 favorites-locked = Favorites is built-in and can't be deleted.
 playlist-locked = Playlist { $id } is built-in and can't be deleted.
 deleted-playlist = Deleted playlist { $id }.

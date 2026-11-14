@@ -481,9 +481,23 @@ impl AppState {
                 Self::alias_insert(&mut self.album_alias, title.clone(), browse.clone());
             }
         }
+        tasks.extend(self.album_fetch_tasks(&route_id));
+        if let Some(url) = self.album_header_cover(&route_id) {
+            tasks.extend(self.artwork_tasks_for_urls(&[url]));
+        }
+        iced::Task::batch(tasks)
+    }
+
+    /// Live tracklist fetch for an album route (the page and the album
+    /// menu share it): the browse fetch when the id is known and not
+    /// cached or in flight, else the title resolve. Offline builds
+    /// fetch nothing.
+    pub(crate) fn album_fetch_tasks(&mut self, route_id: &str) -> Vec<iced::Task<Message>> {
+        #[allow(unused_mut)]
+        let mut tasks = Vec::new();
         #[cfg(feature = "innertube")]
         {
-            if let Some(browse) = self.album_browse_id(&route_id) {
+            if let Some(browse) = self.album_browse_id(route_id) {
                 if !self.album_live.contains_key(&browse)
                     && self.album_loading.as_deref() != Some(browse.as_str())
                 {
@@ -499,22 +513,51 @@ impl AppState {
                     "live-detail",
                     format_args!("album tracklist skipped, no browse id for route: {route_id}"),
                 );
-                let owner = route_owner.or_else(|| {
+                let title = self.resolve_album_title(route_id);
+                let owner = self.album_owner(route_id).or_else(|| {
                     self.catalog
                         .values()
                         .find(|t| t.album.as_deref() == Some(title.as_str()))
                         .map(|t| t.artist.clone())
                 });
-                if self.album_resolving.as_deref() != Some(route_id.as_str()) {
-                    self.album_resolving = Some(route_id.clone());
-                    tasks.push(Self::album_resolve_task(route_id.clone(), title, owner));
+                if self.album_resolving.as_deref() != Some(route_id) {
+                    self.album_resolving = Some(route_id.to_string());
+                    tasks.push(Self::album_resolve_task(route_id.to_string(), title, owner));
                 }
             }
         }
-        if let Some(url) = self.album_header_cover(&route_id) {
-            tasks.extend(self.artwork_tasks_for_urls(&[url]));
+        #[cfg(not(feature = "innertube"))]
+        let _ = route_id;
+        tasks
+    }
+
+    /// Album menu header: cover (544 key), title, and subtitle for any
+    /// album route, search hit or not (album page, artist page cards).
+    pub(crate) fn album_menu_cover(&self, id: &str) -> Option<String> {
+        self.results
+            .albums
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| self.album_cover(a))
+            .or_else(|| self.album_header_cover(id))
+    }
+
+    /// Album menu title and artist for any album route (see
+    /// [`Self::album_menu_cover`]); the year when a search hit knows it.
+    pub(crate) fn album_menu_info(&self, id: &str) -> (String, String, Option<u16>) {
+        if let Some(a) = self.album_search_hit(id) {
+            return (a.title.clone(), a.artist.clone(), a.year);
         }
-        iced::Task::batch(tasks)
+        let title = self.resolve_album_title(id);
+        let artist = self
+            .album_owner(id)
+            .or_else(|| {
+                self.album_display_tracks(id)
+                    .first()
+                    .map(|t| t.artist.clone())
+            })
+            .unwrap_or_default();
+        (title, artist, None)
     }
 
     /// Exact artist name match (case-insensitive) for the resolve
@@ -709,6 +752,14 @@ impl AppState {
             .any(|t| t.album.as_deref() == Some(id_or_title))
         {
             return id_or_title.to_string();
+        }
+        // Browse id whose search hit is gone: the fetched tracklist
+        // still names its album (page header and album menu).
+        if let Some(album) = self.album_live.get(id_or_title).and_then(|ids| {
+            ids.iter()
+                .find_map(|id| self.catalog.get(id)?.album.clone())
+        }) {
+            return album;
         }
         id_or_title.to_string()
     }
@@ -974,6 +1025,108 @@ impl AppState {
             .collect();
         self.cache_tracks(&merged);
         ids
+    }
+
+    /// Add an album's displayed tracklist to a playlist (Favorites =
+    /// likes), in album order, skipping songs already there. The menu
+    /// stays open (multi-add, like the track flyout). Server syncs
+    /// chain one after another so the server keeps the album order.
+    pub(crate) fn add_album_to_playlist(
+        &mut self,
+        playlist_id: &str,
+        album_id: &str,
+    ) -> iced::Task<Message> {
+        let title = self.resolve_album_title(album_id);
+        let tracks: Vec<Track> = self
+            .album_display_tracks(album_id)
+            .iter()
+            .map(|t| self.resolve_for_play_mem(t))
+            .collect();
+        if tracks.is_empty() {
+            self.status = self
+                .language
+                .nothing_to_queue(&self.language.album_queue_label(&title));
+            return iced::Task::none();
+        }
+        let playlist_id = yutu_core::canonical_playlist_id(playlist_id);
+        let mut syncs: Vec<iced::Task<Message>> = Vec::new();
+        let list_title;
+        let mut added = 0usize;
+        if playlist_id == Self::FAVORITES_ID {
+            list_title = self
+                .find_playlist(Self::FAVORITES_ID)
+                .map(|p| p.title)
+                .unwrap_or_default();
+            for t in &tracks {
+                if self.liked.contains(&t.id) {
+                    continue;
+                }
+                self.like_id(&t.id);
+                self.persist_like_track(t, true);
+                self.record_pending("like", None, Some(&t.id), None);
+                syncs.push(Self::like_sync_task(t.id.clone(), true));
+                added += 1;
+            }
+        } else {
+            let Some(i) = self.user_playlists.iter().position(|p| p.id == playlist_id) else {
+                self.status = self.language.playlist_readonly(&playlist_id);
+                return iced::Task::none();
+            };
+            list_title = self.user_playlists[i].title.clone();
+            let server = Self::is_server_playlist(&playlist_id);
+            for t in &tracks {
+                if self.user_playlists[i].tracks.iter().any(|x| x.id == t.id) {
+                    continue;
+                }
+                self.user_playlists[i].tracks.push(t.clone());
+                self.persist_playlist_added(&playlist_id, t);
+                if server {
+                    self.record_pending("add", Some(&playlist_id), Some(&t.id), None);
+                }
+                syncs.push(Self::playlist_add_sync_task(
+                    playlist_id.clone(),
+                    t.id.clone(),
+                ));
+                added += 1;
+            }
+            if added > 0 {
+                self.refresh_playlist_added(&playlist_id);
+            }
+        }
+        self.status = if added == 0 {
+            self.language.already_in_playlist(&title, &list_title)
+        } else {
+            self.language
+                .album_added_to_playlist(&title, &list_title, added)
+        };
+        self.publish_mpris();
+        syncs
+            .into_iter()
+            .reduce(|chain, next| chain.chain(next))
+            .unwrap_or_else(iced::Task::none)
+    }
+
+    /// True when every song of the album is already in the playlist
+    /// (the album flyout marks it added).
+    pub(crate) fn album_in_playlist(&self, playlist_id: &str, tracks: &[Track]) -> bool {
+        !tracks.is_empty() && tracks.iter().all(|t| self.playlist_has(playlist_id, &t.id))
+    }
+
+    /// Album tracklist art wins over whatever the catalog holds (a
+    /// song id shared with a music video keeps the video frame from
+    /// search otherwise): rows, queue, and player all read catalog art.
+    /// Runs before [`Self::merge_live_tracks`], whose write-through
+    /// then persists the cover.
+    pub(crate) fn adopt_album_art(&mut self, tracks: &[Track]) {
+        for t in tracks {
+            if t.thumbnail_url.is_none() {
+                continue;
+            }
+            if let Some(existing) = self.catalog.get_mut(&t.id) {
+                existing.thumbnail_url = t.thumbnail_url.clone();
+                existing.thumbnail_large_url = t.thumbnail_large_url.clone();
+            }
+        }
     }
 
     /// Album header cover (180px): hires of the first track thumb, else

@@ -54,6 +54,10 @@
   `Message::PlayNow`), with **no separate play button** and no inline
   action buttons; extra actions live in the right-click context menu
   only. Cards behave the same (the whole card is the press target).
+  Exception: album page rows (`album_track_row`) carry no art and no
+  artist (the header owns both); the track number turns into the
+  hover play button in place of the art. Album cards right-click
+  into the album menu (`OpenAlbumMenu`) wherever they render.
 - Never write em dashes (neither in the UI nor in code comments/docs):
   use a hyphen, comma, colon, or the `·` separator instead.
 - Search-only UX: no video-ID paste field.

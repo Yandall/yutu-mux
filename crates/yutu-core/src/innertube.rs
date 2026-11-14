@@ -393,10 +393,20 @@ impl InnertubeBackend {
                 .map_err(|e| format!("album songs failed: {e}"))?,
         };
         let artist = join_names(album.artists.iter().map(|a| a.name.as_str()));
+        // Every song wears the album cover (rows carry no art upstream;
+        // a song id shared with a music video would otherwise show the
+        // video frame from search).
+        let small = pick_thumb_url(&album.thumbnails);
+        let large = pick_large_thumb_url(&album.thumbnails);
         Ok(album
             .tracks
             .iter()
-            .map(|t| album_song_to_track(t, &artist, &album.title))
+            .map(|t| {
+                let mut track = album_song_to_track(t, &artist, &album.title);
+                track.thumbnail_url = small.clone();
+                track.thumbnail_large_url = large.clone();
+                track
+            })
             .collect())
     }
 
@@ -1821,9 +1831,9 @@ pub(crate) fn artist_song_to_track(song: &ArtistSong) -> Track {
 }
 
 /// Map one album track to our [`Track`]: `track_no` order is the true
-/// album order, and `plays` survives. Upstream carries no thumbs or
-/// per-row artist (the album context owns both), so the caller passes
-/// the album artist and art warms from the catalog like artist songs.
+/// album order, and `plays` survives. Upstream carries no per-row
+/// thumbs or artist (the album context owns both), so the caller passes
+/// the album artist and stamps the album cover on each track.
 pub(crate) fn album_song_to_track(song: &AlbumSong, artist: &str, album: &str) -> Track {
     Track {
         id: song.video_id.get_raw().to_string(),
