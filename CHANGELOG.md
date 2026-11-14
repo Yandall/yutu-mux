@@ -60,6 +60,8 @@
 
 ### Fixed
 
+- The volume slider keeps its normal size on wide windows instead of
+  stretching across the player bar.
 - Lyrics auto-scroll keeps the highlighted verse centered in short or
   narrow windows, even when lines wrap (#114).
 - Albums with the same name by different artists (like two "Greatest

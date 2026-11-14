@@ -10403,3 +10403,25 @@ fn lyric_probe_measures_live_layout_in_short_window() {
     let row_top_on_screen = g.top - s.lyrics_target;
     assert!(row_top_on_screen >= 0.0 && row_top_on_screen + g.h <= g.view_h);
 }
+
+#[test]
+fn volume_slider_stays_capped_on_wide_windows() {
+    let mut s = test_state();
+    let size = iced::Size::new(1786.0, 900.0);
+    let _ = s.update(Message::WindowResized(size));
+    settle(&mut s);
+    let hits = |x: f32| {
+        // Scan the player bar rows for any volume vote at column `x`.
+        (0..60).step_by(4).any(|dy| {
+            click_view(&s, size, iced::Point::new(x, size.height - 8.0 - dy as f32))
+                .iter()
+                .any(|m| matches!(m, Message::SetVolume(_)))
+        })
+    };
+    // Inside the 120px cap, right of the mute button and left of the
+    // Now Playing toggle: the slider answers.
+    assert!(hits(size.width - 100.0), "slider not found inside its cap");
+    // Far left of the cap (where the uncapped slider used to reach):
+    // nothing.
+    assert!(!hits(size.width - 350.0), "volume slider grew past its cap");
+}

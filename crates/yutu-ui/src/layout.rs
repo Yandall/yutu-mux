@@ -273,6 +273,8 @@ pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
 /// heart and Now Playing buttons) and the volume slider's width cap.
 pub(crate) const MINI_INFO_CHROME: f32 = 160.0;
 pub(crate) const MINI_VOLUME_W: f32 = 110.0;
+/// Mute button width: 18px `ctrl_box` + 6px padding per side.
+pub(crate) const MUTE_BUTTON_W: f32 = 30.0;
 /// Side slot width in the stacked player: holds the time labels on the
 /// seek row and the mute button on the volume row, so both bars line up.
 pub(crate) const MINI_SIDE_W: f32 = 40.0;
