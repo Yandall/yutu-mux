@@ -548,7 +548,7 @@ fn scrollbar_fade_lights_and_decays() {
     let faded = s.scroll_opacity("queue");
     assert!(faded < 1.0 && faded > 0.0);
     // Drawer scrolling lights its own key through its own message.
-    let _ = s.update(Message::DrawerScrolled(10.0));
+    let _ = s.update(Message::DrawerScrolled(10.0, 0.0));
     assert_eq!(s.scroll_opacity("drawer"), 1.0);
 }
 
@@ -5390,6 +5390,70 @@ fn lyric_follow_centers_each_verse() {
 }
 
 #[test]
+fn lyric_follow_centers_in_the_measured_viewport() {
+    // Short windows: the scrollable reports its own height and the
+    // verse centers in it, not in a window-height guess that would
+    // park the highlight below the visible area.
+    let mut s = synced_state(11.0);
+    s.drawer_open = true;
+    let _ = s.update(Message::DrawerScrolled(0.0, 600.0));
+    let tall = s.lyric_follow_y("m1", 2).unwrap();
+    let _ = s.update(Message::DrawerScrolled(0.0, 200.0));
+    let short = s.lyric_follow_y("m1", 2).unwrap();
+    assert!((short - tall - 200.0).abs() < 0.01);
+    // Zero heights (tests, unknown bounds) keep the last measurement.
+    let _ = s.update(Message::DrawerScrolled(0.0, 0.0));
+    assert_eq!(s.drawer_view_h, Some(200.0));
+    // A resize while following drops the recorded verse so the next
+    // tick retargets to the new center.
+    s.lyrics_follow = true;
+    let _ = s.lyric_follow_task();
+    assert!(s.lyrics_follow_at.is_some());
+    let _ = s.update(Message::DrawerScrolled(s.drawer_scroll, 260.0));
+    assert!(s.lyrics_follow_at.is_none());
+    let _ = s.lyric_follow_task();
+    assert!((s.lyrics_target - (short - 30.0)).abs() < 0.01);
+}
+
+#[test]
+fn lyric_follow_takes_the_measured_row_center() {
+    let mut s = synced_state(11.0);
+    s.drawer_open = true;
+    s.lyrics_follow = true;
+    let _ = s.lyric_follow_task();
+    let estimate = s.lyrics_target;
+    let geom = |track: &str, at: usize| LyricRowGeom {
+        track: track.into(),
+        at,
+        top: 900.0,
+        h: 60.0,
+        view_h: 200.0,
+        max_y: 5000.0,
+    };
+    // The live layout wins over the estimate: row center minus half
+    // the viewport (wrapped rows and short windows land exactly).
+    let _ = s.update(Message::LyricRowMeasured(geom("m1", 2)));
+    assert!((s.lyrics_target - 830.0).abs() < 0.01);
+    assert!((s.lyrics_target - estimate).abs() > 1.0);
+    assert_eq!(s.drawer_view_h, Some(200.0));
+    // Stale probes (other verse or track) never move the target.
+    let _ = s.update(Message::LyricRowMeasured(geom("m1", 1)));
+    let _ = s.update(Message::LyricRowMeasured(geom("ghost", 2)));
+    assert!((s.lyrics_target - 830.0).abs() < 0.01);
+    // A manual takeover ignores measurements until follow resumes.
+    s.lyrics_follow = false;
+    let mut far = geom("m1", 2);
+    far.top = 1500.0;
+    let _ = s.update(Message::LyricRowMeasured(far.clone()));
+    assert!((s.lyrics_target - 830.0).abs() < 0.01);
+    // Centers clamp to the scrollable range at both ends.
+    far.max_y = 1000.0;
+    assert!((far.center_y() - 1000.0).abs() < 0.01);
+    far.top = 10.0;
+    assert_eq!(far.center_y(), 0.0);
+}
+
+#[test]
 fn lyric_follow_snaps_takeover_and_resumes() {
     let mut s = synced_state(1.0);
     // Opening the drawer arms a fresh follow run.
@@ -5409,7 +5473,7 @@ fn lyric_follow_snaps_takeover_and_resumes() {
     for _ in 0..80 {
         let _ = s.update(Message::Animate);
         let cmd = s.lyrics_cmds[0];
-        let _ = s.update(Message::DrawerScrolled(cmd));
+        let _ = s.update(Message::DrawerScrolled(cmd, 0.0));
         if (s.drawer_scroll - s.lyrics_target).abs() <= 1.0 {
             break;
         }
@@ -5422,7 +5486,7 @@ fn lyric_follow_snaps_takeover_and_resumes() {
     let _ = s.update(Message::Animate);
     let _ = s.update(Message::Animate);
     let stale = s.lyrics_cmds[2];
-    let _ = s.update(Message::DrawerScrolled(stale));
+    let _ = s.update(Message::DrawerScrolled(stale, 0.0));
     assert!(s.lyrics_follow);
     // Same verse next tick: target holds.
     let _ = s.lyric_follow_task();
@@ -5434,12 +5498,12 @@ fn lyric_follow_snaps_takeover_and_resumes() {
     assert!(s.lyrics_target > y0);
     assert!(s.lyrics_gliding());
     // A real scroll away disengages...
-    let _ = s.update(Message::DrawerScrolled(900.0));
+    let _ = s.update(Message::DrawerScrolled(900.0, 0.0));
     assert!(!s.lyrics_follow);
     assert!(!s.lyrics_gliding());
     // ...and scrolling back near the verse resumes silently.
     let back = s.lyrics_target - 50.0;
-    let _ = s.update(Message::DrawerScrolled(back));
+    let _ = s.update(Message::DrawerScrolled(back, 0.0));
     let _ = s.lyric_follow_task();
     assert!(s.lyrics_follow);
     // Closed drawer and plain lyrics are always a no-op.
@@ -5477,7 +5541,7 @@ fn track_change_resets_open_drawer_to_top() {
     // Drawer open with a stale deep scroll (the user read far down
     // the old lyrics, disengaging follow).
     let _ = s.update(Message::ToggleDrawer);
-    let _ = s.update(Message::DrawerScrolled(500.0));
+    let _ = s.update(Message::DrawerScrolled(500.0, 0.0));
     assert!(!s.lyrics_follow);
     // Changing song snaps back to the hero and re-arms follow.
     let _ = s.update(Message::PlayNow("m2".into()));
@@ -5486,7 +5550,7 @@ fn track_change_resets_open_drawer_to_top() {
     assert!(s.lyrics_follow);
     assert!(s.lyrics_follow_at.is_none());
     // The 0.0 echo matches the command ring, so no takeover fires.
-    let _ = s.update(Message::DrawerScrolled(0.0));
+    let _ = s.update(Message::DrawerScrolled(0.0, 0.0));
     assert!(s.lyrics_follow);
     // Closed drawer: stale offsets are untouched, nothing re-arms.
     let mut s = test_state();
@@ -10236,4 +10300,106 @@ fn playback_teaches_a_missing_length_once() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+/// Selector that runs [`LyricRowProbe`]-equivalent logic over the
+/// headless simulator tree (iced_test exposes selectors, not raw ops).
+struct ProbeSel {
+    row_id: iced::widget::Id,
+    scroll: Option<(iced::Rectangle, iced::Rectangle)>,
+}
+
+impl iced_test::Selector for ProbeSel {
+    type Output = (iced::Rectangle, iced::Rectangle, iced::Rectangle);
+    fn select(&mut self, c: iced_test::selector::Candidate<'_>) -> Option<Self::Output> {
+        use iced_test::selector::Candidate;
+        match c {
+            Candidate::Scrollable {
+                id,
+                bounds,
+                content_bounds,
+                ..
+            } if id == Some(&iced::widget::Id::new(LYRICS_SCROLL_ID)) => {
+                self.scroll = Some((bounds, content_bounds));
+                None
+            }
+            Candidate::Container { id, bounds, .. } if id == Some(&self.row_id) => {
+                self.scroll.map(|(b, cb)| (b, cb, bounds))
+            }
+            _ => None,
+        }
+    }
+    fn description(&self) -> String {
+        "lyric row probe".into()
+    }
+}
+
+/// Short windows: the live drawer layout puts the followed verse in
+/// the middle of the measured viewport, and the estimate alone does
+/// not (wrapping drift). Run with `--ignored` (needs the renderer).
+#[test]
+#[ignore]
+fn lyric_probe_measures_live_layout_in_short_window() {
+    let mut s = synced_state(0.0);
+    let line = "Ni perder el vigor, ni decir sin rigor que todo tiempo";
+    let synced: Vec<yutu_core::LyricLine> = (0..40)
+        .map(|i| yutu_core::LyricLine {
+            start_ms: i * 3000,
+            text: if i % 5 == 4 {
+                String::new()
+            } else {
+                format!("{line} {i}")
+            },
+        })
+        .collect();
+    s.lyrics_cache
+        .get_mut(&("m1".to_string(), LyricsProvider::Lrclib))
+        .unwrap()
+        .synced = synced;
+    let (w, h) = (370.0, 490.0);
+    let _ = s.update(Message::WindowResized(iced::Size::new(w, h)));
+    s.position_secs = 70.0;
+    s.drawer_open = true;
+    s.lyrics_follow = true;
+    // Let the drawer slide finish (it renders off-screen until then).
+    for _ in 0..80 {
+        let _ = s.update(Message::Animate);
+    }
+    let at = s.lyric_cursor_at("m1").unwrap();
+    let _ = s.lyric_follow_task();
+    let estimate = s.lyrics_target;
+    let settings = iced::Settings {
+        fonts: vec![include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")
+            .as_slice()
+            .into()],
+        default_font: iced::Font::with_name("Adwaita Sans"),
+        ..iced::Settings::default()
+    };
+    let mut sim = iced_test::Simulator::with_size(settings, iced::Size::new(w, h), s.view());
+    let (b, cb, row) = sim
+        .find(ProbeSel {
+            row_id: lyric_row_id(at),
+            scroll: None,
+        })
+        .expect("probe finds the followed row");
+    drop(sim);
+    let g = LyricRowGeom {
+        track: "m1".into(),
+        at,
+        top: row.y - cb.y,
+        h: row.height,
+        view_h: b.height,
+        max_y: cb.height - b.height,
+    };
+    eprintln!(
+        "at={at} estimate={estimate:.1} measured={:.1} view_h={:.1} row_top={:.1} row_h={:.1}",
+        g.center_y(),
+        g.view_h,
+        g.top,
+        g.h
+    );
+    let _ = s.update(Message::LyricRowMeasured(g.clone()));
+    assert!((s.lyrics_target - g.center_y()).abs() < 0.01);
+    // At the measured target the row sits fully inside the viewport.
+    let row_top_on_screen = g.top - s.lyrics_target;
+    assert!(row_top_on_screen >= 0.0 && row_top_on_screen + g.h <= g.view_h);
 }

@@ -1412,12 +1412,16 @@ impl AppState {
         if cached.synced.is_empty() || cached.instrumental {
             return None;
         }
-        let wh = self.window.map(|s| s.height).unwrap_or(800.0);
         // Same width formula as the drawer lyrics column.
         let col_w = self.lyrics_col_w();
-        // Window minus header/player chrome (approximate: only shifts
-        // the center, never loses the verse).
-        let viewport = (wh - LYRIC_VIEWPORT_PAD).max(320.0);
+        // The scrollable's measured height (it shrinks under the sticky
+        // header and in short windows); before the first report, window
+        // minus header/player chrome (approximate: only shifts the
+        // center, never loses the verse).
+        let viewport = self.drawer_view_h.unwrap_or_else(|| {
+            let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+            (wh - LYRIC_VIEWPORT_PAD).max(120.0)
+        });
         // Two-column Now Playing: only the provider stepper sits above
         // the lyrics inside the scroll (the hero lives beside it).
         let mut y = if self.np_two_col() {
@@ -1484,11 +1488,15 @@ impl AppState {
             self.lyrics_follow_at = Some((id, at));
             return iced::Task::none();
         }
+        // Every tick while following, measure the live row: the
+        // estimate below is only a first guess (wrapping in narrow
+        // columns and short viewports drift it), the probe corrects it.
+        let probe = Self::lyric_probe_task(id.clone(), at);
         if !changed_track && self.lyrics_follow_at == Some((id.clone(), at)) {
-            return iced::Task::none();
+            return probe;
         }
         self.lyrics_follow_at = Some((id.clone(), at));
-        match self.lyric_follow_y(&id, at) {
+        let jump = match self.lyric_follow_y(&id, at) {
             Some(y) => {
                 self.lyrics_target = y;
                 if self.animations_enabled {
@@ -1500,6 +1508,46 @@ impl AppState {
                 }
             }
             None => iced::Task::none(),
+        };
+        iced::Task::batch([jump, probe])
+    }
+
+    /// Measure visible lyric row `at` in the drawer scrollable; the
+    /// result arrives as [`Message::LyricRowMeasured`] (nothing when
+    /// the row or the scrollable is not on screen).
+    pub(crate) fn lyric_probe_task(track: String, at: usize) -> iced::Task<Message> {
+        iced::advanced::widget::operate(LyricRowProbe {
+            track,
+            at,
+            row_id: lyric_row_id(at),
+            scroll_id: iced::widget::Id::new(LYRICS_SCROLL_ID),
+            scroll: None,
+            row: None,
+        })
+        .map(Message::LyricRowMeasured)
+    }
+
+    /// Apply a measured row: retarget the follow to its exact center
+    /// while it is still the followed verse (stale probes and manual
+    /// takeovers are ignored). Snaps directly with animations off.
+    pub(crate) fn apply_lyric_row(&mut self, g: LyricRowGeom) -> iced::Task<Message> {
+        if !self.drawer_open
+            || !self.lyrics_follow
+            || self.lyrics_follow_at.as_ref() != Some(&(g.track.clone(), g.at))
+        {
+            return iced::Task::none();
+        }
+        self.drawer_view_h = Some(g.view_h);
+        let y = g.center_y();
+        if (y - self.lyrics_target).abs() <= 1.0 {
+            return iced::Task::none();
+        }
+        self.lyrics_target = y;
+        if self.animations_enabled {
+            iced::Task::none()
+        } else {
+            self.lyrics_cmds = [y, f32::NAN, f32::NAN];
+            Self::lyrics_scroll_task(y)
         }
     }
 
@@ -1577,6 +1625,7 @@ impl AppState {
                         continue;
                     }
                     let is_current = Some(vi) == at;
+                    let row_id = lyric_row_id(vi);
                     vi += 1;
                     let ms = l.start_ms;
                     let line: iced::Element<'_, Message> = if is_current {
@@ -1601,12 +1650,18 @@ impl AppState {
                         .align_y(iced::alignment::Vertical::Center)
                         .into()
                     };
-                    let row_el: iced::Element<'_, Message> = row_button(line)
-                        .style(hover_row)
-                        .on_press(Message::SeekToMs(ms))
-                        .padding(4)
-                        .width(iced::Fill)
-                        .into();
+                    // Id'd wrapper: the drawer follow measures the live
+                    // row through it (exact wrap, no estimate).
+                    let row_el: iced::Element<'_, Message> = iced::widget::container(
+                        row_button(line)
+                            .style(hover_row)
+                            .on_press(Message::SeekToMs(ms))
+                            .padding(4)
+                            .width(iced::Fill),
+                    )
+                    .id(row_id)
+                    .width(iced::Fill)
+                    .into();
                     rows.push(row_el);
                 }
                 column(rows).spacing(6).into()
@@ -1752,7 +1807,7 @@ impl AppState {
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
             .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
-            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y));
+            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y, v.bounds().height));
             let body: iced::Element<'_, Message> = container(
                 row![
                     container(hero).width(iced::Length::Fixed(NP_HERO_COL_W)),
@@ -1801,7 +1856,7 @@ impl AppState {
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
             .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
-            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y)),
+            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y, v.bounds().height)),
         ]
         .spacing(8)
         .into();
