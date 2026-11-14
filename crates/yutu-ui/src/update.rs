@@ -1031,6 +1031,75 @@ impl AppState {
                 let tracks = self.album_display_tracks(&id);
                 return self.shuffle_tracks(tracks, self.language.album_queue_label(&title));
             }
+            Message::OpenSearchPlaylist(id) => {
+                return self.open_search_playlist(id);
+            }
+            Message::RemotePlaylistLoaded { id, result } => {
+                let watching = self.remote_playlist_loading.as_deref() == Some(id.as_str());
+                if watching {
+                    self.remote_playlist_loading = None;
+                }
+                match result {
+                    Ok(tracks) => {
+                        let ids = self.merge_live_tracks(tracks);
+                        if ids.is_empty() {
+                            if self.route == Route::RemotePlaylist(id.clone()) {
+                                let label = self.search_playlist_label(&id);
+                                self.status = self.language.playlist_nothing_playable(&label);
+                            }
+                        } else {
+                            let _ = Self::capped_detail_insert(
+                                &mut self.remote_playlist_live,
+                                &mut self.remote_playlist_live_order,
+                                id.clone(),
+                                ids,
+                            );
+                            if self.route == Route::RemotePlaylist(id) {
+                                return self.ensure_visible_tasks();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("playlist tracklist failed: {id} ({e})"),
+                        );
+                        if watching && self.route == Route::RemotePlaylist(id) {
+                            self.status =
+                                Self::failure_status(self.language.fail_live_playlist(), &e);
+                        }
+                    }
+                }
+            }
+            Message::PlayRemotePlaylistAt {
+                playlist_id,
+                index,
+                track_id,
+            } => {
+                self.close_menu();
+                // Same-song no-op (app contract).
+                if self.queue.current().is_some_and(|t| t.id == track_id) {
+                    return iced::Task::none();
+                }
+                self.cancel_drag();
+                let display = self.remote_playlist_tracks(&playlist_id);
+                let start = display
+                    .iter()
+                    .position(|t| t.id == track_id)
+                    .unwrap_or(index.min(display.len()));
+                let tracks: Vec<Track> = display.into_iter().skip(start).collect();
+                let label = self
+                    .language
+                    .playlist_queue_label(&self.search_playlist_label(&playlist_id));
+                if tracks.is_empty() {
+                    self.status = self.language.nothing_to_play(&label);
+                    return iced::Task::none();
+                }
+                self.clear_queue();
+                self.autoplay.clear();
+                self.autoplay_for = None;
+                return self.queue_many(tracks, &label);
+            }
             Message::PlaySearchPlaylist(id) => {
                 return self.play_search_playlist(id, false);
             }
@@ -2527,7 +2596,9 @@ impl AppState {
                 self.close_menu();
                 match self.find_track(&id) {
                     Some(t) => match t.album.clone() {
-                        Some(album) => return self.open_album(album),
+                        Some(album) => {
+                            return self.open_album(Self::album_route(&album, &t.artist));
+                        }
                         None => {
                             self.status = self.language.no_album_for(&t.title, &t.artist);
                         }
@@ -2746,12 +2817,24 @@ impl AppState {
                         );
                         let ids = self.merge_live_tracks(tracks);
                         if !ids.is_empty() {
+                            let showing = self.route_shows_browse(&album_id, false);
                             let _ = Self::capped_detail_insert(
                                 &mut self.album_live,
                                 &mut self.album_live_order,
                                 album_id,
                                 ids,
                             );
+                            // The tracklist can change the header pick
+                            // (song art over a library video): warm it.
+                            if showing {
+                                if let Route::Album(rid) = self.route.clone() {
+                                    if let Some(url) = self.album_header_cover(&rid) {
+                                        return iced::Task::batch(
+                                            self.artwork_tasks_for_urls(&[url]),
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -2820,8 +2903,12 @@ impl AppState {
                             "live-detail",
                             format_args!("album resolved: {title} -> {browse}"),
                         );
+                        // Bare-title alias only for owner-less routes
+                        // (see `open_album`).
+                        if self.album_owner(&route_id).is_none() {
+                            Self::alias_insert(&mut self.album_alias, title, browse.clone());
+                        }
                         Self::alias_insert(&mut self.album_alias, route_id, browse.clone());
-                        Self::alias_insert(&mut self.album_alias, title, browse.clone());
                         if !self.album_live.contains_key(&browse) {
                             self.album_loading = Some(browse.clone());
                             #[cfg(feature = "innertube")]

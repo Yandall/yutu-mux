@@ -2142,6 +2142,64 @@ fn search_playlist_ready_queues_or_reports() {
 }
 
 #[test]
+fn search_playlist_opens_its_page_instead_of_playing() {
+    let mut s = test_state();
+    s.results.playlists.push(PlaylistHit {
+        id: "PL7".into(),
+        title: "Queen Mix".into(),
+        author: "Fan".into(),
+        detail: "3 songs".into(),
+        thumbnail_url: None,
+    });
+    // Opening routes to the page and never touches playback.
+    let _ = s.update(Message::OpenSearchPlaylist("PL7".into()));
+    assert_eq!(s.route, Route::RemotePlaylist("PL7".into()));
+    assert!(s.queue.is_empty());
+    let _ = s.view();
+    // Metadata survives a later search replacing the results.
+    s.results.playlists.clear();
+    assert_eq!(s.search_playlist_label("PL7"), "Queen Mix");
+    // Tracks land in server order and render.
+    let _ = s.update(Message::RemotePlaylistLoaded {
+        id: "PL7".into(),
+        result: Ok(vec![
+            mk_track("q1", "Bohemian Rhapsody", "Queen"),
+            mk_track("q2", "Somebody to Love", "Queen"),
+            mk_track("q3", "Killer Queen", "Queen"),
+        ]),
+    });
+    let ids: Vec<String> = s
+        .remote_playlist_tracks("PL7")
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(ids, ["q1", "q2", "q3"]);
+    assert!(s.queue.is_empty());
+    let _ = s.view();
+    // Row click plays from that song on.
+    let _ = s.update(RowPlay::RemotePlaylistAt("PL7".into()).message("q2", 2));
+    let queued: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(queued, ["q2", "q3"]);
+    // Play pill reuses the fetched list (whole playlist, no refetch).
+    let _ = s.update(Message::PlaySearchPlaylist("PL7".into()));
+    assert_eq!(s.queue.len(), 3);
+}
+
+#[test]
+fn remote_playlist_failure_reports_on_its_page() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenSearchPlaylist("PLx".into()));
+    s.remote_playlist_loading = Some("PLx".into());
+    let _ = s.update(Message::RemotePlaylistLoaded {
+        id: "PLx".into(),
+        result: Err("offline".into()),
+    });
+    assert!(s.remote_playlist_loading.is_none());
+    assert!(s.language.is_failure_line(&s.status));
+    let _ = s.view();
+}
+
+#[test]
 fn artist_album_sub_skips_empty_parts() {
     assert_eq!(
         AppState::artist_album_sub("Queen", Some("A Night At The Opera")),
@@ -7692,6 +7750,119 @@ fn shuffle_playlist_plays_shuffled_from_top() {
     assert!(s.queue.shuffle);
     assert_eq!(s.queue.len(), 4);
     assert_eq!(s.pre_shuffle, Some(ordered));
+}
+
+#[test]
+fn same_titled_albums_by_different_artists_stay_apart() {
+    let mut s = test_state();
+    for (id, artist) in [
+        ("p1", "The Police"),
+        ("p2", "The Police"),
+        ("c1", "The Cure"),
+    ] {
+        let mut t = mk_track(id, id, artist);
+        t.album = Some("Greatest Hits".into());
+        s.catalog.insert(id.into(), t);
+    }
+    // Songs: each artist's page lists only that artist's songs.
+    let police = AppState::album_route("Greatest Hits", "The Police");
+    let cure = AppState::album_route("Greatest Hits", "The Cure");
+    let ids = |s: &AppState, r: &str| -> Vec<String> {
+        let mut v: Vec<String> = s.album_tracks(r).into_iter().map(|t| t.id).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids(&s, &police), ["p1", "p2"]);
+    assert_eq!(ids(&s, &cure), ["c1"]);
+    assert_eq!(s.resolve_album_title(&police), "Greatest Hits");
+    // Lookup: searched albums match on artist, never the first title hit.
+    s.results.albums = vec![
+        Album {
+            id: "MPRE_cure".into(),
+            title: "Greatest Hits".into(),
+            artist: "The Cure".into(),
+            year: Some(2001),
+            thumbnail_url: None,
+        },
+        Album {
+            id: "MPRE_police".into(),
+            title: "Greatest Hits".into(),
+            artist: "The Police".into(),
+            year: Some(1992),
+            thumbnail_url: None,
+        },
+    ];
+    assert_eq!(s.album_browse_id(&police).as_deref(), Some("MPRE_police"));
+    assert_eq!(s.album_browse_id(&cure).as_deref(), Some("MPRE_cure"));
+    // Cache: opening one artist's album never answers for the other's.
+    let _ = s.update(Message::OpenAlbum(cure.clone()));
+    s.results.albums.clear();
+    assert_eq!(s.album_browse_id(&cure).as_deref(), Some("MPRE_cure"));
+    assert_eq!(s.album_browse_id(&police), None);
+    let _ = s.update(Message::OpenAlbum(police.clone()));
+    assert_eq!(s.route, Route::Album(police));
+    let _ = s.view();
+}
+
+#[test]
+fn album_page_cover_matches_the_card_not_a_video_frame() {
+    let mut s = test_state();
+    // Library holds the album's music video (video-frame thumbnail).
+    let mut v = mk_track("vid", "Every Breath You Take", "The Police");
+    v.album = Some("Greatest Hits".into());
+    v.is_video = true;
+    v.thumbnail_url = Some("https://example.invalid/video-frame.jpg".into());
+    s.catalog.insert(v.id.clone(), v);
+    let route = AppState::album_route("Greatest Hits", "The Police");
+    // Video art only stands in when nothing better exists.
+    assert_eq!(
+        s.album_header_cover(&route).as_deref(),
+        Some("https://example.invalid/video-frame.jpg")
+    );
+    // A song from the album beats the video.
+    let mut song = mk_track("song", "Roxanne", "The Police");
+    song.album = Some("Greatest Hits".into());
+    song.thumbnail_url = Some("https://example.invalid/song.jpg".into());
+    s.catalog.insert(song.id.clone(), song);
+    assert_eq!(
+        s.album_header_cover(&route).as_deref(),
+        Some("https://example.invalid/song.jpg")
+    );
+    // The searched album's own art (what the card shows) wins.
+    s.results.albums = vec![Album {
+        id: "MPRE_police".into(),
+        title: "Greatest Hits".into(),
+        artist: "The Police".into(),
+        year: Some(1992),
+        thumbnail_url: Some("https://example.invalid/cover.jpg".into()),
+    }];
+    let card = s.album_cover(&s.results.albums[0].clone());
+    assert_eq!(s.album_header_cover(&route), card);
+    assert_eq!(s.album_header_cover("MPRE_police"), card);
+    // A same-titled album by someone else never lends its art.
+    let cure = Album {
+        id: AppState::album_route("Greatest Hits", "The Cure"),
+        title: "Greatest Hits".into(),
+        artist: "The Cure".into(),
+        year: None,
+        thumbnail_url: None,
+    };
+    assert_eq!(s.album_cover(&cure), None);
+}
+
+#[test]
+fn track_album_owner_accepts_featured_credits() {
+    assert!(AppState::artist_matches_owner("Queen", "Queen"));
+    assert!(AppState::artist_matches_owner(
+        "Queen & David Bowie",
+        "Queen"
+    ));
+    assert!(AppState::artist_matches_owner(
+        "Queen, David Bowie",
+        "Queen"
+    ));
+    assert!(!AppState::artist_matches_owner("Queensryche", "Queen"));
+    assert!(!AppState::artist_matches_owner("The Cure", "The Police"));
 }
 
 #[test]

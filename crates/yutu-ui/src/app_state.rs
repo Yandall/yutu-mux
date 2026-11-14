@@ -265,6 +265,14 @@ pub struct AppState {
     /// Live album tracklists: `track_no`-ordered ids per album browse
     /// id. Same merge-then-prefer rule as [`Self::artist_top`].
     pub(crate) album_live: HashMap<String, Vec<String>>,
+    /// Live search-result playlist tracklists (server order) per
+    /// playlist id, plus the hit metadata captured on open so the
+    /// page header survives later searches replacing `results`.
+    pub(crate) remote_playlist_live: HashMap<String, Vec<String>>,
+    pub(crate) remote_playlist_live_order: Vec<String>,
+    pub(crate) remote_playlist_meta: HashMap<String, yutu_core::PlaylistHit>,
+    /// In-flight search-result playlist fetch (playlist id).
+    pub(crate) remote_playlist_loading: Option<String>,
     /// Route-to-browse aliases (name/title routes → channel/album
     /// browse ids): written at fetch launch and arrival, so cached
     /// lists survive later searches replacing `results` (which the

@@ -831,8 +831,7 @@ impl AppState {
     }
 
     /// Playlist hero: art, type-led subtitle, Play + Shuffle pills.
-    /// Clicking the art or title plays it too (there is no playlist
-    /// detail page: playing is the open action).
+    /// Clicking the art or title opens the playlist page.
     pub(crate) fn search_playlist_hero(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
         use iced::widget::{column, container, row, text};
         use iced::Fill;
@@ -841,13 +840,13 @@ impl AppState {
             self.search_card(
                 row_button(self.playlist_art(p, 96.0))
                     .style(row_click)
-                    .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                    .on_press(Message::OpenSearchPlaylist(p.id.clone()))
                     .padding(0),
                 column![
                     text(self.language.top_result()).size(12).color(MUTED),
                     row_button(btn_text(p.title.clone(), 20))
                         .style(row_click)
-                        .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                        .on_press(Message::OpenSearchPlaylist(p.id.clone()))
                         .padding(0)
                         .width(Fill),
                     text(sub).size(13).color(MUTED),
@@ -873,8 +872,8 @@ impl AppState {
     }
 
     /// Playlist row for the unified search list: art, type-led subtitle,
-    /// one fixed row height, hover highlight + menu. Art and text play
-    /// the playlist; the hover `…` (or right-click) opens its menu.
+    /// one fixed row height, hover highlight + menu. Art and text open
+    /// the playlist page; the hover `…` (or right-click) opens its menu.
     pub(crate) fn search_playlist_row(&self, p: &PlaylistHit) -> iced::Element<'_, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{column, container, mouse_area, row};
@@ -886,7 +885,7 @@ impl AppState {
                 row![
                     row_button(self.art_thumb(Self::playlist_row_art(p).as_deref(), 40.0))
                         .style(row_click)
-                        .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                        .on_press(Message::OpenSearchPlaylist(p.id.clone()))
                         .padding(0),
                     row_button(
                         column![
@@ -904,7 +903,7 @@ impl AppState {
                         .clip(true),
                     )
                     .style(row_click)
-                    .on_press(Message::PlaySearchPlaylist(p.id.clone()))
+                    .on_press(Message::OpenSearchPlaylist(p.id.clone()))
                     .padding(3)
                     .width(Fill),
                     Self::coll_more(hovered, Message::OpenSearchPlaylistMenu(p.id.clone())),

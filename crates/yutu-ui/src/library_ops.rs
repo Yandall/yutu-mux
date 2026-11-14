@@ -470,13 +470,16 @@ impl AppState {
         let mut tasks = vec![self.ensure_visible_tasks()];
         // Aliases record unconditionally (pure, offline-safe): later
         // title routes must keep resolving after `results` churn.
-        let title = match route_id.strip_prefix("ax-") {
-            Some(rest) => rest.to_string(),
-            None => self.resolve_album_title(&route_id),
-        };
+        let title = self.resolve_album_title(&route_id);
+        let route_owner = self.album_owner(&route_id);
         if let Some(browse) = self.album_browse_id(&route_id) {
             Self::alias_insert(&mut self.album_alias, route_id.clone(), browse.clone());
-            Self::alias_insert(&mut self.album_alias, title.clone(), browse.clone());
+            // Bare-title alias only for owner-less routes: an
+            // artist-qualified album must never answer for a
+            // same-titled album by someone else.
+            if route_owner.is_none() {
+                Self::alias_insert(&mut self.album_alias, title.clone(), browse.clone());
+            }
         }
         #[cfg(feature = "innertube")]
         {
@@ -496,11 +499,12 @@ impl AppState {
                     "live-detail",
                     format_args!("album tracklist skipped, no browse id for route: {route_id}"),
                 );
-                let owner = self
-                    .catalog
-                    .values()
-                    .find(|t| t.album.as_deref() == Some(title.as_str()))
-                    .map(|t| t.artist.clone());
+                let owner = route_owner.or_else(|| {
+                    self.catalog
+                        .values()
+                        .find(|t| t.album.as_deref() == Some(title.as_str()))
+                        .map(|t| t.artist.clone())
+                });
                 if self.album_resolving.as_deref() != Some(route_id.as_str()) {
                     self.album_resolving = Some(route_id.clone());
                     tasks.push(Self::album_resolve_task(route_id.clone(), title, owner));
@@ -671,7 +675,7 @@ impl AppState {
             if let Some(title) = t.album.clone() {
                 if !albums.iter().any(|a| a.title == title) {
                     albums.push(Album {
-                        id: format!("ax-{title}"),
+                        id: Self::album_route(&title, artist),
                         title,
                         artist: artist.into(),
                         year: None,
@@ -693,15 +697,10 @@ impl AppState {
                 return album.to_string();
             }
         }
-        // Synthetic cards use ax-Title ids; strip back to the title.
-        if let Some(rest) = id_or_title.strip_prefix("ax-") {
-            if self
-                .catalog
-                .values()
-                .any(|t| t.album.as_deref() == Some(rest))
-            {
-                return rest.to_string();
-            }
+        // Synthetic routes (`ax-Title`, or `ax-Title<US>Artist` from
+        // `album_route`): strip back to the title.
+        if let Some((title, _)) = Self::split_album_route(id_or_title) {
+            return title.to_string();
         }
         // Plain title passthrough (OpenTrackAlbum already passes titles).
         if self
@@ -714,12 +713,60 @@ impl AppState {
         id_or_title.to_string()
     }
 
+    /// Separator between title and artist in synthetic album routes
+    /// (ASCII unit separator: never part of a real title or name).
+    const ALBUM_ROUTE_SEP: char = '\u{1f}';
+
+    /// Synthetic album route carrying its artist, so same-titled albums
+    /// by different artists ("Greatest Hits") never share a page.
+    pub(crate) fn album_route(title: &str, artist: &str) -> String {
+        format!("ax-{title}{}{artist}", Self::ALBUM_ROUTE_SEP)
+    }
+
+    /// `(title, artist)` of a synthetic `ax-` route (artist absent on
+    /// legacy title-only routes); `None` for every other id.
+    pub(crate) fn split_album_route(route_id: &str) -> Option<(&str, Option<&str>)> {
+        let rest = route_id.strip_prefix("ax-")?;
+        Some(match rest.split_once(Self::ALBUM_ROUTE_SEP) {
+            Some((title, artist)) => (title, Some(artist).filter(|a| !a.is_empty())),
+            None => (rest, None),
+        })
+    }
+
+    /// Artist an album route belongs to, when the route says so: the
+    /// synthetic route's artist, a searched album's artist, or the
+    /// owner of a catalog track id. Bare titles have no owner.
+    pub(crate) fn album_owner(&self, route_id: &str) -> Option<String> {
+        if let Some((_, artist)) = Self::split_album_route(route_id) {
+            return artist.map(str::to_string);
+        }
+        if let Some(a) = self.results.albums.iter().find(|a| a.id == route_id) {
+            return Some(a.artist.clone()).filter(|a| !a.is_empty());
+        }
+        self.catalog.get(route_id).map(|t| t.artist.clone())
+    }
+
+    /// Track artist belongs to the album owner: exact, or a credit
+    /// that lists the owner first ("Queen & David Bowie" for Queen).
+    pub(crate) fn artist_matches_owner(track_artist: &str, owner: &str) -> bool {
+        track_artist == owner
+            || track_artist
+                .strip_prefix(owner)
+                .is_some_and(|rest| rest.starts_with([' ', ',', '&']))
+    }
+
     pub(crate) fn album_tracks(&self, id_or_title: &str) -> Vec<Track> {
         let title = self.resolve_album_title(id_or_title);
+        let owner = self.album_owner(id_or_title);
         let mut v: Vec<Track> = self
             .catalog
             .values()
             .filter(|t| t.album.as_deref() == Some(title.as_str()))
+            .filter(|t| {
+                owner
+                    .as_deref()
+                    .is_none_or(|o| Self::artist_matches_owner(&t.artist, o))
+            })
             .cloned()
             .collect();
         v.sort_by(|a, b| a.title.cmp(&b.title));
@@ -735,10 +782,22 @@ impl AppState {
         if self.results.albums.iter().any(|a| a.id == route_id) {
             return Some(route_id.to_string());
         }
-        let title = match route_id.strip_prefix("ax-") {
-            Some(rest) => rest.to_string(),
-            None => self.resolve_album_title(route_id),
-        };
+        let title = self.resolve_album_title(route_id);
+        let route_owner = self.album_owner(route_id);
+        if let Some(owner) = route_owner.as_deref() {
+            // The route names its artist: only that artist's album
+            // counts, and the bare-title alias (which may point at a
+            // same-titled album by someone else) is never consulted.
+            if let Some(hit) = self
+                .results
+                .albums
+                .iter()
+                .find(|a| a.title == title && a.artist == owner)
+            {
+                return Some(hit.id.clone());
+            }
+            return self.album_alias.get(route_id).cloned();
+        }
         let mut candidates = self.results.albums.iter().filter(|a| a.title == title);
         if let Some(first) = candidates.next() {
             // Duplicate titles across artists: prefer the one owning
@@ -943,32 +1002,96 @@ impl AppState {
             .or(hero)
     }
 
+    /// Album page cover, same rule as the search card: the album's
+    /// own art first, then the official tracklist's songs, then the
+    /// library's (songs before music videos, whose thumbnails are
+    /// video frames).
     pub(crate) fn album_header_cover(&self, id: &str) -> Option<String> {
-        let title = self.resolve_album_title(id);
-        self.album_tracks(id)
-            .first()
-            .and_then(|t| t.thumbnail_url.clone())
+        self.album_search_hit(id)
+            .and_then(|a| a.thumbnail_url.clone())
             .or_else(|| {
-                self.results
-                    .albums
-                    .iter()
-                    .find(|a| a.title == title)
-                    .and_then(|a| a.thumbnail_url.clone())
+                self.album_live_tracks(id)
+                    .and_then(|live| Self::album_art_from_tracks(&live))
             })
+            .or_else(|| Self::album_art_from_tracks(&self.album_tracks(id)))
             .map(|u| yutu_core::hires_thumb_url(&u, 544))
     }
 
-    /// Display label for a search-result playlist id (title when known).
-    /// Live lookup only runs on innertube builds; tests exercise it on
-    /// every configuration.
-    #[cfg(any(feature = "innertube", test))]
-    pub(crate) fn search_playlist_label(&self, id: &str) -> String {
+    /// Searched album matching an album route: the exact id, else the
+    /// title, restricted to the route's artist when it names one.
+    pub(crate) fn album_search_hit(&self, route_id: &str) -> Option<&Album> {
+        if let Some(a) = self.results.albums.iter().find(|a| a.id == route_id) {
+            return Some(a);
+        }
+        let title = self.resolve_album_title(route_id);
+        let owner = self.album_owner(route_id);
         self.results
-            .playlists
+            .albums
             .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.title.clone())
+            .find(|a| a.title == title && owner.as_deref().is_none_or(|o| a.artist == o))
+    }
+
+    /// Display label for a search-result playlist id (title when known).
+    pub(crate) fn search_playlist_label(&self, id: &str) -> String {
+        self.remote_playlist_hit(id)
+            .map(|p| p.title)
             .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Search-result playlist metadata: the copy captured on open
+    /// first (survives new searches), then either result list.
+    pub(crate) fn remote_playlist_hit(&self, id: &str) -> Option<PlaylistHit> {
+        self.remote_playlist_meta
+            .get(id)
+            .or_else(|| self.results.playlists.iter().find(|p| p.id == id))
+            .or_else(|| self.all_results.playlists.iter().find(|p| p.id == id))
+            .cloned()
+    }
+
+    /// Fetched tracks of a search-result playlist page, server order
+    /// (empty until the live fetch lands).
+    pub(crate) fn remote_playlist_tracks(&self, id: &str) -> Vec<Track> {
+        self.remote_playlist_live
+            .get(id)
+            .map(|ids| ids.iter().filter_map(|i| self.find_track(i)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Search-result playlist page header cover (hires hit art).
+    pub(crate) fn remote_playlist_cover(&self, id: &str) -> Option<String> {
+        self.remote_playlist_hit(id)
+            .and_then(|p| p.thumbnail_url)
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
+    }
+
+    /// Open a search-result playlist on its own page: capture the hit
+    /// metadata, then fetch the tracklist live (once per session per
+    /// id; the cache is capped like album lists).
+    pub(crate) fn open_search_playlist(&mut self, id: String) -> iced::Task<Message> {
+        self.close_menu();
+        if let Some(hit) = self.remote_playlist_hit(&id) {
+            self.remote_playlist_meta.insert(id.clone(), hit);
+        }
+        self.go(Route::RemotePlaylist(id.clone()));
+        self.publish_mpris();
+        let mut tasks = vec![self.ensure_visible_tasks()];
+        if let Some(url) = self.remote_playlist_cover(&id) {
+            tasks.extend(self.artwork_tasks_for_urls(&[url]));
+        }
+        #[cfg(feature = "innertube")]
+        {
+            if !self.remote_playlist_live.contains_key(&id)
+                && self.remote_playlist_loading.as_deref() != Some(id.as_str())
+            {
+                self.remote_playlist_loading = Some(id.clone());
+                tasks.push(Self::remote_playlist_task(id));
+            }
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            self.status = self.language.needs_innertube_playlists();
+        }
+        iced::Task::batch(tasks)
     }
 
     /// Play one search-result playlist: fetch its tracks live first
@@ -979,6 +1102,12 @@ impl AppState {
         shuffle: bool,
     ) -> iced::Task<Message> {
         self.close_menu();
+        // Already fetched (its page was opened): play straight away.
+        let cached = self.remote_playlist_tracks(&id);
+        if !cached.is_empty() {
+            let label = self.search_playlist_label(&id);
+            return self.play_fresh(cached, &self.language.playlist_queue_label(&label), shuffle);
+        }
         #[cfg(feature = "innertube")]
         {
             let label = self.search_playlist_label(&id);

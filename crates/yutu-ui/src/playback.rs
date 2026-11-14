@@ -78,6 +78,7 @@ impl AppState {
                 .playlist_cover_track(id)
                 .and_then(|t| self.blur_source_url(&t).or_else(|| self.hero_art_for(&t))),
             Route::Album(id) => self.album_header_cover(id),
+            Route::RemotePlaylist(id) => self.remote_playlist_cover(id),
             Route::Artist(id) => self.artist_photo(&self.resolve_artist_name(id)),
             _ => None,
         }

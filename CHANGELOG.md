@@ -19,6 +19,10 @@
 
 ### Changed
 
+- Clicking a recommended album on Home opens its album page instead of
+  playing it right away (#112).
+- Clicking a playlist in search results opens a playlist page with its
+  songs instead of playing it right away (#112).
 - The collapsed library rail now shows the app logo at the top.
 - The player on narrow windows is more compact: one-line title, and the
   volume sits next to the playback buttons (#109).
@@ -56,6 +60,10 @@
 
 ### Fixed
 
+- Albums with the same name by different artists (like two "Greatest
+  Hits") no longer open each other's page or mix their songs (#112).
+- An album page now shows the same cover as its card, instead of a
+  music video frame (#112).
 - Icon buttons (repeat, mute, like, panel pins) hover with a round
   highlight like the other player buttons; the narrow-window menu
   and queue buttons now show a hover too.
