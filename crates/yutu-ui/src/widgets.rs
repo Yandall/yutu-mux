@@ -200,6 +200,29 @@ pub(crate) fn icon_hover(
     }
 }
 
+/// In-page search pill (playlist and history searches): `pill_input`
+/// look, `PILL_H` tall, sized by the caller (compact at rest, grows
+/// while focused). Shares one widget id: the two never share a page,
+/// and the focus probe drives the grow animation through it.
+pub(crate) fn pill_search_input<'a>(
+    placeholder: &str,
+    value: &str,
+    on_input: fn(String) -> Message,
+    width: f32,
+) -> iced::Element<'a, Message> {
+    iced::widget::text_input(placeholder, value)
+        .style(pill_input)
+        .id(PL_SEARCH_INPUT_ID)
+        .on_input(on_input)
+        .size(13)
+        .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(
+            PILL_H - 2.0 * PILL_INPUT_PAD_Y,
+        )))
+        .width(iced::Length::Fixed(width))
+        .padding([PILL_INPUT_PAD_Y, 16.0])
+        .into()
+}
+
 /// Pill input that reads as a quiet button at rest (same fill, border
 /// and radius as `ghost_button`, light placeholder), so the playlist
 /// search sits in the action row next to Shuffle and grows on focus.

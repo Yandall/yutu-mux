@@ -2924,6 +2924,8 @@ impl AppState {
             }
             Message::HistoryFilterChanged(f) => {
                 self.history_filter = f;
+                // Typing counts as focus (same as the playlist search).
+                self.pl_search_focused = true;
                 // A new query restarts the render window (and any stale
                 // row hover dies with the old indices).
                 self.history_limit = HISTORY_PAGE_SIZE;

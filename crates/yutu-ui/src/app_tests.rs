@@ -8353,6 +8353,28 @@ fn playlist_glow_is_ready_on_open() {
 }
 
 #[test]
+fn history_search_follows_the_playlist_search_rules() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    s.navigate(Route::History);
+    settle(&mut s);
+    // Compact at rest: just the placeholder plus field chrome.
+    let ph = text_line_width(s.language.history_filter_placeholder());
+    let rest = s.history_search_width();
+    assert!((rest - (ph + PL_SEARCH_CHROME)).abs() < 0.5);
+    // Typing counts as focus and grows it, within the content width.
+    let _ = s.update(Message::HistoryFilterChanged("a".into()));
+    settle(&mut s);
+    let open = s.history_search_width();
+    assert!(open > rest);
+    assert!(open <= s.content_width() + 0.5);
+    // Leaving the page drops the focus, so it starts compact next time.
+    s.navigate(Route::Home);
+    settle(&mut s);
+    assert_eq!(s.pl_search_expand, 0.0);
+}
+
+#[test]
 fn collection_total_length_format() {
     assert_eq!(fmt_total(0), "0 min");
     assert_eq!(fmt_total(20), "1 min");
@@ -8435,6 +8457,7 @@ fn layout_snapshots() {
         "album",
         "settings",
         "nowplaying",
+        "history",
         "library",
         "queue",
     ];
@@ -8487,6 +8510,7 @@ fn layout_snapshots() {
                     let _ = s.update(Message::OpenAlbum("A Rather Long Album Title".into()));
                 }
                 "settings" => s.navigate(Route::Settings),
+                "history" => s.navigate(Route::History),
                 "nowplaying" => {
                     s.drawer_open = true;
                     let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();

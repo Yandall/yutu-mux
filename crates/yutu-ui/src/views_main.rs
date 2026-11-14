@@ -27,8 +27,7 @@ impl AppState {
     /// Rows render newest-first inside a render window ("Show more"
     /// pages in older plays); the header counts every match.
     pub(crate) fn history_view(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, text, text_input};
-        use iced::Fill;
+        use iced::widget::{button, column, text};
         let (groups, total) = self.history_groups(now_unix(), self.history_limit);
         let shown: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
         let head: iced::Element<'_, Message> = if self.history_filter.trim().is_empty() {
@@ -45,14 +44,14 @@ impl AppState {
         let mut body = column![
             text(self.language.nav_history()).size(22),
             head,
-            text_input(
+            // Same rules as the playlist search: compact pill at rest,
+            // grows while focused.
+            pill_search_input(
                 self.language.history_filter_placeholder(),
-                &self.history_filter
-            )
-            .style(rounded_input)
-            .on_input(Message::HistoryFilterChanged)
-            .width(Fill)
-            .padding(10),
+                &self.history_filter,
+                Message::HistoryFilterChanged,
+                self.history_search_width(),
+            ),
         ]
         .spacing(10);
         if groups.is_empty() {
@@ -1881,6 +1880,20 @@ impl AppState {
         full.min(ww).max(0.0)
     }
 
+    /// History search width: the playlist search's rule (placeholder
+    /// sized at rest, eased up to the header pill's width while
+    /// focused) within the page's content width.
+    pub(crate) fn history_search_width(&self) -> f32 {
+        let full = self
+            .search_full_width()
+            .min(self.content_width())
+            .max(160.0);
+        let collapsed = (text_line_width(self.language.history_filter_placeholder())
+            + PL_SEARCH_CHROME)
+            .min(full);
+        collapsed + (full - collapsed) * ease_in_out(self.pl_search_expand)
+    }
+
     /// Playlist search width: placeholder-sized at rest, eased up to
     /// the header pill's expanded width while focused (same max).
     pub(crate) fn pl_search_width(&self) -> f32 {
@@ -3219,20 +3232,12 @@ impl AppState {
                             self.language.shuffle_label(),
                             Message::PlayAllShuffled,
                         ),
-                        iced::widget::text_input(
+                        pill_search_input(
                             self.language.playlist_filter_placeholder(),
                             &self.playlist_filter,
-                        )
-                        .style(pill_input)
-                        .id(PL_SEARCH_INPUT_ID)
-                        .on_input(Message::PlaylistFilterChanged)
-                        .size(13)
-                        .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(
-                            PILL_H - 2.0 * PILL_INPUT_PAD_Y,
-                        )))
-                        .width(iced::Length::Fixed(self.pl_search_width()))
-                        .padding([PILL_INPUT_PAD_Y, 16.0])
-                        .into(),
+                            Message::PlaylistFilterChanged,
+                            self.pl_search_width(),
+                        ),
                         round_button(
                             btn_icon("ellipsis", 16.0, iced::Color::WHITE),
                             ghost_button,

@@ -21,6 +21,8 @@
 
 - The player on narrow windows is more compact: one-line title, and the
   volume sits next to the playback buttons (#109).
+- The History search matches the playlist search: a compact pill that
+  grows while you type (#109).
 - Now Playing toggle uses a microphone icon that fills while open.
 - Start mix plays YouTube Music's own mix in the queue, labeled
   "Playing from" (#100).
