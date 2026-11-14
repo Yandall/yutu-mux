@@ -81,14 +81,6 @@ pub(crate) fn release_is_click_at(
     }
 }
 
-/// Right-panel tab: queue or recently played.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RightTab {
-    #[default]
-    Queue,
-    Recent,
-}
-
 /// Home shelf contents, recomputed on navigation and on Tick while
 /// the shelves are visible (never per frame: the ranking scans the
 /// whole catalog plus a history query, ~ms in debug builds).
@@ -496,7 +488,6 @@ pub enum Message {
     SeekToMs(u64),
     NavBack,
     NavForward,
-    SetRightTab(RightTab),
     SetSearchFilter(SearchFilter),
     SuggestCompleted {
         gen: u64,
@@ -565,13 +556,6 @@ pub enum Message {
     /// [`Message::QueueExit`]). Carries the same scoped key the row
     /// entered with, so leaving one instance never clears another.
     TrackExit(String),
-    /// Right-panel Recent hover (same per-row contract as track rows
-    /// but its own state, so a Recent row and a center row for the
-    /// same track never highlight together).
-    RecentHover(Option<String>),
-    /// Recent row-leave (same enter-before-exit ordering; see
-    /// [`Message::QueueExit`]).
-    RecentExit(String),
     /// Sidebar playlist hover (reveals the row play button).
     PlaylistHover(Option<String>),
     /// Sidebar playlist row-leave (same enter-before-exit ordering;

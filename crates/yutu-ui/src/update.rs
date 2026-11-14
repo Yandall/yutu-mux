@@ -293,9 +293,6 @@ impl AppState {
                 self.publish_mpris();
                 return self.ensure_visible_tasks();
             }
-            Message::SetRightTab(t) => {
-                self.right_tab = t;
-            }
             Message::SetSearchFilter(f) => {
                 self.search_filter = f;
             }
@@ -1630,7 +1627,6 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
-                self.hovered_recent = None;
             }
             Message::HistoryExit(i) => {
                 if self.hovered_history == Some(i) {
@@ -1672,7 +1668,6 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
-                self.hovered_recent = None;
             }
             Message::TrackExit(id) => {
                 if self.hovered_track.as_deref() == Some(id.as_str()) {
@@ -1696,34 +1691,9 @@ impl AppState {
                     self.pl_hover = None;
                 }
             }
-            Message::RecentHover(h) => {
-                if self.modal_freeze() {
-                    self.hovered_recent = None;
-                } else {
-                    self.hovered_recent = h;
-                }
-                // Same cross-list clearing as track rows: a Recent enter
-                // drops the center highlight for the same track id, so
-                // only the hovered component lights up.
-                self.hovered_track = None;
-                self.hovered_queue = None;
-                self.hovered_history = None;
-                self.hovered_auto = None;
-                self.hovered_album = None;
-                self.hovered_artist = None;
-                self.hovered_search_playlist = None;
-                self.hovered_playlist = None;
-                self.hover_remove = None;
-            }
-            Message::RecentExit(id) => {
-                if self.hovered_recent.as_deref() == Some(id.as_str()) {
-                    self.hovered_recent = None;
-                }
-            }
             Message::AlbumHover(h) => {
                 self.hovered_album = self.coll_hover(h);
                 self.hovered_track = None;
-                self.hovered_recent = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
@@ -1734,7 +1704,6 @@ impl AppState {
             Message::ArtistHover(h) => {
                 self.hovered_artist = self.coll_hover(h);
                 self.hovered_track = None;
-                self.hovered_recent = None;
                 self.hovered_album = None;
                 self.hovered_search_playlist = None;
                 self.hovered_playlist = None;
@@ -1745,7 +1714,6 @@ impl AppState {
             Message::SearchPlaylistHover(h) => {
                 self.hovered_search_playlist = self.coll_hover(h);
                 self.hovered_track = None;
-                self.hovered_recent = None;
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_playlist = None;
@@ -1798,7 +1766,6 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
-                self.hovered_recent = None;
             }
             Message::PlaylistExit(id) => {
                 if self.hovered_playlist.as_deref() == Some(id.as_str()) {
@@ -1815,7 +1782,6 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
-                self.hovered_recent = None;
             }
             Message::AutoExit(i) => {
                 if self.hovered_auto == Some(i) {
@@ -1832,7 +1798,6 @@ impl AppState {
                 self.hovered_album = None;
                 self.hovered_artist = None;
                 self.hovered_search_playlist = None;
-                self.hovered_recent = None;
             }
             Message::DragStart(from) => {
                 // Two-row lists reorder via the trailing edge slot, so

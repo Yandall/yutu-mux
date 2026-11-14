@@ -21,6 +21,10 @@
 
 - Hovering a song shown in several lists highlights only that row (#98).
 
+### Removed
+
+- The Recent tab in the queue sidebar; use the History page instead.
+
 ## 0.1.0
 
 - yutu-mux released for Windows, Linux, and macOS.

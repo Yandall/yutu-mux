@@ -1041,7 +1041,6 @@ impl AppState {
     /// Shared with the scrim hover-freeze (same frozen state).
     pub(crate) fn clear_hovers(&mut self) {
         self.hovered_track = None;
-        self.hovered_recent = None;
         self.hovered_album = None;
         self.hovered_artist = None;
         self.hovered_search_playlist = None;

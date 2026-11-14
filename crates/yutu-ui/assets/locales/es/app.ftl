@@ -164,12 +164,10 @@ month-12 = diciembre
 ## Queue panel & player bar
 
 queue-tab = Fila
-recent-tab = Recientes
 now-playing = Reproduciendo ahora
 nothing-queued = Nada en fila
 up-next = A continuación
 autoplay = Reproducción automática
-no-recent-plays = Sin reproducciones recientes todavía.
 clear-queue = Vaciar fila ({ $n })
 nothing-playing = Nada en reproducción
 loading-ellipsis = Cargando…
