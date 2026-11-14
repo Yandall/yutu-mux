@@ -60,6 +60,8 @@
 
 ### Fixed
 
+- Albums with the same name by different artists (like two "Greatest
+  Hits") no longer open each other's page or mix their songs (#112).
 - Icon buttons (repeat, mute, like, panel pins) hover with a round
   highlight like the other player buttons; the narrow-window menu
   and queue buttons now show a hover too.

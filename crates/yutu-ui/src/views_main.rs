@@ -2347,7 +2347,7 @@ impl AppState {
                             &g.tracks[0],
                             g.title.clone(),
                             g.artist.clone(),
-                            Message::OpenAlbum(format!("ax-{}", g.title)),
+                            Message::OpenAlbum(Self::album_route(&g.title, &g.artist)),
                             Message::OpenHomeAlbumMenu {
                                 album: g.title.clone(),
                                 artist: g.artist.clone(),
@@ -3043,10 +3043,7 @@ impl AppState {
                 let total: u32 = tracks.iter().map(|t| self.track_secs(t)).sum();
                 let artist = tracks.first().map(|t| t.artist.clone()).unwrap_or_default();
                 let year = self
-                    .results
-                    .albums
-                    .iter()
-                    .find(|a| a.title == title)
+                    .album_search_hit(id)
                     .and_then(|a| a.year)
                     .map(|y| y.to_string())
                     .unwrap_or_default();

@@ -7753,6 +7753,73 @@ fn shuffle_playlist_plays_shuffled_from_top() {
 }
 
 #[test]
+fn same_titled_albums_by_different_artists_stay_apart() {
+    let mut s = test_state();
+    for (id, artist) in [
+        ("p1", "The Police"),
+        ("p2", "The Police"),
+        ("c1", "The Cure"),
+    ] {
+        let mut t = mk_track(id, id, artist);
+        t.album = Some("Greatest Hits".into());
+        s.catalog.insert(id.into(), t);
+    }
+    // Songs: each artist's page lists only that artist's songs.
+    let police = AppState::album_route("Greatest Hits", "The Police");
+    let cure = AppState::album_route("Greatest Hits", "The Cure");
+    let ids = |s: &AppState, r: &str| -> Vec<String> {
+        let mut v: Vec<String> = s.album_tracks(r).into_iter().map(|t| t.id).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids(&s, &police), ["p1", "p2"]);
+    assert_eq!(ids(&s, &cure), ["c1"]);
+    assert_eq!(s.resolve_album_title(&police), "Greatest Hits");
+    // Lookup: searched albums match on artist, never the first title hit.
+    s.results.albums = vec![
+        Album {
+            id: "MPRE_cure".into(),
+            title: "Greatest Hits".into(),
+            artist: "The Cure".into(),
+            year: Some(2001),
+            thumbnail_url: None,
+        },
+        Album {
+            id: "MPRE_police".into(),
+            title: "Greatest Hits".into(),
+            artist: "The Police".into(),
+            year: Some(1992),
+            thumbnail_url: None,
+        },
+    ];
+    assert_eq!(s.album_browse_id(&police).as_deref(), Some("MPRE_police"));
+    assert_eq!(s.album_browse_id(&cure).as_deref(), Some("MPRE_cure"));
+    // Cache: opening one artist's album never answers for the other's.
+    let _ = s.update(Message::OpenAlbum(cure.clone()));
+    s.results.albums.clear();
+    assert_eq!(s.album_browse_id(&cure).as_deref(), Some("MPRE_cure"));
+    assert_eq!(s.album_browse_id(&police), None);
+    let _ = s.update(Message::OpenAlbum(police.clone()));
+    assert_eq!(s.route, Route::Album(police));
+    let _ = s.view();
+}
+
+#[test]
+fn track_album_owner_accepts_featured_credits() {
+    assert!(AppState::artist_matches_owner("Queen", "Queen"));
+    assert!(AppState::artist_matches_owner(
+        "Queen & David Bowie",
+        "Queen"
+    ));
+    assert!(AppState::artist_matches_owner(
+        "Queen, David Bowie",
+        "Queen"
+    ));
+    assert!(!AppState::artist_matches_owner("Queensryche", "Queen"));
+    assert!(!AppState::artist_matches_owner("The Cure", "The Police"));
+}
+
+#[test]
 fn album_ax_id_resolves_tracks() {
     let mut s = test_state();
     s.catalog.insert(

@@ -2596,7 +2596,9 @@ impl AppState {
                 self.close_menu();
                 match self.find_track(&id) {
                     Some(t) => match t.album.clone() {
-                        Some(album) => return self.open_album(album),
+                        Some(album) => {
+                            return self.open_album(Self::album_route(&album, &t.artist));
+                        }
                         None => {
                             self.status = self.language.no_album_for(&t.title, &t.artist);
                         }
@@ -2889,8 +2891,12 @@ impl AppState {
                             "live-detail",
                             format_args!("album resolved: {title} -> {browse}"),
                         );
+                        // Bare-title alias only for owner-less routes
+                        // (see `open_album`).
+                        if self.album_owner(&route_id).is_none() {
+                            Self::alias_insert(&mut self.album_alias, title, browse.clone());
+                        }
                         Self::alias_insert(&mut self.album_alias, route_id, browse.clone());
-                        Self::alias_insert(&mut self.album_alias, title, browse.clone());
                         if !self.album_live.contains_key(&browse) {
                             self.album_loading = Some(browse.clone());
                             #[cfg(feature = "innertube")]
