@@ -38,8 +38,11 @@
   stays in the right-click menu (#108).
 - Very wide windows use more of the screen, and Now Playing shows the
   cover beside the lyrics (#108).
-- Now Playing shows a soft blur of the cover's colors behind it (#108).
-- Playlist pages show the playlist cover next to the title (#108).
+- Now Playing shows a soft blur of the cover's colors behind it, and
+  playlist, album and artist pages glow with their cover at the top (#108).
+- Playlist pages get a new header: cover, bold title, song count and
+  total length, a round play button, and Shuffle and search as pills;
+  sorting moves above the song list (#108).
 
 ### Fixed
 

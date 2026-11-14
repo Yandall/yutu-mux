@@ -795,14 +795,21 @@ impl AppState {
                 slots
             }
             Route::PlaylistDetail(id) => {
-                // Cover header (art beside or above the title block),
-                // then the playlist search field, then rows.
+                // Cover header (art beside or above the title block,
+                // search pill inside it), a spacer, then rows.
                 let header_h = if self.hero_stacked() {
-                    HERO_STACKED_ART + 12.0 + 120.0
+                    HERO_STACKED_ART + 12.0 + 140.0
                 } else {
-                    180.0
+                    PLAYLIST_COVER_PX
                 };
-                let y0 = BODY_PAD + header_h + 10.0 + 42.0 + 10.0;
+                // Sort bar (own lists) is a 36px select; Favorites keeps
+                // an 8px spacer in its place.
+                let bar_h = if Some(id.as_str()) == Some(Self::FAVORITES_ID) {
+                    8.0
+                } else {
+                    36.0
+                };
+                let y0 = BODY_PAD + header_h + 10.0 + bar_h + 10.0;
                 match self.find_playlist(id) {
                     None => Vec::new(),
                     Some(p) => {

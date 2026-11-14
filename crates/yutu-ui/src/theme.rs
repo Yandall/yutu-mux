@@ -80,6 +80,25 @@ pub(crate) fn np_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Styl
     }
 }
 
+/// Collection page backdrop veil: light at the top so the cover's
+/// colors show, ending in exactly the app background so the band melts
+/// into the page with no visible edge.
+pub(crate) fn page_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                .add_stop(0.0, iced::Color { a: 0.30, ..APP_BG })
+                .add_stop(0.4, iced::Color { a: 0.60, ..APP_BG })
+                .add_stop(0.7, iced::Color { a: 0.90, ..APP_BG })
+                .add_stop(0.88, APP_BG)
+                .add_stop(1.0, APP_BG),
+        ))),
+        // Top corners only: the bottom edge is plain app background.
+        border: iced::Border::default().rounded(iced::border::top(12)),
+        ..Default::default()
+    }
+}
+
 /// Floating side panel (Medium hover expand, Narrow drawer): the panel
 /// surface plus a soft shadow so it reads as above the content.
 pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Style {

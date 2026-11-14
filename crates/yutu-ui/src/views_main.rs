@@ -3161,38 +3161,36 @@ impl AppState {
                             .collect();
                         column(rows).spacing(2).into()
                     };
-                    // Actions: play, shuffle, sort (own lists only), menu.
-                    // Built as a vec so Favorites simply omits the sort
-                    // slot instead of leaving an empty gap in the row.
+                    // Header (YouTube Music style): cover beside a small
+                    // label, bold title, count + length, then a round play
+                    // button, Shuffle and the playlist search as pills
+                    // (the search grows while focused) and the menu. The
+                    // sort picker (own lists only) sits right-aligned in
+                    // a bar above the songs, so the action row fits.
+                    let total: u64 = p.tracks.iter().map(|t| u64::from(self.track_secs(t))).sum();
                     let mut actions: Vec<iced::Element<'_, Message>> = vec![
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_all(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center),
+                        button(ctrl_box(btn_icon("play", 18.0, iced::Color::WHITE)))
+                            .style(accent_button)
+                            .on_press(Message::PlayAll)
+                            .padding(13)
+                            .into(),
+                        button(btn_text(self.language.shuffle_label(), 13))
+                            .style(ghost_button)
+                            .on_press(Message::PlayAllShuffled)
+                            .padding([9, 16])
+                            .into(),
+                        iced::widget::text_input(
+                            self.language.playlist_filter_placeholder(),
+                            &self.playlist_filter,
                         )
-                        .style(accent_button)
-                        .on_press(Message::PlayAll)
-                        .padding(8)
-                        .into(),
-                        button(
-                            row![
-                                btn_icon("shuffle", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.shuffle_label(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center),
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayAllShuffled)
-                        .padding(8)
+                        .style(pill_input)
+                        .id(PL_SEARCH_INPUT_ID)
+                        .on_input(Message::PlaylistFilterChanged)
+                        .size(13)
+                        .width(iced::Length::Fixed(self.pl_search_width()))
+                        .padding([9, 16])
                         .into(),
                     ];
-                    if !is_fav {
-                        actions.push(sort_button);
-                    }
                     actions.push(
                         button(btn_icon("ellipsis", 15.0, MUTED))
                             .style(hover_row)
@@ -3203,40 +3201,48 @@ impl AppState {
                     let cover = self
                         .playlist_cover_track(&p.id)
                         .and_then(|t| self.hero_art_for(&t));
-                    column![
-                        self.hero_header(
-                            cover.as_deref(),
-                            180.0,
-                            column![
-                                text(p.title.clone()).size(28),
-                                text(self.language.playlist_sub(p.tracks.len()))
-                                    .size(12)
-                                    .color(MUTED),
-                                // Wraps onto a second line on narrow windows
-                                // instead of pushing the menu button off-screen.
-                                iced::widget::Row::with_children(actions)
-                                    .spacing(8)
-                                    .align_y(iced::alignment::Vertical::Center)
-                                    .wrap()
-                                    .vertical_spacing(8),
-                            ]
-                            .spacing(6)
-                            .width(Fill)
-                            .into(),
-                        ),
-                        iced::widget::text_input(
-                            self.language.playlist_filter_placeholder(),
-                            &self.playlist_filter
+                    let info: iced::Element<'_, Message> = column![
+                        text(self.language.playlist_label()).size(12).color(MUTED),
+                        text(p.title.clone()).size(34).font(bold_font()),
+                        text(
+                            self.language
+                                .playlist_meta(p.tracks.len(), &fmt_total(total))
                         )
-                        .style(rounded_input)
-                        .id(PL_SEARCH_INPUT_ID)
-                        .on_input(Message::PlaylistFilterChanged)
-                        .width(iced::Length::Fixed(self.pl_search_width()))
-                        .padding(10),
-                        list,
+                        .size(12)
+                        .color(MUTED),
+                        iced::widget::Space::new().height(iced::Length::Fixed(6.0)),
+                        // Wraps onto a second line on narrow windows
+                        // instead of pushing the menu button off-screen.
+                        iced::widget::Row::with_children(actions)
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
                     ]
-                    .spacing(10)
-                    .into()
+                    .spacing(4)
+                    .width(Fill)
+                    .into();
+                    let header: iced::Element<'_, Message> = if self.hero_stacked() {
+                        column![self.art_thumb(cover.as_deref(), HERO_STACKED_ART), info]
+                            .spacing(12)
+                            .into()
+                    } else {
+                        // Title block sits on the cover's bottom edge.
+                        row![self.art_thumb(cover.as_deref(), PLAYLIST_COVER_PX), info]
+                            .spacing(20)
+                            .align_y(iced::alignment::Vertical::Bottom)
+                            .into()
+                    };
+                    let list_bar: iced::Element<'_, Message> = if is_fav {
+                        iced::widget::Space::new()
+                            .height(iced::Length::Fixed(8.0))
+                            .into()
+                    } else {
+                        row![iced::widget::Space::new().width(Fill), sort_button]
+                            .align_y(iced::alignment::Vertical::Center)
+                            .into()
+                    };
+                    column![header, list_bar, list,].spacing(10).into()
                 }
             },
             Route::Lyrics(id) => {
@@ -3294,7 +3300,40 @@ impl AppState {
                 .height(Fill)
                 .into()
         };
-        column![header, scrolled,].spacing(4).into()
+        let page: iced::Element<'_, Message> = column![header, scrolled,].spacing(4).into();
+        // Collection pages: the cover's colors glow behind the top of the
+        // column (header included) and fade into the app background.
+        match self
+            .page_backdrop_url()
+            .and_then(|u| self.art_blur.get(&u).cloned())
+        {
+            Some(handle) => {
+                use iced::widget::{image, Space, Stack};
+                let band: iced::Element<'_, Message> = Stack::with_children(vec![
+                    image(handle)
+                        .content_fit(iced::ContentFit::Cover)
+                        .filter_method(image::FilterMethod::Linear)
+                        .opacity(PAGE_BACKDROP_OPACITY)
+                        .border_radius(iced::border::top(12))
+                        .width(Fill)
+                        .height(Fill)
+                        .into(),
+                    container(Space::new())
+                        .style(page_backdrop_veil)
+                        .width(Fill)
+                        .height(Fill)
+                        .into(),
+                ])
+                .width(Fill)
+                .height(iced::Length::Fixed(PAGE_BACKDROP_H))
+                .into();
+                Stack::with_children(vec![column![band, Space::new().height(Fill)].into(), page])
+                    .width(Fill)
+                    .height(Fill)
+                    .into()
+            }
+            None => page,
+        }
     }
 
     /// Search popup content, if the gate holds (window-level layer above

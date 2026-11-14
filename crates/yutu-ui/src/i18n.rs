@@ -412,6 +412,13 @@ impl Language {
     pub fn album_label(self) -> String {
         self.tr("album-label")
     }
+    pub fn playlist_label(self) -> String {
+        self.tr("playlist-label")
+    }
+    /// Playlist header meta: song count and total length.
+    pub fn playlist_meta(self, n: usize, time: &str) -> String {
+        self.tr_args("playlist-meta", &[("n", &n.to_string()), ("time", time)])
+    }
     /// Song vs video kind tag for rows (same separator as Playing status).
     pub fn track_kind(self, is_video: bool) -> String {
         if is_video {

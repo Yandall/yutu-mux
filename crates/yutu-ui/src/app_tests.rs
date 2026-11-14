@@ -8166,6 +8166,37 @@ fn playlist_cover_is_the_first_song() {
 }
 
 #[test]
+fn page_backdrop_follows_collection_pages() {
+    let mut s = test_state();
+    assert!(s.page_backdrop_url().is_none());
+    let _ = s.update(Message::CreatePlaylist("Glow".into()));
+    let i = s
+        .user_playlists
+        .iter()
+        .position(|p| p.title == "Glow")
+        .unwrap();
+    let mut t = mk_track("g1", "First", "A");
+    t.thumbnail_url = Some("https://example.invalid/g1.jpg".into());
+    s.user_playlists[i].tracks = vec![t.clone()];
+    let pid = s.user_playlists[i].id.clone();
+    let _ = s.update(Message::OpenPlaylist(pid));
+    // The playlist page glows with its cover (the first song's hero art).
+    assert_eq!(s.page_backdrop_url(), s.hero_art_for(&t));
+    assert!(s.page_backdrop_url().is_some());
+    // Other pages have no backdrop.
+    s.navigate(Route::Settings);
+    assert!(s.page_backdrop_url().is_none());
+}
+
+#[test]
+fn collection_total_length_format() {
+    assert_eq!(fmt_total(0), "0 min");
+    assert_eq!(fmt_total(20), "1 min");
+    assert_eq!(fmt_total(46 * 60 + 40), "46 min");
+    assert_eq!(fmt_total(2 * 3600 + 51 * 60), "2 h 51 min");
+}
+
+#[test]
 fn row_title_budget_bounds() {
     assert_eq!(row_title_budget(0.0), 12);
     assert_eq!(row_title_budget(2000.0), 45);
@@ -8179,6 +8210,29 @@ fn window_has_a_minimum_size() {
     assert_eq!(
         settings.min_size,
         Some(iced::Size::new(MIN_WINDOW_W, MIN_WINDOW_H))
+    );
+}
+
+/// Fake cover backdrop for screenshots (no network): a warm-to-cool
+/// 8x8 ramp stored under `url`.
+fn fake_backdrop(s: &mut AppState, url: String) {
+    let px = ART_BLUR_PX as usize;
+    let mut rgba = Vec::with_capacity(px * px * 4);
+    for y in 0..px {
+        for x in 0..px {
+            let fx = x as f32 / (px - 1) as f32;
+            let fy = y as f32 / (px - 1) as f32;
+            rgba.extend_from_slice(&[
+                (230.0 * (1.0 - fx)) as u8,
+                (60.0 + 120.0 * fy) as u8,
+                (200.0 * fx) as u8,
+                255,
+            ]);
+        }
+    }
+    s.art_blur.insert(
+        url,
+        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba),
     );
 }
 
@@ -8230,6 +8284,7 @@ fn layout_snapshots() {
                         &format!("Artist {i}"),
                     );
                     t.album = Some("A Rather Long Album Title".into());
+                    t.thumbnail_url = Some(format!("https://example.invalid/t{i}.jpg"));
                     t
                 })
                 .collect();
@@ -8265,30 +8320,8 @@ fn layout_snapshots() {
                 "settings" => s.navigate(Route::Settings),
                 "nowplaying" => {
                     s.drawer_open = true;
-                    // Fake cover backdrop (no network): a warm-to-cool
-                    // 8x8 ramp under the playing track's hero URL.
-                    let mut t = s.queue.current().cloned().unwrap();
-                    t.thumbnail_url = Some("https://example.invalid/cover.jpg".into());
-                    let url = AppState::hero_art_url(&t).unwrap();
-                    s.catalog.insert(t.id.clone(), t);
-                    let px = ART_BLUR_PX as usize;
-                    let mut rgba = Vec::with_capacity(px * px * 4);
-                    for y in 0..px {
-                        for x in 0..px {
-                            let fx = x as f32 / (px - 1) as f32;
-                            let fy = y as f32 / (px - 1) as f32;
-                            rgba.extend_from_slice(&[
-                                (230.0 * (1.0 - fx)) as u8,
-                                (60.0 + 120.0 * fy) as u8,
-                                (200.0 * fx) as u8,
-                                255,
-                            ]);
-                        }
-                    }
-                    s.art_blur.insert(
-                        url,
-                        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba),
-                    );
+                    let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();
+                    fake_backdrop(&mut s, url);
                 }
                 "library" => {
                     if s.layout().panels_overlay() {
@@ -8301,6 +8334,9 @@ fn layout_snapshots() {
                     }
                 }
                 _ => s.navigate(Route::Home),
+            }
+            if let Some(url) = s.page_backdrop_url() {
+                fake_backdrop(&mut s, url);
             }
             for _ in 0..80 {
                 let _ = s.update(Message::Animate);

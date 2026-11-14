@@ -262,6 +262,9 @@ pub(crate) const LYRIC_STEPPER_H: f32 = 30.0;
 /// Now Playing backdrop: downscale edge (pixels) and cache size.
 pub(crate) const ART_BLUR_PX: u32 = 8;
 pub(crate) const ART_BLUR_CAP: usize = 64;
+/// Collection page backdrop band height and cover strength.
+pub(crate) const PAGE_BACKDROP_H: f32 = 380.0;
+pub(crate) const PAGE_BACKDROP_OPACITY: f32 = 0.65;
 /// How strongly the stretched cover shows through the sheet.
 pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
 /// Side slot width in the stacked player: holds the time labels on the
@@ -271,6 +274,8 @@ pub(crate) const MINI_SIDE_W: f32 = 40.0;
 /// stacked art size.
 pub(crate) const HERO_STACK_BELOW: f32 = 560.0;
 pub(crate) const HERO_STACKED_ART: f32 = 140.0;
+/// Playlist header cover edge (side-by-side layout).
+pub(crate) const PLAYLIST_COVER_PX: f32 = 190.0;
 /// Content width below which song rows drop the heart button.
 pub(crate) const ROW_HEART_MIN_CONTENT: f32 = 480.0;
 /// Content width from which quick picks use two columns.
@@ -565,6 +570,18 @@ pub(crate) fn ease_toward(current: f32, target: f32, step: f32) -> f32 {
 pub(crate) fn fmt_time(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
     format!("{}:{:02}", total / 60, total % 60)
+}
+
+/// Total length for collection headers: "2 h 51 min", "51 min", or
+/// "1 min" for anything shorter (never "0 min" for a non-empty list).
+pub(crate) fn fmt_total(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 {
+        format!("{h} h {m} min")
+    } else {
+        format!("{} min", m.max(u64::from(secs > 0)))
+    }
 }
 
 /// Song length for list rows: blank when unknown (0), never a fake

@@ -39,18 +39,40 @@ impl AppState {
         Self::hero_art_url(merged)
     }
 
-    /// Now Playing backdrop: once the current cover is on disk, decode
-    /// it on a blocking thread and keep an 8x8 downscale (a few bytes;
-    /// the drawer stretches it with linear filtering, which reads as a
-    /// heavy blur of the cover's colors). Polled from Tick while the
-    /// drawer is open, so it lands whenever the cover does.
-    pub(crate) fn art_blur_task(&mut self) -> iced::Task<Message> {
-        if !self.drawer_open {
-            return iced::Task::none();
+    /// Cover behind the top of a collection page (playlist cover,
+    /// album cover, artist photo); `None` on every other page.
+    pub(crate) fn page_backdrop_url(&self) -> Option<String> {
+        match &self.route {
+            Route::PlaylistDetail(id) => self
+                .playlist_cover_track(id)
+                .and_then(|t| self.hero_art_for(&t)),
+            Route::Album(id) => self.album_header_cover(id),
+            Route::Artist(id) => self.artist_photo(&self.resolve_artist_name(id)),
+            _ => None,
         }
-        let Some(url) = self.queue.current().and_then(|t| self.hero_art_for(t)) else {
-            return iced::Task::none();
-        };
+    }
+
+    /// Backdrops: once a wanted cover is on disk (the Now Playing cover
+    /// while the drawer is open, the current page's cover), decode it on
+    /// a blocking thread and keep an 8x8 downscale (a few bytes; views
+    /// stretch it with linear filtering, which reads as a heavy blur of
+    /// the cover's colors). Polled from Tick, so it lands whenever the
+    /// cover does.
+    pub(crate) fn art_blur_task(&mut self) -> iced::Task<Message> {
+        let mut wanted: Vec<String> = Vec::with_capacity(2);
+        if self.drawer_open {
+            wanted.extend(self.queue.current().and_then(|t| self.hero_art_for(t)));
+        }
+        wanted.extend(self.page_backdrop_url());
+        iced::Task::batch(
+            wanted
+                .into_iter()
+                .map(|url| self.art_blur_decode(url))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn art_blur_decode(&mut self, url: String) -> iced::Task<Message> {
         if self.art_blur.contains_key(&url) || self.art_blur_loading.contains(&url) {
             return iced::Task::none();
         }

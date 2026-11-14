@@ -144,6 +144,40 @@ pub(crate) fn rounded_input(
     }
 }
 
+/// Pill input that reads as a quiet button at rest (same fill, border
+/// and radius as `ghost_button`, light placeholder), so the playlist
+/// search sits in the action row next to Shuffle and grows on focus.
+pub(crate) fn pill_input(
+    _: &iced::Theme,
+    status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
+    let active = matches!(
+        status,
+        iced::widget::text_input::Status::Hovered
+            | iced::widget::text_input::Status::Focused { .. }
+    );
+    iced::widget::text_input::Style {
+        background: iced::Background::Color(if active {
+            iced::Color::from_rgb8(0x2A, 0x2A, 0x2A)
+        } else {
+            iced::Color::from_rgb8(0x22, 0x22, 0x22)
+        }),
+        border: iced::Border {
+            color: if active {
+                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+            } else {
+                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            },
+            width: 1.0,
+            radius: 20.0.into(),
+        },
+        icon: MUTED,
+        placeholder: iced::Color::from_rgb8(0xDD, 0xDD, 0xDD),
+        value: iced::Color::WHITE,
+        selection: ACCENT,
+    }
+}
+
 /// File-picker field: looks like a text input (dark fill, soft border)
 /// but opens the system dialog on press. The hover border lightens so it
 /// never reads as static text, and the red Import CTA stays distinct.
