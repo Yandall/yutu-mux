@@ -75,11 +75,14 @@ fn main() -> iced::Result {
         0.8,
     )));
     // Platform media service on a helper thread (MPRIS on Linux,
-    // Now Playing + media keys on macOS): failures log, GUI runs on.
+    // Now Playing + media keys on macOS, SMTC + media keys on
+    // Windows): failures log, GUI runs on.
     #[cfg(target_os = "macos")]
     yutu_desktop::macos::spawn_media_integration(Arc::clone(&state));
     #[cfg(target_os = "linux")]
     spawn_mpris(Arc::clone(&state));
+    #[cfg(target_os = "windows")]
+    yutu_desktop::windows::spawn_media_integration(Arc::clone(&state));
     // Windows: pin the GPU backend to DX12 unless the user chose one.
     // wgpu's default backend probe hangs on machines with a broken
     // Vulkan/GL stack (no window ever appears, no error either); DX12 is

@@ -218,7 +218,15 @@ cargo test -p yutu-ui --no-default-features
   sequentially when they share files (especially the single-file UI).
   Then run adversarial reviewer agents over the final diff before
   pushing; fix every med+ finding, cheap lows too.
-- Keep `CHANGELOG.md` updated with each round.
+- **Changelog on every change (hard rule)**: every user-visible change
+  (feature, fix, behavior change, removal) adds a line to `CHANGELOG.md`
+  under the `## Unreleased` section at the top, in the **same commit/PR**
+  as the change itself. Group lines under `### Added`, `### Changed`,
+  `### Fixed`, `### Removed`; one plain-language line per change, written
+  for users (what changed for them, not how), with the PR number when
+  known. Create the `## Unreleased` section if it is missing. Pure
+  refactors, tests, and CI-only changes may skip it. At release, rename
+  `## Unreleased` to the version heading so the release notes are ready.
 - Only committer. New features go on a branch per feature
   (`feat/<name>`, `fix/<name>`), pushed for review as a PR; merge to
   `main` only once the feature is complete (3-config clippy + fmt +
@@ -233,12 +241,13 @@ cargo test -p yutu-ui --no-default-features
   seconds-old broken commits (`force-with-lease` only there).
 - Run `cargo run` = real app. User verifies GUI/audio on their machine.
 - Commit messages: `feat|fix|docs(scope): ...` with behavior + test
-  summary. Verify 3-config clippy + fmt + workspace tests before push.
+  summary. Verify 3-config clippy + fmt + workspace tests and the
+  `CHANGELOG.md` entry before push.
 
 ## 9. Key files
 
-- `PLAN.md`: phased plan + execution tracker (append rounds, don't rewrite).
-- `CHANGELOG.md`: release notes, 0.2.0 unreleased section on top.
+- `CHANGELOG.md`: release notes, `## Unreleased` section on top (see
+  the changelog rule in section 8).
 - `crates/yutu-ui/src/lib.rs`: Iced app, playback flow, all views
   (large; grep for `fn drawer_view`, `fn lyrics_content`,
   `fn sidebar_target`, `themed_slider`, `status_text`).
