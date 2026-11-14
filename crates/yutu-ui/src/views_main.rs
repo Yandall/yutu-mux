@@ -524,7 +524,9 @@ impl AppState {
         // switching Row <-> Stack here would rebuild the center and reset
         // its scroll whenever a rail expands.
         let mut layers: Vec<iced::Element<'a, Message>> = vec![row_layer];
-        if self.layout() == LayoutMode::Narrow {
+        // Scrim only behind an open Narrow drawer: without one it would
+        // dim the window and swallow every click.
+        if self.layout() == LayoutMode::Narrow && (left.is_some() || right.is_some()) {
             layers.push(
                 mouse_area(
                     container(Space::new())
@@ -1268,39 +1270,52 @@ impl AppState {
                     .spacing(2)
                     .align_x(iced::alignment::Horizontal::Center)
                     .width(iced::Length::FillPortion(center_part)),
-                    row![
-                        iced::widget::Space::new().width(Fill),
-                        self.mute_button(),
-                        tooltip(
-                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                .step(0.01_f32)
-                                .style(themed_slider)
-                                .width(volume_w),
-                            text(if self.muted {
-                                self.language.volume_muted(self.volume * 100.0)
-                            } else {
-                                self.language.volume(self.volume * 100.0)
-                            })
-                            .size(12),
-                            tooltip::Position::Top,
-                        )
-                        .gap(8),
-                        {
-                            if self.drawer_open {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+                    // Right-aligned group: on a tight bar only the volume
+                    // slider gives up width (capped at its normal size),
+                    // so the mute and Now Playing icons never shrink.
+                    container(
+                        row![
+                            self.mute_button(),
+                            tooltip(
+                                container(
+                                    pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                                        .step(0.01_f32)
+                                        .style(themed_slider)
+                                        .width(Fill),
+                                )
+                                .width(Fill)
+                                .max_width(volume_w as f32),
+                                text(if self.muted {
+                                    self.language.volume_muted(self.volume * 100.0)
+                                } else {
+                                    self.language.volume(self.volume * 100.0)
+                                })
+                                .size(12),
+                                tooltip::Position::Top,
+                            )
+                            .gap(8),
+                            {
+                                if self.drawer_open {
+                                    button(ctrl_box(btn_icon(
+                                        "mic-vocal",
+                                        14.0,
+                                        iced::Color::WHITE,
+                                    )))
                                     .style(accent_button)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
-                            } else {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                    .style(icon_hover)
-                                    .on_press(Message::ToggleDrawer)
-                                    .padding(7)
-                            }
-                        },
-                    ]
-                    .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center)
+                                } else {
+                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                                        .style(icon_hover)
+                                        .on_press(Message::ToggleDrawer)
+                                        .padding(7)
+                                }
+                            },
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                    )
+                    .align_x(iced::alignment::Horizontal::Right)
                     .width(iced::Length::FillPortion(2)),
                 ]
                 .spacing(main_gap)

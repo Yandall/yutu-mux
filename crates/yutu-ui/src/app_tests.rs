@@ -8062,6 +8062,41 @@ fn narrow_mode_uses_drawers() {
     assert_eq!(s.route, Route::History);
 }
 
+/// Click at `at` on the real view (headless) and return the messages.
+fn click_view(s: &AppState, size: iced::Size, at: iced::Point) -> Vec<Message> {
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    sim.point_at(at);
+    let _ = sim.simulate(iced_test::simulator::click());
+    sim.into_messages().collect()
+}
+
+#[test]
+fn narrow_window_stays_clickable_without_a_drawer() {
+    let mut s = test_state();
+    let size = iced::Size::new(420.0, 800.0);
+    let _ = s.update(Message::WindowResized(size));
+    settle(&mut s);
+    assert!(!s.drawers_open());
+    // Header menu button (left edge, header row): with no drawer open
+    // the click reaches it instead of a leftover scrim.
+    let menu = iced::Point::new(8.0 + 21.0, 16.0 + 21.0);
+    let msgs = click_view(&s, size, menu);
+    assert!(
+        msgs.iter()
+            .any(|m| matches!(m, Message::ToggleLibraryDrawer)),
+        "menu click swallowed: {msgs:?}"
+    );
+    assert!(!msgs.iter().any(|m| matches!(m, Message::CloseDrawers)));
+    // With the drawer open, the dimmed content closes it.
+    let _ = s.update(Message::ToggleLibraryDrawer);
+    settle(&mut s);
+    let msgs = click_view(&s, size, iced::Point::new(400.0, 300.0));
+    assert!(
+        msgs.iter().any(|m| matches!(m, Message::CloseDrawers)),
+        "scrim click missed: {msgs:?}"
+    );
+}
+
 #[test]
 fn narrow_header_swaps_gear_for_drawer_buttons() {
     let mut s = test_state();
@@ -8361,10 +8396,12 @@ fn layout_snapshots() {
         });
     std::fs::create_dir_all(&dir).unwrap();
     let only = std::env::var("YUTU_SNAPSHOT_ONLY").unwrap_or_default();
-    let sizes: [(f32, f32); 7] = [
+    let sizes: [(f32, f32); 8] = [
         (360.0, 720.0),
         (420.0, 800.0),
         (600.0, 800.0),
+        // Narrow layout with the full-width player bar (tightest bar).
+        (720.0, 800.0),
         (900.0, 800.0),
         (1280.0, 800.0),
         (1920.0, 1000.0),
