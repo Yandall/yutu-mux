@@ -7816,6 +7816,45 @@ fn search_geometry_tracks_sidebar() {
 }
 
 #[test]
+fn search_fields_grow_while_focused() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    let settle = |s: &mut AppState| {
+        for _ in 0..200 {
+            if !s.animating() {
+                break;
+            }
+            let _ = s.update(Message::Animate);
+        }
+    };
+    settle(&mut s);
+    // Collapsed at rest: narrower than the full pill.
+    let (_, rest) = s.search_pill_geom();
+    let full = s.search_width();
+    assert!(rest < full);
+    // Focus grows it to full width; blur collapses it again.
+    let _ = s.update(Message::SearchFocused(true));
+    assert!(s.animating());
+    settle(&mut s);
+    let (_, open) = s.search_pill_geom();
+    assert!((open - full).abs() < 0.5);
+    let _ = s.update(Message::SearchFocused(false));
+    settle(&mut s);
+    assert!((s.search_pill_geom().1 - rest).abs() < 0.5);
+    // Typing in the top search counts as focus.
+    let _ = s.update(Message::HomeSearchChanged("a".into()));
+    assert!(s.search_focused);
+    // Playlist search: focus expands, navigation drops the flag.
+    let _ = s.update(Message::PlaylistSearchFocused(true));
+    settle(&mut s);
+    assert_eq!(s.pl_search_expand, 1.0);
+    s.navigate(Route::History);
+    assert!(!s.pl_search_focused);
+    settle(&mut s);
+    assert_eq!(s.pl_search_expand, 0.0);
+}
+
+#[test]
 fn clean_release_clicks_the_row() {
     // Press + release without moving over the same unmutated row
     // plays it (the whole row is one press path now).

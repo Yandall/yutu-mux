@@ -1018,10 +1018,22 @@ impl AppState {
         iced::Task::none()
     }
 
+    /// Ask which search field holds keyboard focus (Iced 0.14 inputs
+    /// report no focus/blur): the answers drive the collapsed vs
+    /// expanded widths. A field missing from the page answers nothing,
+    /// so navigation resets the playlist flag itself.
+    pub(crate) fn focus_probe() -> iced::Task<Message> {
+        iced::Task::batch([
+            iced::widget::operation::is_focused(SEARCH_INPUT_ID).map(Message::SearchFocused),
+            iced::widget::operation::is_focused(PL_SEARCH_INPUT_ID)
+                .map(Message::PlaylistSearchFocused),
+        ])
+    }
+
     /// Park the search input cursor at the end (picks replace the
     /// whole query; without this the cursor keeps its old position).
     pub(crate) fn search_cursor_end() -> iced::Task<Message> {
-        iced::widget::operation::move_cursor_to_end("yutu-search")
+        iced::widget::operation::move_cursor_to_end(SEARCH_INPUT_ID)
     }
 
     /// Drop keyboard focus (one place): arming any modal returns this
@@ -1031,6 +1043,10 @@ impl AppState {
     /// unfocuses every non-matching widget, leaving nothing focused.
     /// Same task mechanism as the cursor-end helper.
     pub(crate) fn unfocus_task() -> iced::Task<Message> {
+        Self::unfocus_raw().chain(Self::focus_probe())
+    }
+
+    fn unfocus_raw() -> iced::Task<Message> {
         iced::widget::operation::focus(iced::widget::Id::new("__yutu_modal_unfocus"))
     }
 

@@ -1588,11 +1588,14 @@ impl AppState {
             8.0
         };
         let center_avail = ww - 16.0 - self.sidebar_w - gaps - self.right_target() - chrome - 16.0;
-        let w = if center_avail < search_w {
+        let full = if center_avail < search_w {
             center_avail.max(140.0)
         } else {
             search_w
         };
+        // Collapsed at rest, grows to full while focused (eased).
+        let collapsed = (full * SEARCH_COLLAPSED_FRAC).max(140.0).min(full);
+        let w = collapsed + (full - collapsed) * self.search_expand;
         let left = self.search_pill_left().clamp(0.0, ww.max(0.0));
         (left, w.min(ww).max(0.0))
     }
@@ -1654,7 +1657,7 @@ impl AppState {
                 icon("search", 14.0, MUTED),
                 text_input(self.language.search_placeholder(), &self.search_query)
                     .style(search_inner_input)
-                    .id("yutu-search")
+                    .id(SEARCH_INPUT_ID)
                     .on_input(Message::HomeSearchChanged)
                     .on_submit(Message::SuggestPick)
                     .width(Fill)
@@ -2889,8 +2892,13 @@ impl AppState {
                             &self.playlist_filter
                         )
                         .style(rounded_input)
+                        .id(PL_SEARCH_INPUT_ID)
                         .on_input(Message::PlaylistFilterChanged)
-                        .width(Fill)
+                        .width(iced::Length::Fixed(
+                            PL_SEARCH_COLLAPSED_W
+                                + (PL_SEARCH_EXPANDED_W - PL_SEARCH_COLLAPSED_W)
+                                    * self.pl_search_expand
+                        ))
                         .padding(10),
                         list,
                     ]

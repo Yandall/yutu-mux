@@ -142,6 +142,10 @@ impl AppState {
             right_w: 285.0,
             drawer_open: false,
             drawer_anim: 0.0,
+            search_focused: false,
+            search_expand: 0.0,
+            pl_search_focused: false,
+            pl_search_expand: 0.0,
             animations_enabled: true,
             anim_ms: ANIM_DEFAULT_MS,
             font_family: FontFamily::Adwaita,
@@ -483,6 +487,7 @@ impl AppState {
         self.pl_action_hover = None;
         if route != self.route {
             self.playlist_filter.clear();
+            self.pl_search_focused = false;
             self.nav_back.push(self.route.clone());
             if self.nav_back.len() > 50 {
                 self.nav_back.remove(0);
@@ -502,6 +507,7 @@ impl AppState {
         self.pl_action_hover = None;
         if let Some(prev) = self.nav_back.pop() {
             self.playlist_filter.clear();
+            self.pl_search_focused = false;
             self.nav_forward.push(self.route.clone());
             self.route = prev;
         }
@@ -517,6 +523,7 @@ impl AppState {
         self.pl_action_hover = None;
         if let Some(next) = self.nav_forward.pop() {
             self.playlist_filter.clear();
+            self.pl_search_focused = false;
             self.nav_back.push(self.route.clone());
             self.route = next;
         }
@@ -599,7 +606,26 @@ impl AppState {
             }
             _ => None,
         });
-        iced::Subscription::batch([keys, suggest_keys, tick, events, anim, frames])
+        // Focus moves on clicks, Tab and Esc, including ones a widget
+        // captured (clicking into an input is captured by the input),
+        // so this listens to every status, unlike `events` above.
+        let focus = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                Some(Message::FocusProbe)
+            }
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. })
+                if matches!(
+                    key.as_ref(),
+                    iced::keyboard::Key::Named(
+                        iced::keyboard::key::Named::Tab | iced::keyboard::key::Named::Escape
+                    )
+                ) =>
+            {
+                Some(Message::FocusProbe)
+            }
+            _ => None,
+        });
+        iced::Subscription::batch([keys, suggest_keys, tick, events, anim, frames, focus])
     }
 
     /// Repeat mode as stored in the queue snapshot.

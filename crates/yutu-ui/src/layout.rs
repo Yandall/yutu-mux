@@ -272,6 +272,17 @@ pub(crate) const CENTER_MAX_W: f32 = 1150.0;
 /// Window width past which the center body centers with margins.
 pub(crate) const CENTER_MARGIN_BREAK: f32 = 1600.0;
 
+/// Widget id of the header search input (focus probe + cursor ops).
+pub(crate) const SEARCH_INPUT_ID: &str = "yutu-search";
+/// Widget id of the playlist page search input (focus probe).
+pub(crate) const PL_SEARCH_INPUT_ID: &str = "yutu-pl-search";
+/// Playlist search width when collapsed / expanded (px, clamped to
+/// the available row width by layout).
+pub(crate) const PL_SEARCH_COLLAPSED_W: f32 = 240.0;
+pub(crate) const PL_SEARCH_EXPANDED_W: f32 = 520.0;
+/// Header search collapsed width as a share of its expanded width.
+pub(crate) const SEARCH_COLLAPSED_FRAC: f32 = 0.6;
+
 /// Ease `current` toward `target` by `step` (frame tick for drawer and
 /// sidebar transitions). Snaps when closer than one step.
 pub(crate) fn ease_toward(current: f32, target: f32, step: f32) -> f32 {

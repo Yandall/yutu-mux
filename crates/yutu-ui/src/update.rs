@@ -297,6 +297,7 @@ impl AppState {
                 self.search_filter = f;
             }
             Message::HomeSearchChanged(q) => {
+                self.search_focused = true;
                 return self.apply_search_input(q, true);
             }
             Message::PickSuggestion(q) => {
@@ -2016,6 +2017,8 @@ impl AppState {
                     self.sidebar_w = self.sidebar_target();
                     self.right_w = self.right_target();
                     self.drawer_anim = if self.drawer_open { 1.0 } else { 0.0 };
+                    self.search_expand = self.search_expand_target();
+                    self.pl_search_expand = self.pl_search_expand_target();
                     self.modal_anim = self.modal_target();
                     self.drag_gap = self.drag_gap_target();
                     for (_, o) in self.scroll_hint.values_mut() {
@@ -2031,6 +2034,13 @@ impl AppState {
                     self.right_w = ease_toward(self.right_w, self.right_target(), right_step);
                     let target = if self.drawer_open { 1.0 } else { 0.0 };
                     self.drawer_anim = ease_toward(self.drawer_anim, target, unit_step);
+                    self.search_expand =
+                        ease_toward(self.search_expand, self.search_expand_target(), unit_step);
+                    self.pl_search_expand = ease_toward(
+                        self.pl_search_expand,
+                        self.pl_search_expand_target(),
+                        unit_step,
+                    );
                     self.modal_anim = ease_toward(self.modal_anim, self.modal_target(), unit_step);
                     self.drag_gap = ease_toward(self.drag_gap, self.drag_gap_target(), unit_step);
                     // Scrollbar fades ease out after their idle delay (a
@@ -2818,9 +2828,17 @@ impl AppState {
             }
             Message::PlaylistFilterChanged(f) => {
                 self.playlist_filter = f;
+                self.pl_search_focused = true;
                 // Rows keep their full-list index, but the one under
                 // the cursor may have vanished: drop the stale hover.
                 self.pl_hover = None;
+            }
+            Message::FocusProbe => return Self::focus_probe(),
+            Message::SearchFocused(f) => {
+                self.search_focused = f;
+            }
+            Message::PlaylistSearchFocused(f) => {
+                self.pl_search_focused = f;
             }
             Message::HistoryFilterChanged(f) => {
                 self.history_filter = f;

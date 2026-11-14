@@ -745,6 +745,12 @@ pub enum Message {
     /// Playlist detail search text (filters rows only; a click still
     /// queues the whole playlist from that song on).
     PlaylistFilterChanged(String),
+    /// Focus probe answers (top search / playlist search): drive the
+    /// collapsed vs expanded field width.
+    SearchFocused(bool),
+    /// A click, Tab or Esc may have moved focus: re-read it.
+    FocusProbe,
+    PlaylistSearchFocused(bool),
     /// History page: render the next window of older plays.
     HistoryMore,
     CookiePathChanged(String),

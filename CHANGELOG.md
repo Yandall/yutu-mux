@@ -12,6 +12,8 @@
   screen can still turn off (#104).
 - Search inside a playlist; clicking a result still plays the whole
   playlist from that song on (#105).
+- The top search bar and playlist search start compact and grow when
+  you click into them (#105).
 
 ### Changed
 
