@@ -20,8 +20,8 @@
 ### Fixed
 
 - Hovering a song shown in several lists highlights only that row (#98).
-- Typing in the search bar no longer freezes the app while results load.
-- Search waits until you pause typing for 300ms before fetching results.
+- Typing in the search bar no longer freezes the app (#102).
+- Search waits until you pause typing for 300ms (#102).
 
 ### Removed
 
