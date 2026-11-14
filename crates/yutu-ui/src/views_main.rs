@@ -1578,16 +1578,9 @@ impl AppState {
     /// Pill geometry shared by the header pill, the suggest popup and
     /// the scrim hole (same left + width everywhere, so popup edges
     /// match the input exactly and only the input stays clickable).
-    /// Playlist search width: placeholder-sized at rest, eased up to
-    /// [`PL_SEARCH_EXPANDED_W`] while focused.
-    pub(crate) fn pl_search_width(&self) -> f32 {
-        let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
-            + PL_SEARCH_CHROME)
-            .min(PL_SEARCH_EXPANDED_W);
-        collapsed + (PL_SEARCH_EXPANDED_W - collapsed) * ease_in_out(self.pl_search_expand)
-    }
-
-    pub(crate) fn search_pill_geom(&self) -> (f32, f32) {
+    /// Expanded search width shared by both search fields: the header
+    /// pill target, shrunk to the room the header center leaves.
+    pub(crate) fn search_full_width(&self) -> f32 {
         let search_w = self.search_width();
         let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
         let chrome = Self::NAV_BTN_W + 4.0 + Self::NAV_BTN_W + 4.0 + Self::SETTINGS_W + 4.0;
@@ -1602,6 +1595,22 @@ impl AppState {
         } else {
             search_w
         };
+        full.min(ww).max(0.0)
+    }
+
+    /// Playlist search width: placeholder-sized at rest, eased up to
+    /// the header pill's expanded width while focused (same max).
+    pub(crate) fn pl_search_width(&self) -> f32 {
+        let full = self.search_full_width();
+        let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
+            + PL_SEARCH_CHROME)
+            .min(full);
+        collapsed + (full - collapsed) * ease_in_out(self.pl_search_expand)
+    }
+
+    pub(crate) fn search_pill_geom(&self) -> (f32, f32) {
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let full = self.search_full_width();
         // Collapsed at rest (just wide enough for the whole
         // placeholder), grows to full while focused (eased).
         let collapsed =

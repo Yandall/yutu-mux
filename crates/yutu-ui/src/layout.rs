@@ -276,9 +276,6 @@ pub(crate) const CENTER_MARGIN_BREAK: f32 = 1600.0;
 pub(crate) const SEARCH_INPUT_ID: &str = "yutu-search";
 /// Widget id of the playlist page search input (focus probe).
 pub(crate) const PL_SEARCH_INPUT_ID: &str = "yutu-pl-search";
-/// Playlist search width when expanded (px, clamped to the available
-/// row width by layout). Collapsed width fits the placeholder.
-pub(crate) const PL_SEARCH_EXPANDED_W: f32 = 520.0;
 /// Header pill chrome around the placeholder text: pill padding
 /// (8 + 4), magnifier (14), input padding (2 x 10), row gaps (3 x 4),
 /// empty clear slot (1), submit button (14 + 2 x 6), plus breathing
@@ -290,7 +287,7 @@ pub(crate) const PL_SEARCH_CHROME: f32 = 20.0 + 2.0 + 16.0;
 /// Search field grow/shrink duration: fixed (not the Settings speed,
 /// which is tuned for sidebar travel and reads as a jump on a field),
 /// still instant when animations are off.
-pub(crate) const SEARCH_ANIM_MS: f32 = 220.0;
+pub(crate) const SEARCH_ANIM_MS: f32 = 120.0;
 
 /// Cubic ease-in-out on 0..1 (search field widths): gentle start and
 /// landing, symmetric so a mid-flight reversal never jumps.

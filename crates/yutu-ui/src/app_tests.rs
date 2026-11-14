@@ -7862,6 +7862,9 @@ fn search_fields_grow_while_focused() {
     let _ = s.update(Message::PlaylistSearchFocused(true));
     settle(&mut s);
     assert_eq!(s.pl_search_expand, 1.0);
+    // Both fields share one max width (the header pill's).
+    assert!((s.pl_search_width() - s.search_full_width()).abs() < 0.5);
+    assert!((s.search_full_width() - full).abs() < 0.5);
     s.navigate(Route::History);
     assert!(!s.pl_search_focused);
     settle(&mut s);
