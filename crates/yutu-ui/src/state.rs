@@ -32,6 +32,9 @@ pub enum Route {
     Artist(String),
     Album(String),
     PlaylistDetail(String),
+    /// Read-only page for a search-result (community or featured)
+    /// playlist: tracks fetch live on open, nothing is editable.
+    RemotePlaylist(String),
     Lyrics(String),
 }
 
@@ -115,6 +118,7 @@ pub(crate) enum RowPlay {
     Now,
     ArtistAt(String),
     AlbumAt(String),
+    RemotePlaylistAt(String),
 }
 
 impl RowPlay {
@@ -130,6 +134,11 @@ impl RowPlay {
             },
             Self::AlbumAt(id) => Message::PlayAlbumAt {
                 album_id: id.clone(),
+                index,
+                track_id: track_id.to_string(),
+            },
+            Self::RemotePlaylistAt(id) => Message::PlayRemotePlaylistAt {
+                playlist_id: id.clone(),
                 index,
                 track_id: track_id.to_string(),
             },
@@ -519,6 +528,21 @@ pub enum Message {
     PlayArtistShuffled(String),
     /// Shuffle-play one search hero album (known catalog tracks).
     PlayAlbumShuffled(String),
+    /// Open one search-result playlist on its own page (tracks fetch
+    /// live on open).
+    OpenSearchPlaylist(String),
+    /// Search-result playlist page tracks arrived (or failed).
+    RemotePlaylistLoaded {
+        id: String,
+        result: Result<Vec<Track>, String>,
+    },
+    /// Play a search-result playlist page from the clicked row on
+    /// (same suffix rule as `PlayPlaylistAt`).
+    PlayRemotePlaylistAt {
+        playlist_id: String,
+        index: usize,
+        track_id: String,
+    },
     /// Play one search-result playlist now (tracks fetch live first).
     PlaySearchPlaylist(String),
     /// Shuffle-play one search-result playlist (tracks fetch live first).

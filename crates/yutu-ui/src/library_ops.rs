@@ -959,16 +959,66 @@ impl AppState {
     }
 
     /// Display label for a search-result playlist id (title when known).
-    /// Live lookup only runs on innertube builds; tests exercise it on
-    /// every configuration.
-    #[cfg(any(feature = "innertube", test))]
     pub(crate) fn search_playlist_label(&self, id: &str) -> String {
-        self.results
-            .playlists
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.title.clone())
+        self.remote_playlist_hit(id)
+            .map(|p| p.title)
             .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Search-result playlist metadata: the copy captured on open
+    /// first (survives new searches), then either result list.
+    pub(crate) fn remote_playlist_hit(&self, id: &str) -> Option<PlaylistHit> {
+        self.remote_playlist_meta
+            .get(id)
+            .or_else(|| self.results.playlists.iter().find(|p| p.id == id))
+            .or_else(|| self.all_results.playlists.iter().find(|p| p.id == id))
+            .cloned()
+    }
+
+    /// Fetched tracks of a search-result playlist page, server order
+    /// (empty until the live fetch lands).
+    pub(crate) fn remote_playlist_tracks(&self, id: &str) -> Vec<Track> {
+        self.remote_playlist_live
+            .get(id)
+            .map(|ids| ids.iter().filter_map(|i| self.find_track(i)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Search-result playlist page header cover (hires hit art).
+    pub(crate) fn remote_playlist_cover(&self, id: &str) -> Option<String> {
+        self.remote_playlist_hit(id)
+            .and_then(|p| p.thumbnail_url)
+            .map(|u| yutu_core::hires_thumb_url(&u, 544))
+    }
+
+    /// Open a search-result playlist on its own page: capture the hit
+    /// metadata, then fetch the tracklist live (once per session per
+    /// id; the cache is capped like album lists).
+    pub(crate) fn open_search_playlist(&mut self, id: String) -> iced::Task<Message> {
+        self.close_menu();
+        if let Some(hit) = self.remote_playlist_hit(&id) {
+            self.remote_playlist_meta.insert(id.clone(), hit);
+        }
+        self.go(Route::RemotePlaylist(id.clone()));
+        self.publish_mpris();
+        let mut tasks = vec![self.ensure_visible_tasks()];
+        if let Some(url) = self.remote_playlist_cover(&id) {
+            tasks.extend(self.artwork_tasks_for_urls(&[url]));
+        }
+        #[cfg(feature = "innertube")]
+        {
+            if !self.remote_playlist_live.contains_key(&id)
+                && self.remote_playlist_loading.as_deref() != Some(id.as_str())
+            {
+                self.remote_playlist_loading = Some(id.clone());
+                tasks.push(Self::remote_playlist_task(id));
+            }
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            self.status = self.language.needs_innertube_playlists();
+        }
+        iced::Task::batch(tasks)
     }
 
     /// Play one search-result playlist: fetch its tracks live first
@@ -979,6 +1029,12 @@ impl AppState {
         shuffle: bool,
     ) -> iced::Task<Message> {
         self.close_menu();
+        // Already fetched (its page was opened): play straight away.
+        let cached = self.remote_playlist_tracks(&id);
+        if !cached.is_empty() {
+            let label = self.search_playlist_label(&id);
+            return self.play_fresh(cached, &self.language.playlist_queue_label(&label), shuffle);
+        }
         #[cfg(feature = "innertube")]
         {
             let label = self.search_playlist_label(&id);

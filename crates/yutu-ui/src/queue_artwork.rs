@@ -86,6 +86,11 @@ impl AppState {
                 ),
                 None => (Vec::new(), self.language.playlist_not_found_plain()),
             },
+            Route::RemotePlaylist(id) => (
+                self.remote_playlist_tracks(id),
+                self.language
+                    .playlist_queue_label(&self.search_playlist_label(id)),
+            ),
             Route::Discovery => (
                 self.weekly_mix_tracks(),
                 self.language.weekly_mix().to_string(),
@@ -851,6 +856,10 @@ impl AppState {
             }
             Route::Album(id) => {
                 let rows = self.album_display_tracks(id);
+                Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)
+            }
+            Route::RemotePlaylist(id) => {
+                let rows = self.remote_playlist_tracks(id);
                 Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)
             }
             Route::Discovery => {

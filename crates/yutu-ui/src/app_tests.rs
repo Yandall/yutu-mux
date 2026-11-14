@@ -2142,6 +2142,64 @@ fn search_playlist_ready_queues_or_reports() {
 }
 
 #[test]
+fn search_playlist_opens_its_page_instead_of_playing() {
+    let mut s = test_state();
+    s.results.playlists.push(PlaylistHit {
+        id: "PL7".into(),
+        title: "Queen Mix".into(),
+        author: "Fan".into(),
+        detail: "3 songs".into(),
+        thumbnail_url: None,
+    });
+    // Opening routes to the page and never touches playback.
+    let _ = s.update(Message::OpenSearchPlaylist("PL7".into()));
+    assert_eq!(s.route, Route::RemotePlaylist("PL7".into()));
+    assert!(s.queue.is_empty());
+    let _ = s.view();
+    // Metadata survives a later search replacing the results.
+    s.results.playlists.clear();
+    assert_eq!(s.search_playlist_label("PL7"), "Queen Mix");
+    // Tracks land in server order and render.
+    let _ = s.update(Message::RemotePlaylistLoaded {
+        id: "PL7".into(),
+        result: Ok(vec![
+            mk_track("q1", "Bohemian Rhapsody", "Queen"),
+            mk_track("q2", "Somebody to Love", "Queen"),
+            mk_track("q3", "Killer Queen", "Queen"),
+        ]),
+    });
+    let ids: Vec<String> = s
+        .remote_playlist_tracks("PL7")
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(ids, ["q1", "q2", "q3"]);
+    assert!(s.queue.is_empty());
+    let _ = s.view();
+    // Row click plays from that song on.
+    let _ = s.update(RowPlay::RemotePlaylistAt("PL7".into()).message("q2", 2));
+    let queued: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(queued, ["q2", "q3"]);
+    // Play pill reuses the fetched list (whole playlist, no refetch).
+    let _ = s.update(Message::PlaySearchPlaylist("PL7".into()));
+    assert_eq!(s.queue.len(), 3);
+}
+
+#[test]
+fn remote_playlist_failure_reports_on_its_page() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenSearchPlaylist("PLx".into()));
+    s.remote_playlist_loading = Some("PLx".into());
+    let _ = s.update(Message::RemotePlaylistLoaded {
+        id: "PLx".into(),
+        result: Err("offline".into()),
+    });
+    assert!(s.remote_playlist_loading.is_none());
+    assert!(s.language.is_failure_line(&s.status));
+    let _ = s.view();
+}
+
+#[test]
 fn artist_album_sub_skips_empty_parts() {
     assert_eq!(
         AppState::artist_album_sub("Queen", Some("A Night At The Opera")),

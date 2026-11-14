@@ -328,6 +328,11 @@ impl AppState {
                 .take(CAP)
                 .map(|t| t.id)
                 .collect(),
+            Route::RemotePlaylist(id) => self
+                .remote_playlist_live
+                .get(id)
+                .map(|ids| ids.iter().take(15).cloned().collect())
+                .unwrap_or_default(),
             Route::Search => self
                 .results
                 .tracks

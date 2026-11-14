@@ -110,6 +110,19 @@ impl AppState {
         )
     }
 
+    /// Live tracklist for a search-result playlist page (anonymous,
+    /// same fetch as the play path).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn remote_playlist_task(id: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = live_playlist_tracks(&id).await;
+                (id, result)
+            },
+            |(id, result)| Message::RemotePlaylistLoaded { id, result },
+        )
+    }
+
     /// Bare artist name → channel id through one scoped filtered
     /// search (anonymous: exact matches need no personalization).
     #[cfg(feature = "innertube")]

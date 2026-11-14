@@ -19,6 +19,10 @@
 
 ### Changed
 
+- Clicking a recommended album on Home opens its album page instead of
+  playing it right away.
+- Clicking a playlist in search results opens a playlist page with its
+  songs instead of playing it right away.
 - The collapsed library rail now shows the app logo at the top.
 - The player on narrow windows is more compact: one-line title, and the
   volume sits next to the playback buttons (#109).

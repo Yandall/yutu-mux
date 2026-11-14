@@ -2347,10 +2347,7 @@ impl AppState {
                             &g.tracks[0],
                             g.title.clone(),
                             g.artist.clone(),
-                            Message::PlayHomeAlbum {
-                                album: g.title.clone(),
-                                artist: g.artist.clone(),
-                            },
+                            Message::OpenAlbum(format!("ax-{}", g.title)),
                             Message::OpenHomeAlbumMenu {
                                 album: g.title.clone(),
                                 artist: g.artist.clone(),
@@ -3092,6 +3089,73 @@ impl AppState {
                                 Self::shuffle_pill(
                                     self.language.shuffle_label(),
                                     Message::PlayAllShuffled
+                                ),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .wrap()
+                            .vertical_spacing(8),
+                        ]
+                        .spacing(6)
+                        .width(Fill)
+                        .into(),
+                    ),
+                    column(rows).spacing(2),
+                ]
+                .spacing(12)
+                .into()
+            }
+            Route::RemotePlaylist(id) => {
+                let hit = self.remote_playlist_hit(id);
+                let title = hit
+                    .as_ref()
+                    .map(|p| p.title.clone())
+                    .unwrap_or_else(|| id.clone());
+                let tracks = self.remote_playlist_tracks(id);
+                let pending = tracks.is_empty()
+                    && self.remote_playlist_loading.as_deref() == Some(id.as_str());
+                let total: u32 = tracks.iter().map(|t| self.track_secs(t)).sum();
+                let sub = hit
+                    .as_ref()
+                    .map(|p| self.language.playlist_sub_full(&p.author, &p.detail))
+                    .unwrap_or_default();
+                let meta = if tracks.is_empty() {
+                    sub
+                } else {
+                    let counts = self
+                        .language
+                        .playlist_meta(tracks.len(), &fmt_time(total as f64));
+                    match hit.as_ref().map(|p| p.author.trim()) {
+                        Some(author) if !author.is_empty() => format!("{author} · {counts}"),
+                        _ => counts,
+                    }
+                };
+                let cover = self.remote_playlist_cover(id);
+                let play = RowPlay::RemotePlaylistAt(id.to_string());
+                let rows: Vec<iced::Element<'_, Message>> = if pending {
+                    vec![text(self.language.loading_playlist_songs())
+                        .color(MUTED)
+                        .into()]
+                } else {
+                    tracks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| self.numbered_track_row("remote-pl", t, i + 1, &play))
+                        .collect()
+                };
+                column![
+                    self.hero_header(
+                        cover.as_deref(),
+                        180.0,
+                        column![
+                            text(self.language.playlist_label()).size(12).color(MUTED),
+                            text(title).size(34).font(bold_font()),
+                            text(meta).size(12).color(MUTED),
+                            row![
+                                Self::play_pill(Message::PlaySearchPlaylist(id.clone())),
+                                Self::shuffle_pill(
+                                    self.language.shuffle_label(),
+                                    Message::PlaySearchPlaylistShuffled(id.clone())
                                 ),
                             ]
                             .spacing(8)

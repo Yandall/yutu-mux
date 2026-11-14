@@ -482,6 +482,9 @@ impl Language {
     pub fn loading_album_songs(self) -> String {
         self.tr("loading-album-songs")
     }
+    pub fn loading_playlist_songs(self) -> String {
+        self.tr("loading-playlist-songs")
+    }
     pub fn loading_playlist(self, label: &str) -> String {
         self.tr_args("loading-playlist", &[("label", label)])
     }
@@ -1436,6 +1439,9 @@ impl Language {
     }
     pub fn fail_live_album(self) -> String {
         self.tr("fail-live-album")
+    }
+    pub fn fail_live_playlist(self) -> String {
+        self.tr("fail-live-playlist")
     }
     pub fn fail_artist_lookup(self) -> String {
         self.tr("fail-artist-lookup")
