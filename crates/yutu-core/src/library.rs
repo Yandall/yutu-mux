@@ -1004,6 +1004,10 @@ impl LibraryStore {
                 ("repeat", snap.repeat.clone()),
                 ("volume", snap.volume.to_string()),
                 ("muted", (snap.muted as u8).to_string()),
+                (
+                    "playing_from",
+                    snap.playing_from.clone().unwrap_or_default(),
+                ),
             ];
             for (k, v) in meta {
                 self.conn
@@ -1065,6 +1069,8 @@ impl LibraryStore {
             volume: meta("volume").parse::<f32>().unwrap_or(0.8).clamp(0.0, 1.0),
             // Missing on pre-mute snapshots: restarts unmuted.
             muted: meta("muted") == "1",
+            // Empty (or missing on older snapshots): no context label.
+            playing_from: Some(meta("playing_from")).filter(|s| !s.is_empty()),
         }))
     }
 

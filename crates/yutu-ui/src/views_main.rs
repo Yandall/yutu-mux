@@ -683,10 +683,16 @@ impl AppState {
             .map(|ctx| {
                 column![
                     text(self.language.playing_from()).size(11).color(MUTED),
-                    text(ctx)
-                        .size(14)
-                        .color(iced::Color::WHITE)
-                        .wrapping(iced::widget::text::Wrapping::None),
+                    // Up to two lines; a longer label ends in "…"
+                    // (fitted to the real width at layout time).
+                    iced::widget::responsive(move |size| {
+                        text(fit_lines(ctx, size.width, 14.0, 2))
+                            .size(14)
+                            .color(iced::Color::WHITE)
+                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                            .into()
+                    })
+                    .height(iced::Length::Shrink),
                 ]
                 .spacing(2)
                 .width(Fill)
@@ -2664,18 +2670,10 @@ impl AppState {
                 // fetched); header counts stay library-scoped by design.
                 let radio_btn: iced::Element<'_, Message> = match display.first() {
                     None => text("").size(1).into(),
-                    Some(seed) => button(
-                        row![
-                            btn_icon("radio", 13.0, iced::Color::WHITE),
-                            btn_text(self.language.radio_label(), 13),
-                        ]
-                        .spacing(6)
-                        .align_y(iced::alignment::Vertical::Center),
-                    )
-                    .style(ghost_button)
-                    .on_press(Message::StartRadio(seed.id.clone()))
-                    .padding(8)
-                    .into(),
+                    Some(seed) => Self::mix_pill(
+                        self.language.mix_pill_label(),
+                        Message::StartRadio(seed.id.clone()),
+                    ),
                 };
                 column![
                     row![
@@ -2952,21 +2950,14 @@ impl AppState {
                 column![
                     text(title).size(22),
                     row![
-                        button(
-                            row![
-                                btn_icon("play", 13.0, iced::Color::WHITE),
-                                btn_text(self.language.play_label(), 13)
-                            ]
-                            .spacing(6)
-                            .align_y(iced::alignment::Vertical::Center)
-                        )
-                        .style(accent_button)
-                        .on_press(Message::PlayNow(id.clone()))
-                        .padding(7),
-                        button(btn_text(self.language.radio_label(), 13))
-                            .style(ghost_button)
-                            .on_press(Message::StartRadio(id.clone()))
-                            .padding(8),
+                        Self::play_pill(
+                            self.language.play_pill_label(),
+                            Message::PlayNow(id.clone())
+                        ),
+                        Self::mix_pill(
+                            self.language.mix_pill_label(),
+                            Message::StartRadio(id.clone())
+                        ),
                     ]
                     .spacing(8),
                     stepper,

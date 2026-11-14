@@ -1475,7 +1475,6 @@ impl AppState {
                         return self.unknown_track_task(&id);
                     }
                     Some(t) => {
-                        let artist = t.artist.clone();
                         self.clear_queue();
                         self.queue.push(t);
                         self.queue.jump_to(0);
@@ -1486,12 +1485,12 @@ impl AppState {
                         let play = self.play_current_task();
                         #[cfg(feature = "innertube")]
                         {
-                            let auto = Self::autoplay_task(id, artist);
+                            let auto = Self::autoplay_task(id);
                             return iced::Task::batch([play, auto]);
                         }
                         #[cfg(not(feature = "innertube"))]
                         {
-                            let _ = artist;
+                            let _ = id;
                             return play;
                         }
                     }
@@ -1523,7 +1522,6 @@ impl AppState {
                                     && !known.contains(&t.id)
                                     && !self.disliked.contains(&t.id)
                             })
-                            .take(10)
                             .collect();
                         if fresh.is_empty() {
                             return iced::Task::none();

@@ -490,9 +490,6 @@ impl Language {
     pub fn shuffle_label(self) -> String {
         self.tr("shuffle-label")
     }
-    pub fn radio_label(self) -> String {
-        self.tr("radio-label")
-    }
     pub fn playing_from(self) -> String {
         self.tr("playing-from")
     }
@@ -957,6 +954,9 @@ impl Language {
         self.tr("play-pill-label")
     }
     /// Hero shuffle pill (uppercase like the design).
+    pub fn mix_pill_label(self) -> String {
+        self.tr("mix-pill-label")
+    }
     pub fn shuffle_pill_label(self) -> String {
         self.tr("shuffle-pill-label")
     }

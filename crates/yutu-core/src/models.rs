@@ -220,6 +220,8 @@ pub struct QueueSnapshot {
     pub repeat: String,
     pub volume: f32,
     pub muted: bool,
+    /// "Playing from" context label (e.g. a started mix), if any.
+    pub playing_from: Option<String>,
 }
 
 impl Default for QueueSnapshot {
@@ -232,6 +234,7 @@ impl Default for QueueSnapshot {
             repeat: "off".into(),
             volume: 0.8,
             muted: false,
+            playing_from: None,
         }
     }
 }

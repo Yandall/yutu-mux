@@ -554,7 +554,7 @@ impl AppState {
     /// Album hero: clickable cover/title open the album; Shuffle and
     /// Radio play the known catalog tracks (hidden when none are known).
     pub(crate) fn search_album_hero(&self, a: &Album) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{column, container, row, text};
         use iced::Fill;
         let cover = self.album_cover(a);
         let sub = match a.year {
@@ -571,17 +571,7 @@ impl AppState {
                     self.language.shuffle_pill_label(),
                     Message::PlayAlbumShuffled(a.id.clone())
                 ),
-                button(
-                    row![
-                        btn_icon("radio", 13.0, iced::Color::WHITE),
-                        btn_text(self.language.radio_label(), 13),
-                    ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center),
-                )
-                .style(ghost_button)
-                .on_press(Message::StartRadio(seed))
-                .padding(8),
+                Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)
@@ -617,7 +607,7 @@ impl AppState {
     /// Artist hero: clickable photo/name open the artist; Shuffle and
     /// Radio play the known catalog tracks (hidden when none are known).
     pub(crate) fn search_artist_hero(&self, a: &Artist) -> iced::Element<'_, Message> {
-        use iced::widget::{button, column, container, row, text};
+        use iced::widget::{column, container, row, text};
         use iced::Fill;
         let photo = a
             .thumbnail_url
@@ -630,20 +620,10 @@ impl AppState {
             let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
             row![
                 Self::shuffle_pill(
-                    "SHUFFLE".into(),
+                    self.language.shuffle_pill_label(),
                     Message::PlayArtistShuffled(a.name.clone())
                 ),
-                button(
-                    row![
-                        btn_icon("radio", 13.0, iced::Color::WHITE),
-                        btn_text(self.language.radio_label(), 13),
-                    ]
-                    .spacing(6)
-                    .align_y(iced::alignment::Vertical::Center),
-                )
-                .style(ghost_button)
-                .on_press(Message::StartRadio(seed))
-                .padding(8),
+                Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)

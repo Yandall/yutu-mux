@@ -19,8 +19,13 @@
 - Start mix now plays the same curated mix YouTube Music builds for a
   song (personalized when signed in) instead of a same-artist search.
   It fills the queue right away without leaving the current page, and
-  the queue shows "Playing from: Mix of Song - Artist". Starting a mix
-  of the song already playing keeps it playing.
+  the queue shows "Playing from: Mix of Song - Artist", which survives
+  restarts. Starting a mix of the song already playing keeps it
+  playing; a stopped one starts.
+- Autoplay after clicking a song uses that same YouTube Music mix, so
+  it keeps going for the whole mix instead of stopping after 10 songs.
+- The Radio buttons are now Start mix, sized to match the Play and
+  Shuffle buttons next to them.
 
 ### Fixed
 

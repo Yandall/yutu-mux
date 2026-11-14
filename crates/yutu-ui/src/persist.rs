@@ -32,6 +32,7 @@ impl AppState {
             repeat: self.language.repeat_mode(self.queue.repeat),
             volume: self.volume,
             muted: self.muted,
+            playing_from: self.playing_from.clone(),
         }
     }
 
@@ -70,6 +71,7 @@ impl AppState {
                 || s.shuffle != snap.shuffle
                 || s.repeat != snap.repeat
                 || s.muted != snap.muted
+                || s.playing_from != snap.playing_from
                 || (s.volume - snap.volume).abs() > f32::EPSILON
         });
         if identity_changed {
@@ -121,6 +123,7 @@ impl AppState {
         self.apply_volume();
         self.position_secs = snap.position_secs;
         self.paused = true;
+        self.playing_from = snap.playing_from.clone();
         self.queue_saved = Some(snap);
         // Mirror the forced shuffle-off so the first Tick does not see
         // a phantom identity change (one redundant rewrite per launch).

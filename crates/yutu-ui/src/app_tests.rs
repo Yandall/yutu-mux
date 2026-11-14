@@ -641,8 +641,10 @@ fn mix_is_dropped_when_playback_moved_on_while_loading() {
 fn mix_of_live_song_keeps_it_playing() {
     let mut s = test_state();
     let _ = s.update(Message::PlayNow("m1".into()));
-    // Pretend the load settled: a reload would set this again.
+    // Pretend the load settled into a paused session (alive): a reload
+    // would set `loading_track` again.
     s.loading_track = None;
+    s.paused = true;
     let _ = s.update(Message::StartRadio("m1".into()));
     let gen = s.mix_gen;
     let _ = s.update(Message::MixReady {
@@ -3534,6 +3536,61 @@ fn queue_session_persists_and_restores_across_restart() {
     }
 }
 
+// Offline builds never start a mix (StartRadio only reports).
+#[cfg(feature = "innertube")]
+#[test]
+fn mix_of_stopped_current_song_starts_it() {
+    let mut s = test_state();
+    let _ = s.update(Message::PlayNow("m1".into()));
+    // Stopped: nothing loading, not paused, no live backend file.
+    s.loading_track = None;
+    s.paused = false;
+    let _ = s.update(Message::StartRadio("m1".into()));
+    let gen = s.mix_gen;
+    let _ = s.update(Message::MixReady {
+        gen,
+        seed: "m1".into(),
+        result: Ok(vec![
+            mk_track("m1", "Seed Song", "Seed Artist"),
+            mk_track("v9", "Come Together", "The Beatles"),
+        ]),
+    });
+    assert_eq!(s.loading_track.as_deref(), Some("m1"));
+    assert_eq!(s.queue.len(), 2);
+}
+
+#[test]
+fn playing_from_persists_across_restart() {
+    let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+    let path = std::env::temp_dir()
+        .join(format!("yutu-queue-{}-{}.db", std::process::id(), n))
+        .to_string_lossy()
+        .into_owned();
+    let (mut s, _) = AppState::with_library_path(path.clone());
+    let tracks = yutu_core::MockBackend::fixture_tracks();
+    s.register_tracks(tracks.clone());
+    for t in &tracks {
+        s.queue.push(t.clone());
+    }
+    s.playing_from = Some("Mix of Song - Artist".into());
+    s.persist_queue();
+    drop(s);
+    let (s2, _) = AppState::with_library_path(path);
+    assert_eq!(s2.playing_from.as_deref(), Some("Mix of Song - Artist"));
+}
+
+#[test]
+fn fit_lines_truncates_past_the_line_budget() {
+    let short = "Mix of Song - Artist";
+    assert_eq!(fit_lines(short, 2000.0, 14.0, 2), short);
+    let long = "Mix of 21 de septiembre - El Cuarteto de Nos ".repeat(6);
+    let fitted = fit_lines(&long, 220.0, 14.0, 2);
+    assert!(fitted.ends_with('…'), "{fitted}");
+    assert!(fitted.chars().count() < long.chars().count());
+    // Unknown widths (first layout pass) leave the text alone.
+    assert_eq!(fit_lines(short, 0.0, 14.0, 2), short);
+}
+
 #[test]
 fn muted_session_restores_silenced() {
     let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
@@ -3575,6 +3632,7 @@ fn queue_restore_drops_unknown_ids() {
             repeat: "off".into(),
             volume: 0.8,
             muted: false,
+            playing_from: None,
         })
         .unwrap();
     let (s, _) = AppState::with_library_path(path);

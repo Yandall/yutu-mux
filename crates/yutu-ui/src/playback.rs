@@ -388,6 +388,17 @@ impl AppState {
         self.mix_gen = self.mix_gen.wrapping_add(1);
     }
 
+    /// Whether the current queue entry holds a live session: loading,
+    /// paused (incl. a restored queue awaiting play), or a backend that
+    /// still has a file. Stopped and end-of-queue idle report false.
+    /// Rodio has no idle signal, so it always counts as alive there.
+    pub(crate) fn playback_alive(&self) -> bool {
+        self.loading_track.is_some()
+            || self.paused
+            || self.restored_pending
+            || self.audio.as_ref().is_some_and(|a| !a.is_idle())
+    }
+
     /// Play a YouTube Music mix (the `RDAMVM<seed>` watch radio): the
     /// seed leads, then the server's curated order (deduped, dislikes
     /// dropped). Replaces the queue and autoplay tail like any fresh
@@ -423,7 +434,14 @@ impl AppState {
         self.queue.shuffle = false;
         self.pre_shuffle = None;
         self.pre_shuffle_cur = None;
-        let live = self.queue.current().filter(|t| t.id == seed).cloned();
+        // Keep the seed only when it is actually live (playing, paused,
+        // loading, or a restored session waiting on play). A stopped or
+        // finished seed starts playing like any fresh mix.
+        let live = self
+            .queue
+            .current()
+            .filter(|t| t.id == seed && self.playback_alive())
+            .cloned();
         let task = match live {
             Some(cur) => {
                 // Keep the live entry (already resolved) and its audio;
