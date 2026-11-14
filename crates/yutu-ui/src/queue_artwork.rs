@@ -290,8 +290,7 @@ impl AppState {
 
     /// Card columns for wrapping grids at the current center width.
     pub(crate) fn grid_cols(&self) -> usize {
-        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-        let avail = (ww - 16.0 - self.sidebar_w - 8.0 - self.right_w - 8.0 - 40.0).min(1110.0);
+        let avail = self.content_width();
         ((avail / (HOME_CARD_W + 10.0)) as usize).max(1)
     }
 

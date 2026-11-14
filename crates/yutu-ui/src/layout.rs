@@ -228,6 +228,172 @@ pub(crate) fn player_layout_mode(window_width: f32) -> PlayerLayout {
     }
 }
 
+/// Window layout breakpoints (window width): side panels drop to
+/// drawers below `LAYOUT_NARROW_BELOW`, to overlay rails below
+/// `LAYOUT_MEDIUM_BELOW`, and grow from `LAYOUT_WIDE_FROM` up.
+pub(crate) const LAYOUT_NARROW_BELOW: f32 = 800.0;
+pub(crate) const LAYOUT_MEDIUM_BELOW: f32 = 1100.0;
+pub(crate) const LAYOUT_WIDE_FROM: f32 = 1600.0;
+/// Side panel widths: library rail / full / wide, queue full / wide
+/// (the queue rail is `RIGHT_RAIL_W`).
+pub(crate) const SIDEBAR_RAIL_W: f32 = 56.0;
+pub(crate) const SIDEBAR_FULL_W: f32 = 235.0;
+pub(crate) const SIDEBAR_WIDE_W: f32 = 260.0;
+pub(crate) const RIGHT_FULL_W: f32 = 285.0;
+pub(crate) const RIGHT_WIDE_W: f32 = 320.0;
+/// Smallest window the app accepts: below this nothing has room.
+pub(crate) const MIN_WINDOW_W: f32 = 360.0;
+pub(crate) const MIN_WINDOW_H: f32 = 480.0;
+/// Base window padding (left + right) and the row gap beside a side
+/// panel slot. Shared by every center-width formula.
+pub(crate) const WINDOW_PAD_X: f32 = 16.0;
+pub(crate) const PANEL_GAP: f32 = 8.0;
+/// Center width below which the header drops its back/forward arrows.
+pub(crate) const HEADER_ARROWS_MIN_CENTER: f32 = 480.0;
+/// Center body padding (each side), see `center_view`.
+pub(crate) const BODY_PAD_X: f32 = 20.0;
+
+/// Whole-window layout mode (responsive narrow/medium/normal/wide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutMode {
+    /// Side panels are drawers opened from header buttons.
+    Narrow,
+    /// Side panels are rails that expand over the content.
+    Medium,
+    /// Today's layout: pinned panels push the content.
+    Normal,
+    /// Wider panels and a wider content cap.
+    Wide,
+}
+
+impl LayoutMode {
+    /// Expanded side panels float over the content instead of
+    /// taking space from it.
+    pub(crate) fn panels_overlay(self) -> bool {
+        matches!(self, LayoutMode::Narrow | LayoutMode::Medium)
+    }
+}
+
+/// Window width to layout mode (pure helper, unit-tested).
+pub(crate) fn layout_mode(window_width: f32) -> LayoutMode {
+    if window_width < LAYOUT_NARROW_BELOW {
+        LayoutMode::Narrow
+    } else if window_width < LAYOUT_MEDIUM_BELOW {
+        LayoutMode::Medium
+    } else if window_width < LAYOUT_WIDE_FROM {
+        LayoutMode::Normal
+    } else {
+        LayoutMode::Wide
+    }
+}
+
+impl AppState {
+    /// Live window width (1280 before the first resize event).
+    pub(crate) fn window_w(&self) -> f32 {
+        self.window.map(|s| s.width).unwrap_or(1280.0)
+    }
+
+    /// Current whole-window layout mode.
+    pub(crate) fn layout(&self) -> LayoutMode {
+        layout_mode(self.window_w())
+    }
+
+    /// Expanded library panel width for the current mode (the Narrow
+    /// drawer leaves a strip of content visible beside it).
+    pub(crate) fn sidebar_full_w(&self) -> f32 {
+        match self.layout() {
+            LayoutMode::Narrow => (self.window_w() - 56.0).min(300.0),
+            LayoutMode::Wide => SIDEBAR_WIDE_W,
+            _ => SIDEBAR_FULL_W,
+        }
+    }
+
+    /// Expanded queue panel width for the current mode (the Narrow
+    /// drawer goes full width on the smallest windows).
+    pub(crate) fn right_full_w(&self) -> f32 {
+        let ww = self.window_w();
+        match self.layout() {
+            LayoutMode::Narrow if ww < 500.0 => (ww - WINDOW_PAD_X).max(0.0),
+            LayoutMode::Narrow => (ww - 56.0).min(360.0),
+            LayoutMode::Wide => RIGHT_WIDE_W,
+            _ => RIGHT_FULL_W,
+        }
+    }
+
+    /// Width the left panel takes from the center row: the animated
+    /// panel itself when it pushes the content, the fixed rail when it
+    /// floats over it (Medium), nothing at all for a drawer (Narrow).
+    pub(crate) fn sidebar_slot_w(&self) -> f32 {
+        match self.layout() {
+            LayoutMode::Narrow => 0.0,
+            LayoutMode::Medium => SIDEBAR_RAIL_W,
+            _ => self.sidebar_w,
+        }
+    }
+
+    /// Width the right panel takes from the center row (same rules).
+    pub(crate) fn right_slot_w(&self) -> f32 {
+        match self.layout() {
+            LayoutMode::Narrow => 0.0,
+            LayoutMode::Medium => RIGHT_RAIL_W,
+            _ => self.right_w,
+        }
+    }
+
+    /// A panel floats open over the content (Medium hover expand or a
+    /// Narrow drawer).
+    pub(crate) fn drawers_open(&self) -> bool {
+        self.layout().panels_overlay() && (self.sidebar_latched || self.right_latched)
+    }
+
+    /// Close floating panels (scrim click, Esc, navigation). Push
+    /// modes keep their hover latch: this only touches overlay modes.
+    pub(crate) fn close_drawers(&mut self) {
+        if self.layout().panels_overlay() {
+            self.sidebar_latched = false;
+            self.right_latched = false;
+        }
+    }
+
+    /// Animated left panel width drawn above the content (Medium hover
+    /// expand, Narrow drawer); `None` while nothing floats.
+    pub(crate) fn sidebar_overlay_w(&self) -> Option<f32> {
+        (self.layout().panels_overlay() && self.sidebar_w > self.sidebar_slot_w() + 0.5)
+            .then_some(self.sidebar_w)
+    }
+
+    /// Same for the queue panel.
+    pub(crate) fn right_overlay_w(&self) -> Option<f32> {
+        (self.layout().panels_overlay() && self.right_w > self.right_slot_w() + 0.5)
+            .then_some(self.right_w)
+    }
+
+    /// Center column width: window minus padding, side panel slots
+    /// and the gap beside each present slot. One formula for every
+    /// caller, so geometry never drifts between views.
+    pub(crate) fn center_width(&self) -> f32 {
+        let gap = |w: f32| if w > 0.0 { w + PANEL_GAP } else { 0.0 };
+        (self.window_w() - WINDOW_PAD_X - gap(self.sidebar_slot_w()) - gap(self.right_slot_w()))
+            .max(0.0)
+    }
+
+    /// Body width cap (very wide windows center a capped body).
+    pub(crate) fn content_cap(&self) -> f32 {
+        CENTER_MAX_W
+    }
+
+    /// Now Playing lyrics column: the center minus breathing room,
+    /// held between a readable floor and a comfortable line length.
+    pub(crate) fn lyrics_col_w(&self) -> f32 {
+        (self.center_width() - 64.0).clamp(280.0, 560.0)
+    }
+
+    /// Usable body width inside the center padding, capped.
+    pub(crate) fn content_width(&self) -> f32 {
+        (self.center_width().min(self.content_cap()) - 2.0 * BODY_PAD_X).max(0.0)
+    }
+}
+
 /// Bottom-strip reserve for the current player height (the stacked
 /// minimal player is taller than the single row).
 impl AppState {

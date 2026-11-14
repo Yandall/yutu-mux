@@ -39,6 +39,7 @@ pub(crate) fn icon_bytes(name: &str) -> &'static [u8] {
         "library" => include_bytes!("../assets/icons/library.svg"),
         "plus" => include_bytes!("../assets/icons/plus.svg"),
         "x" => include_bytes!("../assets/icons/x.svg"),
+        "menu" => include_bytes!("../assets/icons/menu.svg"),
         "volume" => include_bytes!("../assets/icons/volume-2.svg"),
         "volume-x" => include_bytes!("../assets/icons/volume-x.svg"),
         "mic" => include_bytes!("../assets/icons/mic.svg"),

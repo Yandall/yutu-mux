@@ -480,6 +480,8 @@ impl AppState {
         // (the queue drag lives in the global panel and survives).
         self.drawer_open = false;
         self.show_suggest = false;
+        // Picking a page from a floating library panel closes it.
+        self.close_drawers();
         self.pl_drag = None;
         self.pl_press_snap = None;
         self.pl_drag_id = None;

@@ -687,6 +687,12 @@ pub enum Message {
     OpenTrackAlbum(String),
     OpenTrackArtist(String),
     ToggleSidebarPin,
+    /// Narrow-mode header buttons: open/close the library or queue
+    /// drawer (opening one closes the other).
+    ToggleLibraryDrawer,
+    ToggleQueueDrawer,
+    /// Scrim click / Esc / navigation: close any open drawer.
+    CloseDrawers,
     ToggleRightPin,
     /// Animation master toggle (Settings).
     AnimationsToggled(bool),

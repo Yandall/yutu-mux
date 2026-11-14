@@ -70,8 +70,7 @@ impl AppState {
         // windows get the fixed field aligned with the other inputs;
         // narrow ones get a fluid field that shrinks, so Import is always
         // reachable. The label budget follows the actual field width.
-        let win_w = self.window.map(|s| s.width).unwrap_or(1280.0);
-        let center_w = win_w - self.sidebar_w - self.right_w - 32.0;
+        let center_w = self.center_width();
         let roomy = cookie_row_roomy(center_w);
         let field_w = if roomy {
             SETTINGS_INPUT_W
@@ -910,28 +909,45 @@ impl AppState {
     /// latched in `CursorMoved` (never derived from the transient animated
     /// width, which would flip the target mid-glide).
     pub(crate) fn sidebar_open(&self) -> bool {
-        self.sidebar_pinned || self.sidebar_latched
+        // Overlay modes ignore the pin: the panel only opens on hover
+        // (Medium rail) or the header menu button (Narrow drawer). The
+        // saved pin comes back once the window is wide again.
+        if self.layout().panels_overlay() {
+            self.sidebar_latched
+        } else {
+            self.sidebar_pinned || self.sidebar_latched
+        }
     }
 
     /// Right panel visibility, same hysteresis contract as the sidebar.
     pub(crate) fn right_open(&self) -> bool {
-        self.right_pinned || self.right_latched
+        if self.layout().panels_overlay() {
+            self.right_latched
+        } else {
+            self.right_pinned || self.right_latched
+        }
     }
 
     /// Animated sidebar target widths from the open states above.
+    /// Narrow mode has no rail: closed is fully hidden.
     pub(crate) fn sidebar_target(&self) -> f32 {
         if self.sidebar_open() {
-            235.0
+            self.sidebar_full_w()
+        } else if self.layout() == LayoutMode::Narrow {
+            0.0
         } else {
-            56.0
+            SIDEBAR_RAIL_W
         }
     }
 
     /// Animated right-panel target width (collapsed keeps a rail with
-    /// queue/autoplay thumbnails; the rail stays visible even when empty).
+    /// queue/autoplay thumbnails; the rail stays visible even when empty,
+    /// except in Narrow mode where the queue lives in a drawer).
     pub(crate) fn right_target(&self) -> f32 {
         if self.right_open() {
-            285.0
+            self.right_full_w()
+        } else if self.layout() == LayoutMode::Narrow {
+            0.0
         } else {
             RIGHT_RAIL_W
         }

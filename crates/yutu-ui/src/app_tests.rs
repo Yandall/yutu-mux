@@ -7964,6 +7964,247 @@ fn list_titles_cap_at_two_lines() {
 }
 
 #[test]
+fn layout_mode_breakpoints() {
+    assert_eq!(layout_mode(360.0), LayoutMode::Narrow);
+    assert_eq!(layout_mode(799.0), LayoutMode::Narrow);
+    assert_eq!(layout_mode(800.0), LayoutMode::Medium);
+    assert_eq!(layout_mode(1099.0), LayoutMode::Medium);
+    assert_eq!(layout_mode(1100.0), LayoutMode::Normal);
+    assert_eq!(layout_mode(1599.0), LayoutMode::Normal);
+    assert_eq!(layout_mode(1600.0), LayoutMode::Wide);
+    assert_eq!(layout_mode(2560.0), LayoutMode::Wide);
+    assert!(LayoutMode::Narrow.panels_overlay());
+    assert!(LayoutMode::Medium.panels_overlay());
+    assert!(!LayoutMode::Normal.panels_overlay());
+    assert!(!LayoutMode::Wide.panels_overlay());
+}
+
+#[test]
+fn center_width_is_window_minus_panels_and_gaps() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    s.sidebar_w = 235.0;
+    s.right_w = 285.0;
+    // 1280 - 16 pad - (235 + 8) - (285 + 8)
+    assert!((s.center_width() - 728.0).abs() < 0.01);
+    // Body: capped center minus 2 x 20 padding.
+    assert!((s.content_width() - 688.0).abs() < 0.01);
+    assert!((s.lyrics_col_w() - 560.0).abs() < 0.01);
+}
+
+fn settle(s: &mut AppState) {
+    for _ in 0..80 {
+        let _ = s.update(Message::Animate);
+    }
+}
+
+#[test]
+fn medium_mode_rails_ignore_pins_and_expand_over_content() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    assert!(s.sidebar_pinned && s.right_pinned);
+    let _ = s.update(Message::WindowResized(iced::Size::new(900.0, 800.0)));
+    settle(&mut s);
+    // Pinned, but Medium collapses both panels to rails.
+    assert!(!s.sidebar_open());
+    assert!(!s.right_open());
+    assert!((s.sidebar_slot_w() - SIDEBAR_RAIL_W).abs() < 0.01);
+    assert!((s.right_slot_w() - RIGHT_RAIL_W).abs() < 0.01);
+    assert!(s.sidebar_overlay_w().is_none());
+    // Hovering the rail expands the panel above the content: the slot
+    // (and so the center width) never moves.
+    let center = s.center_width();
+    let _ = s.update(Message::CursorMoved(iced::Point::new(20.0, 200.0)));
+    settle(&mut s);
+    assert!(s.sidebar_open());
+    assert_eq!(s.sidebar_overlay_w(), Some(SIDEBAR_FULL_W));
+    assert!((s.center_width() - center).abs() < 0.01);
+    // Leaving the panel collapses it again.
+    let _ = s.update(Message::CursorMoved(iced::Point::new(600.0, 200.0)));
+    assert!(!s.sidebar_open());
+    // Wide again: the saved pins come back.
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    settle(&mut s);
+    assert!(s.sidebar_open() && s.right_open());
+    assert!((s.sidebar_slot_w() - SIDEBAR_FULL_W).abs() < 0.01);
+}
+
+#[test]
+fn narrow_mode_uses_drawers() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(420.0, 800.0)));
+    settle(&mut s);
+    assert_eq!(s.layout(), LayoutMode::Narrow);
+    // No rails: the center gets the whole window.
+    assert_eq!(s.sidebar_slot_w(), 0.0);
+    assert_eq!(s.right_slot_w(), 0.0);
+    assert!((s.center_width() - (420.0 - WINDOW_PAD_X)).abs() < 0.01);
+    // Hover never opens a drawer.
+    let _ = s.update(Message::CursorMoved(iced::Point::new(10.0, 200.0)));
+    assert!(!s.sidebar_open());
+    // Menu button opens the library drawer; the queue button swaps.
+    let _ = s.update(Message::ToggleLibraryDrawer);
+    assert!(s.sidebar_open() && s.drawers_open());
+    let _ = s.update(Message::ToggleQueueDrawer);
+    assert!(!s.sidebar_open() && s.right_open());
+    settle(&mut s);
+    // The queue drawer goes full width under 500px.
+    assert_eq!(s.right_overlay_w(), Some(420.0 - WINDOW_PAD_X));
+    // Esc closes it.
+    let _ = s.update(Message::CloseContext);
+    assert!(!s.drawers_open());
+    // Picking a page from the library drawer closes it.
+    let _ = s.update(Message::ToggleLibraryDrawer);
+    let _ = s.update(Message::Navigate(Route::History));
+    assert!(!s.sidebar_open());
+    assert_eq!(s.route, Route::History);
+}
+
+#[test]
+fn narrow_header_swaps_gear_for_drawer_buttons() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    settle(&mut s);
+    assert!(s.header_nav_arrows());
+    let wide_lead = s.header_lead_w();
+    let _ = s.update(Message::WindowResized(iced::Size::new(360.0, 720.0)));
+    settle(&mut s);
+    // Menu button only: the arrows have no room at 360px.
+    assert!(!s.header_nav_arrows());
+    assert!(s.header_lead_w() < wide_lead);
+    // The pill starts right after the menu button and always keeps a
+    // usable width.
+    assert!((s.search_pill_left() - (8.0 + s.header_lead_w())).abs() < 0.01);
+    let (_, w) = s.search_pill_geom();
+    assert!(w >= 140.0, "pill too narrow: {w}");
+}
+
+#[test]
+fn window_has_a_minimum_size() {
+    let settings = window_settings();
+    assert_eq!(
+        settings.min_size,
+        Some(iced::Size::new(MIN_WINDOW_W, MIN_WINDOW_H))
+    );
+}
+
+/// Headless layout screenshots (no display, no network): renders the
+/// whole window for each page and panel state at every layout width
+/// and writes PNGs to `YUTU_SNAPSHOT_DIR` (default
+/// `target/layout-snapshots`). Art stays on placeholders. Run with
+/// `cargo test -p yutu-ui --lib layout_snapshots -- --ignored`.
+#[test]
+#[ignore]
+fn layout_snapshots() {
+    let dir = std::env::var("YUTU_SNAPSHOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/layout-snapshots")
+        });
+    std::fs::create_dir_all(&dir).unwrap();
+    let only = std::env::var("YUTU_SNAPSHOT_ONLY").unwrap_or_default();
+    let sizes: [(f32, f32); 7] = [
+        (360.0, 720.0),
+        (420.0, 800.0),
+        (600.0, 800.0),
+        (900.0, 800.0),
+        (1280.0, 800.0),
+        (1920.0, 1000.0),
+        (2560.0, 1080.0),
+    ];
+    let names = [
+        "home",
+        "search",
+        "playlist",
+        "settings",
+        "nowplaying",
+        "library",
+        "queue",
+    ];
+    for (w, h) in sizes {
+        for name in names {
+            if !only.is_empty() && !only.split(',').any(|o| o == name) {
+                continue;
+            }
+            let mut s = test_state();
+            let tracks: Vec<Track> = (0..14)
+                .map(|i| {
+                    mk_track(
+                        &format!("t{i}"),
+                        &format!("Song title number {i} with a longer name"),
+                        &format!("Artist {i}"),
+                    )
+                })
+                .collect();
+            for t in &tracks {
+                s.queue.push(t.clone());
+            }
+            s.queue.jump_to(2);
+            s.results.tracks = tracks.clone();
+            s.all_results.tracks = tracks.clone();
+            s.all_results.mixed.clear();
+            for pl in [
+                "Favorites mix",
+                "Rave",
+                "Chill music",
+                "Rock en espa\u{f1}ol",
+            ] {
+                let _ = s.update(Message::CreatePlaylist(pl.into()));
+            }
+            let _ = s.update(Message::WindowResized(iced::Size::new(w, h)));
+            match name {
+                "search" => {
+                    s.search_query = "song".into();
+                    s.navigate(Route::Search);
+                }
+                "playlist" => {
+                    s.user_playlists[1].tracks = tracks.clone();
+                    let pid = s.user_playlists[1].id.clone();
+                    let _ = s.update(Message::OpenPlaylist(pid));
+                }
+                "settings" => s.navigate(Route::Settings),
+                "nowplaying" => s.drawer_open = true,
+                "library" => {
+                    if s.layout().panels_overlay() {
+                        s.sidebar_latched = true;
+                    }
+                }
+                "queue" => {
+                    if s.layout().panels_overlay() {
+                        s.right_latched = true;
+                    }
+                }
+                _ => s.navigate(Route::Home),
+            }
+            for _ in 0..80 {
+                let _ = s.update(Message::Animate);
+            }
+            let settings = iced::Settings {
+                fonts: vec![include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")
+                    .as_slice()
+                    .into()],
+                default_font: iced::Font::with_name("Adwaita Sans"),
+                ..iced::Settings::default()
+            };
+            let theme = s.theme();
+            let mut sim =
+                iced_test::Simulator::with_size(settings, iced::Size::new(w, h), s.view());
+            let snap = sim.snapshot(&theme).unwrap();
+            // The renderer suffixes the file name (e.g. `-wgpu`), and an
+            // existing file is compared instead of rewritten: clear both.
+            let path = dir.join(format!("{name}-{w}.png"));
+            for f in std::fs::read_dir(&dir).unwrap().flatten() {
+                let n = f.file_name().to_string_lossy().into_owned();
+                if n.starts_with(&format!("{name}-{w}-")) || n == format!("{name}-{w}.png") {
+                    let _ = std::fs::remove_file(f.path());
+                }
+            }
+            snap.matches_image(&path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn player_layout_breakpoints() {
     assert_eq!(player_layout_mode(499.0), PlayerLayout::Minimal);
     assert_eq!(player_layout_mode(500.0), PlayerLayout::Compact);

@@ -2375,25 +2375,56 @@ impl AppState {
                 // expands the rails.
                 let wh = self.window.map(|s| s.height).unwrap_or(800.0);
                 let above_player = p.y < wh - self.player_zone_h();
-                if !self.sidebar_pinned && !modal {
+                // Hover expand runs on the rails only: Narrow has no
+                // rail (header buttons open its drawers), and overlay
+                // modes ignore the pin.
+                let mode = self.layout();
+                let hover_mode = mode != LayoutMode::Narrow;
+                if (!self.sidebar_pinned || mode.panels_overlay()) && hover_mode && !modal {
                     if p.x < 72.0 && above_player {
                         self.sidebar_latched = true;
-                    } else if p.x >= self.sidebar_w + SIDEBAR_GRACE || !above_player {
+                    // Measured against the width the panel is opening
+                    // to, so a fast cursor never outruns the glide.
+                    } else if p.x >= self.sidebar_w.max(self.sidebar_target()) + SIDEBAR_GRACE
+                        || !above_player
+                    {
                         self.sidebar_latched = false;
                     }
                 }
-                if !self.right_pinned && !modal {
+                if (!self.right_pinned || mode.panels_overlay()) && hover_mode && !modal {
                     let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
                     if p.x > ww - RIGHT_RAIL_W - RIGHT_EXPAND_GRACE && above_player {
                         self.right_latched = true;
-                    } else if p.x <= ww - self.right_w - RIGHT_GRACE || !above_player {
+                    } else if p.x <= ww - self.right_w.max(self.right_target()) - RIGHT_GRACE
+                        || !above_player
+                    {
                         self.right_latched = false;
                     }
                 }
                 return iced::Task::none();
             }
             Message::WindowResized(sz) => {
+                let first = self.window.is_none();
+                let before = self.layout();
                 self.window = Some(sz);
+                let after = self.layout();
+                // Crossing a layout breakpoint resets the panels: overlay
+                // modes start closed, push modes go back to the pins.
+                if before != after {
+                    if after.panels_overlay() {
+                        self.sidebar_latched = false;
+                        self.right_latched = false;
+                    } else {
+                        self.sidebar_latched = self.sidebar_pinned;
+                        self.right_latched = self.right_pinned;
+                    }
+                }
+                // First real size: start at the mode's resting widths
+                // instead of gliding there from the 1280px defaults.
+                if first {
+                    self.sidebar_w = self.sidebar_target();
+                    self.right_w = self.right_target();
+                }
                 // Geometry changed: re-snap the followed verse once
                 // (unless the user took over scrolling).
                 if self.drawer_open && self.lyrics_follow {
@@ -2458,6 +2489,10 @@ impl AppState {
                     self.cancel_drag();
                 } else if self.pl_drag.is_some() {
                     self.cancel_pl_drag();
+                } else if self.drawers_open() {
+                    // Library/queue drawers float above the Now Playing
+                    // sheet, so they close first.
+                    self.close_drawers();
                 } else if self.drawer_open {
                     self.drawer_open = false;
                 }
@@ -2488,6 +2523,21 @@ impl AppState {
                         return self.unknown_track_task(&id);
                     }
                 }
+            }
+            Message::ToggleLibraryDrawer => {
+                self.sidebar_latched = !self.sidebar_latched;
+                if self.sidebar_latched {
+                    self.right_latched = false;
+                }
+            }
+            Message::ToggleQueueDrawer => {
+                self.right_latched = !self.right_latched;
+                if self.right_latched {
+                    self.sidebar_latched = false;
+                }
+            }
+            Message::CloseDrawers => {
+                self.close_drawers();
             }
             Message::ToggleSidebarPin => {
                 self.sidebar_pinned = !self.sidebar_pinned;
