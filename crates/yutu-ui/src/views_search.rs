@@ -82,7 +82,7 @@ impl AppState {
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
                     Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
-                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
+                    song_meta_text(self.row_plays(t), self.track_secs(t)),
                     self.row_heart(t),
                     button(btn_icon("ellipsis", 15.0, MUTED))
                         .style(icon_hover)
@@ -431,6 +431,25 @@ impl AppState {
     /// Top-result hero for the unified search list: the head hit in a
     /// nice card with its type in the subtitle. Songs keep play/like
     /// controls; albums and artists open their detail page.
+    /// Top-result card body: art beside the text block, or stacked
+    /// (art on top) when the content is too narrow for both, so the
+    /// title and buttons never get crushed.
+    pub(crate) fn search_card<'a>(
+        &'a self,
+        art: impl Into<iced::Element<'a, Message>>,
+        info: impl Into<iced::Element<'a, Message>>,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{column, row};
+        if self.hero_stacked() {
+            column![art.into(), info.into()].spacing(12).into()
+        } else {
+            row![art.into(), info.into()]
+                .spacing(14)
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        }
+    }
+
     pub(crate) fn search_hero(&self, hit: &SearchHit) -> iced::Element<'_, Message> {
         match hit {
             SearchHit::Song(t) => self.search_track_hero(t),
@@ -487,7 +506,7 @@ impl AppState {
         };
         mouse_area(
             container(
-                row![
+                self.search_card(
                     self.thumb_sized(t, 96.0),
                     column![
                         text(self.language.top_result()).size(12).color(MUTED),
@@ -512,13 +531,13 @@ impl AppState {
                                 .padding(8),
                         ]
                         .spacing(4)
-                        .align_y(iced::alignment::Vertical::Center),
+                        .align_y(iced::alignment::Vertical::Center)
+                        .wrap()
+                        .vertical_spacing(8),
                     ]
                     .spacing(4)
                     .width(Fill),
-                ]
-                .spacing(14)
-                .align_y(iced::alignment::Vertical::Center),
+                ),
             )
             .style(card_bg)
             .padding(14),
@@ -551,10 +570,12 @@ impl AppState {
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)
+            .wrap()
+            .vertical_spacing(8)
             .into()
         };
         container(
-            row![
+            self.search_card(
                 row_button(self.art_thumb(cover.as_deref(), 96.0))
                     .style(row_click)
                     .on_press(Message::OpenAlbum(a.id.clone()))
@@ -571,9 +592,7 @@ impl AppState {
                 ]
                 .spacing(4)
                 .width(Fill),
-            ]
-            .spacing(14)
-            .align_y(iced::alignment::Vertical::Center),
+            ),
         )
         .style(card_bg)
         .padding(14)
@@ -603,10 +622,12 @@ impl AppState {
             ]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)
+            .wrap()
+            .vertical_spacing(8)
             .into()
         };
         container(
-            row![
+            self.search_card(
                 row_button(self.art_thumb(photo.as_deref(), 96.0))
                     .style(row_click)
                     .on_press(Message::OpenArtist(a.id.clone()))
@@ -623,9 +644,7 @@ impl AppState {
                 ]
                 .spacing(4)
                 .width(Fill),
-            ]
-            .spacing(14)
-            .align_y(iced::alignment::Vertical::Center),
+            ),
         )
         .style(card_bg)
         .padding(14)
@@ -665,7 +684,7 @@ impl AppState {
                         14,
                         iced::Color::WHITE
                     ),
-                    song_meta_text(t.plays.as_deref(), self.track_secs(t)),
+                    song_meta_text(self.row_plays(t), self.track_secs(t)),
                     heart,
                     more,
                 ]
@@ -819,7 +838,7 @@ impl AppState {
         use iced::Fill;
         let sub = self.language.playlist_sub_full(&p.author, &p.detail);
         container(
-            row![
+            self.search_card(
                 row_button(self.playlist_art(p, 96.0))
                     .style(row_click)
                     .on_press(Message::PlaySearchPlaylist(p.id.clone()))
@@ -835,18 +854,18 @@ impl AppState {
                     row![
                         Self::play_pill(Message::PlaySearchPlaylist(p.id.clone())),
                         Self::shuffle_pill(
-                            "SHUFFLE".into(),
+                            self.language.shuffle_label(),
                             Message::PlaySearchPlaylistShuffled(p.id.clone())
                         ),
                     ]
                     .spacing(8)
-                    .align_y(iced::alignment::Vertical::Center),
+                    .align_y(iced::alignment::Vertical::Center)
+                    .wrap()
+                    .vertical_spacing(8),
                 ]
                 .spacing(4)
                 .width(Fill),
-            ]
-            .spacing(14)
-            .align_y(iced::alignment::Vertical::Center),
+            ),
         )
         .style(card_bg)
         .padding(14)

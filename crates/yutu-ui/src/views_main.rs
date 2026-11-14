@@ -274,6 +274,9 @@ impl AppState {
             .size(12)
             .color(MUTED)
             .into()
+        } else if self.sidebar_short() {
+            // Short window: the whole panel scrolls instead (below).
+            column(rows).spacing(2).into()
         } else {
             // Scrolls on its own between the filter and the new
             // playlist row, so both stay reachable on short windows.
@@ -287,7 +290,7 @@ impl AppState {
             .height(Fill)
             .into()
         };
-        container(
+        let panel = container(
             column![
                 row![
                     logo_mark(34.0),
@@ -384,12 +387,31 @@ impl AppState {
                 .align_y(iced::alignment::Vertical::Center),
             ]
             .spacing(10),
-        )
-        .style(sidebar_bg)
-        .padding(12)
-        .width(iced::Length::Fixed(w))
-        .height(Fill)
-        .into()
+        );
+        // Too short for the header, nav, filter and new-playlist row plus
+        // a few playlists: the whole panel scrolls as one list so every
+        // playlist stays reachable (a Fill list would get no height).
+        let panel: iced::Element<'_, Message> = if self.sidebar_short() {
+            container(
+                iced::widget::scrollable(panel.padding(iced::Padding {
+                    right: 10.0,
+                    ..iced::Padding::ZERO
+                }))
+                .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("sidebar")))
+                .on_scroll(|v| Message::Scrolled("sidebar", v.absolute_offset().y))
+                .height(Fill),
+            )
+            .into()
+        } else {
+            panel.into()
+        };
+        container(panel)
+            .style(sidebar_bg)
+            .padding(12)
+            .width(iced::Length::Fixed(w))
+            .height(Fill)
+            .into()
     }
 
     /// Queue row (plain visuals only): while live-dragging the origin is
@@ -1096,14 +1118,20 @@ impl AppState {
                     .padding(7)
                     .into()
             };
+            // One line each for title and artist (ellipsized to the
+            // room beside the art and the two buttons) keeps the bar short.
+            let budget = (((ww - MINI_INFO_CHROME) / 7.0) as usize).clamp(12, 80);
             let info = row![
                 info_art,
                 column![
-                    text(title.clone())
+                    text(truncate_title(&title, budget))
                         .size(13)
                         .width(Fill)
-                        .wrapping(Wrapping::WordOrGlyph),
-                    text(artist.clone()).size(12).color(MUTED),
+                        .wrapping(Wrapping::None),
+                    text(truncate_title(&artist, budget))
+                        .size(12)
+                        .color(MUTED)
+                        .wrapping(Wrapping::None),
                 ]
                 .spacing(1)
                 .width(Fill),
@@ -1145,10 +1173,23 @@ impl AppState {
             ]
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center);
-            let transport_centered: iced::Element<'_, Message> = container(transport)
+            // Transport on the left, volume on the right: one row
+            // instead of two (the slider shrinks first, never the icons).
+            let controls = row![
+                transport,
+                iced::widget::Space::new().width(Fill),
+                self.mute_button(),
+                container(
+                    pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
+                        .step(0.01_f32)
+                        .style(themed_slider)
+                        .width(Fill),
+                )
                 .width(Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .into();
+                .max_width(MINI_VOLUME_W),
+            ]
+            .spacing(6)
+            .align_y(iced::alignment::Vertical::Center);
             let mut bar_col = iced::widget::Column::new().spacing(6);
             if let Some(status) = self.status_row() {
                 bar_col = bar_col.push(status);
@@ -1156,10 +1197,9 @@ impl AppState {
             return container(
                 bar_col
                     .push(info)
-                    .push(transport_centered)
+                    // Fixed side slots keep the seek bar centered on the
+                    // same column as the bar above it.
                     .push(
-                        // Fixed side slots shared with the volume row, so
-                        // both bars start and end at the same x.
                         row![
                             container(text(fmt_time(shown_pos)).size(11).color(MUTED))
                                 .width(iced::Length::Fixed(MINI_SIDE_W))
@@ -1172,20 +1212,7 @@ impl AppState {
                         .spacing(6)
                         .align_y(iced::alignment::Vertical::Center),
                     )
-                    .push(
-                        row![
-                            container(self.mute_button())
-                                .width(iced::Length::Fixed(MINI_SIDE_W))
-                                .align_x(iced::alignment::Horizontal::Center),
-                            pointing_slider(0.0..=1.0, self.volume, Message::SetVolume)
-                                .step(0.01_f32)
-                                .style(themed_slider)
-                                .width(Fill),
-                            iced::widget::Space::new().width(iced::Length::Fixed(MINI_SIDE_W)),
-                        ]
-                        .spacing(6)
-                        .align_y(iced::alignment::Vertical::Center),
-                    ),
+                    .push(controls),
             )
             .style(player_bg)
             .padding(10)

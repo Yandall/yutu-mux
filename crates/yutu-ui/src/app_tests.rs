@@ -8098,6 +8098,25 @@ fn narrow_window_stays_clickable_without_a_drawer() {
 }
 
 #[test]
+fn tiny_windows_compact_the_library_and_rows() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    assert!(!s.sidebar_short());
+    // Smallest window: the library panel scrolls as a whole, and song
+    // rows drop the play count so the title keeps its room.
+    let _ = s.update(Message::WindowResized(iced::Size::new(
+        MIN_WINDOW_W,
+        MIN_WINDOW_H,
+    )));
+    assert!(s.sidebar_short());
+    let mut t = mk_track("pc1", "Song", "A");
+    t.plays = Some("220K plays".into());
+    assert_eq!(s.row_plays(&t), None);
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    assert_eq!(s.row_plays(&t), Some("220K plays"));
+}
+
+#[test]
 fn narrow_header_swaps_gear_for_drawer_buttons() {
     let mut s = test_state();
     let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
@@ -8396,7 +8415,9 @@ fn layout_snapshots() {
         });
     std::fs::create_dir_all(&dir).unwrap();
     let only = std::env::var("YUTU_SNAPSHOT_ONLY").unwrap_or_default();
-    let sizes: [(f32, f32); 8] = [
+    let sizes: [(f32, f32); 9] = [
+        // Smallest allowed window (short: the library panel scrolls).
+        (MIN_WINDOW_W, MIN_WINDOW_H),
         (360.0, 720.0),
         (420.0, 800.0),
         (600.0, 800.0),
@@ -8432,6 +8453,7 @@ fn layout_snapshots() {
                     );
                     t.album = Some("A Rather Long Album Title".into());
                     t.thumbnail_url = Some(format!("https://example.invalid/t{i}.jpg"));
+                    t.plays = Some("220K plays".into());
                     t
                 })
                 .collect();
@@ -8511,10 +8533,15 @@ fn layout_snapshots() {
             let snap = sim.snapshot(&theme).unwrap();
             // The renderer suffixes the file name (e.g. `-wgpu`), and an
             // existing file is compared instead of rewritten: clear both.
-            let path = dir.join(format!("{name}-{w}.png"));
+            let tag = if h < 600.0 {
+                format!("{w}x{h}")
+            } else {
+                format!("{w}")
+            };
+            let path = dir.join(format!("{name}-{tag}.png"));
             for f in std::fs::read_dir(&dir).unwrap().flatten() {
                 let n = f.file_name().to_string_lossy().into_owned();
-                if n.starts_with(&format!("{name}-{w}-")) || n == format!("{name}-{w}.png") {
+                if n.starts_with(&format!("{name}-{tag}-")) || n == format!("{name}-{tag}.png") {
                     let _ = std::fs::remove_file(f.path());
                 }
             }

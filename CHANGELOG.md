@@ -19,6 +19,8 @@
 
 ### Changed
 
+- The player on narrow windows is more compact: one-line title, and the
+  volume sits next to the playback buttons (#109).
 - Now Playing toggle uses a microphone icon that fills while open.
 - Start mix plays YouTube Music's own mix in the queue, labeled
   "Playing from" (#100).
@@ -55,6 +57,8 @@
   drawer is open (#109).
 - The Now Playing button in the player no longer shrinks on tight
   windows; the volume slider gets shorter instead (#109).
+- On very small windows the library drawer scrolls again, search top
+  results stack, and song rows keep room for the title (#109).
 - Hovering a song shown in several lists highlights only that row (#98).
 - The library playlist list scrolls when it is longer than the window (#108).
 - On narrow windows the volume slider lines up with the seek bar (#108).
