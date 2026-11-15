@@ -342,7 +342,7 @@ impl AppState {
             .and_then(|store| store.get_pref(&Self::playlist_sort_key(playlist_id)).ok())
             .flatten()
             .map(|raw| PlaylistSort::parse(&raw))
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.default_sort(playlist_id));
         let sort = self.sort_for(playlist_id, sort);
         self.playlist_sorts.insert(playlist_id.to_string(), sort);
         sort
@@ -355,8 +355,18 @@ impl AppState {
             .playlist_sorts
             .get(playlist_id)
             .copied()
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.default_sort(playlist_id));
         self.sort_for(playlist_id, sort)
+    }
+
+    /// Sort before any pick: Manual (stored order) for playlists, Oldest
+    /// first (like order, what it always showed) for Favorites.
+    pub(crate) fn default_sort(&self, playlist_id: &str) -> PlaylistSort {
+        if playlist_id == Self::FAVORITES_ID {
+            PlaylistSort::OldestFirst
+        } else {
+            PlaylistSort::Manual
+        }
     }
 
     /// A sort pick valid for `playlist_id`: Favorites maps picks it does
@@ -415,6 +425,9 @@ impl AppState {
     ) -> Vec<Track> {
         let mut tracks = playlist.tracks.clone();
         match sort {
+            PlaylistSort::Manual if playlist.id == Self::FAVORITES_ID => {
+                tracks = self.favorites_manual(tracks);
+            }
             PlaylistSort::Manual => {}
             PlaylistSort::OldestFirst => {
                 // No times cached (tests that bypass the store): stored
@@ -468,6 +481,35 @@ impl AppState {
         tracks
     }
 
+    /// Favorites in their hand-made order: ids from `favorites_order`
+    /// first (still-liked ones), then every other like in like order.
+    pub(crate) fn favorites_manual(&self, liked: Vec<Track>) -> Vec<Track> {
+        let mut rest: Vec<Option<Track>> = liked.into_iter().map(Some).collect();
+        let index: HashMap<String, usize> = rest
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.as_ref().map(|t| (t.id.clone(), i)))
+            .collect();
+        let mut out = Vec::with_capacity(rest.len());
+        for id in &self.favorites_order {
+            if let Some(&i) = index.get(id) {
+                if let Some(t) = rest[i].take() {
+                    out.push(t);
+                }
+            }
+        }
+        out.extend(rest.into_iter().flatten());
+        out
+    }
+
+    /// Save Favorites' manual order (memory + pref).
+    pub(crate) fn persist_favorites_order(&mut self, ids: Vec<String>) {
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref(FAVORITES_ORDER_PREF, &ids.join("\n"));
+        }
+        self.favorites_order = ids;
+    }
+
     /// True while a manual playlist drag has moved past slop.
     pub(crate) fn pl_dragging(&self) -> bool {
         self.pl_drag.is_some_and(|d| d.live)
@@ -516,12 +558,22 @@ impl AppState {
                 && current_len == s.len
                 && ordered.get(s.from).is_some_and(|t| t.id == s.id)
         });
-        let manual =
-            self.playlist_sorts.get(&pid).copied().unwrap_or_default() == PlaylistSort::Manual;
+        let manual = self.playlist_sort_cached(&pid) == PlaylistSort::Manual;
         // Reorder: only a live drag on a committing slot, Manual only.
         if snap_ok && drag.live && manual {
             if let Some(slot) = drag.slot {
                 if let Some(to) = slot_commit(current_len, drag.from, slot) {
+                    // Favorites: the new on-screen order becomes its
+                    // local manual order (likes themselves are untouched).
+                    if pid == Self::FAVORITES_ID && drag.from < current_len {
+                        let mut ids: Vec<String> = ordered.iter().map(|t| t.id.clone()).collect();
+                        let item = ids.remove(drag.from);
+                        ids.insert(to.min(ids.len()), item);
+                        self.persist_favorites_order(ids);
+                        self.status = self.language.playlist_reordered();
+                        self.just_reordered_at = Some(std::time::Instant::now());
+                        return iced::Task::none();
+                    }
                     if let Some(pos) = self.user_playlists.iter().position(|p| p.id == pid) {
                         let mut ids: Vec<String> = self.user_playlists[pos]
                             .tracks

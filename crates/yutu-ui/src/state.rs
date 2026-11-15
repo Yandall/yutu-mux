@@ -197,15 +197,16 @@ impl PlaylistSort {
         Self::Manual,
     ];
 
-    /// Favorites picks: no Manual (likes have no hand-made order) and no
-    /// Liked first (every row is liked). Oldest first is its default,
-    /// the like order it always showed.
-    pub const FAVORITES: [Self; 5] = [
+    /// Favorites picks: no Liked first (every row is liked); Manual is
+    /// its own local hand-made order. Oldest first is its default, the
+    /// like order it always showed.
+    pub const FAVORITES: [Self; 6] = [
         Self::NewestFirst,
         Self::OldestFirst,
         Self::Title,
         Self::Artist,
         Self::Album,
+        Self::Manual,
     ];
 
     /// `self` when Favorites offers it, else its default (Oldest first).

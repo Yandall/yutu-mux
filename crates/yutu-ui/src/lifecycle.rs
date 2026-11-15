@@ -192,6 +192,7 @@ impl AppState {
             just_reordered_at: None,
             drag_gap: 0.0,
             playlist_sorts: HashMap::new(),
+            favorites_order: Vec::new(),
             playlist_added,
             pl_drag: None,
             pl_press_snap: None,
@@ -304,6 +305,17 @@ impl AppState {
             let (auto_sync, last_sync_unix) = load_sync_prefs(&state.library_path);
             state.auto_sync = auto_sync;
             state.last_sync_unix = last_sync_unix;
+        }
+        // Favorites' manual order survives restarts.
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            if let Some(raw) = store.get_pref(FAVORITES_ORDER_PREF).unwrap_or(None) {
+                state.favorites_order = raw
+                    .lines()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
         }
         // Animation duration survives restarts (garbage falls back to
         // the default; the slider clamps, so stored values are in range).

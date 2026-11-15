@@ -575,6 +575,11 @@ pub struct AppState {
     /// which is the stored order and the only draggable mode. Persisted
     /// via `playlist_sort_<id>` prefs, default Manual.
     pub(crate) playlist_sorts: HashMap<String, PlaylistSort>,
+    /// Favorites' hand-made (Manual) order as track ids, local only
+    /// (YouTube Music cannot reorder liked songs). Likes missing from it
+    /// show after it in like order; unliked ids are skipped. Persisted
+    /// in the `favorites_manual_order` pref.
+    pub(crate) favorites_order: Vec<String>,
     /// Insertion times per playlist (track id to added_at): loaded once
     /// at startup, kept in step on add/remove/sync/reorder. Manual
     /// reorders move positions but never touch these, so oldest/newest

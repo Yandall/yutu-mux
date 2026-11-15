@@ -575,6 +575,8 @@ pub(crate) const PL_SEARCH_INPUT_ID: &str = "yutu-pl-search";
 /// room so the placeholder never touches the button.
 pub(crate) const SEARCH_PILL_CHROME: f32 = 8.0 + 4.0 + 14.0 + 20.0 + 12.0 + 1.0 + 26.0 + 16.0;
 /// Playlist input chrome: padding (2 x 10), border, breathing room.
+/// Pref holding Favorites' manual order (one track id per line).
+pub(crate) const FAVORITES_ORDER_PREF: &str = "favorites_manual_order";
 pub(crate) const PL_SEARCH_CHROME: f32 = 20.0 + 2.0 + 16.0;
 
 /// Search field grow/shrink duration: fixed (not the Settings speed,

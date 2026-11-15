@@ -3251,7 +3251,6 @@ impl AppState {
                     .into(),
                 Some(p) => {
                     let pid = p.id.clone();
-                    let is_fav = pid == Self::FAVORITES_ID;
                     let sort = self.playlist_sort_cached(&pid);
                     let ordered = self.playlist_ordered_tracks(&p);
                     // Sort control (Favorites too, with its own picks):
@@ -3314,7 +3313,7 @@ impl AppState {
                         } else {
                             column(rows).spacing(2).into()
                         }
-                    } else if !is_fav && sort == PlaylistSort::Manual && ordered.len() >= 2 {
+                    } else if sort == PlaylistSort::Manual && ordered.len() >= 2 {
                         let len = ordered.len();
                         let from = self.pl_drag.map(|d| d.from).unwrap_or(0);
                         let live = self.pl_dragging()
