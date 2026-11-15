@@ -259,3 +259,61 @@ fn live_foreign_sources_read_and_match() {
         assert!(found.len() >= 6, "too many misses: {missing:?}");
     }
 }
+
+fn track(
+    id: &str,
+    title: &str,
+    artist: &str,
+    album: Option<&str>,
+    secs: u32,
+) -> crate::models::Track {
+    crate::models::Track {
+        id: id.into(),
+        title: title.into(),
+        artist: artist.into(),
+        album: album.map(str::to_string),
+        duration_secs: secs,
+        thumbnail_url: None,
+        thumbnail_large_url: None,
+        plays: None,
+        is_video: false,
+    }
+}
+
+#[test]
+fn exported_csv_reads_back_as_the_same_playlist() {
+    let tracks = vec![
+        track("a1", "Hello, \"World\"", "Ana, Bo", Some("Greetings"), 201),
+        track("a2", "Sedúceme", "Viti Ruiz", None, 0),
+        track("a3", "=SUM(A1)", "-Hacker", Some("@home"), 60),
+    ];
+    let csv = to_csv("Salsita", &tracks);
+    assert!(csv.starts_with("\"Track Name\",\"Artist Name(s)\""));
+    assert!(csv.contains("https://music.youtube.com/watch?v=a1"));
+    // Formula-looking cells are defused for spreadsheets...
+    assert!(csv.contains("\"'=SUM(A1)\""));
+    assert!(csv.contains("\"'-Hacker\""));
+    // ...and the importer restores them.
+    let back = parse_csv(&csv, "fallback").unwrap();
+    assert_eq!(back.title, "Salsita");
+    assert_eq!(back.tracks.len(), 3);
+    assert_eq!(back.tracks[0].title, "Hello, \"World\"");
+    assert_eq!(back.tracks[0].artist, "Ana, Bo");
+    assert_eq!(back.tracks[0].album.as_deref(), Some("Greetings"));
+    assert_eq!(back.tracks[0].duration_secs, 201);
+    assert_eq!(back.tracks[1].duration_secs, 0);
+    assert_eq!(back.tracks[1].album, None);
+    assert_eq!(back.tracks[2].title, "=SUM(A1)");
+    assert_eq!(back.tracks[2].artist, "-Hacker");
+    assert_eq!(back.tracks[2].album.as_deref(), Some("@home"));
+    // An empty playlist still exports a header.
+    assert_eq!(to_csv("Empty", &[]).lines().count(), 1);
+}
+
+#[test]
+fn export_file_names_are_safe() {
+    assert_eq!(export_file_name("Salsita"), "Salsita.csv");
+    assert_eq!(export_file_name("AC/DC: Best?"), "AC_DC_ Best_.csv");
+    assert_eq!(export_file_name("  ..  "), "playlist.csv");
+    assert_eq!(export_file_name(""), "playlist.csv");
+}

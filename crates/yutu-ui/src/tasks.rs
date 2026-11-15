@@ -1285,6 +1285,33 @@ impl AppState {
         )
     }
 
+    /// Save a playlist CSV: the system save dialog (suggesting
+    /// `<title>.csv`), then the write. Cancelling is `Ok(None)`.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn export_csv_task(title: String, csv: String) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let picked = rfd::AsyncFileDialog::new()
+                    .set_title("Export playlist")
+                    .set_file_name(yutu_core::playlist_sources::export_file_name(&title))
+                    .add_filter("CSV", &["csv"])
+                    .save_file()
+                    .await;
+                let result = match picked {
+                    None => Ok(None),
+                    Some(handle) => {
+                        let path = handle.path().to_path_buf();
+                        std::fs::write(&path, csv)
+                            .map(|_| Some(path.to_string_lossy().into_owned()))
+                            .map_err(|e| e.to_string())
+                    }
+                };
+                (title, result)
+            },
+            |(title, result)| Message::PlaylistExported { title, result },
+        )
+    }
+
     /// System file picker for a playlist export (CSV / TSV / text).
     /// Cancellation is `None`, never an error.
     #[cfg(feature = "innertube")]

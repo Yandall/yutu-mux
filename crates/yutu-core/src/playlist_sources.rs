@@ -355,7 +355,7 @@ pub fn parse_csv(text: &str, fallback_title: &str) -> Result<ForeignPlaylist, St
                 for row in rows {
                     let get = |i: Option<usize>| {
                         i.and_then(|i| row.get(i))
-                            .map(|v| clean(v))
+                            .map(|v| clean(unguard(v)))
                             .unwrap_or_default()
                     };
                     let title = get(Some(cols.title));
@@ -413,6 +413,65 @@ pub fn parse_csv(text: &str, fallback_title: &str) -> Result<ForeignPlaylist, St
     }
 }
 
+/// CSV export of a playlist, shaped so [`parse_csv`] (and Exportify-style
+/// tools) read it back: `Track Name`, `Artist Name(s)`, `Album Name`,
+/// `Duration (ms)`, `Playlist Name`, plus a YouTube Music `URL`. Every
+/// field is quoted; cells a spreadsheet would run as a formula (leading
+/// `=`, `+`, `-`, `@`, tab or CR) get a `'` prefix, which the importer
+/// strips again.
+pub fn to_csv(title: &str, tracks: &[crate::models::Track]) -> String {
+    fn cell(v: &str) -> String {
+        let guarded = if v.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+            format!("'{v}")
+        } else {
+            v.to_string()
+        };
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    }
+    let mut out = String::from(
+        "\"Track Name\",\"Artist Name(s)\",\"Album Name\",\"Duration (ms)\",\"Playlist Name\",\"URL\"\n",
+    );
+    for t in tracks {
+        let duration = if t.duration_secs > 0 {
+            (u64::from(t.duration_secs) * 1000).to_string()
+        } else {
+            String::new()
+        };
+        let url = format!("https://music.youtube.com/watch?v={}", t.id);
+        let row = [
+            cell(&t.title),
+            cell(&t.artist),
+            cell(t.album.as_deref().unwrap_or("")),
+            cell(&duration),
+            cell(title),
+            cell(&url),
+        ];
+        out.push_str(&row.join(","));
+        out.push('\n');
+    }
+    out
+}
+
+/// A safe file name for `title` (path separators and characters
+/// Windows / macOS reject become `_`), never empty.
+pub fn export_file_name(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    let stem = if cleaned.is_empty() {
+        "playlist"
+    } else {
+        cleaned
+    };
+    format!("{stem}.csv")
+}
+
 /// Known column positions of a headed export.
 struct Columns {
     title: usize,
@@ -467,6 +526,14 @@ impl Columns {
             duration_ms,
             playlist: pos(&["playlist name", "playlist"]),
         })
+    }
+}
+
+/// Undo the export's formula guard: a `'` before `=`, `+`, `-` or `@`.
+fn unguard(v: &str) -> &str {
+    match v.strip_prefix('\'') {
+        Some(rest) if rest.starts_with(['=', '+', '-', '@']) => rest,
+        _ => v,
     }
 }
 

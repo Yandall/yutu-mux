@@ -1531,7 +1531,12 @@ impl AppState {
         let rows: Vec<(String, bool, Message)> = match kind {
             SelectMenu::Sort(pid) => {
                 let current = self.playlist_sort_cached(pid);
-                PlaylistSort::ALL
+                let picks: &[PlaylistSort] = if pid == Self::FAVORITES_ID {
+                    &PlaylistSort::FAVORITES
+                } else {
+                    &PlaylistSort::ALL
+                };
+                picks
                     .iter()
                     .map(|opt| {
                         (

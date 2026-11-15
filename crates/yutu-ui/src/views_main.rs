@@ -3254,16 +3254,13 @@ impl AppState {
                     let is_fav = pid == Self::FAVORITES_ID;
                     let sort = self.playlist_sort_cached(&pid);
                     let ordered = self.playlist_ordered_tracks(&p);
-                    // Sort control for own playlists only (Favorites keeps
-                    // its liked-order view with no picker, like before):
+                    // Sort control (Favorites too, with its own picks):
                     // sort icon + current sort in the quiet button family.
                     // The open card floats from this button (dropdown
                     // overlay), never from the cursor. Fixed width
                     // (longest pick) so the `...` trigger never shifts
                     // when the pick changes.
-                    let sort_button: iced::Element<'_, Message> = if is_fav {
-                        text("").size(1).into()
-                    } else {
+                    let sort_button: iced::Element<'_, Message> = {
                         // Same pill as Shuffle and the search field.
                         let face: iced::Element<'_, Message> = button(
                             row![
@@ -3449,15 +3446,10 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Bottom)
                             .into()
                     };
-                    let list_bar: iced::Element<'_, Message> = if is_fav {
-                        iced::widget::Space::new()
-                            .height(iced::Length::Fixed(8.0))
-                            .into()
-                    } else {
+                    let list_bar: iced::Element<'_, Message> =
                         row![iced::widget::Space::new().width(Fill), sort_button]
                             .align_y(iced::alignment::Vertical::Center)
-                            .into()
-                    };
+                            .into();
                     column![header, list_bar, list,].spacing(10).into()
                 }
             },
@@ -4198,6 +4190,25 @@ impl AppState {
                     .into(),
                 ];
                 let mut pl_items = items;
+                // Export works for every list, Favorites included (the
+                // save dialog ships with the online build only).
+                #[cfg(feature = "innertube")]
+                pl_items.push(
+                    row_button(
+                        row![
+                            btn_icon("file-down", 14.0, iced::Color::WHITE),
+                            btn_text(self.language.export_playlist_csv(), 14),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::ExportPlaylist(pid3.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                );
                 if pid3 != Self::FAVORITES_ID {
                     let pid_rename = pid3.clone();
                     pl_items.push(

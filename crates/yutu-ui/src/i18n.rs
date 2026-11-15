@@ -292,6 +292,15 @@ impl Language {
             self.tr("edit-select-all"),
         ]
     }
+    pub fn export_playlist_csv(self) -> String {
+        self.tr("export-playlist-csv")
+    }
+    pub fn fail_export(self, title: &str) -> String {
+        self.tr_args("fail-export", &[("title", title)])
+    }
+    pub fn playlist_exported(self, title: &str, path: &str) -> String {
+        self.tr_args("playlist-exported", &[("title", title), ("path", path)])
+    }
     pub fn new_playlist(self) -> String {
         self.tr("new-playlist")
     }

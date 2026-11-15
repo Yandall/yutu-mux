@@ -197,6 +197,26 @@ impl PlaylistSort {
         Self::Manual,
     ];
 
+    /// Favorites picks: no Manual (likes have no hand-made order) and no
+    /// Liked first (every row is liked). Oldest first is its default,
+    /// the like order it always showed.
+    pub const FAVORITES: [Self; 5] = [
+        Self::NewestFirst,
+        Self::OldestFirst,
+        Self::Title,
+        Self::Artist,
+        Self::Album,
+    ];
+
+    /// `self` when Favorites offers it, else its default (Oldest first).
+    pub fn for_favorites(self) -> Self {
+        if Self::FAVORITES.contains(&self) {
+            self
+        } else {
+            Self::OldestFirst
+        }
+    }
+
     /// Picker label (user-facing, stays English like other glue labels).
     pub fn label(self) -> &'static str {
         match self {
@@ -464,6 +484,15 @@ pub enum Message {
     StartRadio(String),
     PlayAll,
     CreatePlaylist(String),
+    /// Playlist menu "Export to CSV": asks where to save, then writes
+    /// the songs in their on-screen order.
+    ExportPlaylist(String),
+    /// Export finished: the saved path, `None` when the save dialog was
+    /// cancelled, or the write error.
+    PlaylistExported {
+        title: String,
+        result: Result<Option<String>, String>,
+    },
     /// Library "New playlist" button: opens the create/import dialog.
     OpenNewPlaylist,
     /// Scrim/Esc/Cancel: closes the dialog (an import in flight is

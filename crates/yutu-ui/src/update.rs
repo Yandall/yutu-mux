@@ -1344,6 +1344,30 @@ impl AppState {
             Message::CancelDeletePlaylist => {
                 self.pending_playlist_delete = None;
             }
+            Message::ExportPlaylist(id) => {
+                self.close_menu();
+                let Some((title, csv)) = self.playlist_export_csv(&id) else {
+                    self.status = self.language.playlist_locked(&id);
+                    return iced::Task::none();
+                };
+                #[cfg(feature = "innertube")]
+                return Self::export_csv_task(title, csv);
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = (title, csv);
+                    return iced::Task::none();
+                }
+            }
+            Message::PlaylistExported { title, result } => match result {
+                Ok(Some(path)) => {
+                    self.status = self.language.playlist_exported(&title, &path);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    yutu_core::app_log::warn("yutu-export", format!("{title}: {e}"));
+                    self.status = Self::failure_status(self.language.fail_export(&title), &e);
+                }
+            },
             Message::RequestRenamePlaylist(id) => {
                 self.close_menu();
                 // Same either-form rule as adds (see AddToPlaylist).
@@ -2084,6 +2108,7 @@ impl AppState {
                 }
             }
             Message::PlaylistSortSelected { playlist_id, sort } => {
+                let sort = self.sort_for(&playlist_id, sort);
                 self.persist_playlist_sort(&playlist_id, sort);
                 self.sort_menu = None;
                 self.cancel_pl_drag();

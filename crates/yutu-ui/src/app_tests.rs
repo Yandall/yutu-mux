@@ -11006,3 +11006,119 @@ fn playlist_menu_gets_its_own_line_only_in_narrow_windows() {
         assert_eq!(s.pl_menu_own_line(), own, "w={w}");
     }
 }
+
+#[test]
+fn playlist_export_follows_the_on_screen_order() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Mix".into()));
+    let pid = s.user_playlists[0].id.clone();
+    s.user_playlists[0].tracks = vec![mk_track("b", "Bravo", "Zed"), mk_track("a", "Alpha", "Amy")];
+    // Manual order: as stored.
+    let (title, csv) = s.playlist_export_csv(&pid).unwrap();
+    assert_eq!(title, "Mix");
+    let back = yutu_core::playlist_sources::parse_csv(&csv, "x").unwrap();
+    let titles: Vec<&str> = back.tracks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Bravo", "Alpha"]);
+    assert_eq!(back.title, "Mix");
+    // A title sort reorders the export the same way the page does.
+    s.playlist_sorts.insert(pid.clone(), PlaylistSort::Title);
+    let (_, csv) = s.playlist_export_csv(&pid).unwrap();
+    let back = yutu_core::playlist_sources::parse_csv(&csv, "x").unwrap();
+    let titles: Vec<&str> = back.tracks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["Alpha", "Bravo"]);
+    assert!(s.playlist_export_csv("u404").is_none());
+}
+
+#[test]
+fn playlist_export_results_report_honestly() {
+    for lang in [Language::English, Language::Spanish] {
+        let mut s = test_state();
+        s.language = lang;
+        s.status = "quiet".into();
+        // Cancelled save dialog: nothing to say.
+        let _ = s.update(Message::PlaylistExported {
+            title: "Mix".into(),
+            result: Ok(None),
+        });
+        assert_eq!(s.status, "quiet");
+        let _ = s.update(Message::PlaylistExported {
+            title: "Mix".into(),
+            result: Ok(Some("/tmp/Mix.csv".into())),
+        });
+        assert!(s.status.contains("/tmp/Mix.csv"));
+        assert!(!s.language.is_failure_line(&s.status));
+        // Write errors surface as failures (visible in release builds).
+        let _ = s.update(Message::PlaylistExported {
+            title: "Mix".into(),
+            result: Err("permission denied".into()),
+        });
+        assert!(
+            s.language.is_failure_line(&s.status),
+            "{lang:?}: {}",
+            s.status
+        );
+    }
+}
+
+#[test]
+fn favorites_sort_like_any_playlist() {
+    let mut s = test_state();
+    let fav = AppState::FAVORITES_ID.to_string();
+    for (id, title, artist) in [
+        ("b", "Bravo", "Zed"),
+        ("a", "Alpha", "Amy"),
+        ("c", "Charlie", "Moe"),
+    ] {
+        s.catalog.insert(id.into(), mk_track(id, title, artist));
+        s.like_id(id);
+    }
+    let titles = |s: &AppState| -> Vec<String> {
+        let p = s.find_playlist(AppState::FAVORITES_ID).unwrap();
+        s.playlist_ordered_tracks(&p)
+            .into_iter()
+            .map(|t| t.title)
+            .collect()
+    };
+    // Default: like order (oldest first), as before.
+    assert_eq!(s.playlist_sort_cached(&fav), PlaylistSort::OldestFirst);
+    assert_eq!(titles(&s), ["Bravo", "Alpha", "Charlie"]);
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: fav.clone(),
+        sort: PlaylistSort::NewestFirst,
+    });
+    assert_eq!(titles(&s), ["Charlie", "Alpha", "Bravo"]);
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: fav.clone(),
+        sort: PlaylistSort::Title,
+    });
+    assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+    // Picks Favorites does not offer fall back to its default.
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: fav.clone(),
+        sort: PlaylistSort::Manual,
+    });
+    assert_eq!(s.playlist_sort_cached(&fav), PlaylistSort::OldestFirst);
+    // The pick survives a reload of the cache (persisted pref).
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: fav.clone(),
+        sort: PlaylistSort::Artist,
+    });
+    s.playlist_sorts.clear();
+    assert_eq!(s.playlist_sort(&fav), PlaylistSort::Artist);
+    // Export follows the on-screen order.
+    let (_, csv) = s.playlist_export_csv(&fav).unwrap();
+    let back = yutu_core::playlist_sources::parse_csv(&csv, "x").unwrap();
+    let artists: Vec<&str> = back.tracks.iter().map(|t| t.artist.as_str()).collect();
+    assert_eq!(artists, ["Amy", "Moe", "Zed"]);
+}
+
+#[test]
+fn favorites_sort_picker_lists_only_its_picks() {
+    assert!(!PlaylistSort::FAVORITES.contains(&PlaylistSort::Manual));
+    assert!(!PlaylistSort::FAVORITES.contains(&PlaylistSort::LikedFirst));
+    assert_eq!(
+        PlaylistSort::LikedFirst.for_favorites(),
+        PlaylistSort::OldestFirst
+    );
+    assert_eq!(PlaylistSort::Album.for_favorites(), PlaylistSort::Album);
+}
