@@ -27,6 +27,8 @@
 
 ### Changed
 
+- On narrow windows the playlist menu button sits on its own line, so
+  the playlist search keeps its full width.
 - The library's New playlist button now sits at the top of the
   playlists; the playlist filter box was removed.
 
