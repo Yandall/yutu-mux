@@ -2136,12 +2136,7 @@ impl AppState {
                 if self.pl_action_hover == Some(index) {
                     return iced::Task::none();
                 }
-                let sort = self
-                    .playlist_sorts
-                    .get(&playlist_id)
-                    .copied()
-                    .unwrap_or_default();
-                if sort != PlaylistSort::Manual {
+                if self.playlist_sort_cached(&playlist_id) != PlaylistSort::Manual {
                     return iced::Task::none();
                 }
                 let len = self

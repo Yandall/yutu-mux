@@ -326,4 +326,6 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 - Shuffle with current-last visibly does little (tail already ordered).
 - Widget seek-while-paused applies silently until resume.
 - Repeat All/One starves autoplay by design.
+- Favorites' Manual order is local only (`favorites_manual_order` pref):
+  YouTube Music cannot reorder liked songs. New likes show after it.
 - `README.md` has a duplicated `## Run` section (historical).

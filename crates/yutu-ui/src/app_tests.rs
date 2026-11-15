@@ -11095,7 +11095,7 @@ fn favorites_sort_like_any_playlist() {
     // Picks Favorites does not offer fall back to its default.
     let _ = s.update(Message::PlaylistSortSelected {
         playlist_id: fav.clone(),
-        sort: PlaylistSort::Manual,
+        sort: PlaylistSort::LikedFirst,
     });
     assert_eq!(s.playlist_sort_cached(&fav), PlaylistSort::OldestFirst);
     // The pick survives a reload of the cache (persisted pref).
@@ -11114,11 +11114,80 @@ fn favorites_sort_like_any_playlist() {
 
 #[test]
 fn favorites_sort_picker_lists_only_its_picks() {
-    assert!(!PlaylistSort::FAVORITES.contains(&PlaylistSort::Manual));
+    assert!(PlaylistSort::FAVORITES.contains(&PlaylistSort::Manual));
     assert!(!PlaylistSort::FAVORITES.contains(&PlaylistSort::LikedFirst));
     assert_eq!(
         PlaylistSort::LikedFirst.for_favorites(),
         PlaylistSort::OldestFirst
     );
     assert_eq!(PlaylistSort::Album.for_favorites(), PlaylistSort::Album);
+}
+
+#[test]
+fn favorites_manual_order_is_dragged_and_kept() {
+    let mut s = test_state();
+    let fav = AppState::FAVORITES_ID.to_string();
+    for id in ["f0", "f1", "f2"] {
+        s.catalog.insert(id.into(), mk_track(id, id, "X"));
+        s.like_id(id);
+    }
+    let order = |s: &AppState| -> Vec<String> {
+        let p = s.find_playlist(AppState::FAVORITES_ID).unwrap();
+        s.playlist_ordered_tracks(&p)
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    };
+    let _ = s.update(Message::OpenPlaylist(fav.clone()));
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: fav.clone(),
+        sort: PlaylistSort::Manual,
+    });
+    // No custom order yet: like order.
+    assert_eq!(order(&s), ["f0", "f1", "f2"]);
+    // Drag the first song to the end.
+    let _ = s.update(Message::PlDragStart {
+        playlist_id: fav.clone(),
+        index: 0,
+    });
+    let _ = s.update(Message::PlDragSlot(3));
+    let _ = s.update(Message::DragEnd);
+    assert!(s.status.contains("reordered"));
+    assert_eq!(order(&s), ["f1", "f2", "f0"]);
+    // Likes themselves are untouched (Oldest first still like order).
+    assert_eq!(s.liked_order, ["f0", "f1", "f2"]);
+    // A new like lands after the custom order; an unlike drops out.
+    s.catalog.insert("f3".into(), mk_track("f3", "f3", "X"));
+    s.like_id("f3");
+    s.unlike_id("f2");
+    assert_eq!(order(&s), ["f1", "f0", "f3"]);
+    // The order survives a restart (pref reload).
+    let (s2, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(s2.favorites_order, ["f1", "f2", "f0"]);
+    // Other sorts ignore it.
+    let _ = s.update(Message::PlaylistSortSelected {
+        playlist_id: fav.clone(),
+        sort: PlaylistSort::OldestFirst,
+    });
+    assert_eq!(order(&s), ["f0", "f1", "f3"]);
+}
+
+#[test]
+fn favorites_drag_needs_manual() {
+    let mut s = test_state();
+    let fav = AppState::FAVORITES_ID.to_string();
+    for id in ["f0", "f1"] {
+        s.catalog.insert(id.into(), mk_track(id, id, "X"));
+        s.like_id(id);
+    }
+    // Default sort (Oldest first, never picked): a drag never commits.
+    let _ = s.update(Message::OpenPlaylist(fav.clone()));
+    let _ = s.update(Message::PlDragStart {
+        playlist_id: fav.clone(),
+        index: 0,
+    });
+    let _ = s.update(Message::PlDragSlot(2));
+    let _ = s.update(Message::DragEnd);
+    assert!(s.favorites_order.is_empty());
+    assert!(s.pl_drag.is_none());
 }
