@@ -1965,10 +1965,19 @@ impl AppState {
 
     /// Playlist search width: placeholder-sized at rest, eased up to
     /// the header pill's expanded width while focused (same max).
+    /// Narrow windows (the smallest layout) give the playlist "…" menu
+    /// its own line under play / Shuffle / search; wider ones keep the
+    /// whole action row on one line.
+    pub(crate) fn pl_menu_own_line(&self) -> bool {
+        self.layout() == LayoutMode::Narrow
+    }
+
     pub(crate) fn pl_search_width(&self) -> f32 {
         // Grows only into the room its action row has left (play,
         // Shuffle, menu and gaps beside it), so focusing it never
-        // wraps the menu onto a second line.
+        // wraps the menu onto a second line. Narrow windows put the
+        // menu on its own line instead (see the header), so the search
+        // also gets the menu's slot there.
         let info_w = if self.hero_stacked() {
             self.content_width()
         } else {
@@ -1977,7 +1986,12 @@ impl AppState {
         let shuffle_w = icon_pill_width(&self.language.shuffle_label());
         // 4px spare for subpixel rounding: a row that fits exactly can
         // still wrap by a fraction of a pixel.
-        let room = info_w - 2.0 * PILL_H - shuffle_w - 3.0 * 8.0 - 4.0;
+        let menu_w = if self.pl_menu_own_line() {
+            0.0
+        } else {
+            PILL_H + 8.0
+        };
+        let room = info_w - PILL_H - shuffle_w - 2.0 * 8.0 - menu_w - 4.0;
         let full = self.search_full_width().min(room.max(0.0));
         let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
             + PL_SEARCH_CHROME)
@@ -3358,7 +3372,7 @@ impl AppState {
                     let total: u64 = p.tracks.iter().map(|t| u64::from(self.track_secs(t))).sum();
                     // Every control is PILL_H tall: a true circle for play
                     // and the menu, matching pills for the rest.
-                    let actions: Vec<iced::Element<'_, Message>> = vec![
+                    let mut actions: Vec<iced::Element<'_, Message>> = vec![
                         round_button(
                             btn_icon("play", 18.0, iced::Color::WHITE),
                             accent_button,
@@ -3380,12 +3394,21 @@ impl AppState {
                             Some(Message::PlaylistFilterChanged),
                             false,
                         ),
-                        round_button(
-                            btn_icon("ellipsis", 16.0, iced::Color::WHITE),
-                            ghost_button,
-                            Message::OpenPlaylistMenu(p.id.clone()),
-                        ),
                     ];
+                    let menu_btn: iced::Element<'_, Message> = round_button(
+                        btn_icon("ellipsis", 16.0, iced::Color::WHITE),
+                        ghost_button,
+                        Message::OpenPlaylistMenu(p.id.clone()),
+                    );
+                    // Narrow: the menu gets its own line below the row
+                    // (the search keeps its width); wider windows keep
+                    // it at the end of the one-line action row.
+                    let menu_line = if self.pl_menu_own_line() {
+                        Some(menu_btn)
+                    } else {
+                        actions.push(menu_btn);
+                        None
+                    };
                     let cover = self.playlist_cover_url(&p.id);
                     let info: iced::Element<'_, Message> = column![
                         text(self.language.playlist_label()).size(12).color(MUTED),
@@ -3405,6 +3428,13 @@ impl AppState {
                             .wrap()
                             .vertical_spacing(8),
                     ]
+                    .push(menu_line.map(|m| {
+                        // Same 8px as the row gaps, under the play button.
+                        column![
+                            iced::widget::Space::new().height(iced::Length::Fixed(4.0)),
+                            m
+                        ]
+                    }))
                     .spacing(4)
                     .width(Fill)
                     .into();

@@ -8539,7 +8539,8 @@ fn playlist_cover_falls_back_to_row_art() {
 fn playlist_search_never_outgrows_its_row() {
     // Every layout width (Medium rails included) and both languages:
     // fully expanded (focused) the search still leaves room for play,
-    // Shuffle and the menu, measured the way the pills render.
+    // Shuffle and the menu (Narrow: menu on its own line), measured the
+    // way the pills render.
     for lang in [Language::English, Language::Spanish] {
         for w in (360..=2600).step_by(20) {
             let mut s = test_state();
@@ -8553,13 +8554,15 @@ fn playlist_search_never_outgrows_its_row() {
                 s.content_width() - PLAYLIST_COVER_PX - 20.0
             };
             let shuffle = icon_pill_width(&s.language.shuffle_label());
-            let used = s.pl_search_width() + 2.0 * PILL_H + shuffle + 3.0 * 8.0;
-            let collapsed =
-                text_line_width(s.language.playlist_filter_placeholder()) + PL_SEARCH_CHROME;
-            // Rows too short even for the resting pill wrap by design.
-            if row >= collapsed + 2.0 * PILL_H + shuffle + 3.0 * 8.0 {
-                assert!(used <= row, "{lang:?} w={w}: row overflows: {used} > {row}");
-            }
+            // Narrow puts the menu on its own line: the row holds play,
+            // Shuffle and the search only.
+            let menu = if s.pl_menu_own_line() {
+                0.0
+            } else {
+                PILL_H + 8.0
+            };
+            let used = s.pl_search_width() + PILL_H + shuffle + 2.0 * 8.0 + menu;
+            assert!(used <= row, "{lang:?} w={w}: row overflows: {used} > {row}");
         }
     }
 }
@@ -10986,4 +10989,20 @@ fn right_click_menu_rows_are_disabled_without_a_selection() {
             .any(|m| matches!(m, Message::HomeSearchChanged(_))),
         "{msgs:?}"
     );
+}
+
+#[test]
+fn playlist_menu_gets_its_own_line_only_in_narrow_windows() {
+    for (w, own) in [
+        (360.0, true),
+        (620.0, true),
+        (799.0, true),
+        (800.0, false),
+        (1280.0, false),
+    ] {
+        let mut s = test_state();
+        let _ = s.update(Message::WindowResized(iced::Size::new(w, 800.0)));
+        settle(&mut s);
+        assert_eq!(s.pl_menu_own_line(), own, "w={w}");
+    }
 }

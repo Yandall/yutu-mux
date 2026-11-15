@@ -192,7 +192,9 @@
 - Row budgets that sit beside an `icon_pill_button` reserve
   `icon_pill_width(label)` (13px label + icon + padding), never a
   `text_line_width + N` guess (that undercount wrapped the playlist
-  menu button on Medium windows).
+  menu button on Medium windows). The playlist action row never wraps
+  from Medium up; Narrow gives the "…" menu its own line on purpose
+  (`pl_menu_own_line`), so the search keeps its width.
 - Handle radius literal must be `8.0` (f32), not `8.0.into()` (clippy
   `useless_conversion` + `float_literal_f32_fallback` are deny-level).
 
