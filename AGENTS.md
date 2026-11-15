@@ -328,4 +328,7 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 - Repeat All/One starves autoplay by design.
 - Favorites' Manual order is local only (`favorites_manual_order` pref):
   YouTube Music cannot reorder liked songs. New likes show after it.
+- Favorites' cover is generated (`favorites_cover.rs`): a random gradient
+  saved once in the `favorites_cover` pref, rendered lazily on first
+  display; its glow is the same 8x8 Triangle downscale as image covers.
 - `README.md` has a duplicated `## Run` section (historical).

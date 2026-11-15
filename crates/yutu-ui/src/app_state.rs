@@ -580,6 +580,11 @@ pub struct AppState {
     /// show after it in like order; unliked ids are skipped. Persisted
     /// in the `favorites_manual_order` pref.
     pub(crate) favorites_order: Vec<String>,
+    /// Favorites' saved gradient (random on first launch, then kept).
+    pub(crate) favorites_spec: Option<crate::favorites_cover::CoverSpec>,
+    /// Its rendered cover + glow, built on first display (see
+    /// [`Self::favorites_cover`]).
+    pub(crate) favorites_cover: std::sync::OnceLock<crate::favorites_cover::FavoritesCover>,
     /// Insertion times per playlist (track id to added_at): loaded once
     /// at startup, kept in step on add/remove/sync/reorder. Manual
     /// reorders move positions but never touch these, so oldest/newest

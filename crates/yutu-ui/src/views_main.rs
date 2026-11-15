@@ -221,21 +221,24 @@ impl AppState {
             .all_playlists()
             .into_iter()
             .map(|pl| {
-                let art: iced::Element<'_, Message> = pl
-                    .tracks
-                    .first()
-                    .and_then(|t| self.find_track(&t.id))
-                    .map(|t| self.thumb(&t))
-                    .unwrap_or_else(|| {
-                        container(icon("music", 16.0, MUTED))
-                            .style(card_bg)
-                            .padding(0)
-                            .width(iced::Length::Fixed(40.0))
-                            .height(iced::Length::Fixed(40.0))
-                            .align_x(iced::alignment::Horizontal::Center)
-                            .align_y(iced::alignment::Vertical::Center)
-                            .into()
-                    });
+                let art: iced::Element<'_, Message> = if pl.id == Self::FAVORITES_ID {
+                    self.favorites_art(40.0)
+                } else {
+                    pl.tracks
+                        .first()
+                        .and_then(|t| self.find_track(&t.id))
+                        .map(|t| self.thumb(&t))
+                        .unwrap_or_else(|| {
+                            container(icon("music", 16.0, MUTED))
+                                .style(card_bg)
+                                .padding(0)
+                                .width(iced::Length::Fixed(40.0))
+                                .height(iced::Length::Fixed(40.0))
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .align_y(iced::alignment::Vertical::Center)
+                                .into()
+                        })
+                };
                 // Hover reveals a trailing play button; right-click
                 // opens the playlist menu.
                 let show_play = self.hovered_playlist.as_deref() == Some(pl.id.as_str())
@@ -2151,21 +2154,21 @@ impl AppState {
     /// right-click opens the card menu (playlist or album actions).
     /// Cards follow the app-wide pattern: no separate play button,
     /// extra actions live in the right-click menu only.
-    pub(crate) fn home_card(
-        &self,
-        art: &Track,
+    pub(crate) fn home_card<'a>(
+        &'a self,
+        art: iced::Element<'a, Message>,
         title: String,
         sub: String,
         press: Message,
         right: Message,
-    ) -> iced::Element<'_, Message> {
+    ) -> iced::Element<'a, Message> {
         use iced::widget::text::Wrapping;
         use iced::widget::{column, mouse_area};
         use iced::Fill;
         mouse_area(
             row_button(
                 column![
-                    self.thumb_hero(art, HOME_PICK_ART),
+                    art,
                     column![
                         btn_text(truncate_title(&title, 20), 13)
                             .width(Fill)
@@ -2385,14 +2388,19 @@ impl AppState {
                     .home_strip_playlists()
                     .into_iter()
                     .map(|p| {
-                        let art = p
-                            .tracks
-                            .first()
-                            .and_then(|t| self.find_track(&t.id))
-                            .unwrap_or_else(|| p.tracks[0].clone());
+                        let art = if p.id == Self::FAVORITES_ID {
+                            self.favorites_art(HOME_PICK_ART)
+                        } else {
+                            let t = p
+                                .tracks
+                                .first()
+                                .and_then(|t| self.find_track(&t.id))
+                                .unwrap_or_else(|| p.tracks[0].clone());
+                            self.thumb_hero(&t, HOME_PICK_ART)
+                        };
                         let sub = self.language.playlist_sub(p.tracks.len());
                         self.home_card(
-                            &art,
+                            art,
                             p.title.clone(),
                             sub,
                             Message::OpenPlaylist(p.id.clone()),
@@ -2420,7 +2428,7 @@ impl AppState {
                     .iter()
                     .map(|g| {
                         self.home_card(
-                            &g.tracks[0],
+                            self.thumb_hero(&g.tracks[0], HOME_PICK_ART),
                             g.title.clone(),
                             g.artist.clone(),
                             Message::OpenAlbum(Self::album_route(&g.title, &g.artist)),
@@ -3406,6 +3414,14 @@ impl AppState {
                         None
                     };
                     let cover = self.playlist_cover_url(&p.id);
+                    // Favorites shows its generated heart cover.
+                    let cover_art = |size: f32| -> iced::Element<'_, Message> {
+                        if p.id == Self::FAVORITES_ID {
+                            self.favorites_art(size)
+                        } else {
+                            self.art_thumb(cover.as_deref(), size)
+                        }
+                    };
                     let info: iced::Element<'_, Message> = column![
                         text(self.language.playlist_label()).size(12).color(MUTED),
                         text(p.title.clone()).size(34).font(bold_font()),
@@ -3435,12 +3451,12 @@ impl AppState {
                     .width(Fill)
                     .into();
                     let header: iced::Element<'_, Message> = if self.hero_stacked() {
-                        column![self.art_thumb(cover.as_deref(), HERO_STACKED_ART), info]
+                        column![cover_art(HERO_STACKED_ART), info]
                             .spacing(12)
                             .into()
                     } else {
                         // Title block sits on the cover's bottom edge.
-                        row![self.art_thumb(cover.as_deref(), PLAYLIST_COVER_PX), info]
+                        row![cover_art(PLAYLIST_COVER_PX), info]
                             .spacing(20)
                             .align_y(iced::alignment::Vertical::Bottom)
                             .into()
@@ -4245,11 +4261,14 @@ impl AppState {
                     );
                 }
                 // Focal header: hero art when the first track resolves.
-                let pl_art: iced::Element<'_, Message> =
+                let pl_art: iced::Element<'_, Message> = if p.id == Self::FAVORITES_ID {
+                    self.favorites_art(56.0)
+                } else {
                     match p.tracks.first().and_then(|t| self.find_track(&t.id)) {
                         Some(t) => self.thumb_hero(&t, 56.0),
                         None => self.playlist_cover(&p, 56.0),
-                    };
+                    }
+                };
                 let pl_menu = container(
                     column![
                         row![
