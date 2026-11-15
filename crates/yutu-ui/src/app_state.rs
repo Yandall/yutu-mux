@@ -54,7 +54,6 @@ pub struct AppState {
     pub muted: bool,
     pub status: String,
     pub user_playlists: Vec<Playlist>,
-    pub new_playlist_name: String,
     pub playlist_seq: u64,
     /// Selected EQ preset name (persisted pref; restored at startup).
     /// "Custom" when the band gains match no built-in curve.
@@ -319,8 +318,6 @@ pub struct AppState {
     pub(crate) art_sweep_at: HashMap<&'static str, std::time::Instant>,
     /// Last artwork dir prune (bounded on-disk cache).
     pub(crate) art_pruned_at: Option<std::time::Instant>,
-    /// Playlist filter text in the sidebar.
-    pub(crate) sidebar_filter: String,
     /// Autoplay tail belongs to this seed (stale arrivals drop).
     pub(crate) autoplay_for: Option<String>,
     /// Spotify-style split: manual queue (user picks) plays first, then
@@ -397,6 +394,11 @@ pub struct AppState {
     pub(crate) pending_playlist_rename: Option<String>,
     /// Rename dialog input (prefilled on arm, edited per keystroke).
     pub(crate) rename_playlist_name: String,
+    /// New-playlist dialog (create or import). `None` hides it.
+    pub(crate) new_playlist: Option<NewPlaylistForm>,
+    /// Import fetch generation: bumped on every submit and close so a
+    /// late fetch for a dismissed dialog never creates a playlist.
+    pub(crate) new_playlist_gen: u64,
     /// Self-update probe in flight (About spinner + startup check).
     pub(crate) update_checking: bool,
     /// Manual check requested (the silent startup probe reports only

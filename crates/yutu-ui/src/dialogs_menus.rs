@@ -169,6 +169,14 @@ impl AppState {
         // Entrance: the card starts below center and settles as the
         // ticker eases `modal_anim` to 1.
         let rise = (1.0 - self.modal_anim).clamp(0.0, 1.0) * MODAL_RISE_PX;
+        // The card eats its own clicks: blank card areas (padding,
+        // labels, gaps) have no widget to claim the press, so without
+        // this it falls through the stack to the scrim and dismisses.
+        // Buttons and inputs inside still win (they capture first).
+        let card: iced::Element<'_, Message> = mouse_area(card)
+            .on_press(Message::NoOp)
+            .on_right_press(Message::NoOp)
+            .into();
         let placed: iced::Element<'_, Message> = container(
             column![Space::new().height(iced::Length::Fixed(rise)), card,]
                 .align_x(iced::alignment::Horizontal::Center),
@@ -311,14 +319,19 @@ impl AppState {
         let card: iced::Element<'_, Message> = container(
             column![
                 text(self.language.rename_playlist_title()).size(16),
-                text_input(
-                    self.language.rename_playlist_placeholder(),
-                    &self.rename_playlist_name
-                )
-                .style(rounded_input)
-                .on_input(Message::RenamePlaylistNameChanged)
-                .width(Fill)
-                .padding(10),
+                self.edit_menu(
+                    text_input(
+                        self.language.rename_playlist_placeholder(),
+                        &self.rename_playlist_name
+                    )
+                    .style(rounded_input)
+                    .on_input(Message::RenamePlaylistNameChanged)
+                    .width(Fill)
+                    .padding(10),
+                    &self.rename_playlist_name,
+                    Some(Message::RenamePlaylistNameChanged),
+                    false,
+                ),
                 iced::widget::row![
                     button(btn_text(self.language.rename_playlist_save(), 12))
                         .style(accent_button)
@@ -342,6 +355,322 @@ impl AppState {
         .width(400)
         .into();
         Some(self.modal_frame(card, Message::CancelRenamePlaylist))
+    }
+
+    /// Any text input with the right-click edit menu (Cut, Copy, Paste,
+    /// Select all). `on_edit` is the input's change message (`None` for
+    /// a read-only field); `secure` fields never copy out.
+    pub(crate) fn edit_menu<'a>(
+        &self,
+        input: impl Into<iced::Element<'a, Message>>,
+        value: &str,
+        on_edit: Option<fn(String) -> Message>,
+        secure: bool,
+    ) -> iced::Element<'a, Message> {
+        crate::input_menu::input_menu(input, value, on_edit, self.language.edit_menu_labels())
+            .secure(secure)
+            .into()
+    }
+
+    /// True with a saved YouTube Music session (playlist writes mirror
+    /// on the server, so the YouTube-only settings apply).
+    pub(crate) fn signed_in(&self) -> bool {
+        #[cfg(feature = "innertube")]
+        {
+            self.logged_in || self.cookie_logged_in
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            false
+        }
+    }
+
+    /// New-playlist dialog: "Create" (title, description, visibility)
+    /// or "Import from link" (a YouTube Music playlist link whose songs
+    /// are copied, title optional). Quiet chrome on purpose: text tabs,
+    /// labeled fields and a grey segmented visibility picker, so the
+    /// primary action is the only red on the card. Description and
+    /// visibility are YouTube settings, so signed-out users get a
+    /// local-only note instead. Scrim/Esc/Cancel/X closes it (a running
+    /// import drops).
+    pub(crate) fn new_playlist_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, row, text, text_input, Space};
+        use iced::Fill;
+        let form = self.new_playlist.as_ref()?;
+        let import = form.mode == NewPlaylistMode::Import;
+        let label = |s: String| text(s).size(12).color(MUTED);
+        let field = |placeholder: String, value: &str| {
+            text_input(&placeholder, value)
+                .style(rounded_input)
+                .size(14)
+                .width(Fill)
+                .padding([8, 14])
+        };
+        let tab = |name: String, mode: NewPlaylistMode| {
+            let active = form.mode == mode;
+            column![
+                button(btn_text(name, 13))
+                    .style(tab_button(active))
+                    .on_press_maybe(
+                        (!active && !form.busy).then_some(Message::NewPlaylistModeChanged(mode)),
+                    )
+                    .padding([6, 2]),
+                container(Space::new())
+                    .style(tab_underline(active))
+                    .width(Fill)
+                    .height(iced::Length::Fixed(2.0)),
+            ]
+            .width(iced::Length::Shrink)
+        };
+        let header = row![
+            text(self.language.new_playlist()).size(18).width(Fill),
+            button(btn_icon("x", 16.0, MUTED))
+                .style(icon_hover)
+                .on_press(Message::CloseNewPlaylist)
+                .padding(6),
+        ]
+        .align_y(iced::alignment::Vertical::Center);
+        let tabs = column![
+            row![
+                tab(
+                    self.language.new_playlist_tab_create(),
+                    NewPlaylistMode::Create
+                ),
+                tab(
+                    self.language.new_playlist_tab_import(),
+                    NewPlaylistMode::Import
+                ),
+            ]
+            .spacing(18),
+            container(Space::new())
+                .style(hairline)
+                .width(Fill)
+                .height(iced::Length::Fixed(1.0)),
+        ];
+        let mut fields = column![].spacing(14);
+        if import {
+            // Which links work lives in the tooltip, keeping the form
+            // itself short.
+            let info = iced::widget::tooltip(
+                btn_icon("info", 14.0, MUTED),
+                container(
+                    text(self.language.new_playlist_link_tooltip())
+                        .size(12)
+                        .color(iced::Color::WHITE),
+                )
+                .style(floating_panel_bg)
+                .padding([8, 10])
+                .max_width(260),
+                iced::widget::tooltip::Position::Top,
+            )
+            .gap(6);
+            // CSV exports from any service go through the same field
+            // (the picker fills in the path); offline builds cannot
+            // import at all, so they get no picker.
+            #[cfg(feature = "innertube")]
+            let csv: Option<iced::Element<'_, Message>> = Some(
+                button(
+                    row![
+                        btn_icon("file-up", 14.0, iced::Color::WHITE),
+                        btn_text(self.language.new_playlist_choose_file(), 12),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+                .style(ghost_button)
+                .on_press_maybe((!form.busy).then_some(Message::PickImportFile))
+                .padding([6, 12])
+                .into(),
+            );
+            #[cfg(not(feature = "innertube"))]
+            let csv: Option<iced::Element<'_, Message>> = None;
+            let link = column![
+                row![label(self.language.new_playlist_link_label()), info]
+                    .spacing(6)
+                    .align_y(iced::alignment::Vertical::Center),
+                self.edit_menu(
+                    field(self.language.new_playlist_link_placeholder(), &form.link)
+                        .on_input_maybe((!form.busy).then_some(Message::NewPlaylistLinkChanged))
+                        .on_submit(Message::SubmitNewPlaylist),
+                    &form.link,
+                    (!form.busy)
+                        .then_some(Message::NewPlaylistLinkChanged as fn(String) -> Message),
+                    false,
+                ),
+                label(self.language.new_playlist_import_hint()).size(11),
+            ]
+            .push(csv)
+            .spacing(6);
+            fields = fields.push(link);
+        }
+        let title_label = self.language.new_playlist_title_label();
+        let title_hint = if import {
+            self.language.new_playlist_title_optional()
+        } else {
+            self.language.new_playlist_title_placeholder()
+        };
+        fields = fields.push(
+            column![
+                label(title_label),
+                self.edit_menu(
+                    field(title_hint, &form.title)
+                        .on_input(Message::NewPlaylistTitleChanged)
+                        .on_submit(Message::SubmitNewPlaylist),
+                    &form.title,
+                    Some(Message::NewPlaylistTitleChanged),
+                    false,
+                ),
+            ]
+            .spacing(6),
+        );
+        if self.signed_in() {
+            let segments = PlaylistPrivacy::ALL.iter().map(|&p| {
+                let active = form.privacy == p;
+                button(
+                    text(self.language.privacy_label(p))
+                        .size(12)
+                        .width(Fill)
+                        .align_x(iced::alignment::Horizontal::Center),
+                )
+                .style(seg_button_quiet(active))
+                .on_press(Message::NewPlaylistPrivacyChanged(p))
+                .padding([7, 8])
+                .width(Fill)
+                .into()
+            });
+            fields = fields
+                .push(
+                    column![
+                        label(self.language.new_playlist_description_label()),
+                        self.edit_menu(
+                            field(
+                                self.language.new_playlist_description_placeholder(),
+                                &form.description,
+                            )
+                            .on_input(Message::NewPlaylistDescriptionChanged)
+                            .on_submit(Message::SubmitNewPlaylist),
+                            &form.description,
+                            Some(Message::NewPlaylistDescriptionChanged),
+                            false,
+                        ),
+                    ]
+                    .spacing(6),
+                )
+                .push(
+                    column![
+                        label(self.language.new_playlist_visibility()),
+                        container(row(segments).spacing(2).width(Fill))
+                            .style(seg_group)
+                            .padding(3)
+                            .width(Fill),
+                    ]
+                    .spacing(6),
+                );
+        } else {
+            fields = fields.push(label(self.language.new_playlist_local_hint()).size(11));
+        }
+        if let Some(err) = &form.error {
+            fields = fields.push(text(err.clone()).size(12).color(ACCENT));
+        }
+        let cta = if let (true, Some((done, total))) = (form.busy, form.progress) {
+            self.language.new_playlist_progress(done, total)
+        } else if form.busy {
+            self.language.new_playlist_importing()
+        } else if import {
+            self.language.new_playlist_import()
+        } else {
+            self.language.new_playlist_create()
+        };
+        let mut footer = row![
+            Space::new().width(Fill),
+            button(btn_text(self.language.new_playlist_cancel(), 13))
+                .style(ghost_button)
+                .on_press(Message::CloseNewPlaylist)
+                .padding([8, 16]),
+            button(btn_text(cta, 13))
+                .style(accent_button)
+                .on_press_maybe((!form.busy).then_some(Message::SubmitNewPlaylist))
+                .padding([8, 18]),
+        ]
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center);
+        let mut content = column![tabs, fields].spacing(16);
+        // Import finished with notes: the summary replaces the form (the
+        // playlist is already created and open behind the dialog).
+        if let Some(sum) = &form.summary {
+            let mut notes = column![
+                text(self.language.import_summary_title(&sum.title)).size(14),
+                label(self.language.import_summary_added(sum.imported, sum.total)),
+            ]
+            .spacing(8);
+            if sum.repeats > 0 {
+                notes = notes.push(label(self.language.import_summary_repeats(sum.repeats)));
+            }
+            if !sum.missing.is_empty() {
+                /// Not-found rows listed before "and N more".
+                const SHOWN: usize = 8;
+                let mut list = column![label(
+                    self.language.import_summary_missing(sum.missing.len())
+                )]
+                .spacing(3);
+                for m in sum.missing.iter().take(SHOWN) {
+                    list = list.push(text(format!("· {m}")).size(12).color(MUTED));
+                }
+                if sum.missing.len() > SHOWN {
+                    list = list.push(
+                        text(self.language.import_summary_more(sum.missing.len() - SHOWN))
+                            .size(12)
+                            .color(MUTED),
+                    );
+                }
+                notes = notes.push(list);
+            }
+            if let Some(limit) = sum.limit {
+                notes = notes.push(label(self.language.import_summary_limit(limit)));
+            }
+            content = notes;
+            footer = row![
+                Space::new().width(Fill),
+                button(btn_text(self.language.done_button(), 13))
+                    .style(accent_button)
+                    .on_press(Message::CloseNewPlaylist)
+                    .padding([8, 18]),
+            ];
+        }
+        // Short windows: the card pins to the window height and only
+        // the form scrolls between the fixed header and footer, so the
+        // actions are always reachable (the tallest form is ~500px).
+        let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+        let short = wh < 560.0;
+        let middle = iced::widget::scrollable(content.padding(iced::Padding {
+            right: 6.0,
+            ..iced::Padding::ZERO
+        }))
+        .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+        .height(if short {
+            iced::Length::Fill
+        } else {
+            iced::Length::Shrink
+        });
+        let body = column![header, middle, footer].spacing(16);
+        // Narrow windows: the card never overflows the 360px minimum.
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let card: iced::Element<'_, Message> = container(body)
+            .height(if short {
+                iced::Length::Fixed((wh - 32.0).max(240.0))
+            } else {
+                iced::Length::Shrink
+            })
+            .style(card_bg)
+            .padding(iced::Padding {
+                top: 14.0,
+                right: 18.0,
+                bottom: 18.0,
+                left: 20.0,
+            })
+            .width((ww - 32.0).clamp(280.0, 420.0))
+            .into();
+        Some(self.modal_frame(card, Message::CloseNewPlaylist))
     }
 
     /// Self-update row (About section): a manual check button, swapped
@@ -561,44 +890,69 @@ impl AppState {
                     .label(self.language.enable_scrobbling())
                     .on_toggle(Message::ScrobbleToggled)
                     .style(red_toggle),
-                text_input(
-                    self.language.scrobble_user_placeholder(),
-                    &self.scrobble_user
-                )
-                .style(rounded_input)
-                .on_input(Message::ScrobbleUserChanged)
-                .padding(10),
-                text_input(
-                    self.language.scrobble_lb_placeholder(),
-                    &self.scrobble_lb_token
-                )
-                .style(rounded_input)
-                .on_input(Message::ScrobbleLbTokenChanged)
-                .secure(true)
-                .padding(10),
-                text_input(
-                    self.language.scrobble_fm_key_placeholder(),
-                    &self.scrobble_fm_key
-                )
-                .style(rounded_input)
-                .on_input(Message::ScrobbleFmKeyChanged)
-                .padding(10),
-                text_input(
-                    self.language.scrobble_fm_secret_placeholder(),
-                    &self.scrobble_fm_secret
-                )
-                .style(rounded_input)
-                .on_input(Message::ScrobbleFmSecretChanged)
-                .secure(true)
-                .padding(10),
-                text_input(
-                    self.language.scrobble_fm_sk_placeholder(),
-                    &self.scrobble_fm_sk
-                )
-                .style(rounded_input)
-                .on_input(Message::ScrobbleFmSkChanged)
-                .secure(true)
-                .padding(10),
+                self.edit_menu(
+                    text_input(
+                        self.language.scrobble_user_placeholder(),
+                        &self.scrobble_user
+                    )
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleUserChanged)
+                    .padding(10),
+                    &self.scrobble_user,
+                    Some(Message::ScrobbleUserChanged),
+                    false,
+                ),
+                self.edit_menu(
+                    text_input(
+                        self.language.scrobble_lb_placeholder(),
+                        &self.scrobble_lb_token
+                    )
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleLbTokenChanged)
+                    .secure(true)
+                    .padding(10),
+                    &self.scrobble_lb_token,
+                    Some(Message::ScrobbleLbTokenChanged),
+                    true,
+                ),
+                self.edit_menu(
+                    text_input(
+                        self.language.scrobble_fm_key_placeholder(),
+                        &self.scrobble_fm_key
+                    )
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleFmKeyChanged)
+                    .padding(10),
+                    &self.scrobble_fm_key,
+                    Some(Message::ScrobbleFmKeyChanged),
+                    false,
+                ),
+                self.edit_menu(
+                    text_input(
+                        self.language.scrobble_fm_secret_placeholder(),
+                        &self.scrobble_fm_secret
+                    )
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleFmSecretChanged)
+                    .secure(true)
+                    .padding(10),
+                    &self.scrobble_fm_secret,
+                    Some(Message::ScrobbleFmSecretChanged),
+                    true,
+                ),
+                self.edit_menu(
+                    text_input(
+                        self.language.scrobble_fm_sk_placeholder(),
+                        &self.scrobble_fm_sk
+                    )
+                    .style(rounded_input)
+                    .on_input(Message::ScrobbleFmSkChanged)
+                    .secure(true)
+                    .padding(10),
+                    &self.scrobble_fm_sk,
+                    Some(Message::ScrobbleFmSkChanged),
+                    true,
+                ),
                 button(btn_text(self.language.done_button(), 12))
                     .style(accent_button)
                     .on_press(Message::CloseScrobbleModal)

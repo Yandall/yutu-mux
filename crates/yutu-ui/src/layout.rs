@@ -286,7 +286,7 @@ pub(crate) const HERO_STACKED_ART: f32 = 140.0;
 /// pixels of the top (the user scrolled up on purpose).
 pub(crate) const LYRIC_TOP_HOLD_PX: f32 = 8.0;
 /// Library panel height below which the whole panel scrolls (fixed
-/// header, nav, filter and new-playlist parts plus ~3 playlist rows).
+/// header, nav and new-playlist button plus ~3 playlist rows).
 pub(crate) const SIDEBAR_SHORT_BELOW: f32 = 540.0;
 /// Header control height: pills, pill inputs and round buttons share
 /// it (the 20px button radius makes a 40px button a true circle).

@@ -46,11 +46,16 @@ impl AppState {
             head,
             // Same rules as the playlist search: compact pill at rest,
             // grows while focused.
-            pill_search_input(
-                self.language.history_filter_placeholder(),
+            self.edit_menu(
+                pill_search_input(
+                    self.language.history_filter_placeholder(),
+                    &self.history_filter,
+                    Message::HistoryFilterChanged,
+                    self.history_search_width(),
+                ),
                 &self.history_filter,
-                Message::HistoryFilterChanged,
-                self.history_search_width(),
+                Some(Message::HistoryFilterChanged),
+                false,
             ),
         ]
         .spacing(10);
@@ -203,21 +208,18 @@ impl AppState {
         self.sidebar_full(w, pin_btn)
     }
 
-    /// Full library panel (logo, nav, playlist filter and list, new
-    /// playlist row) at width `w`.
+    /// Full library panel (logo, nav, "New playlist" button, playlist
+    /// list) at width `w`.
     fn sidebar_full<'a>(
         &'a self,
         w: f32,
         pin_btn: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
-        use iced::widget::{button, column, container, mouse_area, row, text, text_input};
+        use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
-        let q = self.sidebar_filter.to_lowercase();
-        let new_name = self.new_playlist_name.clone();
         let rows: Vec<iced::Element<'_, Message>> = self
             .all_playlists()
             .into_iter()
-            .filter(|pl| q.is_empty() || pl.title.to_lowercase().contains(&q))
             .map(|pl| {
                 let art: iced::Element<'_, Message> = pl
                     .tracks
@@ -279,20 +281,16 @@ impl AppState {
             })
             .collect();
         let list: iced::Element<'_, Message> = if rows.is_empty() {
-            text(if self.all_playlists().is_empty() {
-                self.language.no_playlists_below()
-            } else {
-                self.language.no_playlists_match()
-            })
-            .size(12)
-            .color(MUTED)
-            .into()
+            text(self.language.no_playlists_above())
+                .size(12)
+                .color(MUTED)
+                .into()
         } else if self.sidebar_short() {
             // Short window: the whole panel scrolls instead (below).
             column(rows).spacing(2).into()
         } else {
-            // Scrolls on its own between the filter and the new
-            // playlist row, so both stay reachable on short windows.
+            // Scrolls on its own below the "New playlist" button, so
+            // the button stays reachable on long libraries.
             iced::widget::scrollable(column(rows).spacing(2).padding(iced::Padding {
                 right: 10.0,
                 ..iced::Padding::ZERO
@@ -373,35 +371,33 @@ impl AppState {
                     }),
                 )
                 .spacing(2),
-                text_input(
-                    self.language.sidebar_filter_placeholder(),
-                    &self.sidebar_filter
-                )
-                .style(rounded_input)
-                .on_input(Message::SidebarFilterChanged)
-                .width(Fill)
-                .padding(10),
-                list,
-                row![
-                    text_input(
-                        self.language.new_playlist_placeholder(),
-                        &self.new_playlist_name
+                column![
+                    // Heads the playlist list, shaped like a playlist row
+                    // (40px tile + label) so it reads as "add one here".
+                    row_button(
+                        row![
+                            container(btn_icon("plus", 18.0, iced::Color::WHITE))
+                                .style(card_bg)
+                                .width(iced::Length::Fixed(40.0))
+                                .height(iced::Length::Fixed(40.0))
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .align_y(iced::alignment::Vertical::Center),
+                            btn_text(self.language.new_playlist(), 13).width(Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
                     )
-                    .style(rounded_input)
-                    .on_input(Message::NewPlaylistNameChanged)
-                    .width(Fill)
-                    .padding(10),
-                    button(btn_icon("plus", 16.0, iced::Color::WHITE))
-                        .style(accent_button)
-                        .on_press(Message::CreatePlaylist(new_name))
-                        .padding(7),
+                    .style(hover_row)
+                    .on_press(Message::OpenNewPlaylist)
+                    .padding(8)
+                    .width(Fill),
+                    list,
                 ]
-                .spacing(6)
-                .align_y(iced::alignment::Vertical::Center),
+                .spacing(2),
             ]
             .spacing(10),
         );
-        // Too short for the header, nav, filter and new-playlist row plus
+        // Too short for the header, nav and new-playlist button plus
         // a few playlists: the whole panel scrolls as one list so every
         // playlist stays reachable (a Fill list would get no height).
         let panel: iced::Element<'_, Message> = if self.sidebar_short() {
@@ -1978,9 +1974,11 @@ impl AppState {
         } else {
             self.content_width() - PLAYLIST_COVER_PX - 20.0
         };
-        let shuffle_w = text_line_width(&self.language.shuffle_label()) + 32.0;
-        let room = info_w - 2.0 * PILL_H - shuffle_w - 3.0 * 8.0 - 8.0;
-        let full = self.search_full_width().min(room.max(160.0));
+        let shuffle_w = icon_pill_width(&self.language.shuffle_label());
+        // 4px spare for subpixel rounding: a row that fits exactly can
+        // still wrap by a fraction of a pixel.
+        let room = info_w - 2.0 * PILL_H - shuffle_w - 3.0 * 8.0 - 4.0;
+        let full = self.search_full_width().min(room.max(0.0));
         let collapsed = (text_line_width(self.language.playlist_filter_placeholder())
             + PL_SEARCH_CHROME)
             .min(full);
@@ -2054,13 +2052,18 @@ impl AppState {
         let pill: iced::Element<'_, Message> = container(
             row![
                 icon("search", 14.0, MUTED),
-                text_input(self.language.search_placeholder(), &self.search_query)
-                    .style(search_inner_input)
-                    .id(SEARCH_INPUT_ID)
-                    .on_input(Message::HomeSearchChanged)
-                    .on_submit(Message::SuggestPick)
-                    .width(Fill)
-                    .padding(10),
+                self.edit_menu(
+                    text_input(self.language.search_placeholder(), &self.search_query)
+                        .style(search_inner_input)
+                        .id(SEARCH_INPUT_ID)
+                        .on_input(Message::HomeSearchChanged)
+                        .on_submit(Message::SuggestPick)
+                        .width(Fill)
+                        .padding(10),
+                    &self.search_query,
+                    Some(Message::HomeSearchChanged),
+                    false,
+                ),
                 clear_btn,
                 go_btn,
             ]
@@ -3366,11 +3369,16 @@ impl AppState {
                             self.language.shuffle_label(),
                             Message::PlayAllShuffled,
                         ),
-                        pill_search_input(
-                            self.language.playlist_filter_placeholder(),
+                        self.edit_menu(
+                            pill_search_input(
+                                self.language.playlist_filter_placeholder(),
+                                &self.playlist_filter,
+                                Message::PlaylistFilterChanged,
+                                self.pl_search_width(),
+                            ),
                             &self.playlist_filter,
-                            Message::PlaylistFilterChanged,
-                            self.pl_search_width(),
+                            Some(Message::PlaylistFilterChanged),
+                            false,
                         ),
                         round_button(
                             btn_icon("ellipsis", 16.0, iced::Color::WHITE),
@@ -4496,6 +4504,10 @@ impl AppState {
         // Playlist-rename dialog above everything else: same dimmed
         // frame, scrim/Esc keeps the old name (safe default).
         if let Some(dialog) = self.playlist_rename_dialog() {
+            layers.push(dialog);
+        }
+        // New-playlist dialog: same dimmed frame, scrim/Esc cancels.
+        if let Some(dialog) = self.new_playlist_dialog() {
             layers.push(dialog);
         }
         // Self-update modal above everything else: same dimmed frame,

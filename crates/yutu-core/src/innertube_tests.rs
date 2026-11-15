@@ -371,7 +371,7 @@ fn fabricated_playlist_page() -> String {
             "4:05",
             "vid22222222",
             "",
-            "MUSIC_VIDEO_TYPE_ATV",
+            "MUSIC_VIDEO_TYPE_OMV",
         ),
         row(
             format!(
@@ -436,6 +436,11 @@ fn tolerant_rows_map_both_shapes_and_skip_junk() {
     );
     assert_eq!(tracks[1].artist, "Alice, Bob");
     assert_eq!(tracks[1].duration_secs, 245);
+    // Video type: official videos are flagged (imports look for their
+    // song version), ATV songs are not.
+    assert!(!tracks[0].is_video);
+    assert!(tracks[1].is_video);
+    assert!(!tracks[2].is_video);
     // Flex-duration row: no fixedColumns, duration in flex column 3.
     assert_eq!(tracks[2].id, "vid33333333");
     assert_eq!(tracks[2].title, "Flex Song");

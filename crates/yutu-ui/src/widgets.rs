@@ -158,6 +158,23 @@ pub(crate) fn round_button<'a>(
 
 /// Grey pill with a leading glyph (Shuffle, Start mix): same height and
 /// look as `pill_button`.
+/// Icon pill geometry (see [`icon_pill_button`]): horizontal padding,
+/// icon edge, icon-to-label gap and label text size.
+const ICON_PILL_PAD_X: f32 = 16.0;
+const ICON_PILL_ICON: f32 = 14.0;
+const ICON_PILL_GAP: f32 = 8.0;
+const ICON_PILL_TEXT: f32 = 13.0;
+
+/// Rendered width of an [`icon_pill_button`] with `label`: what row
+/// budgets must reserve so neighbours never wrap. `text_line_width`
+/// measures at 16px, scaled here to the pill's 13px label.
+pub(crate) fn icon_pill_width(label: &str) -> f32 {
+    2.0 * ICON_PILL_PAD_X
+        + ICON_PILL_ICON
+        + ICON_PILL_GAP
+        + text_line_width(label) * ICON_PILL_TEXT / 16.0
+}
+
 pub(crate) fn icon_pill_button<'a>(
     icon: &str,
     label: String,
@@ -166,10 +183,10 @@ pub(crate) fn icon_pill_button<'a>(
     iced::widget::button(
         iced::widget::container(
             iced::widget::row![
-                btn_icon(icon, 14.0, iced::Color::WHITE),
-                btn_text(label, 13)
+                btn_icon(icon, ICON_PILL_ICON, iced::Color::WHITE),
+                btn_text(label, ICON_PILL_TEXT)
             ]
-            .spacing(8)
+            .spacing(ICON_PILL_GAP)
             .align_y(iced::alignment::Vertical::Center),
         )
         .height(iced::Fill)
@@ -177,7 +194,7 @@ pub(crate) fn icon_pill_button<'a>(
     )
     .style(ghost_button)
     .on_press(on_press)
-    .padding([0, 16])
+    .padding([0.0, ICON_PILL_PAD_X])
     .height(iced::Length::Fixed(PILL_H))
     .into()
 }
@@ -543,6 +560,70 @@ pub(crate) fn seg_button(
             border: iced::Border::default().rounded(10),
             ..Default::default()
         }
+    }
+}
+
+/// Quiet segment (dialog choices): grey lift when active instead of the
+/// red fill, so a form's only red stays its primary action.
+pub(crate) fn seg_button_quiet(
+    active: bool,
+) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    move |_: &iced::Theme, status: iced::widget::button::Status| {
+        let hovered = matches!(
+            status,
+            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+        );
+        iced::widget::button::Style {
+            background: if active {
+                Some(iced::Background::Color(iced::Color::from_rgb8(
+                    0x3A, 0x3A, 0x3A,
+                )))
+            } else if hovered {
+                Some(iced::Background::Color(CARD_BG_HOVER))
+            } else {
+                None
+            },
+            text_color: if active || hovered {
+                iced::Color::WHITE
+            } else {
+                MUTED
+            },
+            border: iced::Border::default().rounded(10),
+            ..Default::default()
+        }
+    }
+}
+
+/// Text tab (dialog mode switch): no fill, white when active, muted
+/// otherwise (hover brightens); the underline bar marks the active one.
+pub(crate) fn tab_button(
+    active: bool,
+) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    move |_: &iced::Theme, status: iced::widget::button::Status| {
+        let hovered = matches!(
+            status,
+            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+        );
+        iced::widget::button::Style {
+            background: None,
+            text_color: if active || hovered {
+                iced::Color::WHITE
+            } else {
+                MUTED
+            },
+            ..Default::default()
+        }
+    }
+}
+
+/// Underline under a text tab: accent when active, invisible otherwise.
+pub(crate) fn tab_underline(
+    active: bool,
+) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
+    move |_| iced::widget::container::Style {
+        background: active.then_some(iced::Background::Color(ACCENT)),
+        border: iced::Border::default().rounded(1),
+        ..Default::default()
     }
 }
 

@@ -21,6 +21,223 @@ use yutu_player::MpvBackend;
 use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
 impl AppState {
+    /// Create a local playlist shell seeded with `tracks` (deduped by
+    /// id), persist it, and mirror it on YouTube Music when signed in
+    /// (the create sends the songs too; the sync migrates the shell to
+    /// the server id). Returns the new local id, `None` when the title
+    /// is empty.
+    pub(crate) fn create_playlist(
+        &mut self,
+        spec: NewPlaylistSpec,
+        tracks: Vec<Track>,
+    ) -> (Option<String>, iced::Task<Message>) {
+        let title = spec.title.trim().to_string();
+        if title.is_empty() {
+            self.status = self.language.playlist_name_empty();
+            self.publish_mpris();
+            return (None, iced::Task::none());
+        }
+        let mut seen = HashSet::new();
+        let tracks: Vec<Track> = tracks
+            .into_iter()
+            .filter(|t| seen.insert(t.id.clone()))
+            .collect();
+        let spec = NewPlaylistSpec {
+            title: title.clone(),
+            video_ids: tracks.iter().map(|t| t.id.clone()).collect(),
+            ..spec
+        };
+        let tracks = self.register_tracks(tracks);
+        self.playlist_seq += 1;
+        let id = format!("u{}", self.playlist_seq);
+        self.user_playlists.push(Playlist {
+            id: id.clone(),
+            title: title.clone(),
+            tracks: tracks.clone(),
+        });
+        if tracks.is_empty() {
+            self.persist_playlist_created(&id, &title);
+        } else if let Ok(store) = LibraryStore::open(&self.library_path) {
+            // One transaction for the whole list (imports run to
+            // hundreds of songs).
+            let _ = store.sync_server_playlist(&id, &title, &tracks);
+            self.refresh_playlist_added(&id);
+        }
+        // The create row carries the title only: a replay after a failed
+        // push creates a plain list and flushes every song as an add.
+        self.record_pending("create", Some(&id), None, Some(&title));
+        self.status = self.language.playlist_created(&title, &id);
+        self.publish_mpris();
+        let task = Self::playlist_create_sync_task(id.clone(), spec);
+        (Some(id), task)
+    }
+
+    /// New-playlist dialog CTA. Create mode makes the list right away;
+    /// Import mode validates the link and starts the source fetch (the
+    /// dialog stays open, busy, until [`Self::finish_playlist_import`]).
+    pub(crate) fn submit_new_playlist(&mut self) -> iced::Task<Message> {
+        let Some(form) = self.new_playlist.clone() else {
+            return iced::Task::none();
+        };
+        if form.busy {
+            return iced::Task::none();
+        }
+        match form.mode {
+            NewPlaylistMode::Create => {
+                if form.title.trim().is_empty() {
+                    if let Some(f) = self.new_playlist.as_mut() {
+                        f.error = Some(self.language.playlist_name_empty());
+                    }
+                    return iced::Task::none();
+                }
+                self.new_playlist = None;
+                let spec = NewPlaylistSpec {
+                    title: form.title,
+                    description: Some(form.description),
+                    privacy: form.privacy,
+                    video_ids: Vec::new(),
+                };
+                let (id, sync) = self.create_playlist(spec, Vec::new());
+                let open = id
+                    .map(|id| self.update_sync(Message::OpenPlaylist(id)))
+                    .unwrap_or_else(iced::Task::none);
+                iced::Task::batch([sync, open])
+            }
+            NewPlaylistMode::Import => {
+                let Some(source) = yutu_core::playlist_sources::detect_source(&form.link) else {
+                    if let Some(f) = self.new_playlist.as_mut() {
+                        f.error = Some(self.language.new_playlist_bad_link());
+                    }
+                    return iced::Task::none();
+                };
+                #[cfg(feature = "innertube")]
+                {
+                    self.new_playlist_gen += 1;
+                    if let Some(f) = self.new_playlist.as_mut() {
+                        f.busy = true;
+                        f.progress = None;
+                        f.error = None;
+                    }
+                    Self::link_import_task(self.new_playlist_gen, source)
+                }
+                #[cfg(not(feature = "innertube"))]
+                {
+                    let _ = source;
+                    if let Some(f) = self.new_playlist.as_mut() {
+                        f.error = Some(self.language.needs_innertube_playlists());
+                    }
+                    iced::Task::none()
+                }
+            }
+        }
+    }
+
+    /// Linked playlist arrived: create the copy (form title, else the
+    /// source's) and open it, or report the failure inside the dialog.
+    /// Songs not found or a capped source keep the dialog open on a
+    /// summary (release builds show no info status lines, so the dialog
+    /// is where the user learns it). Arrivals for a closed or
+    /// resubmitted dialog are dropped.
+    pub(crate) fn finish_playlist_import(
+        &mut self,
+        generation: u64,
+        platform: String,
+        result: Result<LinkImport, String>,
+    ) -> iced::Task<Message> {
+        if generation != self.new_playlist_gen {
+            return iced::Task::none();
+        }
+        let Some(form) = self.new_playlist.clone().filter(|f| f.busy) else {
+            return iced::Task::none();
+        };
+        let fail = |s: &mut Self, msg: String| {
+            if let Some(f) = s.new_playlist.as_mut() {
+                f.busy = false;
+                f.progress = None;
+                f.error = Some(msg);
+            }
+            iced::Task::none()
+        };
+        let fetched = match result {
+            Ok(fetched) => fetched,
+            Err(e) => {
+                yutu_core::app_log::warn("yutu-import", format!("{platform} import: {e}"));
+                let msg = self.language.new_playlist_import_failed_from(&platform);
+                return fail(self, msg);
+            }
+        };
+        if fetched.tracks.is_empty() {
+            let msg = if fetched.missing.is_empty() {
+                self.language.new_playlist_import_empty()
+            } else {
+                self.language.new_playlist_none_found()
+            };
+            return fail(self, msg);
+        }
+        if !fetched.missing.is_empty() {
+            yutu_core::app_log::info(
+                "yutu-import",
+                format!(
+                    "{platform} import: {} not found: {}",
+                    fetched.missing.len(),
+                    fetched.missing.join(" | ")
+                ),
+            );
+        }
+        let title = [form.title.trim(), fetched.title.trim()]
+            .into_iter()
+            .find(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.language.new_playlist_imported_title());
+        let spec = NewPlaylistSpec {
+            title,
+            description: Some(form.description),
+            privacy: form.privacy,
+            video_ids: Vec::new(),
+        };
+        let found = fetched.tracks.len();
+        let (id, sync) = self.create_playlist(spec, fetched.tracks);
+        let created = id
+            .as_deref()
+            .and_then(|id| self.user_playlists.iter().find(|p| p.id == id))
+            .map(|p| (p.title.clone(), p.tracks.len()));
+        if let Some((title, n)) = &created {
+            self.status = self.language.playlist_imported(title, *n, fetched.swapped);
+        }
+        match created {
+            Some((title, imported)) => {
+                // Repeats: dropped in the source, plus rows that found the
+                // same YouTube Music song (the playlist keeps one copy).
+                let repeats = fetched.repeats + found.saturating_sub(imported);
+                let total = fetched
+                    .source_rows
+                    .max(imported + repeats + fetched.missing.len());
+                let notes = imported < total || fetched.limit.is_some();
+                if notes {
+                    if let Some(f) = self.new_playlist.as_mut() {
+                        f.busy = false;
+                        f.progress = None;
+                        f.summary = Some(ImportSummary {
+                            title,
+                            total,
+                            imported,
+                            repeats,
+                            missing: fetched.missing,
+                            limit: fetched.limit,
+                        });
+                    }
+                } else {
+                    self.new_playlist = None;
+                }
+            }
+            None => self.new_playlist = None,
+        }
+        let open = id
+            .map(|id| self.update_sync(Message::OpenPlaylist(id)))
+            .unwrap_or_else(iced::Task::none);
+        iced::Task::batch([sync, open])
+    }
+
     /// Weekly Mix from persisted history + in-memory likes + real catalog.
     /// Disliked ("don't recommend") tracks never appear.
     pub fn weekly_mix_tracks(&self) -> Vec<Track> {

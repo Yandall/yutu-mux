@@ -34,6 +34,48 @@ pub fn edit_playlist_id(id: &str) -> String {
     canonical_playlist_id(id)
 }
 
+/// Playlist id from a pasted YouTube / YouTube Music link, in canonical
+/// (edit) form, or `None` when the text names no playlist.
+///
+/// Accepts `...?list=ID` links (playlist pages, and watch links that
+/// carry a list), `music.youtube.com/browse/VLID` links, and bare ids
+/// with a known playlist prefix (`PL`, `OLAK5uy_`, `RDCLAK`, `VL`).
+/// A plain song link (`watch?v=` without `list=`) is not a playlist.
+pub fn parse_playlist_link(input: &str) -> Option<String> {
+    fn id_ok(id: &str) -> bool {
+        id.len() >= 2
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }
+    fn cut(rest: &str) -> &str {
+        let end = rest.find(['&', '#', '?', '/']).unwrap_or(rest.len());
+        &rest[..end]
+    }
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // `list=` only as a real query key (`?list=` / `&list=`), so a
+    // `playlist=` style key never matches by accident.
+    for key in ["?list=", "&list="] {
+        if let Some(at) = s.find(key) {
+            let id = cut(&s[at + key.len()..]);
+            return id_ok(id).then(|| canonical_playlist_id(id));
+        }
+    }
+    if let Some(at) = s.find("/browse/") {
+        let id = cut(&s[at + "/browse/".len()..]);
+        // Only playlist browse pages (`VL...`): albums/artists browse
+        // under other prefixes.
+        return (id.starts_with("VL") && id_ok(id)).then(|| canonical_playlist_id(id));
+    }
+    let bare = ["PL", "OLAK5uy_", "RDCLAK", "VL"]
+        .iter()
+        .any(|p| s.starts_with(p));
+    (bare && s.len() >= 12 && id_ok(s)).then(|| canonical_playlist_id(s))
+}
+
 /// One not-yet-confirmed server write, recorded at action time and
 /// cleared when its push succeeds. Sync replays leftovers before
 /// pulling, so web changes reconcile without dropping local intent.

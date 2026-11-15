@@ -601,19 +601,13 @@ impl AppState {
             }
             "body" => self.body_art_slots(),
             // Library playlist list: one first-song thumb per row
-            // (40px art + 2x8 padding, 2px spacing), filter applied.
+            // (40px art + 2x8 padding, 2px spacing).
             "sidebar" => {
                 // Empty playlists keep their row (placeholder art), so
                 // positions follow the row index, not the art count.
                 const PITCH: f32 = 58.0;
-                let q = self.sidebar_filter.to_lowercase();
                 let mut slots = Vec::new();
-                for (i, pl) in self
-                    .all_playlists()
-                    .into_iter()
-                    .filter(|pl| q.is_empty() || pl.title.to_lowercase().contains(&q))
-                    .enumerate()
-                {
+                for (i, pl) in self.all_playlists().into_iter().enumerate() {
                     if let Some(t) = pl.tracks.first() {
                         let t = self.find_track(&t.id).unwrap_or_else(|| t.clone());
                         slots.extend(Self::track_row_slots(&[t], i as f32 * PITCH, PITCH));

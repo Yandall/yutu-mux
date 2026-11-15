@@ -39,12 +39,59 @@ nav-history = Historial
 search-placeholder = Buscar en YouTube Music…
 history-filter-placeholder = Buscar en el historial…
 playlist-filter-placeholder = Buscar en la lista…
-sidebar-filter-placeholder = Filtrar listas…
-new-playlist-placeholder = Nueva lista…
 no-playlists-sidebar = Sin listas todavía: crea una en la barra lateral.
-no-playlists-below = Sin listas todavía: crea una abajo.
-no-playlists-match = Ninguna lista coincide.
+no-playlists-above = Sin listas todavía: crea una arriba.
 no-playlists-menu = Sin listas todavía: crea una en la barra lateral.
+
+
+## Text field edit menu
+
+edit-cut = Cortar
+edit-copy = Copiar
+edit-paste = Pegar
+edit-select-all = Seleccionar todo
+
+## New playlist dialog
+
+new-playlist = Nueva lista
+new-playlist-tab-create = Crear
+new-playlist-tab-import = Importar desde enlace
+new-playlist-title-label = Título
+new-playlist-description-label = Descripción
+new-playlist-link-label = Enlace de la lista
+new-playlist-title-placeholder = Mi lista
+new-playlist-title-optional = Por defecto, el nombre original
+new-playlist-description-placeholder = Opcional
+new-playlist-visibility = Visibilidad
+privacy-public = Pública
+privacy-unlisted = No listada
+privacy-private = Privada
+new-playlist-local-hint = Se guarda en este equipo. Inicia sesión para crearla también en YouTube Music.
+new-playlist-link-placeholder = Pega el enlace de una lista
+new-playlist-import-hint = Las canciones se buscan en YouTube Music, prefiriendo la versión de canción a los videos musicales.
+new-playlist-create = Crear
+new-playlist-import = Importar
+new-playlist-importing = Importando…
+new-playlist-progress = Progreso { $done }/{ $total }
+import-summary-spotify-cap = Los enlaces de Spotify traen como máximo las primeras { $n } canciones. Para la lista completa, expórtala a CSV (por ejemplo con Exportify) e importa el archivo.
+import-summary-partial = Solo se pudieron leer { $got } de { $total } canciones de la lista.
+import-summary-more = y { $n } más
+import-summary-missing = { $n } no encontradas en YouTube Music:
+import-summary-added = { $added } de { $total } canciones añadidas.
+import-summary-repeats = { $n } canciones repetidas omitidas.
+import-summary-title = Importada { $title }
+new-playlist-none-found = No se encontró ninguna de las canciones en YouTube Music.
+new-playlist-file-failed = No se pudo leer ese archivo. Usa un CSV exportado con columnas de título y artista.
+new-playlist-import-failed-from = No se pudo leer esa lista de { $platform }. Comprueba que sea pública o importa un CSV exportado.
+new-playlist-choose-file = Elegir archivo CSV
+new-playlist-link-tooltip = Pega el enlace de una lista de YouTube Music, Spotify, Apple Music o Deezer. También puedes elegir un archivo CSV exportado.
+new-playlist-cancel = Cancelar
+new-playlist-bad-link = Ese no es un enlace de una lista de YouTube Music, Spotify, Apple Music o Deezer.
+new-playlist-import-failed = No se pudo leer esa lista. Revisa el enlace o inicia sesión para listas privadas.
+new-playlist-import-empty = Esa lista no tiene canciones reproducibles.
+new-playlist-imported-title = Lista importada
+playlist-imported = Importada { $title } ({ $n } canciones).
+playlist-imported-swapped = Importada { $title } ({ $n } canciones, { $swapped } videos cambiados por su versión de canción).
 
 ## Home
 

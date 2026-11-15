@@ -15,6 +15,7 @@ use yutu_core::{
     Playlist, PlaylistHit, QueueSnapshot, Relaunch, SearchAll, SearchResults, TopKind, Track,
     UpdateInfo,
 };
+pub use yutu_core::{NewPlaylistSpec, PlaylistPrivacy};
 #[cfg(feature = "mpv")]
 #[allow(unused_imports)]
 use yutu_player::MpvBackend;
@@ -316,6 +317,68 @@ pub struct StagedImport {
     pub library_ok: bool,
 }
 
+/// New-playlist dialog tab: a blank playlist, or a copy of a linked one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NewPlaylistMode {
+    #[default]
+    Create,
+    Import,
+}
+
+/// A fetched link import: the source title, its tracks with music
+/// videos swapped for their song versions, and how many were swapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkImport {
+    pub title: String,
+    pub tracks: Vec<Track>,
+    pub swapped: usize,
+    /// Rows from another platform with no confident YouTube Music
+    /// match (`Artist - Title` labels, source order).
+    pub missing: Vec<String>,
+    /// The source handed over fewer songs than the playlist has.
+    pub limit: Option<yutu_core::playlist_sources::ReadLimit>,
+    /// Rows the source handed over (before repeats were dropped).
+    pub source_rows: usize,
+    /// Source rows dropped as repeats of an earlier row.
+    pub repeats: usize,
+}
+
+/// Finished import with something to tell (songs not found, a capped
+/// source): the dialog shows it after the playlist is created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportSummary {
+    pub(crate) title: String,
+    /// Rows the source handed over: always `imported + repeats +
+    /// missing.len()`, so the numbers on screen add up.
+    pub(crate) total: usize,
+    pub(crate) imported: usize,
+    /// Repeats of a song already in the list (in the source, or two
+    /// rows that found the same YouTube Music song).
+    pub(crate) repeats: usize,
+    pub(crate) missing: Vec<String>,
+    pub(crate) limit: Option<yutu_core::playlist_sources::ReadLimit>,
+}
+
+/// New-playlist dialog state (`None` on the app hides the dialog).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NewPlaylistForm {
+    pub(crate) mode: NewPlaylistMode,
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) privacy: PlaylistPrivacy,
+    /// Import mode: a pasted playlist link (YouTube Music, Spotify,
+    /// Apple Music, Deezer) or a picked CSV / text export path.
+    pub(crate) link: String,
+    /// Import fetch in flight (CTA shows progress, inputs stay).
+    pub(crate) busy: bool,
+    /// Song-version search progress (`done`, `total` videos) while busy.
+    pub(crate) progress: Option<(usize, usize)>,
+    /// Inline failure (bad link, fetch error), cleared on edit.
+    pub(crate) error: Option<String>,
+    /// Import done with notes to show (replaces the form until closed).
+    pub(crate) summary: Option<ImportSummary>,
+}
+
 /// Collection menu target: which search album/artist hit,
 /// community playlist, or home recommended-album group the open menu
 /// belongs to (track menus and user playlist menus keep their own
@@ -379,7 +442,6 @@ pub enum Message {
     EnqueueTrack(String),
     /// Append to the end of the queue without touching playback.
     QueueTrack(String),
-    NewPlaylistNameChanged(String),
     Stop,
     Next,
     Prev,
@@ -402,6 +464,39 @@ pub enum Message {
     StartRadio(String),
     PlayAll,
     CreatePlaylist(String),
+    /// Library "New playlist" button: opens the create/import dialog.
+    OpenNewPlaylist,
+    /// Scrim/Esc/Cancel: closes the dialog (an import in flight is
+    /// dropped when it lands).
+    CloseNewPlaylist,
+    NewPlaylistModeChanged(NewPlaylistMode),
+    NewPlaylistTitleChanged(String),
+    NewPlaylistDescriptionChanged(String),
+    NewPlaylistPrivacyChanged(PlaylistPrivacy),
+    NewPlaylistLinkChanged(String),
+    /// Dialog CTA: create (Create mode) or fetch the linked playlist
+    /// (Import mode, lands in [`Message::PlaylistImportFetched`]).
+    SubmitNewPlaylist,
+    /// Linked playlist fetched for an import (videos already swapped
+    /// for their song versions). `generation` drops arrivals from a
+    /// closed or resubmitted dialog.
+    PlaylistImportFetched {
+        generation: u64,
+        /// Platform name for logs and messages ("Spotify", ...).
+        platform: String,
+        result: Result<LinkImport, String>,
+    },
+    /// Import tab "Choose CSV file": opens the system file picker.
+    PickImportFile,
+    /// File picker result (`None` = cancelled): fills the link field.
+    ImportFilePicked(Option<String>),
+    /// Song-version search progress for a running link import: `done`
+    /// of `total` videos searched (same generation rule).
+    PlaylistImportProgress {
+        generation: u64,
+        done: usize,
+        total: usize,
+    },
     AddToPlaylist {
         playlist_id: String,
         track_id: String,
@@ -774,7 +869,6 @@ pub enum Message {
     /// Artist page "Show all": expand Popular to the full server-ranked
     /// list (one-way; navigating away and back collapses).
     ArtistTopExpand,
-    SidebarFilterChanged(String),
     HistoryFilterChanged(String),
     /// Playlist detail search text (filters rows only; a click still
     /// queues the whole playlist from that song on).
@@ -926,6 +1020,10 @@ pub enum Message {
     ServerPlaylistCreated {
         local_id: String,
         title: String,
+        /// Track ids the server already holds from the create itself
+        /// (sent with the create request): the post-create flush skips
+        /// them so they never land twice.
+        seeded: Vec<String>,
         result: Result<String, String>,
     },
     /// Best-effort server playlist add/remove/delete result (local state

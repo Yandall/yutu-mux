@@ -16,8 +16,19 @@
   you click into them (#105).
 - Narrow windows (under 800px) open the library and queue as drawers
   from new header buttons; Settings moves into the library drawer (#107).
+- New playlist dialog: set title, description and visibility (public,
+  unlisted, private) when creating a playlist.
+- Import a YouTube Music playlist from its link into a new playlist.
+- Playlist imports use the song version of music videos when one exists.
+- Import playlists from Spotify, Apple Music and Deezer links, or from a
+  CSV export; songs not found on YouTube Music are listed at the end.
+- Imports skip repeated songs and match titles regardless of accents.
+- Right-click any text field to cut, copy, paste or select all.
 
 ### Changed
+
+- The library's New playlist button now sits at the top of the
+  playlists; the playlist filter box was removed.
 
 - Clicking a recommended album on Home opens its album page instead of
   playing it right away (#112).
@@ -60,6 +71,9 @@
 
 ### Fixed
 
+- The playlist menu button no longer wraps under the search box on
+  medium-width windows.
+- Clicking an empty spot inside a dialog no longer closes it.
 - The volume slider keeps its normal size on wide windows instead of
   stretching across the player bar (#113).
 - Lyrics auto-scroll keeps the highlighted verse centered in short or

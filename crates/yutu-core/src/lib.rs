@@ -16,6 +16,7 @@ pub mod lyrics_providers;
 #[cfg(test)]
 mod lyrics_tests;
 pub mod models;
+pub mod playlist_sources;
 pub mod pot;
 #[cfg(feature = "innertube")]
 pub mod raw_browse;
@@ -28,6 +29,7 @@ mod raw_search_tests;
 pub mod scrobble;
 pub mod secure_store;
 pub mod security;
+pub mod song_match;
 pub mod stream;
 pub mod update;
 #[cfg(all(test, feature = "update"))]
@@ -73,7 +75,9 @@ pub use innertube::ResolvedStream;
 #[cfg(feature = "innertube")]
 pub use innertube::ServerPlaylist;
 pub use library::LibraryStore;
-pub use library::{browse_playlist_id, canonical_playlist_id, edit_playlist_id, PendingOp};
+pub use library::{
+    browse_playlist_id, canonical_playlist_id, edit_playlist_id, parse_playlist_link, PendingOp,
+};
 #[cfg(feature = "lyrics")]
 pub use lyrics_providers::fetch_lrclib;
 pub use lyrics_providers::{
@@ -81,8 +85,9 @@ pub use lyrics_providers::{
     ytm_timed_to_result, LyricLine, LyricsProvider, LyricsResult, MatchCandidate, MatchQuery,
 };
 pub use models::{
-    hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, MixedRef, Playlist,
-    PlaylistHit, QueueSnapshot, SearchAll, SearchResults, TopHit, TopKind, Track,
+    hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, MixedRef, NewPlaylistSpec,
+    Playlist, PlaylistHit, PlaylistPrivacy, QueueSnapshot, SearchAll, SearchResults, TopHit,
+    TopKind, Track,
 };
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 #[cfg(feature = "innertube")]

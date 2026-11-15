@@ -113,6 +113,46 @@ pub struct Playlist {
     pub tracks: Vec<Track>,
 }
 
+/// Who can see a playlist on YouTube Music (the create dialog's
+/// visibility choice). New playlists default to private, like the web.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlaylistPrivacy {
+    Public,
+    Unlisted,
+    #[default]
+    Private,
+}
+
+impl PlaylistPrivacy {
+    /// Every choice in display order (public first, like YouTube).
+    pub const ALL: [PlaylistPrivacy; 3] = [
+        PlaylistPrivacy::Public,
+        PlaylistPrivacy::Unlisted,
+        PlaylistPrivacy::Private,
+    ];
+}
+
+/// Everything a server playlist create needs: the title plus the
+/// optional YouTube settings, and the songs to start it with (link
+/// imports send the whole resolved list in the create).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewPlaylistSpec {
+    pub title: String,
+    pub description: Option<String>,
+    pub privacy: PlaylistPrivacy,
+    pub video_ids: Vec<String>,
+}
+
+impl NewPlaylistSpec {
+    /// Plain private playlist with only a title (sync replays, menus).
+    pub fn titled(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LyricsLine {
     pub start_ms: u64,
