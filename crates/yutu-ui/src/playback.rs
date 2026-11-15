@@ -44,6 +44,10 @@ impl AppState {
     /// swaps when the large cover lands), albums and artists by URL.
     pub(crate) fn page_backdrop_handle(&self) -> Option<iced::widget::image::Handle> {
         match &self.route {
+            // Favorites glows from its generated cover (same 8x8 rule).
+            Route::PlaylistDetail(id) if id == Self::FAVORITES_ID => {
+                self.favorites_cover().map(|c| c.glow.clone())
+            }
             Route::PlaylistDetail(id) => self
                 .playlist_cover_track(id)
                 .and_then(|t| self.track_blur(&t)),
@@ -74,6 +78,8 @@ impl AppState {
     /// album cover, artist photo); `None` on every other page.
     pub(crate) fn page_backdrop_url(&self) -> Option<String> {
         match &self.route {
+            // Generated in memory: nothing to download or decode.
+            Route::PlaylistDetail(id) if id == Self::FAVORITES_ID => None,
             Route::PlaylistDetail(id) => self
                 .playlist_cover_track(id)
                 .and_then(|t| self.blur_source_url(&t).or_else(|| self.hero_art_for(&t))),
@@ -117,6 +123,9 @@ impl AppState {
         for pl in self.all_playlists() {
             if ahead >= BLUR_PREFETCH_PER_TICK {
                 break;
+            }
+            if pl.id == Self::FAVORITES_ID {
+                continue;
             }
             let Some(t) = pl
                 .tracks

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Favorites has its own cover: a heart on a color gradient picked once
+  for your library, with a matching glow on its page.
 - In-app updates with Update and restart, Omit this version, or Update
   later (#97).
 - Rename playlists from the right-click menu, synced while signed in (#96).

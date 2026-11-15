@@ -25,6 +25,9 @@ impl AppState {
     /// row's own art, else a fixed music placeholder (same box either
     /// way, rows never shift).
     pub(crate) fn playlist_cover(&self, pl: &Playlist, size: f32) -> iced::Element<'_, Message> {
+        if pl.id == Self::FAVORITES_ID {
+            return self.favorites_art(size);
+        }
         if let Some(t) = pl.tracks.first().and_then(|t| self.find_track(&t.id)) {
             return self.thumb_sized(&t, size);
         }

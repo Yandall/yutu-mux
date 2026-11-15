@@ -226,6 +226,32 @@ impl AppState {
     /// never triggered here: scroll position decides what is on
     /// screen (iced has no intersection observer), and sweeps fetch
     /// exactly that window plus overscan.
+    /// Favorites' cover and glow, rendered from the saved gradient the
+    /// first time anything shows them, then kept (`None` only when the
+    /// library could not be opened at launch).
+    pub(crate) fn favorites_cover(&self) -> Option<&crate::favorites_cover::FavoritesCover> {
+        let spec = self.favorites_spec?;
+        Some(
+            self.favorites_cover
+                .get_or_init(|| crate::favorites_cover::FavoritesCover::build(spec, ART_BLUR_PX)),
+        )
+    }
+
+    /// Favorites' generated cover at `size` (same box as `lazy_image`;
+    /// the placeholder only shows when there is no saved gradient).
+    pub(crate) fn favorites_art(&self, size: f32) -> iced::Element<'_, Message> {
+        use iced::widget::{container, image};
+        match self.favorites_cover() {
+            Some(cover) => container(image(cover.image.clone()).width(size).height(size))
+                .style(card_bg)
+                .padding(0)
+                .width(iced::Length::Fixed(size))
+                .height(iced::Length::Fixed(size))
+                .into(),
+            None => self.lazy_image(None, size),
+        }
+    }
+
     pub(crate) fn lazy_image(&self, url: Option<&str>, size: f32) -> iced::Element<'_, Message> {
         use iced::widget::{container, image};
         match url.and_then(|u| self.art_handle(u)) {

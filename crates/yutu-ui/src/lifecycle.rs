@@ -193,6 +193,8 @@ impl AppState {
             drag_gap: 0.0,
             playlist_sorts: HashMap::new(),
             favorites_order: Vec::new(),
+            favorites_spec: None,
+            favorites_cover: std::sync::OnceLock::new(),
             playlist_added,
             pl_drag: None,
             pl_press_snap: None,
@@ -316,6 +318,11 @@ impl AppState {
                     .map(str::to_string)
                     .collect();
             }
+        }
+        // Favorites cover: the saved gradient (random on first launch,
+        // then kept); rendered lazily on first display.
+        if let Ok(store) = LibraryStore::open(&state.library_path) {
+            state.favorites_spec = Some(crate::favorites_cover::load_or_create(&store));
         }
         // Animation duration survives restarts (garbage falls back to
         // the default; the slider clamps, so stored values are in range).

@@ -8717,6 +8717,7 @@ fn layout_snapshots() {
         "newplaylist",
         "importplaylist",
         "importsummary",
+        "favorites",
     ];
     for (w, h) in sizes {
         for name in names {
@@ -8785,6 +8786,12 @@ fn layout_snapshots() {
                     if s.layout().panels_overlay() {
                         s.right_latched = true;
                     }
+                }
+                "favorites" => {
+                    for t in &tracks[..5] {
+                        s.like_id(&t.id);
+                    }
+                    let _ = s.update(Message::OpenPlaylist(AppState::FAVORITES_ID.into()));
                 }
                 "newplaylist" => {
                     s.navigate(Route::Home);

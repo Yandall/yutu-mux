@@ -2,6 +2,7 @@
 
 mod dropdown;
 mod eq_graph;
+mod favorites_cover;
 mod i18n;
 mod input_menu;
 mod pointing_slider;
