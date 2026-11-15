@@ -283,17 +283,155 @@ impl Language {
             Self::Spanish => "Buscar en la lista…",
         }
     }
-    pub fn sidebar_filter_placeholder(self) -> &'static str {
-        match self {
-            Self::English => "Filter playlists…",
-            Self::Spanish => "Filtrar listas…",
+    /// Text field right-click menu: Cut, Copy, Paste, Select all.
+    pub fn edit_menu_labels(self) -> [String; 4] {
+        [
+            self.tr("edit-cut"),
+            self.tr("edit-copy"),
+            self.tr("edit-paste"),
+            self.tr("edit-select-all"),
+        ]
+    }
+    pub fn new_playlist(self) -> String {
+        self.tr("new-playlist")
+    }
+    pub fn new_playlist_tab_create(self) -> String {
+        self.tr("new-playlist-tab-create")
+    }
+    pub fn new_playlist_tab_import(self) -> String {
+        self.tr("new-playlist-tab-import")
+    }
+    pub fn new_playlist_title_label(self) -> String {
+        self.tr("new-playlist-title-label")
+    }
+    pub fn new_playlist_description_label(self) -> String {
+        self.tr("new-playlist-description-label")
+    }
+    pub fn new_playlist_link_label(self) -> String {
+        self.tr("new-playlist-link-label")
+    }
+    pub fn new_playlist_title_placeholder(self) -> String {
+        self.tr("new-playlist-title-placeholder")
+    }
+    pub fn new_playlist_title_optional(self) -> String {
+        self.tr("new-playlist-title-optional")
+    }
+    pub fn new_playlist_description_placeholder(self) -> String {
+        self.tr("new-playlist-description-placeholder")
+    }
+    pub fn new_playlist_visibility(self) -> String {
+        self.tr("new-playlist-visibility")
+    }
+    pub fn privacy_label(self, privacy: yutu_core::PlaylistPrivacy) -> String {
+        use yutu_core::PlaylistPrivacy;
+        self.tr(match privacy {
+            PlaylistPrivacy::Public => "privacy-public",
+            PlaylistPrivacy::Unlisted => "privacy-unlisted",
+            PlaylistPrivacy::Private => "privacy-private",
+        })
+    }
+    pub fn new_playlist_local_hint(self) -> String {
+        self.tr("new-playlist-local-hint")
+    }
+    pub fn new_playlist_link_placeholder(self) -> String {
+        self.tr("new-playlist-link-placeholder")
+    }
+    pub fn new_playlist_import_hint(self) -> String {
+        self.tr("new-playlist-import-hint")
+    }
+    pub fn new_playlist_create(self) -> String {
+        self.tr("new-playlist-create")
+    }
+    pub fn new_playlist_import(self) -> String {
+        self.tr("new-playlist-import")
+    }
+    pub fn new_playlist_importing(self) -> String {
+        self.tr("new-playlist-importing")
+    }
+    pub fn new_playlist_cancel(self) -> String {
+        self.tr("new-playlist-cancel")
+    }
+    pub fn new_playlist_bad_link(self) -> String {
+        self.tr("new-playlist-bad-link")
+    }
+    pub fn new_playlist_import_failed(self) -> String {
+        self.tr("new-playlist-import-failed")
+    }
+    pub fn new_playlist_import_empty(self) -> String {
+        self.tr("new-playlist-import-empty")
+    }
+    pub fn new_playlist_imported_title(self) -> String {
+        self.tr("new-playlist-imported-title")
+    }
+    pub fn playlist_imported(self, title: &str, n: usize, swapped: usize) -> String {
+        if swapped == 0 {
+            return self.tr_args(
+                "playlist-imported",
+                &[("title", title), ("n", &n.to_string())],
+            );
+        }
+        self.tr_args(
+            "playlist-imported-swapped",
+            &[
+                ("title", title),
+                ("n", &n.to_string()),
+                ("swapped", &swapped.to_string()),
+            ],
+        )
+    }
+    pub fn new_playlist_link_tooltip(self) -> String {
+        self.tr("new-playlist-link-tooltip")
+    }
+    pub fn new_playlist_choose_file(self) -> String {
+        self.tr("new-playlist-choose-file")
+    }
+    /// Source read failure, per platform (YouTube and files have their
+    /// own wording).
+    pub fn new_playlist_import_failed_from(self, platform: &str) -> String {
+        match platform {
+            "YouTube Music" => self.tr("new-playlist-import-failed"),
+            "file" => self.tr("new-playlist-file-failed"),
+            _ => self.tr_args("new-playlist-import-failed-from", &[("platform", platform)]),
         }
     }
-    pub fn new_playlist_placeholder(self) -> &'static str {
-        match self {
-            Self::English => "New playlist…",
-            Self::Spanish => "Nueva lista…",
+    pub fn new_playlist_none_found(self) -> String {
+        self.tr("new-playlist-none-found")
+    }
+    pub fn import_summary_title(self, title: &str) -> String {
+        self.tr_args("import-summary-title", &[("title", title)])
+    }
+    pub fn import_summary_added(self, added: usize, total: usize) -> String {
+        self.tr_args(
+            "import-summary-added",
+            &[("added", &added.to_string()), ("total", &total.to_string())],
+        )
+    }
+    pub fn import_summary_repeats(self, n: usize) -> String {
+        self.tr_args("import-summary-repeats", &[("n", &n.to_string())])
+    }
+    pub fn import_summary_missing(self, n: usize) -> String {
+        self.tr_args("import-summary-missing", &[("n", &n.to_string())])
+    }
+    pub fn import_summary_more(self, n: usize) -> String {
+        self.tr_args("import-summary-more", &[("n", &n.to_string())])
+    }
+    pub fn import_summary_limit(self, limit: yutu_core::playlist_sources::ReadLimit) -> String {
+        use yutu_core::playlist_sources::ReadLimit;
+        match limit {
+            ReadLimit::Partial { got, total } => self.tr_args(
+                "import-summary-partial",
+                &[("got", &got.to_string()), ("total", &total.to_string())],
+            ),
+            ReadLimit::SpotifyCap(n) => {
+                self.tr_args("import-summary-spotify-cap", &[("n", &n.to_string())])
+            }
         }
+    }
+    pub fn new_playlist_progress(self, done: usize, total: usize) -> String {
+        self.tr_args(
+            "new-playlist-progress",
+            &[("done", &done.to_string()), ("total", &total.to_string())],
+        )
     }
     pub fn history_title(self) -> String {
         self.tr("history-title")
@@ -307,11 +445,8 @@ impl Language {
     pub fn no_playlists_sidebar(self) -> String {
         self.tr("no-playlists-sidebar")
     }
-    pub fn no_playlists_below(self) -> String {
-        self.tr("no-playlists-below")
-    }
-    pub fn no_playlists_match(self) -> String {
-        self.tr("no-playlists-match")
+    pub fn no_playlists_above(self) -> String {
+        self.tr("no-playlists-above")
     }
     // Queue panel tabs + headers.
     pub fn queue_tab(self) -> String {

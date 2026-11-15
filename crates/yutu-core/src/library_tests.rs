@@ -579,3 +579,39 @@ fn upsert_heals_pre_art_playlist_rows() {
         Some("https://example.invalid/s")
     );
 }
+
+#[test]
+fn playlist_links_parse_to_canonical_ids() {
+    let id = "PLabcdefghijklmnop_-12";
+    for link in [
+        format!("https://music.youtube.com/playlist?list={id}"),
+        format!("https://music.youtube.com/playlist?list={id}&si=xyz"),
+        format!("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list={id}&index=3"),
+        format!("https://music.youtube.com/browse/VL{id}"),
+        format!("  {id}  "),
+        format!("VL{id}"),
+    ] {
+        assert_eq!(parse_playlist_link(&link).as_deref(), Some(id), "{link}");
+    }
+    assert_eq!(
+        parse_playlist_link("https://music.youtube.com/playlist?list=OLAK5uy_kXyz123").as_deref(),
+        Some("OLAK5uy_kXyz123")
+    );
+}
+
+#[test]
+fn non_playlist_links_are_rejected() {
+    for bad in [
+        "",
+        "   ",
+        "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://music.youtube.com/browse/MPREb_album123",
+        "https://music.youtube.com/playlist?list=",
+        "https://music.youtube.com/playlist?list=bad id",
+        "dQw4w9WgXcQ",
+        "PLshort",
+        "hello world",
+    ] {
+        assert_eq!(parse_playlist_link(bad), None, "{bad:?}");
+    }
+}

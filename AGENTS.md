@@ -56,7 +56,8 @@
   only. Cards behave the same (the whole card is the press target).
 - Never write em dashes (neither in the UI nor in code comments/docs):
   use a hyphen, comma, colon, or the `·` separator instead.
-- Search-only UX: no video-ID paste field.
+- Search-only UX: no video-ID paste field. The one paste field is the
+  New playlist dialog's playlist-link import (playlists only).
 - Theme: vivid red accent `ACCENT = #FF0033` (user override of the
   former soft `#E62117`; pure-red family allowed from Round 11),
   hover `#FF3366`. Dark Spotify-style surfaces,
@@ -126,6 +127,21 @@
   two-column >= 900 (hero fixed, lyrics scroll alone; follow math
   uses `LYRIC_STEPPER_H` there), Wide caps the body at 1400. Row
   titles ellipsize to a per-frame char budget (`row_title_chars`).
+- **Link import prefers songs**: every music video row (OMV/UGC) of an
+  imported playlist is swapped for its song version via one filtered
+  song search (`song_match::best_song_match`, `SWAP_MIN_SCORE`); live,
+  remix, cover etc. never replace a plain video, weak matches keep the
+  video. The server create sends the resolved ids (batched), never a
+  `sourcePlaylistId` copy (that would bring the videos back).
+- **Foreign playlist imports** (`playlist_sources.rs`): one link field
+  routes by host (`detect_source`). Deezer uses its public API; Spotify
+  (embed page, max 100 rows) and Apple Music (page JSON) read only the
+  anonymous public page on a user-pasted link: no login, no token
+  extraction, no cookies, no background fetches. CSV/text exports are
+  the documented fallback when a page format breaks. Rows match via
+  `song_match::resolve_foreign` (songs first, video fallback); misses
+  and capped reads show in the dialog summary (release status lines
+  hide info).
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -169,6 +185,14 @@
 - `scrollable.on_scroll(|v| ... v.absolute_offset().y ...)` is how sticky
   headers read scroll offset. `AbsoluteOffset` lives in
   `iced_core::widget::operation::scrollable`.
+- Text fields have no native right-click menu: wrap every input with
+  `edit_menu(input, value, Some(on_input), secure)` (`input_menu.rs`:
+  Cut / Copy / Paste / Select all on the input's own state and the
+  system clipboard; secure fields never copy). New inputs must use it.
+- Row budgets that sit beside an `icon_pill_button` reserve
+  `icon_pill_width(label)` (13px label + icon + padding), never a
+  `text_line_width + N` guess (that undercount wrapped the playlist
+  menu button on Medium windows).
 - Handle radius literal must be `8.0` (f32), not `8.0.into()` (clippy
   `useless_conversion` + `float_literal_f32_fallback` are deny-level).
 

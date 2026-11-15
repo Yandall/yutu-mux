@@ -884,36 +884,118 @@ impl InnertubeBackend {
         }
     }
 
-    /// Create a private playlist on YouTube Music, returning its server id
-    /// in canonical (edit-form) storage form.
+    /// Create a playlist on YouTube Music from `spec` (title, optional
+    /// description, visibility, and the songs to start it with),
+    /// returning its server id in canonical (edit-form) storage form plus
+    /// the song ids that actually landed on it.
+    ///
+    /// Songs go in batches: the first rides the create request, the rest
+    /// are appended. A failed append stops there and reports only what
+    /// landed, so the caller's per-song flush retries the remainder.
     ///
     /// Auth: cookie OR Google OAuth; anonymous backends get a local error.
-    pub async fn create_server_playlist(&self, title: &str) -> Result<String, String> {
+    pub async fn create_server_playlist(
+        &self,
+        spec: &crate::models::NewPlaylistSpec,
+    ) -> Result<(String, Vec<String>), String> {
+        use crate::models::PlaylistPrivacy;
         use ytmapi_rs::query::playlist::PrivacyStatus;
         use ytmapi_rs::query::CreatePlaylistQuery;
-        match &self.inner {
-            Inner::Anonymous(_) => {
-                Err("create_server_playlist requires login (cookie or Google OAuth)".into())
-            }
-            Inner::Cookie(client) => client
-                .create_playlist(CreatePlaylistQuery::new(
-                    title,
-                    None,
-                    PrivacyStatus::Private,
-                ))
-                .await
-                .map(|id| crate::library::canonical_playlist_id(id.get_raw()))
-                .map_err(|e| format!("create playlist failed: {e}")),
-            Inner::OAuth(client) => client
-                .create_playlist(CreatePlaylistQuery::new(
-                    title,
-                    None,
-                    PrivacyStatus::Private,
-                ))
-                .await
-                .map(|id| crate::library::canonical_playlist_id(id.get_raw()))
-                .map_err(|e| format!("create playlist failed: {e}")),
+        /// Songs per request (create body or append), well under what
+        /// the web client sends when saving a long queue.
+        const BATCH: usize = 50;
+        let privacy = match spec.privacy {
+            PlaylistPrivacy::Public => PrivacyStatus::Public,
+            PlaylistPrivacy::Unlisted => PrivacyStatus::Unlisted,
+            PlaylistPrivacy::Private => PrivacyStatus::Private,
+        };
+        let description = spec
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty());
+        let mut batches = spec.video_ids.chunks(BATCH);
+        let first: &[String] = batches.next().unwrap_or(&[]);
+        let base = CreatePlaylistQuery::new(spec.title.as_str(), description, privacy);
+        macro_rules! create {
+            ($client:expr) => {
+                if first.is_empty() {
+                    $client.create_playlist(base).await
+                } else {
+                    $client
+                        .create_playlist(
+                            base.with_video_ids(
+                                first.iter().map(|v| VideoID::from_raw(v.as_str())),
+                            ),
+                        )
+                        .await
+                }
+            };
         }
+        let id = match &self.inner {
+            Inner::Anonymous(_) => {
+                return Err("create_server_playlist requires login (cookie or Google OAuth)".into())
+            }
+            Inner::Cookie(client) => create!(client),
+            Inner::OAuth(client) => create!(client),
+        }
+        .map(|id| crate::library::canonical_playlist_id(id.get_raw()))
+        .map_err(|e| format!("create playlist failed: {e}"))?;
+        let mut landed: Vec<String> = first.to_vec();
+        let edit = crate::library::edit_playlist_id(&id);
+        for batch in batches {
+            let ids = batch.iter().map(|v| VideoID::from_raw(v.as_str()));
+            let added = match &self.inner {
+                Inner::Anonymous(_) => break,
+                Inner::Cookie(client) => {
+                    client
+                        .add_video_items_to_playlist(PlaylistID::from_raw(edit.as_str()), ids)
+                        .await
+                }
+                Inner::OAuth(client) => {
+                    client
+                        .add_video_items_to_playlist(PlaylistID::from_raw(edit.as_str()), ids)
+                        .await
+                }
+            };
+            match added {
+                Ok(_) => landed.extend(batch.iter().cloned()),
+                Err(e) => {
+                    crate::app_log::warn(
+                        "yutu-sync",
+                        format!("create {id}: batch append failed ({e}), rest flushes per song"),
+                    );
+                    break;
+                }
+            }
+        }
+        Ok((id, landed))
+    }
+
+    /// Source playlist title for link imports (the default name of the
+    /// imported copy). Runs on every backend: public lists read
+    /// anonymously, private ones need the owner's session.
+    pub async fn playlist_title(&self, playlist_id: &str) -> Result<String, String> {
+        let browse = crate::library::browse_playlist_id(playlist_id);
+        let details = match &self.inner {
+            Inner::Anonymous(client) => {
+                client
+                    .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
+                    .await
+            }
+            Inner::Cookie(client) => {
+                client
+                    .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
+                    .await
+            }
+            Inner::OAuth(client) => {
+                client
+                    .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
+                    .await
+            }
+        }
+        .map_err(|e| format!("playlist details failed: {e}"))?;
+        Ok(details.title)
     }
 
     /// Append a video to a YouTube Music playlist you own.
@@ -1961,13 +2043,18 @@ pub(crate) fn tolerant_row_to_track(item: &serde_json::Value) -> Option<Track> {
     {
         return None;
     }
-    if r
+    let video_type = r
         .pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoType")
-        .and_then(|t| t.as_str())
-        == Some("MUSIC_VIDEO_TYPE_PODCAST_EPISODE")
-    {
+        .and_then(|t| t.as_str());
+    if video_type == Some("MUSIC_VIDEO_TYPE_PODCAST_EPISODE") {
         return None;
     }
+    // Music videos (official `OMV`, user `UGC`): imports look for their
+    // song version. Songs (`ATV`) and unknown rows read as songs.
+    let is_video = matches!(
+        video_type,
+        Some("MUSIC_VIDEO_TYPE_OMV" | "MUSIC_VIDEO_TYPE_UGC")
+    );
     let video_id = r
         .pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoId")
         .and_then(|v| v.as_str())
@@ -1997,7 +2084,7 @@ pub(crate) fn tolerant_row_to_track(item: &serde_json::Value) -> Option<Track> {
         thumbnail_url: small,
         thumbnail_large_url: large,
         plays: None,
-        is_video: false,
+        is_video,
     })
 }
 

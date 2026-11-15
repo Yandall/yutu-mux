@@ -39,12 +39,59 @@ nav-history = History
 search-placeholder = Search YouTube Music…
 history-filter-placeholder = Search history…
 playlist-filter-placeholder = Search in playlist…
-sidebar-filter-placeholder = Filter playlists…
-new-playlist-placeholder = New playlist…
 no-playlists-sidebar = No playlists yet: create one in the sidebar.
-no-playlists-below = No playlists yet: create one below.
-no-playlists-match = No playlists match.
+no-playlists-above = No playlists yet: create one above.
 no-playlists-menu = No playlists yet: create one in the sidebar.
+
+
+## Text field edit menu
+
+edit-cut = Cut
+edit-copy = Copy
+edit-paste = Paste
+edit-select-all = Select all
+
+## New playlist dialog
+
+new-playlist = New playlist
+new-playlist-tab-create = Create
+new-playlist-tab-import = Import from link
+new-playlist-title-label = Title
+new-playlist-description-label = Description
+new-playlist-link-label = Playlist link
+new-playlist-title-placeholder = My playlist
+new-playlist-title-optional = Defaults to the original name
+new-playlist-description-placeholder = Optional
+new-playlist-visibility = Visibility
+privacy-public = Public
+privacy-unlisted = Unlisted
+privacy-private = Private
+new-playlist-local-hint = Saved on this device. Sign in to also create it on YouTube Music.
+new-playlist-link-placeholder = Paste a playlist link
+new-playlist-import-hint = Songs are matched on YouTube Music, preferring song versions over music videos.
+new-playlist-create = Create
+new-playlist-import = Import
+new-playlist-importing = Importing…
+new-playlist-progress = Progress { $done }/{ $total }
+import-summary-spotify-cap = Spotify links bring at most the first { $n } songs. For the whole playlist, export it to CSV (for example with Exportify) and import the file.
+import-summary-partial = Only { $got } of { $total } songs could be read from the playlist.
+import-summary-more = and { $n } more
+import-summary-missing = { $n } not found on YouTube Music:
+import-summary-added = { $added } of { $total } songs added.
+import-summary-repeats = { $n } repeated songs skipped.
+import-summary-title = Imported { $title }
+new-playlist-none-found = None of the songs could be found on YouTube Music.
+new-playlist-file-failed = Could not read that file. Use a CSV export with title and artist columns.
+new-playlist-import-failed-from = Could not read that { $platform } playlist. Check that it is public, or import a CSV export instead.
+new-playlist-choose-file = Choose CSV file
+new-playlist-link-tooltip = Paste a playlist link from YouTube Music, Spotify, Apple Music or Deezer. You can also choose a CSV export file.
+new-playlist-cancel = Cancel
+new-playlist-bad-link = That is not a playlist link from YouTube Music, Spotify, Apple Music or Deezer.
+new-playlist-import-failed = Could not read that playlist. Check the link, or sign in for private playlists.
+new-playlist-import-empty = That playlist has no playable songs.
+new-playlist-imported-title = Imported playlist
+playlist-imported = Imported { $title } ({ $n } songs).
+playlist-imported-swapped = Imported { $title } ({ $n } songs, { $swapped } videos swapped for their song version).
 
 ## Home
 

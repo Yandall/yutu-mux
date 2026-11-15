@@ -3,6 +3,7 @@
 mod dropdown;
 mod eq_graph;
 mod i18n;
+mod input_menu;
 mod pointing_slider;
 mod row_button;
 mod seek_bar;

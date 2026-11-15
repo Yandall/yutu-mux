@@ -551,11 +551,13 @@ impl AppState {
     }
 
     /// Create the playlist on YouTube Music (best effort): success
-    /// migrates the local `u{seq}` shell to the real server id.
+    /// migrates the local `u{seq}` shell to the real server id. The
+    /// create carries the spec's songs; the ones that landed come back
+    /// as `seeded` so the post-create flush only retries the rest.
     #[cfg(feature = "innertube")]
     pub(crate) fn playlist_create_sync_task(
         local_id: String,
-        title: String,
+        spec: NewPlaylistSpec,
     ) -> iced::Task<Message> {
         if !Self::has_session() {
             return iced::Task::none();
@@ -564,17 +566,113 @@ impl AppState {
             async move {
                 let backend = Self::session_backend().await;
                 let result = match backend {
-                    Ok(b) => b.create_server_playlist(&title).await,
+                    Ok(b) => b.create_server_playlist(&spec).await,
                     Err(e) => Err(e),
                 };
-                (local_id, title, result)
+                let (result, seeded) = match result {
+                    Ok((id, landed)) => (Ok(id), landed),
+                    Err(e) => (Err(e), Vec::new()),
+                };
+                (local_id, spec.title, seeded, result)
             },
-            |(local_id, title, result)| Message::ServerPlaylistCreated {
+            |(local_id, title, seeded, result)| Message::ServerPlaylistCreated {
                 local_id,
                 title,
+                seeded,
                 result,
             },
         )
+    }
+
+    /// Playlist import read, any source, with progress ticks forwarded
+    /// to the dialog:
+    /// - YouTube Music: the source's title and tracks, then each music
+    ///   video swapped for its song version. Saved login first (private
+    ///   lists of the signed-in account read), anonymous fallback.
+    /// - Spotify / Apple Music / Deezer / CSV: the source's rows, each
+    ///   found on YouTube Music (songs first, a video only when no song
+    ///   matches); unmatched rows come back as `missing`.
+    ///
+    /// A failed source read fails the import; a failed song search keeps
+    /// the video (YouTube) or counts the row as missing (others).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn link_import_task(
+        generation: u64,
+        source: yutu_core::playlist_sources::ImportSource,
+    ) -> iced::Task<Message> {
+        use yutu_core::playlist_sources::{fetch_foreign, ImportSource};
+        let (tick_tx, mut tick_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, usize)>();
+        let platform = source.platform().to_string();
+        let fetch = iced::Task::perform(
+            async move {
+                let tick = |done, total| {
+                    let _ = tick_tx.send((done, total));
+                };
+                let auth = Self::session_search_auth();
+                let result = match &source {
+                    ImportSource::YouTube(id) => match Self::detail_backend().await {
+                        Ok(b) => match b.playlist_tracks(id).await {
+                            Ok(tracks) => {
+                                let title = b.playlist_title(id).await.unwrap_or_default();
+                                let (tracks, swapped) =
+                                    yutu_core::song_match::resolve_song_versions(
+                                        tracks, &auth, tick,
+                                    )
+                                    .await;
+                                Ok(LinkImport {
+                                    title,
+                                    source_rows: tracks.len(),
+                                    tracks,
+                                    swapped,
+                                    missing: Vec::new(),
+                                    limit: None,
+                                    repeats: 0,
+                                })
+                            }
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    other => match fetch_foreign(other).await {
+                        Ok(pl) => {
+                            let source_rows = pl.tracks.len();
+                            // One search per distinct song: repeats would
+                            // land on the same match anyway.
+                            let (rows, repeats) = yutu_core::song_match::dedupe_foreign(pl.tracks);
+                            let (tracks, missing) =
+                                yutu_core::song_match::resolve_foreign(rows, &auth, tick).await;
+                            Ok(LinkImport {
+                                title: pl.title,
+                                tracks,
+                                swapped: 0,
+                                missing: missing.iter().map(|m| m.label()).collect(),
+                                limit: pl.limit,
+                                source_rows,
+                                repeats,
+                            })
+                        }
+                        Err(e) => Err(e),
+                    },
+                };
+                (generation, platform, result)
+            },
+            |(generation, platform, result)| Message::PlaylistImportFetched {
+                generation,
+                platform,
+                result,
+            },
+        );
+        // Ends when the fetch drops its sender.
+        let forward = iced::Task::stream(futures::stream::poll_fn(move |cx| {
+            tick_rx.poll_recv(cx).map(|opt| {
+                opt.map(|(done, total)| Message::PlaylistImportProgress {
+                    generation,
+                    done,
+                    total,
+                })
+            })
+        }));
+        iced::Task::batch([fetch, forward])
     }
 
     /// Append one track to a server playlist (best effort).
@@ -705,7 +803,7 @@ impl AppState {
     #[cfg(not(feature = "innertube"))]
     pub(crate) fn playlist_create_sync_task(
         _local_id: String,
-        _title: String,
+        _spec: NewPlaylistSpec,
     ) -> iced::Task<Message> {
         iced::Task::none()
     }
@@ -908,7 +1006,10 @@ impl AppState {
                     // Only while the shell still exists locally.
                     if let (Some(local), Some(title)) = (op.playlist_id, op.title) {
                         if self.user_playlists.iter().any(|p| p.id == local) {
-                            tasks.push(Self::playlist_create_sync_task(local, title));
+                            tasks.push(Self::playlist_create_sync_task(
+                                local,
+                                NewPlaylistSpec::titled(title),
+                            ));
                         }
                     }
                 }
@@ -1181,6 +1282,23 @@ impl AppState {
                     .map(|h| h.path().to_string_lossy().into_owned())
             },
             Message::CookieFilePicked,
+        )
+    }
+
+    /// System file picker for a playlist export (CSV / TSV / text).
+    /// Cancellation is `None`, never an error.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn import_file_browse_task() -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Choose a playlist export")
+                    .add_filter("Playlist export", &["csv", "tsv", "txt"])
+                    .pick_file()
+                    .await
+                    .map(|h| h.path().to_string_lossy().into_owned())
+            },
+            Message::ImportFilePicked,
         )
     }
 

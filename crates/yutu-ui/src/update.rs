@@ -457,9 +457,6 @@ impl AppState {
                     }
                 }
             }
-            Message::NewPlaylistNameChanged(n) => {
-                self.new_playlist_name = n;
-            }
             Message::Pause => {
                 if let Some(a) = &self.audio {
                     a.pause();
@@ -1129,25 +1126,84 @@ impl AppState {
                 }
             },
             Message::CreatePlaylist(title) => {
-                let title = title.trim().to_string();
-                if title.is_empty() {
-                    self.status = self.language.playlist_name_empty();
-                } else {
-                    self.playlist_seq += 1;
-                    let id = format!("u{}", self.playlist_seq);
-                    self.user_playlists.push(Playlist {
-                        id: id.clone(),
-                        title: title.clone(),
-                        tracks: Vec::new(),
-                    });
-                    self.persist_playlist_created(&id, &title);
-                    self.record_pending("create", Some(&id), None, Some(&title));
-                    self.new_playlist_name.clear();
-                    self.status = self.language.playlist_created(&title, &id);
-                    self.publish_mpris();
-                    // Signed in: mirror on YouTube Music, migrating the
-                    // local shell to the server id on success.
-                    return Self::playlist_create_sync_task(id, title);
+                return self
+                    .create_playlist(NewPlaylistSpec::titled(title), Vec::new())
+                    .1;
+            }
+            Message::OpenNewPlaylist => {
+                self.close_menu();
+                // Restart the entrance only when nothing is open (shared
+                // ticker, see OpenRenamePlaylist).
+                if self.modal_target() == 0.0 {
+                    self.modal_anim = 0.0;
+                }
+                self.new_playlist = Some(NewPlaylistForm::default());
+                self.clear_hovers();
+                return Self::unfocus_task();
+            }
+            Message::CloseNewPlaylist => {
+                self.new_playlist = None;
+                self.new_playlist_gen += 1;
+            }
+            Message::NewPlaylistModeChanged(mode) => {
+                if let Some(f) = self.new_playlist.as_mut() {
+                    if !f.busy {
+                        f.mode = mode;
+                        f.error = None;
+                    }
+                }
+            }
+            Message::NewPlaylistTitleChanged(v) => {
+                if let Some(f) = self.new_playlist.as_mut() {
+                    f.title = v;
+                    f.error = None;
+                }
+            }
+            Message::NewPlaylistDescriptionChanged(v) => {
+                if let Some(f) = self.new_playlist.as_mut() {
+                    f.description = v;
+                }
+            }
+            Message::NewPlaylistPrivacyChanged(p) => {
+                if let Some(f) = self.new_playlist.as_mut() {
+                    f.privacy = p;
+                }
+            }
+            Message::NewPlaylistLinkChanged(v) => {
+                if let Some(f) = self.new_playlist.as_mut() {
+                    if !f.busy {
+                        f.link = v;
+                        f.error = None;
+                    }
+                }
+            }
+            Message::SubmitNewPlaylist => return self.submit_new_playlist(),
+            Message::PlaylistImportFetched {
+                generation,
+                platform,
+                result,
+            } => return self.finish_playlist_import(generation, platform, result),
+            Message::PickImportFile => {
+                #[cfg(feature = "innertube")]
+                return Self::import_file_browse_task();
+            }
+            Message::ImportFilePicked(path) => {
+                if let (Some(path), Some(f)) = (path, self.new_playlist.as_mut()) {
+                    if !f.busy {
+                        f.link = path;
+                        f.error = None;
+                    }
+                }
+            }
+            Message::PlaylistImportProgress {
+                generation,
+                done,
+                total,
+            } => {
+                if generation == self.new_playlist_gen {
+                    if let Some(f) = self.new_playlist.as_mut().filter(|f| f.busy) {
+                        f.progress = Some((done, total));
+                    }
                 }
             }
             Message::AddToPlaylist {
@@ -2549,6 +2605,11 @@ impl AppState {
                     self.rename_playlist_name.clear();
                     return iced::Task::none();
                 }
+                if self.new_playlist.is_some() {
+                    self.new_playlist = None;
+                    self.new_playlist_gen += 1;
+                    return iced::Task::none();
+                }
                 // No update-modal arm here by design: Esc never
                 // dismisses it (an explicit action does).
                 #[cfg(feature = "innertube")]
@@ -3005,9 +3066,6 @@ impl AppState {
                     }
                 }
             }
-            Message::SidebarFilterChanged(f) => {
-                self.sidebar_filter = f;
-            }
             Message::PlaylistFilterChanged(f) => {
                 self.playlist_filter = f;
                 self.pl_search_focused = true;
@@ -3381,9 +3439,11 @@ impl AppState {
             Message::ServerPlaylistCreated {
                 local_id,
                 title,
+                seeded,
                 result,
             } => match result {
                 Ok(server_id) => {
+                    let seeded: HashSet<&str> = seeded.iter().map(String::as_str).collect();
                     // The create row clears first (by shell id), then any
                     // add/remove rows recorded mid-flight move shell id to
                     // server id for the flush below.
@@ -3454,11 +3514,13 @@ impl AppState {
                     self.status = self.language.created_synced(&merged.title);
                     self.publish_mpris();
                     // Flush any in-flight rows to the server id (failures
-                    // report per track, the local rows are kept).
+                    // report per track, the local rows are kept). Songs
+                    // the create already copied (link imports) stay put.
                     return iced::Task::batch(
                         merged
                             .tracks
                             .iter()
+                            .filter(|t| !seeded.contains(t.id.as_str()))
                             .map(|t| Self::playlist_add_sync_task(server_id.clone(), t.id.clone()))
                             .collect::<Vec<_>>(),
                     );

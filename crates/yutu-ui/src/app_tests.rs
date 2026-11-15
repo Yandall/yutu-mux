@@ -5867,8 +5867,6 @@ fn sidebar_and_right_tabs_switch() {
     assert!(s.right_pinned);
     let _ = s.update(Message::ToggleRightPin);
     assert!(!s.right_pinned);
-    let _ = s.update(Message::SidebarFilterChanged("gym".into()));
-    assert_eq!(s.sidebar_filter, "gym");
 }
 
 #[cfg(feature = "innertube")]
@@ -7055,6 +7053,7 @@ fn server_sync_results_report_honestly() {
     let _ = s.update(Message::ServerPlaylistCreated {
         local_id: local.clone(),
         title: "Trip".into(),
+        seeded: Vec::new(),
         result: Ok("PLnew1".into()),
     });
     assert!(s.user_playlists.iter().any(|p| p.id == "PLnew1"));
@@ -7066,6 +7065,7 @@ fn server_sync_results_report_honestly() {
     let _ = s.update(Message::ServerPlaylistCreated {
         local_id: local2.clone(),
         title: "Local".into(),
+        seeded: Vec::new(),
         result: Err("500".into()),
     });
     assert!(s.user_playlists.iter().any(|p| p.id == local2));
@@ -7074,6 +7074,7 @@ fn server_sync_results_report_honestly() {
     let _ = s.update(Message::ServerPlaylistCreated {
         local_id: "u999".into(),
         title: "Ghost".into(),
+        seeded: Vec::new(),
         result: Ok("PLghost1".into()),
     });
     assert!(s.status.contains("PLghost1"));
@@ -8536,16 +8537,31 @@ fn playlist_cover_falls_back_to_row_art() {
 
 #[test]
 fn playlist_search_never_outgrows_its_row() {
-    let mut s = test_state();
-    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
-    settle(&mut s);
-    // Fully expanded (focused) it still leaves room for play, Shuffle
-    // and the menu beside the cover.
-    s.pl_search_expand = 1.0;
-    let row = s.content_width() - PLAYLIST_COVER_PX - 20.0;
-    let shuffle = text_line_width(&s.language.shuffle_label()) + 32.0;
-    let used = s.pl_search_width() + 2.0 * PILL_H + shuffle + 3.0 * 8.0;
-    assert!(used <= row, "row overflows: {used} > {row}");
+    // Every layout width (Medium rails included) and both languages:
+    // fully expanded (focused) the search still leaves room for play,
+    // Shuffle and the menu, measured the way the pills render.
+    for lang in [Language::English, Language::Spanish] {
+        for w in (360..=2600).step_by(20) {
+            let mut s = test_state();
+            s.language = lang;
+            let _ = s.update(Message::WindowResized(iced::Size::new(w as f32, 800.0)));
+            settle(&mut s);
+            s.pl_search_expand = 1.0;
+            let row = if s.hero_stacked() {
+                s.content_width()
+            } else {
+                s.content_width() - PLAYLIST_COVER_PX - 20.0
+            };
+            let shuffle = icon_pill_width(&s.language.shuffle_label());
+            let used = s.pl_search_width() + 2.0 * PILL_H + shuffle + 3.0 * 8.0;
+            let collapsed =
+                text_line_width(s.language.playlist_filter_placeholder()) + PL_SEARCH_CHROME;
+            // Rows too short even for the resting pill wrap by design.
+            if row >= collapsed + 2.0 * PILL_H + shuffle + 3.0 * 8.0 {
+                assert!(used <= row, "{lang:?} w={w}: row overflows: {used} > {row}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -8695,6 +8711,9 @@ fn layout_snapshots() {
         "history",
         "library",
         "queue",
+        "newplaylist",
+        "importplaylist",
+        "importsummary",
     ];
     for (w, h) in sizes {
         for name in names {
@@ -8763,6 +8782,46 @@ fn layout_snapshots() {
                     if s.layout().panels_overlay() {
                         s.right_latched = true;
                     }
+                }
+                "newplaylist" => {
+                    s.navigate(Route::Home);
+                    let _ = s.update(Message::OpenNewPlaylist);
+                    let _ = s.update(Message::NewPlaylistTitleChanged("Road trip".into()));
+                }
+                "importplaylist" => {
+                    s.navigate(Route::Home);
+                    let _ = s.update(Message::OpenNewPlaylist);
+                    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+                    let _ = s.update(Message::NewPlaylistLinkChanged(
+                        "https://music.youtube.com/watch?v=x".into(),
+                    ));
+                    let _ = s.update(Message::SubmitNewPlaylist);
+                }
+                #[cfg(feature = "innertube")]
+                "importsummary" => {
+                    s.navigate(Route::Home);
+                    let _ = s.update(Message::OpenNewPlaylist);
+                    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+                    let _ = s.update(Message::NewPlaylistLinkChanged(
+                        "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M".into(),
+                    ));
+                    let _ = s.update(Message::SubmitNewPlaylist);
+                    let gen = s.new_playlist_gen;
+                    let _ = s.update(Message::PlaylistImportFetched {
+                        generation: gen,
+                        platform: "Spotify".into(),
+                        result: Ok(LinkImport {
+                            title: "Salsita".into(),
+                            tracks: tracks.clone(),
+                            swapped: 0,
+                            missing: (0..1)
+                                .map(|i| format!("Some Artist {i} - A song that was not found"))
+                                .collect(),
+                            limit: None,
+                            source_rows: 138,
+                            repeats: 123,
+                        }),
+                    });
                 }
                 _ => s.navigate(Route::Home),
             }
@@ -10424,4 +10483,507 @@ fn volume_slider_stays_capped_on_wide_windows() {
     // Far left of the cap (where the uncapped slider used to reach):
     // nothing.
     assert!(!hits(size.width - 350.0), "volume slider grew past its cap");
+}
+
+#[test]
+fn new_playlist_dialog_creates_and_opens_the_list() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    assert!(s.new_playlist.is_some());
+    assert!(s.modal_open());
+    // Empty title: the dialog stays open with an inline error.
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let form = s.new_playlist.as_ref().unwrap();
+    assert!(form.error.is_some());
+    assert!(s.user_playlists.is_empty());
+    // Editing clears the error.
+    let _ = s.update(Message::NewPlaylistTitleChanged("Road Trip".into()));
+    assert!(s.new_playlist.as_ref().unwrap().error.is_none());
+    let _ = s.update(Message::NewPlaylistDescriptionChanged("Long drives".into()));
+    let _ = s.update(Message::NewPlaylistPrivacyChanged(PlaylistPrivacy::Public));
+    assert_eq!(
+        s.new_playlist.as_ref().unwrap().privacy,
+        PlaylistPrivacy::Public
+    );
+    let _ = s.update(Message::SubmitNewPlaylist);
+    assert!(s.new_playlist.is_none());
+    assert_eq!(s.user_playlists.len(), 1);
+    let id = s.user_playlists[0].id.clone();
+    assert_eq!(s.user_playlists[0].title, "Road Trip");
+    assert_eq!(s.route, Route::PlaylistDetail(id));
+}
+
+#[test]
+fn new_playlist_dialog_closes_on_esc_and_cancel() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::CloseContext);
+    assert!(s.new_playlist.is_none());
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistTitleChanged("Kept?".into()));
+    let _ = s.update(Message::CloseNewPlaylist);
+    assert!(s.new_playlist.is_none());
+    assert!(s.user_playlists.is_empty());
+    // Reopening starts from a blank form.
+    let _ = s.update(Message::OpenNewPlaylist);
+    assert_eq!(s.new_playlist.as_ref().unwrap().title, "");
+}
+
+#[test]
+fn import_rejects_links_that_name_no_playlist() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::NewPlaylistLinkChanged(
+        "https://music.youtube.com/watch?v=dQw4w9WgXcQ".into(),
+    ));
+    let gen = s.new_playlist_gen;
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let form = s.new_playlist.as_ref().unwrap();
+    assert!(!form.busy);
+    assert_eq!(
+        form.error.as_deref(),
+        Some(s.language.new_playlist_bad_link().as_str())
+    );
+    assert_eq!(s.new_playlist_gen, gen);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn import_from_link_copies_the_source_playlist() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::NewPlaylistLinkChanged(
+        "https://music.youtube.com/playlist?list=PLsource1234567&si=abc".into(),
+    ));
+    let _ = s.update(Message::SubmitNewPlaylist);
+    assert!(s.new_playlist.as_ref().unwrap().busy);
+    let gen = s.new_playlist_gen;
+    let tracks = vec![
+        mk_track("i1", "One", "A"),
+        mk_track("i2", "Two", "B"),
+        mk_track("i1", "One", "A"),
+    ];
+    // A stale arrival (older generation) is dropped.
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen - 1,
+        platform: "YouTube Music".into(),
+        result: Ok(LinkImport {
+            title: "Stale".into(),
+            tracks: tracks.clone(),
+            swapped: 0,
+            missing: Vec::new(),
+            limit: None,
+            source_rows: 0,
+            repeats: 0,
+        }),
+    });
+    assert!(s.user_playlists.is_empty());
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "YouTube Music".into(),
+        result: Ok(LinkImport {
+            title: "Summer Hits".into(),
+            tracks,
+            swapped: 0,
+            missing: Vec::new(),
+            limit: None,
+            source_rows: 3,
+            repeats: 0,
+        }),
+    });
+    // The repeated song is explained, so the dialog ends on a summary.
+    let sum = s.new_playlist.as_ref().unwrap().summary.clone().unwrap();
+    assert_eq!((sum.total, sum.imported, sum.repeats), (3, 2, 1));
+    let _ = s.update(Message::CloseNewPlaylist);
+    assert!(s.new_playlist.is_none());
+    assert_eq!(s.user_playlists.len(), 1);
+    let pl = &s.user_playlists[0];
+    // Source title by default, duplicates collapsed.
+    assert_eq!(pl.title, "Summer Hits");
+    let ids: Vec<&str> = pl.tracks.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["i1", "i2"]);
+    assert_eq!(s.route, Route::PlaylistDetail(pl.id.clone()));
+    // Persisted: a fresh load sees the copy with its songs.
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    let saved = store.user_playlists().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].tracks.len(), 2);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn import_keeps_a_typed_title_and_reports_failures_inline() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::NewPlaylistLinkChanged("PLsource1234567".into()));
+    let _ = s.update(Message::NewPlaylistTitleChanged("Mine".into()));
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let gen = s.new_playlist_gen;
+    // Fetch failure: the dialog stays, unlocked, with a human error.
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "YouTube Music".into(),
+        result: Err("HTTP 404".into()),
+    });
+    let form = s.new_playlist.as_ref().unwrap();
+    assert!(!form.busy);
+    assert_eq!(
+        form.error.as_deref(),
+        Some(s.language.new_playlist_import_failed().as_str())
+    );
+    // Retry succeeds and the typed title wins over the source's.
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let gen = s.new_playlist_gen;
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "YouTube Music".into(),
+        result: Ok(LinkImport {
+            title: "Source".into(),
+            tracks: vec![mk_track("i1", "One", "A")],
+            swapped: 0,
+            missing: Vec::new(),
+            limit: None,
+            source_rows: 0,
+            repeats: 0,
+        }),
+    });
+    assert_eq!(s.user_playlists[0].title, "Mine");
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn closing_the_dialog_drops_a_running_import() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::NewPlaylistLinkChanged("PLsource1234567".into()));
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let gen = s.new_playlist_gen;
+    let _ = s.update(Message::CloseNewPlaylist);
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "YouTube Music".into(),
+        result: Ok(LinkImport {
+            title: "Late".into(),
+            tracks: vec![mk_track("i1", "One", "A")],
+            swapped: 0,
+            missing: Vec::new(),
+            limit: None,
+            source_rows: 0,
+            repeats: 0,
+        }),
+    });
+    assert!(s.user_playlists.is_empty());
+    assert!(s.new_playlist.is_none());
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn import_shows_song_search_progress_and_reports_swaps() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::NewPlaylistLinkChanged("PLsource1234567".into()));
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let gen = s.new_playlist_gen;
+    // Stale ticks are ignored, live ones land on the dialog.
+    let _ = s.update(Message::PlaylistImportProgress {
+        generation: gen - 1,
+        done: 9,
+        total: 9,
+    });
+    assert_eq!(s.new_playlist.as_ref().unwrap().progress, None);
+    let _ = s.update(Message::PlaylistImportProgress {
+        generation: gen,
+        done: 3,
+        total: 8,
+    });
+    assert_eq!(s.new_playlist.as_ref().unwrap().progress, Some((3, 8)));
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "YouTube Music".into(),
+        result: Ok(LinkImport {
+            title: "Mixed".into(),
+            tracks: vec![mk_track("s1", "One", "A"), mk_track("s2", "Two", "B")],
+            swapped: 2,
+            missing: Vec::new(),
+            limit: None,
+            source_rows: 0,
+            repeats: 0,
+        }),
+    });
+    assert!(s.new_playlist.is_none());
+    assert_eq!(
+        s.status,
+        "Imported Mixed (2 songs, 2 videos swapped for their song version)."
+    );
+}
+
+#[test]
+fn clicking_inside_a_dialog_card_never_dismisses_it() {
+    let mut s = test_state();
+    let size = iced::Size::new(1280.0, 800.0);
+    let _ = s.update(Message::WindowResized(size));
+    let _ = s.update(Message::OpenNewPlaylist);
+    for _ in 0..80 {
+        let _ = s.update(Message::Animate);
+    }
+    // A plain label inside the card: no widget of its own claims the
+    // press, so it used to fall through to the scrim and close the card.
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    sim.click("Visibility")
+        .or_else(|_| sim.click("Title"))
+        .expect("a card label is on screen");
+    let msgs: Vec<Message> = sim.into_messages().collect();
+    assert!(
+        !msgs.iter().any(|m| matches!(m, Message::CloseNewPlaylist)),
+        "inside click dismissed: {msgs:?}"
+    );
+    // The backdrop outside the card still dismisses.
+    let msgs = click_view(&s, size, iced::Point::new(8.0, 400.0));
+    assert!(
+        msgs.iter().any(|m| matches!(m, Message::CloseNewPlaylist)),
+        "outside click kept it open: {msgs:?}"
+    );
+}
+
+#[cfg(feature = "innertube")]
+fn start_import(s: &mut AppState, link: &str) -> u64 {
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::NewPlaylistLinkChanged(link.into()));
+    let _ = s.update(Message::SubmitNewPlaylist);
+    assert!(
+        s.new_playlist.as_ref().unwrap().busy,
+        "{link} did not start"
+    );
+    s.new_playlist_gen
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn every_platform_link_and_csv_path_starts_an_import() {
+    for link in [
+        "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x",
+        "https://www.deezer.com/en/playlist/3155776842",
+        "https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb",
+        "/home/me/export.csv",
+    ] {
+        let mut s = test_state();
+        let _ = start_import(&mut s, link);
+    }
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn picked_files_fill_the_link_field() {
+    let mut s = test_state();
+    let _ = s.update(Message::OpenNewPlaylist);
+    let _ = s.update(Message::NewPlaylistModeChanged(NewPlaylistMode::Import));
+    let _ = s.update(Message::ImportFilePicked(None));
+    assert_eq!(s.new_playlist.as_ref().unwrap().link, "");
+    let _ = s.update(Message::ImportFilePicked(Some("/tmp/mix.csv".into())));
+    assert_eq!(s.new_playlist.as_ref().unwrap().link, "/tmp/mix.csv");
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn foreign_imports_with_misses_end_on_a_summary() {
+    let mut s = test_state();
+    let gen = start_import(
+        &mut s,
+        "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    );
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "Spotify".into(),
+        result: Ok(LinkImport {
+            title: "Top Hits".into(),
+            tracks: vec![mk_track("s1", "One", "A"), mk_track("s2", "Two", "B")],
+            swapped: 0,
+            missing: vec!["C - Three".into()],
+            limit: Some(yutu_core::playlist_sources::ReadLimit::SpotifyCap(100)),
+            source_rows: 0,
+            repeats: 0,
+        }),
+    });
+    // The playlist exists and is open behind the dialog...
+    assert_eq!(s.user_playlists.len(), 1);
+    assert_eq!(
+        s.route,
+        Route::PlaylistDetail(s.user_playlists[0].id.clone())
+    );
+    // ...and the dialog stays on the summary until Done.
+    let sum = s.new_playlist.as_ref().unwrap().summary.clone().unwrap();
+    assert_eq!(sum.imported, 2);
+    assert_eq!(sum.missing, ["C - Three"]);
+    let _ = s.update(Message::CloseNewPlaylist);
+    assert!(s.new_playlist.is_none());
+    assert_eq!(s.user_playlists.len(), 1);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn foreign_import_failures_name_the_platform() {
+    let mut s = test_state();
+    let gen = start_import(&mut s, "https://www.deezer.com/en/playlist/3155776842");
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "Deezer".into(),
+        result: Err("deezer: no data".into()),
+    });
+    let form = s.new_playlist.as_ref().unwrap();
+    assert!(!form.busy);
+    assert!(form.error.as_deref().unwrap().contains("Deezer"));
+    // Nothing matched at all: an error, no empty playlist.
+    let _ = s.update(Message::SubmitNewPlaylist);
+    let gen = s.new_playlist_gen;
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "Deezer".into(),
+        result: Ok(LinkImport {
+            title: "X".into(),
+            tracks: Vec::new(),
+            swapped: 0,
+            missing: vec!["A - B".into()],
+            limit: None,
+            source_rows: 0,
+            repeats: 0,
+        }),
+    });
+    assert_eq!(
+        s.new_playlist.as_ref().unwrap().error.as_deref(),
+        Some(s.language.new_playlist_none_found().as_str())
+    );
+    assert!(s.user_playlists.is_empty());
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn import_summary_numbers_add_up_to_the_source() {
+    let mut s = test_state();
+    let gen = start_import(
+        &mut s,
+        "https://music.apple.com/co/playlist/salsita/pl.u-r2yBDVETePo6xWV",
+    );
+    // 10 source rows: 3 dropped as repeats before searching, 7 searched;
+    // 5 found (two of them the same YouTube Music song), 2 not found.
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "Apple Music".into(),
+        result: Ok(LinkImport {
+            title: "Salsita".into(),
+            tracks: vec![
+                mk_track("a", "A", "X"),
+                mk_track("b", "B", "X"),
+                mk_track("c", "C", "X"),
+                mk_track("d", "D", "X"),
+                mk_track("a", "A", "X"),
+            ],
+            swapped: 0,
+            missing: vec!["Y - E".into(), "Y - F".into()],
+            limit: None,
+            source_rows: 10,
+            repeats: 3,
+        }),
+    });
+    let sum = s.new_playlist.as_ref().unwrap().summary.clone().unwrap();
+    assert_eq!(sum.total, 10);
+    assert_eq!(sum.imported, 4);
+    assert_eq!(sum.repeats, 4);
+    assert_eq!(sum.imported + sum.repeats + sum.missing.len(), sum.total);
+    assert_eq!(s.user_playlists[0].tracks.len(), 4);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn repeats_alone_still_explain_the_count() {
+    let mut s = test_state();
+    let gen = start_import(&mut s, "https://www.deezer.com/en/playlist/3155776842");
+    let _ = s.update(Message::PlaylistImportFetched {
+        generation: gen,
+        platform: "Deezer".into(),
+        result: Ok(LinkImport {
+            title: "Twice".into(),
+            tracks: vec![mk_track("a", "A", "X")],
+            swapped: 0,
+            missing: Vec::new(),
+            limit: None,
+            source_rows: 2,
+            repeats: 1,
+        }),
+    });
+    let sum = s.new_playlist.as_ref().unwrap().summary.clone().unwrap();
+    assert_eq!((sum.total, sum.imported, sum.repeats), (2, 1, 1));
+}
+
+/// Headless right click (press + release) at the simulator's pointer.
+fn right_click() -> Vec<iced::Event> {
+    use iced::mouse::{Button, Event as M};
+    vec![
+        iced::Event::Mouse(M::ButtonPressed(Button::Right)),
+        iced::Event::Mouse(M::ButtonReleased(Button::Right)),
+    ]
+}
+
+#[test]
+fn right_click_menu_selects_and_cuts_input_text() {
+    let mut s = test_state();
+    let size = iced::Size::new(1280.0, 800.0);
+    let _ = s.update(Message::WindowResized(size));
+    s.search_query = "hello world".into();
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    let input = sim
+        .find(iced::advanced::widget::Id::new(SEARCH_INPUT_ID))
+        .expect("search input on screen")
+        .bounds();
+    let at = iced::Point::new(input.x + 40.0, input.center_y());
+    // Menu rows sit just below-right of the right-click point:
+    // card top = point + 2, then 4px padding, 30px rows.
+    let row = |i: f32| iced::Point::new(at.x + 40.0, at.y + 2.0 + 4.0 + 30.0 * i + 15.0);
+    // Right click opens the menu; "Select all" (row 3) selects the text.
+    sim.point_at(at);
+    let _ = sim.simulate(right_click());
+    sim.point_at(row(3.0));
+    let _ = sim.simulate(iced_test::simulator::click());
+    // Right click again keeps that selection; "Cut" (row 0) empties it.
+    sim.point_at(at);
+    let _ = sim.simulate(right_click());
+    sim.point_at(row(0.0));
+    let _ = sim.simulate(iced_test::simulator::click());
+    let msgs: Vec<Message> = sim.into_messages().collect();
+    assert!(
+        msgs.iter()
+            .any(|m| matches!(m, Message::HomeSearchChanged(v) if v.is_empty())),
+        "cut never edited the field: {msgs:?}"
+    );
+}
+
+#[test]
+fn right_click_menu_rows_are_disabled_without_a_selection() {
+    let mut s = test_state();
+    let size = iced::Size::new(1280.0, 800.0);
+    let _ = s.update(Message::WindowResized(size));
+    s.search_query = "hello".into();
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    let input = sim
+        .find(iced::advanced::widget::Id::new(SEARCH_INPUT_ID))
+        .unwrap()
+        .bounds();
+    let at = iced::Point::new(input.x + 40.0, input.center_y());
+    sim.point_at(at);
+    let _ = sim.simulate(right_click());
+    // Cut with nothing selected does nothing.
+    sim.point_at(iced::Point::new(at.x + 40.0, at.y + 2.0 + 4.0 + 15.0));
+    let _ = sim.simulate(iced_test::simulator::click());
+    let msgs: Vec<Message> = sim.into_messages().collect();
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| matches!(m, Message::HomeSearchChanged(_))),
+        "{msgs:?}"
+    );
 }
