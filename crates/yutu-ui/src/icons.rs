@@ -70,6 +70,7 @@ pub(crate) fn icon_bytes(name: &str) -> &'static [u8] {
         "pencil" => include_bytes!("../assets/icons/pencil.svg"),
         "info" => include_bytes!("../assets/icons/info.svg"),
         "file-up" => include_bytes!("../assets/icons/file-up.svg"),
+        "file-down" => include_bytes!("../assets/icons/file-down.svg"),
         _ => include_bytes!("../assets/icons/music.svg"),
     }
 }

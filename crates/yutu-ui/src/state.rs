@@ -464,6 +464,15 @@ pub enum Message {
     StartRadio(String),
     PlayAll,
     CreatePlaylist(String),
+    /// Playlist menu "Export to CSV": asks where to save, then writes
+    /// the songs in their on-screen order.
+    ExportPlaylist(String),
+    /// Export finished: the saved path, `None` when the save dialog was
+    /// cancelled, or the write error.
+    PlaylistExported {
+        title: String,
+        result: Result<Option<String>, String>,
+    },
     /// Library "New playlist" button: opens the create/import dialog.
     OpenNewPlaylist,
     /// Scrim/Esc/Cancel: closes the dialog (an import in flight is

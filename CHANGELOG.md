@@ -24,6 +24,8 @@
   CSV export; songs not found on YouTube Music are listed at the end.
 - Imports skip repeated songs and match titles regardless of accents.
 - Right-click any text field to cut, copy, paste or select all.
+- Export any playlist to a CSV file from its menu; the file imports back
+  into Yutu Mux or other services.
 
 ### Changed
 

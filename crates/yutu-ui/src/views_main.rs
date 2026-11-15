@@ -4198,6 +4198,25 @@ impl AppState {
                     .into(),
                 ];
                 let mut pl_items = items;
+                // Export works for every list, Favorites included (the
+                // save dialog ships with the online build only).
+                #[cfg(feature = "innertube")]
+                pl_items.push(
+                    row_button(
+                        row![
+                            btn_icon("file-down", 14.0, iced::Color::WHITE),
+                            btn_text(self.language.export_playlist_csv(), 14),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .width(Fill),
+                    )
+                    .style(hover_row)
+                    .on_press(Message::ExportPlaylist(pid3.clone()))
+                    .padding(8)
+                    .width(Fill)
+                    .into(),
+                );
                 if pid3 != Self::FAVORITES_ID {
                     let pid_rename = pid3.clone();
                     pl_items.push(

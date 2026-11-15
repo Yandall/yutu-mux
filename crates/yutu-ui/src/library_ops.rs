@@ -375,6 +375,20 @@ impl AppState {
             .unwrap_or(0)
     }
 
+    /// Title + CSV body for exporting playlist `id`, songs in the order
+    /// its page shows them (Favorites has no sort picker: its own
+    /// order). `None` for an unknown id.
+    pub(crate) fn playlist_export_csv(&self, id: &str) -> Option<(String, String)> {
+        let p = self.find_playlist(id)?;
+        let tracks = if p.id == Self::FAVORITES_ID {
+            p.tracks.clone()
+        } else {
+            self.playlist_ordered_tracks(&p)
+        };
+        let csv = yutu_core::playlist_sources::to_csv(&p.title, &tracks);
+        Some((p.title, csv))
+    }
+
     /// Display order for an own playlist: stored Manual order untouched,
     /// every other pick a pure sort over it (stable, deterministic).
     /// Favorites never reaches here (its view has no picker).

@@ -24,6 +24,7 @@ dont-recommend = No recomendar
 recommend-again = Recomendar de nuevo
 delete-playlist = Eliminar lista
 rename-playlist = Renombrar lista
+export-playlist-csv = Exportar a CSV
 rename-playlist-title = Renombrar lista
 rename-playlist-save = Guardar
 rename-playlist-cancel = Cancelar
@@ -91,6 +92,7 @@ new-playlist-import-failed = No se pudo leer esa lista. Revisa el enlace o inici
 new-playlist-import-empty = Esa lista no tiene canciones reproducibles.
 new-playlist-imported-title = Lista importada
 playlist-imported = Importada { $title } ({ $n } canciones).
+playlist-exported = { $title } exportada a { $path }
 playlist-imported-swapped = Importada { $title } ({ $n } canciones, { $swapped } videos cambiados por su versión de canción).
 
 ## Home
@@ -434,6 +436,7 @@ fail-search = Búsqueda fallida
 fail-mix = Error de mezcla
 fail-sync = Error de sincronización
 fail-signout = Error al cerrar sesión
+fail-export = Error al exportar { $title }
 fail-export-delete = No se pudo eliminar el archivo exportado
 fail-signin = Error al iniciar sesión
 fail-check = Error de comprobación
