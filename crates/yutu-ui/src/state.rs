@@ -197,6 +197,26 @@ impl PlaylistSort {
         Self::Manual,
     ];
 
+    /// Favorites picks: no Manual (likes have no hand-made order) and no
+    /// Liked first (every row is liked). Oldest first is its default,
+    /// the like order it always showed.
+    pub const FAVORITES: [Self; 5] = [
+        Self::NewestFirst,
+        Self::OldestFirst,
+        Self::Title,
+        Self::Artist,
+        Self::Album,
+    ];
+
+    /// `self` when Favorites offers it, else its default (Oldest first).
+    pub fn for_favorites(self) -> Self {
+        if Self::FAVORITES.contains(&self) {
+            self
+        } else {
+            Self::OldestFirst
+        }
+    }
+
     /// Picker label (user-facing, stays English like other glue labels).
     pub fn label(self) -> &'static str {
         match self {

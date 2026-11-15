@@ -2108,6 +2108,7 @@ impl AppState {
                 }
             }
             Message::PlaylistSortSelected { playlist_id, sort } => {
+                let sort = self.sort_for(&playlist_id, sort);
                 self.persist_playlist_sort(&playlist_id, sort);
                 self.sort_menu = None;
                 self.cancel_pl_drag();

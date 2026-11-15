@@ -343,6 +343,7 @@ impl AppState {
             .flatten()
             .map(|raw| PlaylistSort::parse(&raw))
             .unwrap_or_default();
+        let sort = self.sort_for(playlist_id, sort);
         self.playlist_sorts.insert(playlist_id.to_string(), sort);
         sort
     }
@@ -350,10 +351,22 @@ impl AppState {
     /// Cached sort for immutable views (default Manual when not loaded
     /// yet; `OpenPlaylist` preloads, so first frames already agree).
     pub(crate) fn playlist_sort_cached(&self, playlist_id: &str) -> PlaylistSort {
-        self.playlist_sorts
+        let sort = self
+            .playlist_sorts
             .get(playlist_id)
             .copied()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.sort_for(playlist_id, sort)
+    }
+
+    /// A sort pick valid for `playlist_id`: Favorites maps picks it does
+    /// not offer (Manual, Liked first) to its default, Oldest first.
+    pub(crate) fn sort_for(&self, playlist_id: &str, sort: PlaylistSort) -> PlaylistSort {
+        if playlist_id == Self::FAVORITES_ID {
+            sort.for_favorites()
+        } else {
+            sort
+        }
     }
 
     /// Persist a sort pick (cache plus pref write-through).
@@ -376,28 +389,20 @@ impl AppState {
     }
 
     /// Title + CSV body for exporting playlist `id`, songs in the order
-    /// its page shows them (Favorites has no sort picker: its own
-    /// order). `None` for an unknown id.
+    /// its page shows them. `None` for an unknown id.
     pub(crate) fn playlist_export_csv(&self, id: &str) -> Option<(String, String)> {
         let p = self.find_playlist(id)?;
-        let tracks = if p.id == Self::FAVORITES_ID {
-            p.tracks.clone()
-        } else {
-            self.playlist_ordered_tracks(&p)
-        };
+        let tracks = self.playlist_ordered_tracks(&p);
         let csv = yutu_core::playlist_sources::to_csv(&p.title, &tracks);
         Some((p.title, csv))
     }
 
-    /// Display order for an own playlist: stored Manual order untouched,
-    /// every other pick a pure sort over it (stable, deterministic).
-    /// Favorites never reaches here (its view has no picker).
+    /// Display order for a playlist: stored Manual order untouched, every
+    /// other pick a pure sort over it (stable, deterministic). Favorites
+    /// is stored in like order (oldest first) with no insertion-time
+    /// map, so Oldest first keeps it and Newest first reverses it.
     pub(crate) fn playlist_ordered_tracks(&self, playlist: &Playlist) -> Vec<Track> {
-        let sort = self
-            .playlist_sorts
-            .get(&playlist.id)
-            .copied()
-            .unwrap_or_default();
+        let sort = self.playlist_sort_cached(&playlist.id);
         self.playlist_ordered_tracks_with(playlist, sort)
     }
 

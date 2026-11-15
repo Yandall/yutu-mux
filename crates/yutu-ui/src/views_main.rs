@@ -3254,16 +3254,13 @@ impl AppState {
                     let is_fav = pid == Self::FAVORITES_ID;
                     let sort = self.playlist_sort_cached(&pid);
                     let ordered = self.playlist_ordered_tracks(&p);
-                    // Sort control for own playlists only (Favorites keeps
-                    // its liked-order view with no picker, like before):
+                    // Sort control (Favorites too, with its own picks):
                     // sort icon + current sort in the quiet button family.
                     // The open card floats from this button (dropdown
                     // overlay), never from the cursor. Fixed width
                     // (longest pick) so the `...` trigger never shifts
                     // when the pick changes.
-                    let sort_button: iced::Element<'_, Message> = if is_fav {
-                        text("").size(1).into()
-                    } else {
+                    let sort_button: iced::Element<'_, Message> = {
                         // Same pill as Shuffle and the search field.
                         let face: iced::Element<'_, Message> = button(
                             row![
@@ -3449,15 +3446,10 @@ impl AppState {
                             .align_y(iced::alignment::Vertical::Bottom)
                             .into()
                     };
-                    let list_bar: iced::Element<'_, Message> = if is_fav {
-                        iced::widget::Space::new()
-                            .height(iced::Length::Fixed(8.0))
-                            .into()
-                    } else {
+                    let list_bar: iced::Element<'_, Message> =
                         row![iced::widget::Space::new().width(Fill), sort_button]
                             .align_y(iced::alignment::Vertical::Center)
-                            .into()
-                    };
+                            .into();
                     column![header, list_bar, list,].spacing(10).into()
                 }
             },

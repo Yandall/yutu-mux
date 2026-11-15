@@ -26,6 +26,7 @@
 - Right-click any text field to cut, copy, paste or select all.
 - Export any playlist to a CSV file from its menu; the file imports back
   into Yutu Mux or other services.
+- Sort Favorites by newest, oldest, title, artist or album.
 
 ### Changed
 
