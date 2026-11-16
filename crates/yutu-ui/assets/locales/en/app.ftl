@@ -326,7 +326,7 @@ eq-off-failed = EQ off (saved; { $e })
 ## Volume leveling (Settings)
 
 volume-leveling = Level volume between songs
-volume-leveling-hint = Plays every song at a similar loudness, so quiet tracks no longer need a volume bump.
+volume-leveling-hint = Plays every song at a similar loudness.
 leveling-on = Volume leveling on
 leveling-off = Volume leveling off
 leveling-saved = Volume leveling saved (needs the mpv backend to apply)
