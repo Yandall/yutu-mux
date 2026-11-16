@@ -21,7 +21,8 @@ fontdb = "0.23"
 # (already in the tree through iced's image feature).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # tokio rt: the system font scan runs on a blocking thread at startup.
-tokio = { version = "1", features = ["time", "sync", "rt"] }
+# net + io-util: the opt-in control socket (`control.rs`).
+tokio = { version = "1", features = ["time", "sync", "rt", "net", "io-util"] }
 futures = "0.3"
 serde_json = "1"
 # System file picker for the cookies.txt import (portal on Linux,

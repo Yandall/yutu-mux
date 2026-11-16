@@ -3,6 +3,7 @@
 pub mod app_log;
 pub mod auth;
 pub mod backend;
+pub mod control;
 pub mod discovery;
 pub mod history;
 #[cfg(feature = "innertube")]

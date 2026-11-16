@@ -28,6 +28,8 @@ tokio = { version = "1", features = ["rt", "macros", "signal"] }
 # which inflates the macOS footprint long after the churn that made
 # them; only Rust allocations route here, libmpv/ffmpeg keep theirs).
 mimalloc = "0.1"
+# `ctl` client output (pretty JSON).
+serde_json = "1"
 
 # Build script input, used only when TARGET contains `windows` (the gate
 # lives in build.rs via the TARGET env var, because a build script

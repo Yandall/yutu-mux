@@ -7,6 +7,8 @@
     windows_subsystem = "windows"
 )]
 
+mod ctl;
+
 use std::sync::{Arc, Mutex};
 use yutu_desktop::mpris::{MprisPlayer, PlaybackStatus, SharedPlayer};
 use yutu_desktop::NowPlaying;
@@ -60,6 +62,12 @@ fn spawn_mpris(state: SharedPlayer) {
 }
 
 fn main() -> iced::Result {
+    let args: Vec<String> = std::env::args().collect();
+    // `yutu-mux ctl ...` drives an already running instance and exits
+    // (no window, no log file of its own).
+    if args.get(1).map(String::as_str) == Some("ctl") {
+        std::process::exit(ctl::run(&args[2..]));
+    }
     // File logging first (everything below lands in today's log, kept
     // a week): panics are chained into it too, so a wedge or crash
     // always leaves a trail even when stderr is lost (Finder launch).
@@ -95,5 +103,8 @@ fn main() -> iced::Result {
     if std::env::var_os("WGPU_BACKEND").is_none() {
         std::env::set_var("WGPU_BACKEND", "dx12");
     }
-    yutu_ui::run(Some(state))
+    // Opt-in control socket for scripts and agents (`yutu-mux ctl`).
+    let control =
+        yutu_core::control::enabled_from(&args, std::env::var("YUTU_CONTROL").ok().as_deref());
+    yutu_ui::run(Some(state), control)
 }

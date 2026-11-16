@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 yutu-core = { path = "../yutu-core" }
 zbus = "5"
+# Hyprland window control (`hyprctl clients -j` parsing).
+serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 
 # macOS media keys + Now Playing via souvlaki (MPNowPlayingInfoCenter /

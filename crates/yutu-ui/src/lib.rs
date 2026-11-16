@@ -14,6 +14,8 @@ pub use i18n::Language;
 mod app;
 mod app_state;
 mod catalog;
+mod control;
+pub use control::{ControlCall, ControlReply, ReplySlot};
 mod fonts;
 mod helpers;
 mod icons;

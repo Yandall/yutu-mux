@@ -11198,3 +11198,67 @@ fn favorites_drag_needs_manual() {
     assert!(s.favorites_order.is_empty());
     assert!(s.pl_drag.is_none());
 }
+
+/// Send one control command through `update`, return its JSON reply.
+fn control_call(s: &mut AppState, words: &str) -> Result<serde_json::Value, String> {
+    let args: Vec<String> = words.split_whitespace().map(String::from).collect();
+    let command = yutu_core::control::parse_command(&args)?;
+    let (tx, mut rx) = futures::channel::oneshot::channel();
+    let _ = s.update(Message::Control(ControlCall {
+        command,
+        reply: ReplySlot::new(tx),
+    }));
+    match rx.try_recv() {
+        Ok(Some(ControlReply::Json(r))) => r,
+        Ok(Some(ControlReply::Screenshot { .. })) => Err("unexpected screenshot".into()),
+        _ => Err("no reply".into()),
+    }
+}
+
+#[test]
+fn control_state_and_navigation_go_through_messages() {
+    let mut s = test_state();
+    let st = control_call(&mut s, "state").unwrap();
+    assert_eq!(st["route"], "home");
+    assert_eq!(st["busy"], false);
+    let r = control_call(&mut s, "nav settings").unwrap();
+    assert_eq!(r["route"], "settings");
+    assert_eq!(s.route, Route::Settings);
+    control_call(&mut s, "nav back").unwrap();
+    assert_eq!(s.route, Route::Home);
+    assert!(control_call(&mut s, "nav nowhere").is_err());
+}
+
+#[test]
+fn control_queue_commands_respect_contracts() {
+    let mut s = test_state();
+    for i in 0..3 {
+        s.queue
+            .push(mk_track(&format!("t{i}"), &format!("Song {i}"), "A"));
+    }
+    s.queue.jump_to(0);
+    let q = control_call(&mut s, "queue").unwrap();
+    assert_eq!(q["items"].as_array().unwrap().len(), 3);
+    assert_eq!(q["index"], 0);
+    // Out-of-range jumps are refused, not clamped.
+    assert!(control_call(&mut s, "jump 9").is_err());
+    // Set-style shuffle/repeat land on the requested value.
+    control_call(&mut s, "shuffle on").unwrap();
+    assert!(s.queue.shuffle);
+    control_call(&mut s, "shuffle on").unwrap();
+    assert!(s.queue.shuffle, "set-on twice must not toggle back");
+    control_call(&mut s, "repeat one").unwrap();
+    assert_eq!(s.queue.repeat, yutu_player::RepeatMode::One);
+    control_call(&mut s, "repeat off").unwrap();
+    assert_eq!(s.queue.repeat, yutu_player::RepeatMode::Off);
+    control_call(&mut s, "volume 0.25").unwrap();
+    assert!((s.volume - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn control_play_result_needs_a_result() {
+    let mut s = test_state();
+    assert!(control_call(&mut s, "play-result 0").is_err());
+    let p = control_call(&mut s, "playlists").unwrap();
+    assert_eq!(p[0]["id"], AppState::FAVORITES_ID);
+}

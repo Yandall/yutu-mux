@@ -122,6 +122,7 @@ impl AppState {
             pending_seek: None,
             autoload: false,
             restored_pending: false,
+            control_enabled: false,
             context_menu: None,
             submenu_playlists_for: None,
             submenu_trigger_hot: false,
@@ -653,7 +654,21 @@ impl AppState {
             }
             _ => None,
         });
-        iced::Subscription::batch([keys, suggest_keys, tick, events, anim, frames, focus])
+        let control = if self.control_enabled {
+            control::control_subscription()
+        } else {
+            iced::Subscription::none()
+        };
+        iced::Subscription::batch([
+            keys,
+            suggest_keys,
+            tick,
+            events,
+            anim,
+            frames,
+            focus,
+            control,
+        ])
     }
 
     /// Repeat mode as stored in the queue snapshot.
