@@ -7180,6 +7180,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "mimalloc",
+ "serde_json",
  "tokio",
  "winres",
  "yutu-core",
