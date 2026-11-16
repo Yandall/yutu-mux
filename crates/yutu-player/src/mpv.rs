@@ -30,6 +30,12 @@
 //!   defensively clamped to +/-12 dB because `EqPreset` fields are public
 //!   and may bypass validation. Applying a preset replaces
 //!   the whole `af` chain and may cause a brief audible re-init glitch.
+//! - Volume leveling: an optional FFmpeg `loudnorm` stage (see
+//!   [`LEVELING_FILTER`]) appended after the EQ in the same `af` chain,
+//!   so every song plays near one loudness target (Spotify-style "normalize
+//!   volume"). EQ and leveling share the one property, so the backend
+//!   remembers both halves and always pushes the full chain
+//!   (see [`af_chain_with_leveling`]).
 //! - `load_bytes` spills audio to a temp file (`std::env::temp_dir`) because
 //!   libmpv loads from paths/URLs, not memory; spilled files are removed
 //!   best-effort on `stop`/`Drop`.
@@ -37,7 +43,7 @@
 use crate::backend::{AudioBackend, PlayerError};
 use crate::eq::{EqPreset, BAND_COUNT, EQ_FREQUENCIES, MAX_GAIN_DB, MIN_GAIN_DB};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// Clamp a caller volume (`0.0..=1.0`) and scale it to mpv's `volume`
@@ -75,6 +81,24 @@ pub fn af_chain_for_gains(gains: &[f32; BAND_COUNT]) -> String {
         .map(|(freq, gain)| format!("equalizer=f={freq}:t=o:w=1:g={}", clamp_eq_gain(*gain)))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// FFmpeg loudness normalizer (EBU R128, single-pass dynamic mode):
+/// target -14 LUFS (the common streaming reference level), true peak
+/// capped at -1 dBTP, a wide loudness range so songs keep their own
+/// dynamics. It runs after the EQ so EQ boosts are leveled too.
+pub const LEVELING_FILTER: &str = "loudnorm=I=-14:TP=-1:LRA=11";
+
+/// Join the EQ chain (may be empty: nothing pushed yet) with the optional
+/// leveling stage into one `af` value. Empty output clears all filters.
+#[must_use]
+pub fn af_chain_with_leveling(eq_chain: &str, leveling: bool) -> String {
+    match (eq_chain.is_empty(), leveling) {
+        (true, false) => String::new(),
+        (true, true) => LEVELING_FILTER.to_string(),
+        (false, false) => eq_chain.to_string(),
+        (false, true) => format!("{eq_chain},{LEVELING_FILTER}"),
+    }
 }
 
 fn mpv_op_err(op: &str, err: libmpv2::Error) -> PlayerError {
@@ -149,6 +173,10 @@ fn spill_temp_bytes(bytes: &[u8]) -> Result<PathBuf, PlayerError> {
 pub struct MpvBackend {
     mpv: libmpv2::Mpv,
     temp_files: Mutex<Vec<PathBuf>>,
+    /// Last EQ chain pushed (empty until the first EQ push) and the
+    /// leveling flag: both halves of the one `af` property.
+    eq_chain: Mutex<String>,
+    leveling: AtomicBool,
 }
 
 impl MpvBackend {
@@ -171,6 +199,8 @@ impl MpvBackend {
         Ok(Self {
             mpv,
             temp_files: Mutex::new(Vec::new()),
+            eq_chain: Mutex::new(String::new()),
+            leveling: AtomicBool::new(false),
         })
     }
 
@@ -299,9 +329,32 @@ impl MpvBackend {
     /// never rejected.
     pub fn apply_eq_gains(&self, gains: &[f32; BAND_COUNT]) -> Result<(), PlayerError> {
         let chain = af_chain_for_gains(gains);
+        let full = af_chain_with_leveling(&chain, self.leveling.load(Ordering::Relaxed));
         self.mpv
-            .set_property("af", chain.as_str())
-            .map_err(|e| mpv_op_err("apply EQ", e))
+            .set_property("af", full.as_str())
+            .map_err(|e| mpv_op_err("apply EQ", e))?;
+        if let Ok(mut slot) = self.eq_chain.lock() {
+            *slot = chain;
+        }
+        Ok(())
+    }
+
+    /// Turn volume leveling ([`LEVELING_FILTER`]) on or off, keeping the
+    /// current EQ chain. The flag only flips once mpv accepted the chain.
+    pub fn set_leveling(&self, on: bool) -> Result<(), PlayerError> {
+        let eq = self.eq_chain.lock().map(|c| c.clone()).unwrap_or_default();
+        let full = af_chain_with_leveling(&eq, on);
+        self.mpv
+            .set_property("af", full.as_str())
+            .map_err(|e| mpv_op_err("set volume leveling", e))?;
+        self.leveling.store(on, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Whether volume leveling is on.
+    #[must_use]
+    pub fn leveling(&self) -> bool {
+        self.leveling.load(Ordering::Relaxed)
     }
 
     /// Current playback position in seconds (`time-pos` property).
@@ -425,6 +478,18 @@ mod tests {
     }
 
     #[test]
+    fn leveling_appends_after_the_eq() {
+        let eq = af_chain_for_gains(&EqPreset::rock().bands);
+        assert_eq!(af_chain_with_leveling(&eq, false), eq);
+        assert_eq!(
+            af_chain_with_leveling(&eq, true),
+            format!("{eq},{LEVELING_FILTER}")
+        );
+        assert_eq!(af_chain_with_leveling("", true), LEVELING_FILTER);
+        assert_eq!(af_chain_with_leveling("", false), "");
+    }
+
+    #[test]
     fn af_chain_clamps_out_of_range_gains() {
         let mut bands = [0.0f32; BAND_COUNT];
         bands[0] = 99.0;
@@ -450,6 +515,24 @@ mod tests {
         assert_eq!(backend.position_secs(), 0.0);
         assert_eq!(backend.duration_secs(), 0.0);
         assert!(!backend.is_playing());
+    }
+
+    #[test]
+    fn libmpv_accepts_the_leveling_chain() {
+        let backend = match MpvBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: mpv unavailable in this environment: {e}");
+                return;
+            }
+        };
+        backend.set_leveling(true).expect("leveling alone");
+        backend
+            .apply_eq_preset(&EqPreset::rock())
+            .expect("EQ keeps leveling");
+        assert!(backend.leveling());
+        backend.set_leveling(false).expect("leveling off");
+        assert!(!backend.leveling());
     }
 
     /// Minimal 0.1s mono 16-bit 44.1kHz WAV, built by hand (no deps).

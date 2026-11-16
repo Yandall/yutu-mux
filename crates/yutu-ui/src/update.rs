@@ -1488,6 +1488,7 @@ impl AppState {
             Message::SelectEqPreset(name) => self.select_eq_preset(&name),
             Message::SetEqBand(index, gain) => self.set_eq_band(index, gain),
             Message::EqToggled(on) => self.toggle_eq(on),
+            Message::VolumeLevelingToggled(on) => self.toggle_volume_leveling(on),
             Message::ScrobbleToggled(on) => {
                 self.scrobble_enabled = on;
                 if let Ok(store) = LibraryStore::open(&self.library_path) {

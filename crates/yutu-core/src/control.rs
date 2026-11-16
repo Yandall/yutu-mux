@@ -52,6 +52,8 @@ pub enum Command {
     /// Volume 0.0..=1.0.
     Volume(f32),
     Mute,
+    /// Volume leveling between songs; `None` toggles.
+    Level(Option<bool>),
     /// `None` toggles.
     Shuffle(Option<bool>),
     /// `None` cycles.
@@ -119,6 +121,7 @@ Playback:
   seek <seconds>           absolute position
   volume <0..1>            set volume (unmutes)
   mute                     toggle mute
+  level [on|off]           volume leveling between songs (toggle or set)
   shuffle [on|off]         toggle or set
   repeat [off|all|one]     cycle or set
   enqueue <track-id>       append to the queue
@@ -210,6 +213,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             Command::Volume(v)
         }
         "mute" => Command::Mute,
+        "level" => Command::Level(on_off(args.get(1))?),
         "shuffle" => Command::Shuffle(on_off(args.get(1))?),
         "repeat" => Command::Repeat(match args.get(1).map(String::as_str) {
             None => None,
@@ -408,6 +412,11 @@ mod tests {
             Ok(Command::PlayResult(3))
         );
         assert_eq!(parse_command(&words("shuffle")), Ok(Command::Shuffle(None)));
+        assert_eq!(parse_command(&words("level")), Ok(Command::Level(None)));
+        assert_eq!(
+            parse_command(&words("level off")),
+            Ok(Command::Level(Some(false)))
+        );
         assert_eq!(
             parse_command(&words("shuffle on")),
             Ok(Command::Shuffle(Some(true)))
@@ -497,6 +506,7 @@ mod tests {
             "jump",
             "remove",
             "clear-queue",
+            "level",
             "like",
             "nav",
             "now-playing",
