@@ -71,22 +71,26 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         .map(|raw| FontFamily::parse(&raw))
         .unwrap_or(FontFamily::Adwaita);
     let _ = EFFECTIVE_FONT.set(startup_family);
-    iced::application(
+    // A daemon instead of a single-window application: the mini player
+    // is a second window. The main window opens at boot and closing it
+    // quits (see `Message::WindowClosed`).
+    iced::daemon(
         move || {
             let (mut state, task) = AppState::new();
             state.mpris = mpris.clone();
             state.publish_mpris();
-            (state, task)
+            let (main, open) = iced::window::open(window_settings());
+            state.main_window = Some(main);
+            (state, iced::Task::batch([open.discard(), task]))
         },
         AppState::update,
-        AppState::view,
+        AppState::view_for,
     )
-    .title(|state: &AppState| state.window_title())
-    .window(window_settings())
+    .title(AppState::title_for)
     .font(include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf").as_slice())
     .default_font(startup_family.to_iced_font())
-    .scale_factor(|state: &AppState| clamp_scale(state.ui_scale))
-    .theme(AppState::theme)
+    .scale_factor(|state: &AppState, _window| clamp_scale(state.ui_scale))
+    .theme(AppState::theme_for)
     .subscription(AppState::subscription)
     .run()
 }

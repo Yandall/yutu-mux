@@ -761,6 +761,20 @@ pub enum Message {
     Animate,
     /// Bottom drawer open/close.
     ToggleDrawer,
+    /// Open the picture-in-picture mini player (focus it when open).
+    OpenMiniPlayer,
+    /// Close the mini player window (playback continues).
+    MiniClose,
+    /// Close the mini player and bring the main window forward.
+    MiniRestore,
+    /// Grow/shrink the mini player's lyrics ticker.
+    MiniToggleLyrics,
+    /// Pointer entered/left the mini window (shows its Open/Close chips).
+    MiniHover(bool),
+    /// Press on the mini player's art/title: move the window.
+    MiniDrag,
+    /// A window closed (the main one quits the app).
+    WindowClosed(iced::window::Id),
     /// Drawer lyrics scroll offset (sticky header past 200px) and the
     /// viewport height it was measured in (0 = unknown).
     DrawerScrolled(f32, f32),

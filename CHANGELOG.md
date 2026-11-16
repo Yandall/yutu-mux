@@ -4,6 +4,10 @@
 
 ### Added
 
+- Mini player: a small floating window with the current song, playback
+  controls and a progress ring, tinted with the cover's colors.
+- The mini player's lyrics button grows it into a five-line synced
+  lyrics ticker; it remembers whether lyrics were open.
 - Favorites has its own cover: a heart on a color gradient picked once
   for your library, with a matching glow on its page.
 - In-app updates with Update and restart, Omit this version, or Update

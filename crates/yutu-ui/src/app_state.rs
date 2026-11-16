@@ -606,4 +606,12 @@ pub struct AppState {
     /// Which playlist the in-flight manual drag belongs to (stale drags
     /// from a navigated-away list never commit).
     pub(crate) pl_drag_id: Option<String>,
+    /// The main window (None in tests, which run without windows): its
+    /// events alone drive the app's cursor, layout and drag tracking,
+    /// and closing it quits the app.
+    pub(crate) main_window: Option<iced::window::Id>,
+    /// The picture-in-picture mini player window, while open.
+    pub(crate) mini: Option<crate::mini_player::MiniPlayer>,
+    /// Mini player lyrics ticker open last time (`mini_lyrics` pref).
+    pub(crate) mini_lyrics_pref: bool,
 }

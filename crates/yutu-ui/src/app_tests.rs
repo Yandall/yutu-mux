@@ -11198,3 +11198,239 @@ fn favorites_drag_needs_manual() {
     assert!(s.favorites_order.is_empty());
     assert!(s.pl_drag.is_none());
 }
+
+#[test]
+fn mini_ticker_window_centers_on_the_current_verse() {
+    use crate::mini_player::ticker_window;
+    // Middle: two above, two below.
+    assert_eq!(
+        ticker_window(10, Some(5)),
+        vec![(3, -2), (4, -1), (5, 0), (6, 1), (7, 2)]
+    );
+    // Edges clamp instead of padding with phantom lines.
+    assert_eq!(ticker_window(10, Some(0)), vec![(0, 0), (1, 1), (2, 2)]);
+    assert_eq!(ticker_window(10, Some(9)), vec![(7, -2), (8, -1), (9, 0)]);
+    // Before the first timestamp the opening lines are upcoming.
+    assert_eq!(ticker_window(10, None), vec![(0, 1), (1, 2), (2, 3)]);
+    assert_eq!(ticker_window(1, None), vec![(0, 1)]);
+    // No lines, or a stale cursor past the end: nothing to show.
+    assert!(ticker_window(0, None).is_empty());
+    assert!(ticker_window(0, Some(0)).is_empty());
+    assert_eq!(ticker_window(2, Some(7)), vec![(0, 1), (1, 2)]);
+}
+
+#[test]
+fn mini_window_size_follows_the_ticker_and_the_ui_scale() {
+    use crate::mini_player::*;
+    let collapsed = mini_window_size(false, 1.0);
+    let open = mini_window_size(true, 1.0);
+    assert_eq!(collapsed.width, MINI_W + 2.0 * MINI_MARGIN);
+    assert_eq!(open.width, collapsed.width);
+    // The lyrics grow the window downward by exactly the ticker.
+    assert_eq!(open.height - collapsed.height, MINI_LYRICS_H);
+    // Scaled UI scales the window, so the content never clips.
+    let big = mini_window_size(false, 1.5);
+    assert_eq!(big.width, (collapsed.width * 1.5).ceil());
+    assert_eq!(big.height, (collapsed.height * 1.5).ceil());
+}
+
+#[test]
+fn mini_player_opens_once_toggles_lyrics_and_closes() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::OpenMiniPlayer);
+    let mini = s.mini.expect("mini player open");
+    assert!(!mini.lyrics && !mini.hovered);
+    // A second open focuses the same window instead of stacking one.
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert_eq!(s.mini.unwrap().id, mini.id);
+    // Hover shows the chips; leaving hides them.
+    let _ = s.update(Message::MiniHover(true));
+    assert!(s.mini.unwrap().hovered);
+    let _ = s.update(Message::MiniHover(false));
+    assert!(!s.mini.unwrap().hovered);
+    // Lyrics toggle flips and is remembered for the next open.
+    let _ = s.update(Message::MiniToggleLyrics);
+    assert!(s.mini.unwrap().lyrics);
+    assert!(s.mini_lyrics_pref);
+    let _ = s.update(Message::MiniClose);
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert!(s.mini.unwrap().lyrics, "reopens with the ticker open");
+    // The pref survives a restart (same library).
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert!(again.mini_lyrics_pref);
+    // Restore closes the mini window too; drags with none open no-op.
+    let _ = s.update(Message::MiniRestore);
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::MiniDrag);
+    let _ = s.update(Message::MiniToggleLyrics);
+    assert!(s.mini.is_none());
+}
+
+#[test]
+fn mini_window_closed_from_outside_is_forgotten() {
+    let mut s = test_state();
+    let main = iced::window::Id::unique();
+    s.main_window = Some(main);
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    // Another window id closing leaves the mini player alone.
+    let _ = s.update(Message::WindowClosed(iced::window::Id::unique()));
+    assert!(s.mini.is_some());
+    let _ = s.update(Message::WindowClosed(id));
+    assert!(s.mini.is_none());
+    // The bar button opens a fresh one afterwards.
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert!(s.mini.is_some_and(|m| m.id != id));
+}
+
+#[test]
+fn mini_player_renders_every_lyrics_state() {
+    // Synced: before, on, and past the verses (collapsed and open).
+    let mut s = synced_state(6.0);
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    let _ = s.view_for(id);
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniToggleLyrics);
+    for pos in [0.0, 6.0, 60.0] {
+        s.position_secs = pos;
+        let _ = s.view_for(id);
+    }
+    // Instrumental, plain, loading and missing lyrics.
+    let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
+    entry.instrumental = true;
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry.clone());
+    let _ = s.view_for(id);
+    entry.instrumental = false;
+    entry.synced.clear();
+    entry.plain = "one\n\ntwo\nthree".into();
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry);
+    let _ = s.view_for(id);
+    s.lyrics_cache.clear();
+    let _ = s.view_for(id);
+    // Empty queue still renders (no song, no ring progress).
+    s.queue = Queue::default();
+    s.paused = true;
+    let _ = s.view_for(id);
+    // Any other window id is the app itself.
+    let _ = s.view_for(iced::window::Id::unique());
+}
+
+#[test]
+fn mini_window_is_transparent_and_named() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "Song", "Band"));
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    let other = iced::window::Id::unique();
+    // Only the capsule paints: the window background is clear.
+    assert_eq!(
+        s.theme_for(id).palette().background,
+        iced::Color::TRANSPARENT
+    );
+    assert_ne!(
+        s.theme_for(other).palette().background,
+        iced::Color::TRANSPARENT
+    );
+    assert_eq!(s.title_for(other), "Song · Band");
+    assert_eq!(s.title_for(id), "Mini player · Song · Band");
+    s.language = Language::Spanish;
+    assert_eq!(s.title_for(id), "Minirreproductor · Song · Band");
+}
+
+#[test]
+fn player_bar_shows_the_mini_player_button_in_every_layout() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    for w in [400.0, 700.0, 1280.0] {
+        let _ = s.update(Message::WindowResized(iced::Size::new(w, 800.0)));
+        let _ = s.player_view();
+        let _ = s.update(Message::OpenMiniPlayer);
+        let _ = s.player_view();
+        let _ = s.update(Message::MiniClose);
+    }
+}
+
+/// Headless mini player screenshots (collapsed, hovered, lyrics open)
+/// with a fake cover glow, written next to the layout snapshots. The
+/// window background is transparent, so the PNGs keep alpha. Run with
+/// `cargo test -p yutu-ui --lib mini_player_snapshots -- --ignored`.
+#[test]
+#[ignore]
+fn mini_player_snapshots() {
+    let dir = std::env::var("YUTU_SNAPSHOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/layout-snapshots")
+        });
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, hovered, lyrics) in [
+        ("mini-collapsed", false, false),
+        ("mini-hovered", true, false),
+        ("mini-lyrics", true, true),
+    ] {
+        let mut s = synced_state(6.0);
+        let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
+        t.thumbnail_url = Some("https://example.invalid/m1.jpg".into());
+        s.queue = Queue::default();
+        s.queue.push(t.clone());
+        let url = s.hero_art_for(&t).unwrap();
+        fake_backdrop(&mut s, url);
+        let verses = [
+            "We left the porch light burning",
+            "for the ones who find their way",
+            "Paper lanterns on the water",
+            "carry everything we could not say",
+            "Hold the river, hold it steady",
+            "till the morning pulls us in",
+        ];
+        s.lyrics_cache.insert(
+            ("pip1".into(), LyricsProvider::Lrclib),
+            yutu_core::LyricsResult {
+                plain: String::new(),
+                synced: verses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| yutu_core::LyricLine {
+                        start_ms: 50_000 + i as u64 * 8_000,
+                        text: (*v).into(),
+                    })
+                    .collect(),
+                instrumental: false,
+            },
+        );
+        // A third of the way in, on the third verse.
+        s.position_secs = 67.0;
+        let _ = s.update(Message::OpenMiniPlayer);
+        let id = s.mini.unwrap().id;
+        if hovered {
+            let _ = s.update(Message::MiniHover(true));
+        }
+        if lyrics != s.mini.unwrap().lyrics {
+            let _ = s.update(Message::MiniToggleLyrics);
+        }
+        let settings = iced::Settings {
+            fonts: vec![include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")
+                .as_slice()
+                .into()],
+            default_font: iced::Font::with_name("Adwaita Sans"),
+            ..iced::Settings::default()
+        };
+        let theme = s.theme_for(id);
+        let size = crate::mini_player::mini_content_size(lyrics);
+        let mut sim = iced_test::Simulator::with_size(settings, size, s.view_for(id));
+        let snap = sim.snapshot(&theme).unwrap();
+        for f in std::fs::read_dir(&dir).unwrap().flatten() {
+            let n = f.file_name().to_string_lossy().into_owned();
+            if n.starts_with(&format!("{name}-")) || n == format!("{name}.png") {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+        snap.matches_image(dir.join(format!("{name}.png"))).unwrap();
+    }
+}

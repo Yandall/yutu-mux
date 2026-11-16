@@ -270,8 +270,9 @@ pub(crate) const PAGE_BACKDROP_OPACITY: f32 = 0.65;
 /// How strongly the stretched cover shows through the sheet.
 pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
 /// Stacked player: horizontal chrome beside the title (art, padding,
-/// heart and Now Playing buttons) and the volume slider's width cap.
-pub(crate) const MINI_INFO_CHROME: f32 = 160.0;
+/// heart, mini player and Now Playing buttons) and the volume slider's
+/// width cap.
+pub(crate) const MINI_INFO_CHROME: f32 = 200.0;
 pub(crate) const MINI_VOLUME_W: f32 = 110.0;
 /// Mute button width: 18px `ctrl_box` + 6px padding per side.
 pub(crate) const MUTE_BUTTON_W: f32 = 30.0;

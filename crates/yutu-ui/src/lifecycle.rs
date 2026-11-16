@@ -201,6 +201,9 @@ impl AppState {
             pl_hover: None,
             pl_action_hover: None,
             pl_drag_id: None,
+            main_window: None,
+            mini: None,
+            mini_lyrics_pref: false,
             error_log: Vec::new(),
             seek_hold_until: None,
             paused_seek: false,
@@ -318,6 +321,11 @@ impl AppState {
                     .map(str::to_string)
                     .collect();
             }
+            // Mini player ticker open/closed, as the user last left it.
+            state.mini_lyrics_pref = store
+                .get_pref(crate::mini_player::MINI_LYRICS_PREF)
+                .unwrap_or(None)
+                .is_some_and(|v| v == "1");
         }
         // Favorites cover: the saved gradient (random on first launch,
         // then kept); rendered lazily on first display.
@@ -607,7 +615,55 @@ impl AppState {
         } else {
             iced::Subscription::none()
         };
-        let events = iced::event::listen().filter_map(|event| match event {
+        // Main window only: the mini player's cursor, size and clicks
+        // must never move the app's cursor tracking, layout mode or
+        // drag arming (tests run windowless, so None accepts all).
+        let events = iced::event::listen_with(|event, status, window| {
+            if status == iced::event::Status::Captured {
+                return None;
+            }
+            Self::main_event_message(event).map(|msg| (window, msg))
+        })
+        .with(self.main_window)
+        .filter_map(|(main, (window, msg))| main.is_none_or(|m| m == window).then_some(msg));
+        // Focus moves on clicks, Tab and Esc, including ones a widget
+        // captured (clicking into an input is captured by the input),
+        // so this listens to every status, unlike `events` above.
+        let focus = iced::event::listen_with(|event, _status, window| match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                Some((window, Message::FocusProbe))
+            }
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. })
+                if matches!(
+                    key.as_ref(),
+                    iced::keyboard::Key::Named(
+                        iced::keyboard::key::Named::Tab | iced::keyboard::key::Named::Escape
+                    )
+                ) =>
+            {
+                Some((window, Message::FocusProbe))
+            }
+            _ => None,
+        })
+        .with(self.main_window)
+        .filter_map(|(main, (window, msg))| main.is_none_or(|m| m == window).then_some(msg));
+        let closed = iced::window::close_events().map(Message::WindowClosed);
+        iced::Subscription::batch([
+            keys,
+            suggest_keys,
+            tick,
+            events,
+            anim,
+            frames,
+            focus,
+            closed,
+        ])
+    }
+
+    /// App-level message for a main window event the app tracks
+    /// (cursor, size, side buttons, drag press/release).
+    fn main_event_message(event: iced::Event) -> Option<Message> {
+        match event {
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                 Some(Message::CursorMoved(position))
             }
@@ -633,27 +689,7 @@ impl AppState {
                 Some(Message::GlobalPress)
             }
             _ => None,
-        });
-        // Focus moves on clicks, Tab and Esc, including ones a widget
-        // captured (clicking into an input is captured by the input),
-        // so this listens to every status, unlike `events` above.
-        let focus = iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
-                Some(Message::FocusProbe)
-            }
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. })
-                if matches!(
-                    key.as_ref(),
-                    iced::keyboard::Key::Named(
-                        iced::keyboard::key::Named::Tab | iced::keyboard::key::Named::Escape
-                    )
-                ) =>
-            {
-                Some(Message::FocusProbe)
-            }
-            _ => None,
-        });
-        iced::Subscription::batch([keys, suggest_keys, tick, events, anim, frames, focus])
+        }
     }
 
     /// Repeat mode as stored in the queue snapshot.

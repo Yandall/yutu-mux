@@ -216,6 +216,9 @@ month-12 = diciembre
 
 queue-tab = Fila
 now-playing = Reproduciendo ahora
+mini-player = Minirreproductor
+mini-open = Abrir
+mini-close = Cerrar
 nothing-queued = Nada en fila
 up-next = A continuación
 autoplay = Reproducción automática

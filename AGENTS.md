@@ -142,6 +142,15 @@
   `song_match::resolve_foreign` (songs first, video fallback); misses
   and capped reads show in the dialog summary (release status lines
   hide info).
+- **Mini player** (`mini_player.rs`, design "Pill · Glow"): the app is
+  an `iced::daemon`; the main window opens at boot and closing it
+  quits (`Message::WindowClosed`). The mini player is a second
+  frameless, transparent, always-on-top window and never minimizes
+  or hides the main one (Wayland cannot restore it). Window events
+  are filtered to `main_window`, so the mini window never moves the
+  app's cursor, layout mode or drag arming. Views/titles/themes go
+  through `view_for` / `title_for` / `theme_for`; `view()` stays the
+  main window. Lyrics toggle resizes downward, kept in `mini_lyrics`.
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -312,6 +321,8 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 - `crates/yutu-core/src/ytdlp.rs`: yt-dlp resolver flags.
 - `crates/yutu-core/src/lyrics_providers.rs`: `parse_lrc`, `line_at`,
   LRCLIB fetch.
+- `crates/yutu-ui/src/mini_player.rs`: mini player window (settings,
+  pill view, progress ring, lyrics ticker, per-window dispatch).
 - `crates/yutu-ui/src/i18n.rs`: app `Language`, Fluent lookup with
   English fallback, per-language failure markers.
 - `crates/yutu-ui/assets/locales/<lang>/app.ftl`: UI strings per

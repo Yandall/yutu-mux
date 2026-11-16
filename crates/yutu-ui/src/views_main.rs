@@ -1189,6 +1189,7 @@ impl AppState {
                 .spacing(1)
                 .width(Fill),
                 info_like,
+                self.mini_player_button(),
                 drawer_btn,
             ]
             .spacing(8)
@@ -1342,19 +1343,27 @@ impl AppState {
                     // slider gives up width (capped at its normal size),
                     // so the mute and Now Playing icons never shrink.
                     container(
-                        row![self.volume_group(volume_w, 8.0, true), {
-                            if self.drawer_open {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+                        row![
+                            self.volume_group(volume_w, 8.0, true),
+                            self.mini_player_button(),
+                            {
+                                if self.drawer_open {
+                                    button(ctrl_box(btn_icon(
+                                        "mic-vocal",
+                                        14.0,
+                                        iced::Color::WHITE,
+                                    )))
                                     .style(accent_button)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
-                            } else {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                    .style(icon_hover)
-                                    .on_press(Message::ToggleDrawer)
-                                    .padding(7)
-                            }
-                        },]
+                                } else {
+                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                                        .style(icon_hover)
+                                        .on_press(Message::ToggleDrawer)
+                                        .padding(7)
+                                }
+                            },
+                        ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
                     )

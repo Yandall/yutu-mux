@@ -43,6 +43,7 @@ mod app_tests;
 mod dialogs_menus;
 mod library_ops;
 mod lifecycle;
+mod mini_player;
 mod persist;
 mod playback;
 mod player_cards;

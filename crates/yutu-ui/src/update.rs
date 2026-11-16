@@ -2271,6 +2271,28 @@ impl AppState {
                     }
                 }
             }
+            Message::OpenMiniPlayer => return self.open_mini_player(),
+            Message::MiniClose => return self.close_mini_player(),
+            Message::MiniRestore => return self.restore_from_mini(),
+            Message::MiniToggleLyrics => return self.toggle_mini_lyrics(),
+            Message::MiniHover(over) => {
+                if let Some(mini) = self.mini.as_mut() {
+                    mini.hovered = over;
+                }
+            }
+            Message::MiniDrag => {
+                if let Some(mini) = self.mini {
+                    return iced::window::drag(mini.id);
+                }
+            }
+            Message::WindowClosed(id) => {
+                // The main window owns the session: closing it quits
+                // (the daemon would otherwise keep running headless).
+                if self.main_window == Some(id) {
+                    return iced::exit();
+                }
+                self.mini_window_closed(id);
+            }
             Message::LyricRowMeasured(g) => return self.apply_lyric_row(g),
             Message::DrawerScrolled(y, view_h) => {
                 self.drawer_scroll = y.max(0.0);

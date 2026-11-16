@@ -216,6 +216,9 @@ month-12 = December
 
 queue-tab = Queue
 now-playing = Now playing
+mini-player = Mini player
+mini-open = Open
+mini-close = Close
 nothing-queued = Nothing queued
 up-next = Up next
 autoplay = Autoplay
