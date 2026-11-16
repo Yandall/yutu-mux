@@ -188,16 +188,12 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fake_sidecar(body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = std::env::temp_dir().join(format!(
             "yutu-fake-botguard-{}-{}.sh",
             std::process::id(),
             body.len()
         ));
-        std::fs::write(&path, format!("#!/bin/sh\necho '{body}'\n")).unwrap();
-        let mut perm = std::fs::metadata(&path).unwrap().permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&path, perm).unwrap();
+        crate::test_exec::write_executable(&path, &format!("#!/bin/sh\necho '{body}'\n"));
         path
     }
 

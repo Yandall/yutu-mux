@@ -238,29 +238,21 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fake_ytdlp(stdout_body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = std::env::temp_dir().join(format!(
             "yutu-fake-ytdlp-{}-{}.sh",
             std::process::id(),
             stdout_body.len()
         ));
-        std::fs::write(&path, format!("#!/bin/sh\necho '{stdout_body}'\n")).unwrap();
-        let mut perm = std::fs::metadata(&path).unwrap().permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&path, perm).unwrap();
+        crate::test_exec::write_executable(&path, &format!("#!/bin/sh\necho '{stdout_body}'\n"));
         path
     }
 
     /// Fake sidecar with an arbitrary shell body (unique per `tag`).
     #[cfg(unix)]
     fn write_fake_script(tag: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path =
             std::env::temp_dir().join(format!("yutu-fake-ytdlp-{}-{tag}.sh", std::process::id()));
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        let mut perm = std::fs::metadata(&path).unwrap().permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&path, perm).unwrap();
+        crate::test_exec::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path
     }
 
