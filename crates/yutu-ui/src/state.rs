@@ -775,6 +775,9 @@ pub enum Message {
     MiniHover(bool),
     /// Press on the mini player's art/title: move the window.
     MiniDrag,
+    /// The mini window moved (or its position was read back): remember
+    /// it for the next open.
+    MiniMoved(iced::Point),
     /// A window closed (the main one quits the app).
     WindowClosed(iced::window::Id),
     /// Drawer lyrics scroll offset (sticky header past 200px) and the

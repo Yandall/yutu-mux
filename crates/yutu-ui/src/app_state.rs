@@ -617,4 +617,9 @@ pub struct AppState {
     pub(crate) mini: Option<crate::mini_player::MiniPlayer>,
     /// Mini player lyrics ticker open last time (`mini_lyrics` pref).
     pub(crate) mini_lyrics_pref: bool,
+    /// Where the user last left the mini player (`mini_pos` pref):
+    /// logical screen position from window moves (X11, macOS,
+    /// Windows), or Hyprland layout coordinates read via `hyprctl`.
+    /// Other Wayland compositors place it themselves.
+    pub(crate) mini_pos: Option<iced::Point>,
 }

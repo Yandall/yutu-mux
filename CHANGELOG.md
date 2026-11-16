@@ -8,6 +8,13 @@
   controls and a progress ring, tinted with the cover's colors.
 - The mini player's lyrics button grows it into a five-line synced
   lyrics ticker; it remembers whether lyrics were open.
+- The mini player reopens where you left it and its lyrics grow
+  downward only (X11, macOS, Windows, Hyprland).
+- Long lyric lines in the mini player shrink or end in "…" so all five
+  lines stay visible.
+- The mini player has its own window id (`yutu-mux-mini`); the README
+  has a Hyprland rule that removes the frame around it.
+- `yutu-mux ctl mini` opens, closes and screenshots the mini player.
 - Scriptable control: start with `--control` and drive the running app
   (play, search, navigate, screenshots) via `yutu-mux ctl`.
 - `yutu-mux ctl quit` closes the app, and `ctl float` toggles tiling

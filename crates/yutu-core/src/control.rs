@@ -86,8 +86,25 @@ pub enum Command {
     /// Hyprland: float (`Some(true)`), tile (`Some(false)`) or toggle
     /// the window, like a Super+T keybind.
     Float(Option<bool>),
+    /// Mini player window (picture-in-picture).
+    Mini(MiniArg),
     /// Save the session and close the app.
     Quit,
+}
+
+/// `mini` subcommands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MiniArg {
+    /// Open when closed, close when open (bare `mini`).
+    Toggle,
+    Open,
+    Close,
+    /// Close it and bring the main window forward.
+    Restore,
+    /// Lyrics ticker; `None` toggles.
+    Lyrics(Option<bool>),
+    /// Capture the mini window to a PNG.
+    Screenshot(Option<PathBuf>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +155,9 @@ UI:
   resize <w> <h>           resize the window (logical px; Hyprland: float first)
   float [on|off]           Hyprland: float, tile or toggle the window
   screenshot [path.png]    capture the window (default: temp dir)
+  mini [open|close|restore]          mini player (bare: toggle)
+  mini lyrics [on|off]               mini player lyrics ticker
+  mini screenshot [path.png]         capture the mini player window
   quit                     save the session and close the app
 
 Client flags:
@@ -240,6 +260,21 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         "screenshot" => Command::Screenshot(args.get(1).map(PathBuf::from)),
         "float" => Command::Float(on_off(args.get(1))?),
         "tile" => Command::Float(Some(false)),
+        "mini" => Command::Mini(
+            match args.get(1).map(|s| s.to_ascii_lowercase()).as_deref() {
+                None | Some("toggle") => MiniArg::Toggle,
+                Some("open" | "on") => MiniArg::Open,
+                Some("close" | "off") => MiniArg::Close,
+                Some("restore") => MiniArg::Restore,
+                Some("lyrics") => MiniArg::Lyrics(on_off(args.get(2))?),
+                Some("screenshot") => MiniArg::Screenshot(args.get(2).map(PathBuf::from)),
+                Some(other) => {
+                    return Err(format!(
+                        "unknown mini action `{other}` (open|close|restore|lyrics|screenshot)"
+                    ))
+                }
+            },
+        ),
         "quit" | "exit" => Command::Quit,
         other => return Err(format!("unknown command `{other}` (try `help`)")),
     };
@@ -435,6 +470,21 @@ mod tests {
             parse_command(&words("screenshot /tmp/a.png")),
             Ok(Command::Screenshot(Some("/tmp/a.png".into())))
         );
+        assert_eq!(
+            parse_command(&words("mini")),
+            Ok(Command::Mini(MiniArg::Toggle))
+        );
+        assert_eq!(
+            parse_command(&words("mini lyrics on")),
+            Ok(Command::Mini(MiniArg::Lyrics(Some(true))))
+        );
+        assert_eq!(
+            parse_command(&words("mini screenshot /tmp/m.png")),
+            Ok(Command::Mini(MiniArg::Screenshot(Some(
+                "/tmp/m.png".into()
+            ))))
+        );
+        assert!(parse_command(&words("mini fly")).is_err());
     }
 
     #[test]
@@ -506,6 +556,7 @@ mod tests {
             "resize",
             "screenshot",
             "float",
+            "mini",
             "quit",
         ] {
             assert!(HELP.contains(w), "help misses {w}");

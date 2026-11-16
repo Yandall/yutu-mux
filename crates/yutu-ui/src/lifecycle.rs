@@ -205,6 +205,7 @@ impl AppState {
             main_window: None,
             mini: None,
             mini_lyrics_pref: false,
+            mini_pos: None,
             error_log: Vec::new(),
             seek_hold_until: None,
             paused_seek: false,
@@ -327,6 +328,10 @@ impl AppState {
                 .get_pref(crate::mini_player::MINI_LYRICS_PREF)
                 .unwrap_or(None)
                 .is_some_and(|v| v == "1");
+            state.mini_pos = store
+                .get_pref(crate::mini_player::MINI_POS_PREF)
+                .unwrap_or(None)
+                .and_then(|v| crate::mini_player::parse_mini_pos(&v));
         }
         // Favorites cover: the saved gradient (random on first launch,
         // then kept); rendered lazily on first display.
@@ -649,6 +654,17 @@ impl AppState {
         .with(self.main_window)
         .filter_map(|(main, (window, msg))| main.is_none_or(|m| m == window).then_some(msg));
         let closed = iced::window::close_events().map(Message::WindowClosed);
+        // Mini window moves (X11, macOS and Windows report them, Wayland
+        // never does), remembered so it reopens where the user left it.
+        let mini_moved = match self.mini {
+            Some(mini) => iced::event::listen_with(|event, _status, window| match event {
+                iced::Event::Window(iced::window::Event::Moved(at)) => Some((window, at)),
+                _ => None,
+            })
+            .with(mini.id)
+            .filter_map(|(id, (window, at))| (id == window).then_some(Message::MiniMoved(at))),
+            None => iced::Subscription::none(),
+        };
         let control = if self.control_enabled {
             control::control_subscription()
         } else {
@@ -663,6 +679,7 @@ impl AppState {
             frames,
             focus,
             closed,
+            mini_moved,
             control,
         ])
     }

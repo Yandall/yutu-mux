@@ -11344,6 +11344,144 @@ fn mini_window_is_transparent_and_named() {
 }
 
 #[test]
+fn mini_drag_keeps_the_chips_until_a_real_exit() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    let _ = s.update(Message::OpenMiniPlayer);
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniDrag);
+    let mini = s.mini.unwrap();
+    assert!(mini.hovered && mini.drag_hold);
+    // The compositor's move grab sends a leave: the chips stay.
+    let _ = s.update(Message::MiniHover(false));
+    assert!(s.mini.unwrap().hovered, "chips survive the grab leave");
+    // The pointer seen over the window again ends the hold, so the
+    // next leave is a real one.
+    let _ = s.update(Message::MiniHover(true));
+    assert!(!s.mini.unwrap().drag_hold);
+    let _ = s.update(Message::MiniHover(false));
+    assert!(!s.mini.unwrap().hovered);
+    // A drag that starts without a hover still shows the chips.
+    let _ = s.update(Message::MiniDrag);
+    assert!(s.mini.unwrap().hovered);
+}
+
+#[test]
+fn mini_ticker_long_lines_stay_inside_their_slots() {
+    use crate::mini_player::{
+        ticker_lines, ticker_slot, ticker_text_width, ticker_worst_height, MINI_LYRICS_H,
+    };
+    // Budget: every slot at its maximum still fits inside the ticker.
+    assert!(ticker_worst_height() <= MINI_LYRICS_H - 2.0 * 16.0);
+    assert_eq!(ticker_slot(0, false).1, 1);
+    assert_eq!(ticker_slot(0, true).1, 2);
+    assert!(ticker_slot(0, true).0 < ticker_slot(0, false).0);
+    for d in [-2, -1, 1, 2] {
+        assert_eq!(ticker_slot(d, false).1, 1, "neighbors are one line");
+    }
+    let long = "and every word we never said is drifting down the river \
+                past the porch light and the lanterns and the morning";
+    let visible = vec![long, long, long, "short", long];
+    // Current verse long: smaller, at most two lines, cut with "…".
+    let lines = ticker_lines(&visible, Some(2));
+    assert_eq!(lines.len(), 5);
+    let w = ticker_text_width();
+    for (cut, size, d) in &lines {
+        let (_, max) = ticker_slot(*d, *d == 0);
+        if cut == "short" {
+            continue;
+        }
+        assert!(cut.ends_with('…'), "{d}: {cut}");
+        assert!(cut.chars().count() < long.chars().count());
+        if *d != 0 {
+            assert_eq!(fit_lines(cut, w, *size, max), *cut, "{d} fits one line");
+        }
+    }
+    assert_eq!(lines[2].1, ticker_slot(0, true).0);
+    // A short current verse keeps the full size, untouched.
+    let lines = ticker_lines(&visible, Some(3));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!((cur.0.as_str(), cur.1), ("short", ticker_slot(0, false).0));
+    // Rendering long lines never panics (synced and plain).
+    let mut s = synced_state(6.0);
+    let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
+    for l in entry.synced.iter_mut() {
+        if !l.text.is_empty() {
+            l.text = long.into();
+        }
+    }
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry.clone());
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    if !s.mini.unwrap().lyrics {
+        let _ = s.update(Message::MiniToggleLyrics);
+    }
+    for pos in [0.0, 6.0, 60.0] {
+        s.position_secs = pos;
+        let _ = s.view_for(id);
+    }
+    entry.synced.clear();
+    entry.plain = format!("{long}\n{long}");
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry);
+    let _ = s.view_for(id);
+}
+
+#[test]
+fn mini_position_is_remembered_across_opens_and_restarts() {
+    use crate::mini_player::{format_mini_pos, mini_window_settings, parse_mini_pos};
+    assert_eq!(
+        parse_mini_pos(&format_mini_pos(iced::Point::new(12.4, -30.6))),
+        Some(iced::Point::new(12.0, -31.0))
+    );
+    assert_eq!(parse_mini_pos("nope"), None);
+    assert_eq!(parse_mini_pos("1,NaN"), None);
+    // No saved spot: the first placement (top-right); saved: exactly it.
+    assert!(matches!(
+        mini_window_settings(false, 1.0, None).position,
+        iced::window::Position::SpecificWith(_)
+    ));
+    assert!(matches!(
+        mini_window_settings(false, 1.0, Some(iced::Point::new(5.0, 6.0))).position,
+        iced::window::Position::Specific(p) if p == iced::Point::new(5.0, 6.0)
+    ));
+    let mut s = test_state();
+    let _ = s.update(Message::OpenMiniPlayer);
+    let _ = s.update(Message::MiniMoved(iced::Point::new(700.0, 40.0)));
+    let _ = s.update(Message::MiniMoved(iced::Point::new(800.0, 50.0)));
+    assert_eq!(s.mini_pos, Some(iced::Point::new(800.0, 50.0)));
+    let _ = s.update(Message::MiniClose);
+    // Saved on close, back after a restart.
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(again.mini_pos, Some(iced::Point::new(800.0, 50.0)));
+    // A position read back after close (Hyprland) is saved at once.
+    let _ = s.update(Message::MiniMoved(iced::Point::new(90.0, 60.0)));
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(again.mini_pos, Some(iced::Point::new(90.0, 60.0)));
+    // Quitting (main window closed) with the mini open keeps its spot.
+    let main = iced::window::Id::unique();
+    s.main_window = Some(main);
+    let _ = s.update(Message::OpenMiniPlayer);
+    let _ = s.update(Message::MiniMoved(iced::Point::new(300.0, 20.0)));
+    let _ = s.update(Message::WindowClosed(main));
+    assert!(s.mini.is_none());
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(again.mini_pos, Some(iced::Point::new(300.0, 20.0)));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mini_window_has_its_own_app_id() {
+    let mini = crate::mini_player::mini_window_settings(false, 1.0, None);
+    assert_eq!(mini.platform_specific.application_id, "yutu-mux-mini");
+    assert_eq!(
+        window_settings().platform_specific.application_id,
+        "yutu-mux"
+    );
+}
+
+#[test]
 fn player_bar_shows_the_mini_player_button_in_every_layout() {
     let mut s = test_state();
     s.queue.push(mk_track("m1", "T", "A"));
@@ -11373,6 +11511,7 @@ fn mini_player_snapshots() {
         ("mini-collapsed", false, false),
         ("mini-hovered", true, false),
         ("mini-lyrics", true, true),
+        ("mini-long-lyrics", false, true),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -11381,14 +11520,25 @@ fn mini_player_snapshots() {
         s.queue.push(t.clone());
         let url = s.hero_art_for(&t).unwrap();
         fake_backdrop(&mut s, url);
-        let verses = [
-            "We left the porch light burning",
-            "for the ones who find their way",
-            "Paper lanterns on the water",
-            "carry everything we could not say",
-            "Hold the river, hold it steady",
-            "till the morning pulls us in",
-        ];
+        let verses = if name == "mini-long-lyrics" {
+            [
+                "We left the porch light burning for the ones who never came back home",
+                "for the ones who find their way across the water in the dark of night",
+                "Paper lanterns on the water, every one a little wish we could not keep",
+                "carry everything we could not say before the river took the words away",
+                "Hold the river, hold it steady, hold it till the morning pulls us in",
+                "till the morning pulls us in",
+            ]
+        } else {
+            [
+                "We left the porch light burning",
+                "for the ones who find their way",
+                "Paper lanterns on the water",
+                "carry everything we could not say",
+                "Hold the river, hold it steady",
+                "till the morning pulls us in",
+            ]
+        };
         s.lyrics_cache.insert(
             ("pip1".into(), LyricsProvider::Lrclib),
             yutu_core::LyricsResult {
@@ -11497,4 +11647,31 @@ fn control_play_result_needs_a_result() {
     assert!(control_call(&mut s, "play-result 0").is_err());
     let p = control_call(&mut s, "playlists").unwrap();
     assert_eq!(p[0]["id"], AppState::FAVORITES_ID);
+}
+
+#[test]
+fn control_mini_commands_drive_the_mini_player() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    assert_eq!(
+        control_call(&mut s, "state").unwrap()["mini"]["open"],
+        false
+    );
+    assert!(control_call(&mut s, "mini lyrics on").is_err(), "closed");
+    assert!(control_call(&mut s, "mini screenshot").is_err(), "closed");
+    control_call(&mut s, "mini").unwrap();
+    assert!(s.mini.is_some());
+    control_call(&mut s, "mini lyrics on").unwrap();
+    assert!(s.mini.unwrap().lyrics);
+    // Already on: no toggle back off.
+    control_call(&mut s, "mini lyrics on").unwrap();
+    assert!(s.mini.unwrap().lyrics);
+    let st = control_call(&mut s, "state").unwrap();
+    assert_eq!(st["mini"]["open"], true);
+    assert_eq!(st["mini"]["lyrics"], true);
+    control_call(&mut s, "mini").unwrap();
+    assert!(s.mini.is_none());
+    control_call(&mut s, "mini open").unwrap();
+    control_call(&mut s, "mini restore").unwrap();
+    assert!(s.mini.is_none());
 }

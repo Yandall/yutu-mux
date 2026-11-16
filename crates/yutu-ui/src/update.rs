@@ -2276,21 +2276,15 @@ impl AppState {
             Message::MiniClose => return self.close_mini_player(),
             Message::MiniRestore => return self.restore_from_mini(),
             Message::MiniToggleLyrics => return self.toggle_mini_lyrics(),
-            Message::MiniHover(over) => {
-                if let Some(mini) = self.mini.as_mut() {
-                    mini.hovered = over;
-                }
-            }
-            Message::MiniDrag => {
-                if let Some(mini) = self.mini {
-                    return iced::window::drag(mini.id);
-                }
-            }
+            Message::MiniHover(over) => self.mini_hover(over),
+            Message::MiniDrag => return self.mini_drag(),
+            Message::MiniMoved(at) => self.mini_moved(at),
             Message::WindowClosed(id) => {
                 // The main window owns the session: closing it quits
                 // (the daemon would otherwise keep running headless).
                 if self.main_window == Some(id) {
-                    return iced::exit();
+                    // Keep the mini player's spot for the next launch.
+                    return self.close_mini_player().chain(iced::exit());
                 }
                 self.mini_window_closed(id);
             }

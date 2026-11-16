@@ -151,6 +151,14 @@
   app's cursor, layout mode or drag arming. Views/titles/themes go
   through `view_for` / `title_for` / `theme_for`; `view()` stays the
   main window. Lyrics toggle resizes downward, kept in `mini_lyrics`.
+  Own app id `yutu-mux-mini` (README has the Hyprland rule). Position
+  saved in `mini_pos`: window `Moved` events (X11/macOS/Windows), or
+  `hyprctl` under Hyprland (read on close, moved back on open, top
+  edge re-pinned after a lyrics resize since Hyprland keeps centers).
+  Hyprland dispatchers address windows by `address:`, never `pid:`
+  (two windows). A drag holds the chips (`drag_hold`) until the
+  pointer is seen again. Ticker lines are fitted (`ticker_lines`):
+  neighbors 1 line, current verse at most 2 at a smaller size.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in

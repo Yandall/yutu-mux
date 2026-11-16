@@ -10,15 +10,33 @@
 //!     player never minimizes or hides it (Wayland cannot restore a
 //!     minimized window from the app, so nothing would bring it back).
 //!   - Window actions (Open, Close) float above the capsule only while
-//!     the pointer is over the mini window.
+//!     the pointer is over the mini window. A drag keeps them up until
+//!     the pointer really leaves (the compositor's move grab sends a
+//!     leave while the pointer is still over the window).
 //!   - The art and title are the drag handle (no title bar).
 //!   - Sizes are logical units times the UI scale, so the window always
 //!     fits its content at any scale.
+//!   - Its own app id ([`MINI_APP_ID`], Linux) so compositor rules can
+//!     target it (README: Hyprland rule).
+//!   - Position: reopens where the user left it (`mini_pos` pref) where
+//!     the platform reports moves (X11, macOS, Windows). Wayland clients
+//!     cannot read or set their position, so under Hyprland the app
+//!     asks `hyprctl` instead (also to keep the top edge fixed when the
+//!     lyrics grow, since Hyprland keeps a resized window's center);
+//!     other Wayland compositors place it themselves.
+//!   - The ticker never wraps past its slots: neighbor lines are one
+//!     ellipsized line, the current verse at most two (smaller text
+//!     when long), so all five slots always fit.
 
 use super::*;
 
 /// Pref remembering whether the ticker was open ("1") last time.
 pub(crate) const MINI_LYRICS_PREF: &str = "mini_lyrics";
+/// Pref remembering where the mini window was last left ("x,y").
+pub(crate) const MINI_POS_PREF: &str = "mini_pos";
+/// Linux app id (Wayland) / class of the mini window, for compositor
+/// rules (shared with the Hyprland helper, which skips it for `ctl`).
+pub(crate) const MINI_APP_ID: &str = yutu_desktop::hyprland::MINI_CLASS;
 /// Capsule width (content units).
 pub(crate) const MINI_W: f32 = 360.0;
 /// Capsule height when collapsed (the header row when expanded).
@@ -38,6 +56,13 @@ const MINI_RING: f32 = 52.0;
 const MINI_RING_W: f32 = 3.0;
 /// Char budget for the title/artist beside the controls.
 const MINI_TITLE_CHARS: usize = 18;
+/// Ticker padding (vertical, horizontal) and gap between lines.
+const MINI_TICKER_PAD: (f32, f32) = (16.0, 24.0);
+const MINI_TICKER_GAP: f32 = 10.0;
+/// Current verse size, and the smaller size a verse too long for one
+/// line drops to (then wrapped to at most two lines).
+const MINI_CUR_SIZE: f32 = 21.0;
+const MINI_CUR_LONG_SIZE: f32 = 16.0;
 /// Glow strength over the base surface, then a dark veil on top so
 /// white text always reads (same idea as the Now Playing sheet).
 const MINI_GLOW_OPACITY: f32 = 0.9;
@@ -53,6 +78,21 @@ pub struct MiniPlayer {
     pub(crate) lyrics: bool,
     /// Pointer over the mini window (shows the Open/Close chips).
     pub(crate) hovered: bool,
+    /// A drag started: ignore the leave the compositor's move grab
+    /// sends, until the pointer is seen over the window again.
+    pub(crate) drag_hold: bool,
+}
+
+/// Parse the `mini_pos` pref ("x,y", finite numbers).
+pub(crate) fn parse_mini_pos(s: &str) -> Option<iced::Point> {
+    let (x, y) = s.split_once(',')?;
+    let (x, y): (f32, f32) = (x.trim().parse().ok()?, y.trim().parse().ok()?);
+    (x.is_finite() && y.is_finite()).then(|| iced::Point::new(x, y))
+}
+
+/// Format a position for the `mini_pos` pref (whole pixels).
+pub(crate) fn format_mini_pos(at: iced::Point) -> String {
+    format!("{},{}", at.x.round(), at.y.round())
 }
 
 /// Content size in UI units: capsule plus chip row plus shadow margin.
@@ -84,20 +124,136 @@ fn mini_start_position(window: iced::Size, monitor: iced::Size) -> iced::Point {
 
 /// Window settings for the mini player: frameless, transparent (the
 /// capsule is the visible shape), not resizable, kept above other
-/// windows where the platform allows it.
-pub(crate) fn mini_window_settings(lyrics: bool, scale: f32) -> iced::window::Settings {
+/// windows where the platform allows it, at the saved spot when there
+/// is one.
+pub(crate) fn mini_window_settings(
+    lyrics: bool,
+    scale: f32,
+    saved: Option<iced::Point>,
+) -> iced::window::Settings {
     let base = window_settings();
+    #[cfg(target_os = "linux")]
+    let platform_specific = iced::window::settings::PlatformSpecific {
+        application_id: MINI_APP_ID.into(),
+        ..base.platform_specific.clone()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let platform_specific = base.platform_specific.clone();
     iced::window::Settings {
         size: mini_window_size(lyrics, scale),
         min_size: None,
-        position: iced::window::Position::SpecificWith(mini_start_position),
+        position: match saved {
+            Some(at) => iced::window::Position::Specific(at),
+            None => iced::window::Position::SpecificWith(mini_start_position),
+        },
         resizable: false,
         decorations: false,
         transparent: true,
         minimizable: false,
         level: iced::window::Level::AlwaysOnTop,
+        platform_specific,
         ..base
     }
+}
+
+/// Resize the (non-resizable) mini window. A non-resizable window pins
+/// min = max = its first size (winit stores those hints and restores
+/// them even when unlocked), so a bare resize is clamped by the
+/// compositor. Re-pin both hints at the new size, then resize: max is
+/// cleared first so the new min never exceeds the old max. Chained so
+/// the steps land in order.
+fn mini_resize(id: iced::window::Id, size: iced::Size) -> iced::Task<Message> {
+    iced::window::set_max_size(id, None)
+        .chain(iced::window::set_min_size(id, Some(size)))
+        .chain(iced::window::set_max_size(id, Some(size)))
+        .chain(iced::window::resize(id, size))
+}
+
+/// Run a blocking helper (`hyprctl`) off the UI thread.
+#[cfg(target_os = "linux")]
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(f).await.ok()
+}
+
+/// Under Hyprland the app places the mini window itself via `hyprctl`.
+fn on_hyprland() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        yutu_desktop::hyprland::available()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// Hyprland: the mini window's top-left in layout coordinates.
+#[cfg(target_os = "linux")]
+fn hypr_mini_window() -> iced::Task<Option<yutu_desktop::hyprland::HyprWindow>> {
+    iced::Task::perform(
+        blocking(|| yutu_desktop::hyprland::class_window(MINI_APP_ID).ok()),
+        Option::flatten,
+    )
+}
+
+/// Text size and line budget of a ticker slot `distance` lines from
+/// the current verse (`long`: the current verse does not fit one line
+/// at full size).
+pub(crate) fn ticker_slot(distance: i32, long: bool) -> (f32, usize) {
+    match distance.unsigned_abs() {
+        0 if long => (MINI_CUR_LONG_SIZE, 2),
+        0 => (MINI_CUR_SIZE, 1),
+        1 => (14.0, 1),
+        _ => (12.0, 1),
+    }
+}
+
+/// Text width inside the ticker.
+pub(crate) fn ticker_text_width() -> f32 {
+    MINI_W - 2.0 * MINI_TICKER_PAD.1
+}
+
+#[cfg(test)]
+/// Tallest the ticker content can get: the current verse at its larger
+/// budget, two neighbors on each side at one line each, the gaps.
+pub(crate) fn ticker_worst_height() -> f32 {
+    let line = |(size, lines): (f32, usize)| {
+        iced::widget::text::LineHeight::default()
+            .to_absolute(iced::Pixels(size))
+            .0
+            * lines as f32
+    };
+    let current = line(ticker_slot(0, false)).max(line(ticker_slot(0, true)));
+    current
+        + 2.0 * line(ticker_slot(1, false))
+        + 2.0 * line(ticker_slot(2, false))
+        + 4.0 * MINI_TICKER_GAP
+}
+
+/// Ticker lines ready to draw: `(text cut to its slot, size, distance)`.
+/// Measured with the real font (bold for the current verse), so the
+/// cut matches what is drawn.
+pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, f32, i32)> {
+    let width = ticker_text_width();
+    ticker_window(visible.len(), at)
+        .into_iter()
+        .map(|(i, d)| {
+            let line = visible[i];
+            if d == 0 {
+                let bold = bold_font();
+                let (size, lines) = ticker_slot(0, false);
+                let one = fit_lines_font(line, width, size, lines, bold);
+                if one == line {
+                    return (one, size, 0);
+                }
+                let (size, lines) = ticker_slot(0, true);
+                (fit_lines_font(line, width, size, lines, bold), size, 0)
+            } else {
+                let (size, lines) = ticker_slot(d, false);
+                (fit_lines(line, width, size, lines), size, d)
+            }
+        })
+        .collect()
 }
 
 /// Mini window theme: the dark theme with a transparent window
@@ -283,25 +439,109 @@ impl AppState {
             return iced::window::gain_focus(mini.id);
         }
         let lyrics = self.mini_lyrics_pref;
-        let (id, open) = iced::window::open(mini_window_settings(lyrics, self.mini_scale()));
+        let hypr = on_hyprland();
+        // Hyprland coordinates are not client positions: never hand
+        // them to the window settings (Wayland ignores them anyway).
+        let saved = if hypr { None } else { self.mini_pos };
+        let (id, open) = iced::window::open(mini_window_settings(lyrics, self.mini_scale(), saved));
         self.mini = Some(MiniPlayer {
             id,
             lyrics,
             hovered: false,
+            drag_hold: false,
         });
-        let mut tasks = vec![open.discard()];
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut open = open.discard();
+        // Hyprland: move it back where it was once it is mapped.
+        #[cfg(target_os = "linux")]
+        if let (true, Some(at)) = (hypr, self.mini_pos) {
+            use yutu_desktop::hyprland as hl;
+            open = open.chain(iced::Task::perform(
+                blocking(move || {
+                    let w = hl::wait_class_window(
+                        MINI_APP_ID,
+                        None,
+                        std::time::Duration::from_secs(2),
+                    )?;
+                    hl::move_window(&w.address, at.x as i64, at.y as i64)
+                }),
+                |_| Message::NoOp,
+            ));
+        }
+        let mut tasks = vec![open];
         if lyrics {
             tasks.extend(self.mini_lyrics_fetch());
         }
         iced::Task::batch(tasks)
     }
 
-    /// Close the mini player window (playback keeps going).
+    /// Close the mini player window (playback keeps going), keeping
+    /// its position for the next open.
     pub(crate) fn close_mini_player(&mut self) -> iced::Task<Message> {
-        match self.mini.take() {
-            Some(mini) => iced::window::close(mini.id),
-            None => iced::Task::none(),
+        let Some(mini) = self.mini.take() else {
+            return iced::Task::none();
+        };
+        self.save_mini_pos();
+        let close = iced::window::close::<Message>(mini.id);
+        // Hyprland: read where the user left it before it goes away
+        // (the answer lands after close and is saved then).
+        #[cfg(target_os = "linux")]
+        if on_hyprland() {
+            let id = mini.id;
+            return hypr_mini_window().then(move |w| {
+                let close = iced::window::close(id);
+                match w {
+                    Some(w) => iced::Task::done(Message::MiniMoved(iced::Point::new(
+                        w.at.0 as f32,
+                        w.at.1 as f32,
+                    )))
+                    .chain(close),
+                    None => close,
+                }
+            });
         }
+        close
+    }
+
+    /// The mini window moved (or Hyprland reported where it is).
+    pub(crate) fn mini_moved(&mut self, at: iced::Point) {
+        self.mini_pos = Some(at);
+        // Moves stream in while dragging: persist only once closed.
+        if self.mini.is_none() {
+            self.save_mini_pos();
+        }
+    }
+
+    fn save_mini_pos(&self) {
+        let Some(at) = self.mini_pos else { return };
+        if let Ok(store) = yutu_core::LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref(MINI_POS_PREF, &format_mini_pos(at));
+        }
+    }
+
+    /// Pointer over / off the mini window. A leave right after a drag
+    /// is the compositor's move grab, not the pointer leaving: the
+    /// chips stay until the pointer is seen over the window again.
+    pub(crate) fn mini_hover(&mut self, over: bool) {
+        let Some(mini) = self.mini.as_mut() else {
+            return;
+        };
+        if over {
+            mini.hovered = true;
+            mini.drag_hold = false;
+        } else if !mini.drag_hold {
+            mini.hovered = false;
+        }
+    }
+
+    /// Press on the drag handle: hand the move to the compositor.
+    pub(crate) fn mini_drag(&mut self) -> iced::Task<Message> {
+        let Some(mini) = self.mini.as_mut() else {
+            return iced::Task::none();
+        };
+        mini.hovered = true;
+        mini.drag_hold = true;
+        iced::window::drag(mini.id)
     }
 
     /// Close the mini player and bring the main window forward
@@ -330,17 +570,32 @@ impl AppState {
         if let Ok(store) = yutu_core::LibraryStore::open(&self.library_path) {
             let _ = store.set_pref(MINI_LYRICS_PREF, if lyrics { "1" } else { "0" });
         }
-        // A non-resizable window pins min = max = its first size (winit
-        // stores those hints and restores them even when unlocked), so
-        // a bare resize is clamped by the compositor. Re-pin both hints
-        // at the new size, then resize: max is cleared first so the new
-        // min never exceeds the old max. Chained so the steps land in
-        // order.
         let size = mini_window_size(lyrics, self.mini_scale());
-        let resize = iced::window::set_max_size(id, None)
-            .chain(iced::window::set_min_size(id, Some(size)))
-            .chain(iced::window::set_max_size(id, Some(size)))
-            .chain(iced::window::resize(id, size));
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut resize = mini_resize(id, size);
+        // Hyprland keeps a resized floating window's center, so the
+        // ticker would grow up and down: read the top-left first, then
+        // put it back once the new size is applied.
+        #[cfg(target_os = "linux")]
+        if on_hyprland() {
+            use yutu_desktop::hyprland as hl;
+            let want = (size.width.round() as i64, size.height.round() as i64);
+            resize = hypr_mini_window().then(move |before| {
+                let resize = mini_resize(id, size);
+                let Some(w) = before else { return resize };
+                resize.chain(iced::Task::perform(
+                    blocking(move || {
+                        let _ = hl::wait_class_window(
+                            MINI_APP_ID,
+                            Some(want),
+                            std::time::Duration::from_secs(1),
+                        );
+                        hl::move_window(&w.address, w.at.0, w.at.1)
+                    }),
+                    |_| Message::NoOp,
+                ))
+            });
+        }
         let mut tasks = vec![resize];
         if lyrics {
             tasks.extend(self.mini_lyrics_fetch());
@@ -363,6 +618,7 @@ impl AppState {
     pub(crate) fn mini_window_closed(&mut self, id: iced::window::Id) {
         if self.mini.is_some_and(|m| m.id == id) {
             self.mini = None;
+            self.save_mini_pos();
         }
     }
 
@@ -673,28 +929,32 @@ impl AppState {
                         .filter(|t| !t.is_empty())
                         .collect();
                     let at = self.lyric_cursor_at(id);
-                    let lines: Vec<iced::Element<'_, Message>> = ticker_window(visible.len(), at)
+                    let lines: Vec<iced::Element<'_, Message>> = ticker_lines(&visible, at)
                         .into_iter()
-                        .map(|(i, d)| {
-                            let (size, color) = match d.abs() {
-                                0 => (21.0, iced::Color::WHITE),
-                                1 => (14.0, iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72)),
-                                _ => (12.0, iced::Color::from_rgba(1.0, 1.0, 1.0, 0.5)),
+                        .map(|(cut, size, d)| {
+                            let color = match d.abs() {
+                                0 => iced::Color::WHITE,
+                                1 => iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72),
+                                _ => iced::Color::from_rgba(1.0, 1.0, 1.0, 0.5),
                             };
-                            let mut line = text(visible[i].to_string())
+                            let line = text(cut)
                                 .size(size)
                                 .color(color)
                                 .align_x(iced::alignment::Horizontal::Center)
-                                .wrapping(Wrapping::WordOrGlyph)
                                 .width(Fill);
+                            // Neighbors are already cut to one line: never
+                            // let a measuring hair wrap them anyway.
                             if d == 0 {
-                                line = line.font(bold_font());
+                                line.font(bold_font())
+                                    .wrapping(Wrapping::WordOrGlyph)
+                                    .into()
+                            } else {
+                                line.wrapping(Wrapping::None).into()
                             }
-                            line.into()
                         })
                         .collect();
                     column(lines)
-                        .spacing(10)
+                        .spacing(MINI_TICKER_GAP)
                         .align_x(iced::alignment::Horizontal::Center)
                         .into()
                 }
@@ -708,10 +968,11 @@ impl AppState {
                         .filter(|l| !l.is_empty())
                         .take(5)
                         .map(|l| {
-                            text(l.to_string())
+                            text(fit_lines(l, ticker_text_width(), 13.0, 1))
                                 .size(13)
                                 .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
                                 .align_x(iced::alignment::Horizontal::Center)
+                                .wrapping(Wrapping::None)
                                 .width(Fill)
                                 .into()
                         })
@@ -726,7 +987,7 @@ impl AppState {
             },
         };
         container(body)
-            .padding([16, 24])
+            .padding([MINI_TICKER_PAD.0, MINI_TICKER_PAD.1])
             .width(Fill)
             .height(iced::Length::Fixed(MINI_LYRICS_H))
             .center_x(Fill)

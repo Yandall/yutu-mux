@@ -11,6 +11,7 @@ Native Rust YouTube Music desktop app. Iced UI (no webview). Linux, macOS, and W
   - [Windows](#windows)
   - [Manual development build](#manual-development-build)
 - [Sign in](#sign-in)
+- [Mini player](#mini-player)
 - [Disclaimer of use](#disclaimer-of-use)
 - [Layout](#layout)
 - [Contributing](#contributing)
@@ -106,6 +107,35 @@ Settings imports a Netscape `cookies.txt` (private window, export via a
 "Get cookies.txt" extension). The file picker reads it, the app never
 shows its contents, the session is stored at 0600. Never paste cookie
 contents anywhere. Details and ToS notes in `docs/AUTH.md`.
+
+## Mini player
+
+The picture-in-picture button in the player bar opens a small floating
+window with the current song and controls; drag it by the cover or
+title. It reopens where you left it on X11, macOS and Windows, and on
+Hyprland. Other Wayland compositors choose its position themselves.
+
+Its window has its own app id, `yutu-mux-mini`, so compositor rules can
+target it. Tiling compositors frame and blur the whole transparent
+window (the pill then sits on a box); on Hyprland 0.57+ (Lua config)
+this rule keeps only the pill, floating above every workspace:
+
+```lua
+hl.window_rule({
+    name        = "yutu-mux-mini",
+    match       = { class = "^(yutu-mux-mini)$" },
+    float       = true,
+    pin         = true,
+    border_size = 0,
+    no_blur     = true,
+    no_shadow   = true,
+    rounding    = 0,
+    opacity     = "1.0 override",
+})
+```
+
+`opacity` matters when your config sets `active_opacity` /
+`inactive_opacity`: with blur off, anything behind would show through.
 
 ## Disclaimer of use
 

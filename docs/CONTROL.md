@@ -34,7 +34,10 @@ yutu-mux ctl play-result 0
 yutu-mux ctl seek 60
 yutu-mux ctl nav settings
 yutu-mux ctl resize 900 700
-yutu-mux ctl screenshot shot.png         # captures the real window
+yutu-mux ctl screenshot shot.png         # captures the real (main) window
+yutu-mux ctl mini open                   # mini player: open|close|restore
+yutu-mux ctl mini lyrics on              # its lyrics ticker
+yutu-mux ctl mini screenshot mini.png    # captures the mini window
 yutu-mux ctl help                        # full command list
 ```
 
@@ -55,7 +58,7 @@ yutu-mux ctl float         # toggle
 ```
 
 `float` and `resize` go through `hyprctl`, targeting the app's own
-window by process id, never the focused one. `resize` on a tiled
+main window, never the focused one and never the mini player. `resize` on a tiled
 window fails with a hint instead of silently doing nothing. Other
 tiling compositors (Sway, niri) may still ignore `resize`;
 `state.window` always reports the real size.
