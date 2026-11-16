@@ -456,11 +456,54 @@ impl AppState {
             Command::Escape => vec![Message::CloseContext],
             Command::Resize(w, h) => {
                 let size = iced::Size::new(w.max(MIN_WINDOW_W), h.max(MIN_WINDOW_H));
+                // Hyprland owns tiled sizes: resize through the
+                // compositor (floating windows only, it says so).
+                #[cfg(target_os = "linux")]
+                if yutu_desktop::hyprland::available() {
+                    let (w, h) = (size.width.round() as u32, size.height.round() as u32);
+                    return control_blocking(reply, move || {
+                        yutu_desktop::hyprland::resize(w, h).map(|win| {
+                            json!({
+                                "width": win.size.0,
+                                "height": win.size.1,
+                                "floating": win.floating,
+                            })
+                        })
+                    });
+                }
                 reply.ok(json!({ "width": size.width, "height": size.height }));
                 return iced::window::latest().then(move |id| match id {
                     Some(id) => iced::window::resize(id, size),
                     None => iced::Task::none(),
                 });
+            }
+            Command::Float(want) => {
+                #[cfg(target_os = "linux")]
+                if yutu_desktop::hyprland::available() {
+                    return control_blocking(reply, move || {
+                        yutu_desktop::hyprland::set_floating(want)
+                            .map(|floating| json!({ "floating": floating }))
+                    });
+                }
+                let _ = want;
+                reply.err("float needs a Hyprland session");
+                return iced::Task::none();
+            }
+            Command::Quit => {
+                // Same savers a manual quit relies on; a failed save
+                // keeps the app open instead of losing the session.
+                if !(self.persist_eq() && self.persist_queue()) {
+                    reply.err("session save failed; the app stays open");
+                    return iced::Task::none();
+                }
+                reply.ok(json!({ "quitting": true }));
+                #[cfg(unix)]
+                let _ = std::fs::remove_file(yutu_core::control::socket_path());
+                // A short grace so the reply line reaches the client.
+                return iced::Task::future(tokio::time::sleep(std::time::Duration::from_millis(
+                    200,
+                )))
+                .then(|_| iced::exit());
             }
             Command::Screenshot(path) => {
                 let path = path.unwrap_or_else(yutu_core::control::default_screenshot_path);
@@ -485,6 +528,26 @@ impl AppState {
         };
         self.control_run(msgs, &reply)
     }
+}
+
+/// Run a blocking helper (e.g. `hyprctl`) off the UI thread and reply
+/// with its result.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn control_blocking(
+    reply: ReplySlot,
+    f: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> iced::Task<Message> {
+    iced::Task::perform(
+        async move {
+            tokio::task::spawn_blocking(f)
+                .await
+                .unwrap_or_else(|e| Err(format!("worker crashed: {e}")))
+        },
+        move |r| {
+            reply.send(ControlReply::Json(r));
+            Message::NoOp
+        },
+    )
 }
 
 /// Socket listener as an Iced subscription (Unix only).

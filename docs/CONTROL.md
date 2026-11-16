@@ -41,9 +41,24 @@ yutu-mux ctl help                        # full command list
 Output is JSON on stdout; errors go to stderr. Exit codes: `0` ok,
 `1` the app refused or is unreachable, `2` usage error.
 
-`resize` is a request: tiling compositors (Hyprland, Sway, niri) may
-ignore it. `state.window` always reports the real size, and the
-headless `layout_snapshots` test covers fixed widths without a window.
+`quit` saves the session (queue, position, EQ) and closes the app.
+
+### Hyprland
+
+Tiled windows ignore resize requests, so under Hyprland:
+
+```sh
+yutu-mux ctl float on      # float the app window (like a Super+T bind)
+yutu-mux ctl resize 900 700
+yutu-mux ctl float off     # back to tiled (also: `ctl tile`)
+yutu-mux ctl float         # toggle
+```
+
+`float` and `resize` go through `hyprctl`, targeting the app's own
+window by process id, never the focused one. `resize` on a tiled
+window fails with a hint instead of silently doing nothing. Other
+tiling compositors (Sway, niri) may still ignore `resize`;
+`state.window` always reports the real size.
 
 `--wait` polls `state` until `busy` is false (search, track loading,
 artist/album pages) and then prints the search results (after

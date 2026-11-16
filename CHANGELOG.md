@@ -6,6 +6,8 @@
 
 - Scriptable control: start with `--control` and drive the running app
   (play, search, navigate, screenshots) via `yutu-mux ctl`.
+- `yutu-mux ctl quit` closes the app, and `ctl float` toggles tiling
+  on Hyprland so `ctl resize` works there.
 - Favorites has its own cover: a heart on a color gradient picked once
   for your library, with a matching glow on its page.
 - In-app updates with Update and restart, Omit this version, or Update

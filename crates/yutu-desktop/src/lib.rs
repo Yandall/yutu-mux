@@ -12,6 +12,8 @@
 /// MPRIS identity advertised on D-Bus.
 pub const MPRIS_IDENTITY: &str = "yutu-mux";
 
+#[cfg(target_os = "linux")]
+pub mod hyprland;
 pub mod macos;
 pub mod macos_notes;
 pub mod media;

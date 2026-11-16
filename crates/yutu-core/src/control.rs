@@ -83,6 +83,11 @@ pub enum Command {
     Resize(f32, f32),
     /// Capture the real window to a PNG at this path.
     Screenshot(Option<PathBuf>),
+    /// Hyprland: float (`Some(true)`), tile (`Some(false)`) or toggle
+    /// the window, like a Super+T keybind.
+    Float(Option<bool>),
+    /// Save the session and close the app.
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,8 +135,10 @@ UI:
   library [on|off]         library panel
   queue-panel [on|off]     queue panel
   escape                   close menus, dialogs and drawers
-  resize <w> <h>           resize the window (logical px)
+  resize <w> <h>           resize the window (logical px; Hyprland: float first)
+  float [on|off]           Hyprland: float, tile or toggle the window
   screenshot [path.png]    capture the window (default: temp dir)
+  quit                     save the session and close the app
 
 Client flags:
   --wait                   after the command, poll until the app is idle
@@ -231,6 +238,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             Command::Resize(w, h)
         }
         "screenshot" => Command::Screenshot(args.get(1).map(PathBuf::from)),
+        "float" => Command::Float(on_off(args.get(1))?),
+        "tile" => Command::Float(Some(false)),
+        "quit" | "exit" => Command::Quit,
         other => return Err(format!("unknown command `{other}` (try `help`)")),
     };
     Ok(c)
@@ -411,6 +421,16 @@ mod tests {
             Ok(Command::Resize(800.0, 600.0))
         );
         assert_eq!(parse_command(&words("like")), Ok(Command::Like(None)));
+        assert_eq!(parse_command(&words("quit")), Ok(Command::Quit));
+        assert_eq!(parse_command(&words("float")), Ok(Command::Float(None)));
+        assert_eq!(
+            parse_command(&words("float on")),
+            Ok(Command::Float(Some(true)))
+        );
+        assert_eq!(
+            parse_command(&words("tile")),
+            Ok(Command::Float(Some(false)))
+        );
         assert_eq!(
             parse_command(&words("screenshot /tmp/a.png")),
             Ok(Command::Screenshot(Some("/tmp/a.png".into())))
@@ -485,6 +505,8 @@ mod tests {
             "escape",
             "resize",
             "screenshot",
+            "float",
+            "quit",
         ] {
             assert!(HELP.contains(w), "help misses {w}");
         }
