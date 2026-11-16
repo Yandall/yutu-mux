@@ -330,10 +330,18 @@ impl AppState {
         if let Ok(store) = yutu_core::LibraryStore::open(&self.library_path) {
             let _ = store.set_pref(MINI_LYRICS_PREF, if lyrics { "1" } else { "0" });
         }
-        let mut tasks = vec![iced::window::resize(
-            id,
-            mini_window_size(lyrics, self.mini_scale()),
-        )];
+        // A non-resizable window pins min = max = its first size (winit
+        // stores those hints and restores them even when unlocked), so
+        // a bare resize is clamped by the compositor. Re-pin both hints
+        // at the new size, then resize: max is cleared first so the new
+        // min never exceeds the old max. Chained so the steps land in
+        // order.
+        let size = mini_window_size(lyrics, self.mini_scale());
+        let resize = iced::window::set_max_size(id, None)
+            .chain(iced::window::set_min_size(id, Some(size)))
+            .chain(iced::window::set_max_size(id, Some(size)))
+            .chain(iced::window::resize(id, size));
+        let mut tasks = vec![resize];
         if lyrics {
             tasks.extend(self.mini_lyrics_fetch());
         }
