@@ -24,9 +24,10 @@
 //!     asks `hyprctl` instead (also to keep the top edge fixed when the
 //!     lyrics grow, since Hyprland keeps a resized window's center);
 //!     other Wayland compositors place it themselves.
-//!   - The ticker never wraps past its slots: neighbor lines are one
-//!     ellipsized line, the current verse at most two (smaller text
-//!     when long), so all five slots always fit.
+//!   - The synced ticker never wraps past its slots: neighbor lines are
+//!     one ellipsized line, the current verse at most two (smaller text
+//!     when long), so all five slots always fit. Unsynced lyrics show
+//!     in full instead, wrapped and scrollable by hand.
 
 use super::*;
 
@@ -903,6 +904,41 @@ impl AppState {
         .into()
     }
 
+    /// Unsynced lyrics in the ticker: every line wrapped (never cut),
+    /// blank lines kept as stanza gaps, scrolled by hand with the slim
+    /// bar that shows on hover.
+    fn mini_plain_lyrics(&self, plain: &str) -> iced::Element<'_, Message> {
+        use iced::widget::{column, scrollable, text, text::Wrapping, Space};
+        use iced::Fill;
+        let lines: Vec<iced::Element<'_, Message>> = plain
+            .trim()
+            .lines()
+            .map(str::trim)
+            .map(|l| -> iced::Element<'_, Message> {
+                if l.is_empty() {
+                    Space::new().height(iced::Length::Fixed(6.0)).into()
+                } else {
+                    text(l.to_string())
+                        .size(13)
+                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .wrapping(Wrapping::WordOrGlyph)
+                        .width(Fill)
+                        .into()
+                }
+            })
+            .collect();
+        scrollable(column(lines).spacing(6).padding(iced::Padding {
+            right: 10.0,
+            ..iced::Padding::ZERO
+        }))
+        .direction(scrollable::Direction::Vertical(slim_bar()))
+        .style(|t, s| slim_scroll_alpha(t, s, 0.0))
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }
+
     /// Five-line synced ticker: the current verse large and white, its
     /// neighbors smaller and fading with distance. Unsynced lyrics,
     /// instrumentals, loading and empty states show one quiet line.
@@ -958,27 +994,20 @@ impl AppState {
                         .align_x(iced::alignment::Horizontal::Center)
                         .into()
                 }
-                // Plain lyrics carry no timing: the opening lines,
-                // static, so the ticker never pretends to follow.
-                Some((_, cached)) => column(
-                    cached
-                        .plain
-                        .lines()
-                        .map(str::trim)
-                        .filter(|l| !l.is_empty())
-                        .take(5)
-                        .map(|l| {
-                            text(fit_lines(l, ticker_text_width(), 13.0, 1))
-                                .size(13)
-                                .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
-                                .align_x(iced::alignment::Horizontal::Center)
-                                .wrapping(Wrapping::None)
-                                .width(Fill)
-                                .into()
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .spacing(8)
+                // Plain lyrics carry no timing: the whole text, wrapped,
+                // static and scrollable by hand, so the ticker never
+                // pretends to follow. Keyed by song, so a new song
+                // starts at the top.
+                Some((_, cached)) => iced::widget::keyed_column([(
+                    {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        id.hash(&mut h);
+                        h.finish()
+                    },
+                    self.mini_plain_lyrics(&cached.plain),
+                )])
+                .height(Fill)
                 .into(),
                 None if self.lyrics_fetch_pending(id) => {
                     notice(self.language.loading_lyrics(self.lyrics_provider.label()))

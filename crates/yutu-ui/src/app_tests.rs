@@ -11512,6 +11512,7 @@ fn mini_player_snapshots() {
         ("mini-hovered", true, false),
         ("mini-lyrics", true, true),
         ("mini-long-lyrics", false, true),
+        ("mini-plain-lyrics", false, true),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -11520,7 +11521,7 @@ fn mini_player_snapshots() {
         s.queue.push(t.clone());
         let url = s.hero_art_for(&t).unwrap();
         fake_backdrop(&mut s, url);
-        let verses = if name == "mini-long-lyrics" {
+        let verses = if name == "mini-long-lyrics" || name == "mini-plain-lyrics" {
             [
                 "We left the porch light burning for the ones who never came back home",
                 "for the ones who find their way across the water in the dark of night",
@@ -11554,6 +11555,18 @@ fn mini_player_snapshots() {
                 instrumental: false,
             },
         );
+        // Unsynced: the whole text, wrapped, scrollable.
+        if name == "mini-plain-lyrics" {
+            let plain = verses.join("\n") + "\n\n" + &verses.join("\n");
+            s.lyrics_cache.insert(
+                ("pip1".into(), LyricsProvider::Lrclib),
+                yutu_core::LyricsResult {
+                    plain,
+                    synced: Vec::new(),
+                    instrumental: false,
+                },
+            );
+        }
         // A third of the way in, on the third verse.
         s.position_secs = 67.0;
         let _ = s.update(Message::OpenMiniPlayer);

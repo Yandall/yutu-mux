@@ -10,8 +10,9 @@
   lyrics ticker; it remembers whether lyrics were open.
 - The mini player reopens where you left it and its lyrics grow
   downward only (X11, macOS, Windows, Hyprland).
-- Long lyric lines in the mini player shrink or end in "…" so all five
-  lines stay visible.
+- Long synced lyric lines in the mini player shrink or end in "…" so all
+  five lines stay visible.
+- Unsynced lyrics in the mini player show in full, wrapped, and scroll.
 - The mini player has its own window id (`yutu-mux-mini`); the README
   has a Hyprland rule that removes the frame around it.
 - `yutu-mux ctl mini` opens, closes and screenshots the mini player.
