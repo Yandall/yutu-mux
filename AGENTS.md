@@ -151,6 +151,13 @@
   app's cursor, layout mode or drag arming. Views/titles/themes go
   through `view_for` / `title_for` / `theme_for`; `view()` stays the
   main window. Lyrics toggle resizes downward, kept in `mini_lyrics`.
+- **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
+  `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
+  Commands parse in `yutu_core::control` and execute in
+  `yutu-ui/src/control.rs` strictly by dispatching existing `Message`s
+  (no side doors around UI contracts). New user actions should get a
+  `ctl` command too. Agents: drive the app with `yutu-mux ctl` (state,
+  play, search, nav, screenshot) rather than synthetic input.
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -328,7 +335,10 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 - `crates/yutu-ui/assets/locales/<lang>/app.ftl`: UI strings per
   language (translators edit these, never Rust; tests pin parity).
 - `crates/yutu-ui/assets/icons/`: Lucide SVGs + attribution README.
-- `src/main.rs`: MPRIS serve + watch loop wiring, log init, panic hook.
+- `src/main.rs`: MPRIS serve + watch loop wiring, log init, panic hook,
+  `ctl` subcommand dispatch (`src/ctl.rs` client).
+- `crates/yutu-core/src/control.rs`: control protocol (command parser,
+  socket path, wire format); `crates/yutu-ui/src/control.rs` executes.
 
 ## 10. Known judgment calls / quirks (don't "fix" blindly)
 

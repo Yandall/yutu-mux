@@ -414,6 +414,8 @@ pub enum CollectionMenu {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Command from the opt-in control socket (`control.rs`).
+    Control(ControlCall),
     Navigate(Route),
     /// Open a URL in the system browser (About page links).
     OpenUrl(String),

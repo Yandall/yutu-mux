@@ -60,7 +60,9 @@ pub(crate) fn window_settings() -> iced::window::Settings {
     }
 }
 
-pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
+/// Run the app. `control` opens the local control socket
+/// (`yutu_core::control`) so scripts and agents can drive it.
+pub fn run(mpris: Option<yutu_desktop::SharedPlayer>, control: bool) -> iced::Result {
     // Display startup: the bundled Adwaita Sans variable face always
     // registers (the System pick just leaves it unused) and the stored
     // family picks the renderer default. Scale reads live state, so
@@ -78,6 +80,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>) -> iced::Result {
         move || {
             let (mut state, task) = AppState::new();
             state.mpris = mpris.clone();
+            state.control_enabled = control;
             state.publish_mpris();
             let (main, open) = iced::window::open(window_settings());
             state.main_window = Some(main);

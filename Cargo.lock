@@ -7167,6 +7167,7 @@ dependencies = [
 name = "yutu-desktop"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "souvlaki",
  "tokio",
  "windows 0.44.0",
@@ -7180,6 +7181,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "mimalloc",
+ "serde_json",
  "tokio",
  "winres",
  "yutu-core",

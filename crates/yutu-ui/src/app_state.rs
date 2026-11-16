@@ -186,6 +186,9 @@ pub struct AppState {
     /// A session restore is waiting for its first play (the play button
     /// loads the saved track instead of resuming an empty backend).
     pub(crate) restored_pending: bool,
+    /// Opt-in control socket listener (`--control` / `YUTU_CONTROL=1`),
+    /// set once at startup.
+    pub(crate) control_enabled: bool,
     /// Context menu open for this track id (None = closed).
     pub(crate) context_menu: Option<String>,
     /// Playlist menu open for this playlist id (None = closed).

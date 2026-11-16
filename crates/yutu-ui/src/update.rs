@@ -26,6 +26,7 @@ impl AppState {
     /// returning; the `PlayStreamId` early return publishes explicitly.
     pub(crate) fn update_sync(&mut self, message: Message) -> iced::Task<Message> {
         match message {
+            Message::Control(_) => unreachable!("control calls are dispatched in update()"),
             Message::PlayTrack(_) | Message::EnqueueTrack(_) => {
                 unreachable!("play actions are dispatched in update()")
             }

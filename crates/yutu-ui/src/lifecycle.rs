@@ -122,6 +122,7 @@ impl AppState {
             pending_seek: None,
             autoload: false,
             restored_pending: false,
+            control_enabled: false,
             context_menu: None,
             submenu_playlists_for: None,
             submenu_trigger_hot: false,
@@ -648,6 +649,11 @@ impl AppState {
         .with(self.main_window)
         .filter_map(|(main, (window, msg))| main.is_none_or(|m| m == window).then_some(msg));
         let closed = iced::window::close_events().map(Message::WindowClosed);
+        let control = if self.control_enabled {
+            control::control_subscription()
+        } else {
+            iced::Subscription::none()
+        };
         iced::Subscription::batch([
             keys,
             suggest_keys,
@@ -657,6 +663,7 @@ impl AppState {
             frames,
             focus,
             closed,
+            control,
         ])
     }
 

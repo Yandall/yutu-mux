@@ -1417,6 +1417,11 @@ impl AppState {
     /// MPRIS state is published on every path that returns here.
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
+            Message::Control(call) => {
+                let task = self.control(call);
+                self.publish_mpris();
+                task
+            }
             Message::PlayTrack(i) => {
                 self.show_suggest = false;
                 let task = self.play_index(i);
