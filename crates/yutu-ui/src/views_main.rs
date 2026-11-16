@@ -1383,8 +1383,13 @@ impl AppState {
     /// lines for `id`, or None without synced lyrics / before the
     /// first timestamp. Same filter + `line_at` call as
     /// [`lyrics_content`]: the follow geometry must agree with the
-    /// highlight, so both read through here.
+    /// highlight, so both read through here. Only the live track has
+    /// a cursor: another song's lyrics (opened from a context menu)
+    /// must never follow the playing song's clock.
     pub(crate) fn lyric_cursor_at(&self, id: &str) -> Option<usize> {
+        if !self.lyrics_is_live(id) {
+            return None;
+        }
         let (_, cached) = self.lyrics_display_entry(id)?;
         // Instrumentals render a static label (no verses to follow),
         // even when stray synced lines exist.
@@ -1400,6 +1405,11 @@ impl AppState {
             .cloned()
             .collect();
         yutu_core::line_at(&visible, pos_ms)
+    }
+
+    /// True when `id` is the track currently loaded in the player.
+    pub(crate) fn lyrics_is_live(&self, id: &str) -> bool {
+        self.queue.current().is_some_and(|t| t.id == id)
     }
 
     /// Estimated height of one lyric row: wrapped visual lines at the
@@ -1633,6 +1643,33 @@ impl AppState {
         };
         match self.lyrics_display_entry(id) {
             Some((_, cached)) if cached.instrumental => notice(self.language.instrumental()),
+            // Not the playing song: static text in the unsynced style
+            // (stanza gaps kept), no highlight and no click-to-seek
+            // (that would seek the other song).
+            Some((_, cached)) if !cached.synced.is_empty() && !self.lyrics_is_live(id) => column(
+                cached
+                    .synced
+                    .iter()
+                    .map(|l| -> iced::Element<'_, Message> {
+                        let line = l.text.trim();
+                        if line.is_empty() {
+                            iced::widget::Space::new()
+                                .height(iced::Length::Fixed(10.0))
+                                .width(Fill)
+                                .into()
+                        } else {
+                            text(line.to_string())
+                                .size(13)
+                                .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .width(Fill)
+                                .into()
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .spacing(6)
+            .into(),
             Some((_, cached)) if !cached.synced.is_empty() => {
                 // Highlight reads through the shared cursor so the
                 // follow geometry can never disagree with it.
