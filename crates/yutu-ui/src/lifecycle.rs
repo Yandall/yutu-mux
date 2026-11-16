@@ -82,6 +82,7 @@ impl AppState {
             eq_cooldown_until: None,
             eq_dirty: false,
             eq_enabled: true,
+            volume_leveling: false,
             eq_saved: None,
             seek_drag: None,
             seek_drag_at: None,
@@ -415,6 +416,17 @@ impl AppState {
                 state.eq_preset = "Flat".to_string();
             }
             state.eq_saved = Some((state.eq_preset.clone(), state.eq_gains, state.eq_enabled));
+            // Volume leveling survives restarts (silent push, like EQ;
+            // rodio keeps the stored choice for when mpv is back).
+            state.volume_leveling =
+                store.get_pref("volume_leveling").unwrap_or(None).as_deref() == Some("1");
+            if state.volume_leveling {
+                if let Some(audio) = &state.audio {
+                    if audio.supports_eq() {
+                        let _ = audio.set_leveling(true);
+                    }
+                }
+            }
         }
         // Lyrics provider survives restarts (unknown values fall back to
         // LRCLIB, which carries synced timing).

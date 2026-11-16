@@ -1336,6 +1336,24 @@ impl Language {
     pub fn eq_off_failed(self, e: &str) -> String {
         self.tr_args("eq-off-failed", &[("e", e)])
     }
+    pub fn volume_leveling(self) -> String {
+        self.tr("volume-leveling")
+    }
+    pub fn volume_leveling_hint(self) -> String {
+        self.tr("volume-leveling-hint")
+    }
+    pub fn leveling_on(self) -> String {
+        self.tr("leveling-on")
+    }
+    pub fn leveling_off(self) -> String {
+        self.tr("leveling-off")
+    }
+    pub fn leveling_saved(self) -> String {
+        self.tr("leveling-saved")
+    }
+    pub fn leveling_failed(self, e: &str) -> String {
+        self.tr_args("leveling-failed", &[("e", e)])
+    }
     // Likes, radio, playlists.
     pub fn removed_favorite(self, id: &str) -> String {
         self.tr_args("removed-favorite", &[("id", id)])

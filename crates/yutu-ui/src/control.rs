@@ -151,6 +151,7 @@ impl AppState {
             "position_secs": self.position_secs,
             "volume": self.volume,
             "muted": self.muted,
+            "volume_leveling": self.volume_leveling,
             "shuffle": self.queue.shuffle,
             "repeat": format!("{:?}", self.queue.repeat).to_ascii_lowercase(),
             "queue": {
@@ -362,6 +363,9 @@ impl AppState {
             Command::Seek(s) => vec![Message::SeekTo(s as f32)],
             Command::Volume(v) => vec![Message::SetVolume(v)],
             Command::Mute => vec![Message::ToggleMute],
+            Command::Level(want) => vec![Message::VolumeLevelingToggled(
+                want.unwrap_or(!self.volume_leveling),
+            )],
             Command::Shuffle(want) => {
                 if want.is_some_and(|w| w == self.queue.shuffle) {
                     vec![]

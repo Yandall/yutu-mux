@@ -4114,6 +4114,20 @@ fn eq_bypass_keeps_curve() {
 }
 
 #[test]
+fn volume_leveling_toggle_persists() {
+    let mut s = test_state();
+    assert!(!s.volume_leveling, "off by default");
+    let _ = s.update(Message::VolumeLevelingToggled(true));
+    assert!(s.volume_leveling);
+    let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+    assert!(reopened.volume_leveling);
+    let _ = s.update(Message::VolumeLevelingToggled(false));
+    assert!(!s.volume_leveling);
+    let (reopened, _) = AppState::with_library_path(s.library_path.clone());
+    assert!(!reopened.volume_leveling);
+}
+
+#[test]
 fn settings_view_builds_with_graph_eq() {
     // Widget-tree smoke: Settings (preset buttons, bypass toggle,
     // canvas graph) constructs without panicking.

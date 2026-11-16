@@ -323,6 +323,15 @@ eq-off-no-device = EQ desactivado (sin dispositivo de audio)
 eq-off-skipped = EQ desactivado (omitido en { $backend })
 eq-off-failed = EQ desactivado (guardado; { $e })
 
+## Volume leveling (Settings)
+
+volume-leveling = Nivelar el volumen entre canciones
+volume-leveling-hint = Reproduce cada canción con un volumen parecido, así las pistas bajas ya no necesitan subir el volumen.
+leveling-on = Nivelación de volumen activada
+leveling-off = Nivelación de volumen desactivada
+leveling-saved = Nivelación de volumen guardada (necesita el backend mpv para aplicarse)
+leveling-failed = Error al nivelar el volumen: { $e }
+
 ## Debug panel (debug-panel feature only)
 
 error-section-title = Errores recientes de reproducción

@@ -715,6 +715,24 @@ impl AppState {
         ok
     }
 
+    /// Volume leveling toggle: pushes the loudness stage live on mpv and
+    /// persists at once. Rodio has no filter stage, so the choice is kept
+    /// and the status says so (it applies once mpv is back).
+    pub(crate) fn toggle_volume_leveling(&mut self, on: bool) {
+        self.volume_leveling = on;
+        self.status = match &self.audio {
+            Some(audio) if audio.supports_eq() => match audio.set_leveling(on) {
+                Ok(()) if on => self.language.leveling_on(),
+                Ok(()) => self.language.leveling_off(),
+                Err(e) => self.language.leveling_failed(&e),
+            },
+            _ => self.language.leveling_saved(),
+        };
+        if let Ok(store) = LibraryStore::open(&self.library_path) {
+            let _ = store.set_pref("volume_leveling", if on { "1" } else { "0" });
+        }
+    }
+
     /// One-line EQ backend note for Settings (rodio/no-device only: mpv
     /// builds show nothing, so the capped layout stays clean there).
     pub(crate) fn eq_note(&self) -> String {

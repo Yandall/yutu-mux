@@ -180,4 +180,15 @@ impl AudioOut {
             Self::Mpv(a) => a.apply_eq_preset(preset).map_err(|e| e.to_string()),
         }
     }
+
+    /// Volume leveling is an mpv filter stage like the EQ: rodio has none.
+    pub(crate) fn set_leveling(&self, on: bool) -> Result<(), String> {
+        #[cfg(not(feature = "mpv"))]
+        let _ = on;
+        match self {
+            Self::Rodio(_) => Err("volume leveling needs the mpv backend (libmpv)".into()),
+            #[cfg(feature = "mpv")]
+            Self::Mpv(a) => a.set_leveling(on).map_err(|e| e.to_string()),
+        }
+    }
 }

@@ -560,6 +560,7 @@ pub enum Message {
     SelectEqPreset(String),
     SetEqBand(usize, f32),
     EqToggled(bool),
+    VolumeLevelingToggled(bool),
     SeekPreview(f32),
     SeekRelease,
     ScrobbleToggled(bool),

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Volume leveling (Settings > Playback): songs play at a similar
+  loudness, so quiet tracks no longer need a volume bump.
 - Scriptable control: start with `--control` and drive the running app
   (play, search, navigate, screenshots) via `yutu-mux ctl`.
 - `yutu-mux ctl quit` closes the app, and `ctl float` toggles tiling

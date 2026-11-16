@@ -2841,6 +2841,16 @@ impl AppState {
                         ),
                     ]
                     .spacing(4),
+                    column![
+                        toggler(self.volume_leveling)
+                            .label(self.language.volume_leveling())
+                            .on_toggle(Message::VolumeLevelingToggled)
+                            .style(red_toggle),
+                        text(self.language.volume_leveling_hint())
+                            .size(12)
+                            .color(MUTED),
+                    ]
+                    .spacing(4),
                     settings_input(eq_group),
                     settings_input(eq_warn),
                     settings_input(eq_panel),

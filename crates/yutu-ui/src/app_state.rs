@@ -75,6 +75,9 @@ pub struct AppState {
     /// Last persisted EQ curve (preset name, gains, bypass): the Tick
     /// saver writes prefs on change, so drags settle without storms.
     pub eq_saved: Option<(String, [f32; BAND_COUNT], bool)>,
+    /// Volume leveling (persisted pref, default off): an mpv loudness
+    /// stage after the EQ so every song plays near one loudness.
+    pub volume_leveling: bool,
     /// Seek-bar drag preview in seconds (Some while held): display only
     /// (time label, lyrics, MPRIS follow it). The backend seek and the
     /// auto-advance wait for release; in-memory only, never persisted.
