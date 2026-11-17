@@ -244,7 +244,7 @@ impl AppState {
         weekly_mix(
             &self.discovery_history(),
             &self.liked,
-            &self.catalog_tracks(),
+            self.catalog.values(),
             10,
             now_unix(),
         )
@@ -259,7 +259,7 @@ impl AppState {
         forgotten_favorites(
             &self.liked,
             &self.discovery_history(),
-            &self.catalog_tracks(),
+            self.catalog.values(),
             now_unix(),
         )
         .into_iter()
@@ -270,13 +270,27 @@ impl AppState {
     /// Virtual Favorites id (never persisted, never a `uN` user id).
     pub(crate) const FAVORITES_ID: &'static str = "__favorites";
 
-    pub(crate) fn all_playlists(&self) -> Vec<Playlist> {
-        let mut out = vec![Playlist {
-            id: Self::FAVORITES_ID.into(),
-            title: "Favorites".into(),
-            tracks: self.favorite_tracks(),
+    /// Every playlist (built-in Favorites first, then user playlists),
+    /// borrowed: per-frame views only need ids, titles, counts and the
+    /// first row, so they never clone any playlist's tracks.
+    pub(crate) fn playlist_heads(&self) -> Vec<PlaylistHead<'_>> {
+        let mut liked = self
+            .liked_order
+            .iter()
+            .filter_map(|id| self.catalog.get(id.as_str()));
+        let first = liked.next();
+        let mut out = vec![PlaylistHead {
+            id: Self::FAVORITES_ID,
+            title: "Favorites",
+            len: usize::from(first.is_some()) + liked.count(),
+            first,
         }];
-        out.extend(self.user_playlists.clone());
+        out.extend(self.user_playlists.iter().map(|p| PlaylistHead {
+            id: p.id.as_str(),
+            title: p.title.as_str(),
+            len: p.tracks.len(),
+            first: p.tracks.first(),
+        }));
         out
     }
 
@@ -323,7 +337,8 @@ impl AppState {
                 tracks: self.favorite_tracks(),
             });
         }
-        self.all_playlists().into_iter().find(|p| p.id == id)
+        // Clone only the match (the playlist page asks every frame).
+        self.user_playlists.iter().find(|p| p.id == id).cloned()
     }
 
     /// Sort key for the pref store.

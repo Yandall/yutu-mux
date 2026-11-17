@@ -27,19 +27,20 @@ const LIKED_ARTIST_BONUS: f64 = 1.0;
 /// zero are returned (i.e. played at least once or liked / liked-artist),
 /// ordered by score descending with track-id ascending tie-breaks,
 /// truncated to `n` (`n == 0` yields an empty mix).
-pub fn weekly_mix(
+pub fn weekly_mix<'a>(
     history: &[HistoryEntry],
     liked: &HashSet<String>,
-    catalog: &[Track],
+    catalog: impl IntoIterator<Item = &'a Track> + Clone,
     n: usize,
     now_unix: i64,
 ) -> Vec<Track> {
-    if n == 0 || catalog.is_empty() {
+    if n == 0 {
         return Vec::new();
     }
 
     let liked_artists: HashSet<&str> = catalog
-        .iter()
+        .clone()
+        .into_iter()
         .filter(|t| liked.contains(&t.id))
         .map(|t| t.artist.as_str())
         .collect();
@@ -90,10 +91,10 @@ pub fn weekly_mix(
 /// when `now - last_played >= 30 * 86400`. Results are ordered with
 /// never-played first, then by last-played ascending (longest without a
 /// play first), with track-id ascending tie-breaks.
-pub fn forgotten_favorites(
+pub fn forgotten_favorites<'a>(
     liked: &HashSet<String>,
     history: &[HistoryEntry],
-    catalog: &[Track],
+    catalog: impl IntoIterator<Item = &'a Track>,
     now_unix: i64,
 ) -> Vec<Track> {
     let mut last_played: HashMap<&str, i64> = HashMap::new();

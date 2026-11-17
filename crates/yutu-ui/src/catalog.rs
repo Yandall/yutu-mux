@@ -381,13 +381,12 @@ impl AppState {
             .chain(self.results.tracks.iter())
             .chain(self.queue.items().iter())
             .chain(self.autoplay.iter())
+            // Favorites rows come from the catalog itself, so only user
+            // playlists can hold a stored row it lacks (borrowed scan,
+            // only the match is cloned).
+            .chain(self.user_playlists.iter().flat_map(|p| p.tracks.iter()))
             .find(|t| t.id == id)
             .cloned()
-            .or_else(|| {
-                self.all_playlists()
-                    .into_iter()
-                    .find_map(|p| p.tracks.into_iter().find(|t| t.id == id))
-            })
     }
 
     /// Stale search completion (the user typed on): keep the rows in
@@ -521,11 +520,11 @@ impl AppState {
     /// disk-cached art shows instantly via [`Self::art_handle`]; this
     /// warms only covers missing from both memory and disk.
     pub(crate) fn sidebar_cover_tracks(&self) -> Vec<Track> {
-        self.all_playlists()
+        self.playlist_heads()
             .into_iter()
             .take(8)
             .filter_map(|p| {
-                let first = p.tracks.first()?;
+                let first = p.first?;
                 // Catalog row wins (fresh art); stored row is the fallback.
                 Some(self.find_track(&first.id).unwrap_or_else(|| first.clone()))
             })
@@ -874,13 +873,6 @@ impl AppState {
                 .filter(|e| e.count.is_some())
                 .map(|e| e.arrived)
                 .sum::<usize>()
-    }
-
-    /// Everything the app has really seen (discovery candidate pool).
-    pub(crate) fn catalog_tracks(&self) -> Vec<Track> {
-        let mut v: Vec<Track> = self.catalog.values().cloned().collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
     }
 
     /// Move the captured fresh-import source into the cleanup modal once

@@ -218,14 +218,13 @@ impl AppState {
         use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let rows: Vec<iced::Element<'_, Message>> = self
-            .all_playlists()
+            .playlist_heads()
             .into_iter()
             .map(|pl| {
                 let art: iced::Element<'_, Message> = if pl.id == Self::FAVORITES_ID {
                     self.favorites_art(40.0)
                 } else {
-                    pl.tracks
-                        .first()
+                    pl.first
                         .and_then(|t| self.find_track(&t.id))
                         .map(|t| self.thumb(&t))
                         .unwrap_or_else(|| {
@@ -241,12 +240,11 @@ impl AppState {
                 };
                 // Hover reveals a trailing play button; right-click
                 // opens the playlist menu.
-                let show_play = self.hovered_playlist.as_deref() == Some(pl.id.as_str())
-                    && !pl.tracks.is_empty();
+                let show_play = self.hovered_playlist.as_deref() == Some(pl.id) && pl.len > 0;
                 let trailing: iced::Element<'_, Message> = if show_play {
                     button(btn_icon("play", 14.0, iced::Color::WHITE))
                         .style(accent_button)
-                        .on_press(Message::PlayPlaylist(pl.id.clone()))
+                        .on_press(Message::PlayPlaylist(pl.id.to_string()))
                         .padding(8)
                         .into()
                 } else {
@@ -254,16 +252,15 @@ impl AppState {
                         .width(iced::Length::Fixed(30.0))
                         .into()
                 };
-                let pl_id = pl.id.clone();
-                let pl_hover = pl.id.clone();
+                let pl_id = pl.id.to_string();
+                let pl_hover = pl.id.to_string();
                 mouse_area(
                     row_button(
                         row![
                             art,
                             column![
-                                btn_text(pl.title.clone(), 13),
-                                btn_text(self.language.playlist_sub(pl.tracks.len()), 11)
-                                    .color(MUTED),
+                                btn_text(pl.title.to_string(), 13),
+                                btn_text(self.language.playlist_sub(pl.len), 11).color(MUTED),
                             ]
                             .spacing(1)
                             .width(Fill),
@@ -273,7 +270,7 @@ impl AppState {
                         .align_y(iced::alignment::Vertical::Center),
                     )
                     .style(hover_row)
-                    .on_press(Message::OpenPlaylist(pl.id.clone()))
+                    .on_press(Message::OpenPlaylist(pl_id.clone()))
                     .padding(8)
                     .width(Fill),
                 )
@@ -2579,8 +2576,11 @@ impl AppState {
                     .spacing(10)
                     .into()
                 };
-                let album_groups = self.recommended_albums(10);
-                let album_cards: Vec<iced::Element<'_, Message>> = album_groups
+                // Memoized shelf (refresh_home_shelves): re-ranking the
+                // catalog here ran on every frame.
+                let album_cards: Vec<iced::Element<'_, Message>> = self
+                    .home_shelves
+                    .albums
                     .iter()
                     .map(|g| {
                         self.home_card(
@@ -4095,13 +4095,13 @@ impl AppState {
                 }
                 // Playlist membership for every row (precomputed: the menu
                 // buttons below borrow nothing from self). Built-ins
-                // lead via all_playlists.
+                // lead via playlist_heads.
                 let membership: Vec<(String, String, bool)> = self
-                    .all_playlists()
+                    .playlist_heads()
                     .iter()
                     .map(|pl| {
-                        let has = self.playlist_has(&pl.id, &t.id);
-                        (pl.id.clone(), pl.title.clone(), has)
+                        let has = self.playlist_has(pl.id, &t.id);
+                        (pl.id.to_string(), pl.title.to_string(), has)
                     })
                     .collect();
                 // Flyout toggle: the playlist list opens to the side so

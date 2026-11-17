@@ -105,8 +105,21 @@ pub(crate) struct HomeShelves {
 pub(crate) struct AlbumGroup {
     pub(crate) title: String,
     pub(crate) artist: String,
+    /// Summed plays (the shelf rank; the scoring tests read it).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) plays: usize,
     pub(crate) tracks: Vec<Track>,
+}
+
+/// Borrowed summary of one playlist (built-in Favorites first), for
+/// views that run every frame: no track list clone.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlaylistHead<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) len: usize,
+    /// Stored first row (Favorites: first resolvable liked track).
+    pub(crate) first: Option<&'a Track>,
 }
 
 /// Click behavior for a numbered song row: plain `PlayNow`, or play

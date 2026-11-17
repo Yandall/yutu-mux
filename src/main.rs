@@ -61,7 +61,49 @@ fn spawn_mpris(state: SharedPlayer) {
     });
 }
 
+/// mimalloc v3 option ids (`mi_option_e` in the bundled C header; the
+/// Rust bindings carry no constants for these two). The test below
+/// pins them against their documented defaults.
+const MI_OPTION_ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
+const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
+/// Hand freed Rust memory back to the OS promptly. By default mimalloc
+/// keeps freed arena pages resident for 10 s (1 s purge delay x10 for
+/// arenas) and commits whole arena chunks up front on Linux: with the
+/// per-frame view churn that held ~100 MB for ~40 MB of live data.
+/// Immediate purge measured ~100 -> 60-75 MB over an 8 minute session.
+/// (Arenas reserved before `main` keep eager commit; later ones don't.)
+fn tune_mimalloc() {
+    // SAFETY: option setters only store an integer; called first thing
+    // in main, before the app spawns threads.
+    unsafe {
+        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
+        libmimalloc_sys::mi_option_set(MI_OPTION_ARENA_EAGER_COMMIT, 0);
+    }
+}
+
+/// glibc gives every thread that mallocs its own 64 MB arena (up to
+/// 8 per core). Only libmpv, ffmpeg and the GPU driver allocate there
+/// (Rust goes to mimalloc), and their per-track threads left ~70 MB
+/// of mostly idle arenas after a few songs. Two arenas measured ~40 MB
+/// lower with no playback difference. Must run before any thread
+/// starts; an explicit `MALLOC_ARENA_MAX` in the environment wins.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn cap_malloc_arenas() {
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: plain glibc tuning call, made on the main thread
+        // before any other thread exists; a failure only keeps the
+        // default.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+    }
+}
+
 fn main() -> iced::Result {
+    tune_mimalloc();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    cap_malloc_arenas();
     let args: Vec<String> = std::env::args().collect();
     // `yutu-mux ctl ...` drives an already running instance and exits
     // (no window, no log file of its own).
@@ -107,4 +149,26 @@ fn main() -> iced::Result {
     let control =
         yutu_core::control::enabled_from(&args, std::env::var("YUTU_CONTROL").ok().as_deref());
     yutu_ui::run(Some(state), control)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The hardcoded option ids must still name the options we mean:
+    /// a mimalloc bump that renumbers `mi_option_e` fails here instead
+    /// of silently tuning the wrong knob. Reads the documented v3
+    /// defaults before anything sets them.
+    #[test]
+    fn mimalloc_option_ids_match_their_defaults() {
+        // SAFETY: plain option reads.
+        let (eager, delay) = unsafe {
+            (
+                libmimalloc_sys::mi_option_get(MI_OPTION_ARENA_EAGER_COMMIT),
+                libmimalloc_sys::mi_option_get(MI_OPTION_PURGE_DELAY),
+            )
+        };
+        assert_eq!(eager, 2, "arena_eager_commit default (2 = on overcommit)");
+        assert_eq!(delay, 1000, "purge_delay default (ms)");
+    }
 }

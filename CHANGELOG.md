@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- Uses noticeably less memory (about a fifth less in a typical
+  session) and no longer creeps up the longer it runs.
+- Less CPU and network work on the Home page and library panel:
+  connections and recommendations are reused instead of rebuilt.
+
 ### Fixed
 
 - macOS: text on non-Retina screens is drawn slightly heavier, so small

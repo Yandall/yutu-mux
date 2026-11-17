@@ -120,24 +120,25 @@ impl AppState {
         // Every library playlist's glow, a few per call, so opening one
         // paints its glow on the first frame (row covers are on disk).
         let mut ahead = 0;
-        for pl in self.all_playlists() {
+        // Borrowed (runs every Tick): no playlist or track clones.
+        for pl in self.playlist_heads() {
             if ahead >= BLUR_PREFETCH_PER_TICK {
                 break;
             }
             if pl.id == Self::FAVORITES_ID {
                 continue;
             }
+            // Catalog row wins (fresh art); stored row is the fallback.
             let Some(t) = pl
-                .tracks
-                .first()
-                .map(|f| self.find_track(&f.id).unwrap_or_else(|| f.clone()))
+                .first
+                .map(|f| self.catalog.get(f.id.as_str()).unwrap_or(f))
             else {
                 continue;
             };
-            if self.track_blur(&t).is_some() {
+            if self.track_blur(t).is_some() {
                 continue;
             }
-            if let Some(u) = self.blur_source_url(&t) {
+            if let Some(u) = self.blur_source_url(t) {
                 if !self.art_blur_loading.contains(&u) && !wanted.contains(&u) {
                     wanted.push(u);
                     ahead += 1;
