@@ -58,7 +58,7 @@ ARCH="$(uname -m)"
 # the Rust deployment target, and the ceiling the bundled-library check
 # below enforces. Homebrew bottles carry the build host's macOS as their
 # minimum, so the release runner must be this macOS (or older) too.
-MIN_MACOS="${MIN_MACOS:-14.0}"
+MIN_MACOS="${MIN_MACOS:-15.0}"
 export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
 # shellcheck disable=SC2086
 [ -n "${CARGO_FLAGS:-}" ] && echo "cargo flags: $CARGO_FLAGS"
