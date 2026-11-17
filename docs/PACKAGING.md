@@ -207,7 +207,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>dev.yutu-mux.YutuMux</string>
   <key>CFBundleName</key><string>YutuMux</string>
   <key>CFBundleVersion</key><string>0.1.0</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
 </dict></plist>
 PLIST
 

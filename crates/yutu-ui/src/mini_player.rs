@@ -93,7 +93,7 @@ const MINI_TICKER_LAYOUTS: [(f32, u32); 8] = [
 const MINI_GLOW_OPACITY: f32 = 0.9;
 const MINI_VEIL: iced::Color = iced::Color::from_rgba(0.04, 0.02, 0.03, 0.45);
 /// Base capsule surface (shows alone until the glow is decoded).
-const MINI_SURFACE: iced::Color = iced::Color::from_rgb8(0x1A, 0x14, 0x17);
+pub(crate) const MINI_SURFACE: iced::Color = iced::Color::from_rgb8(0x1A, 0x14, 0x17);
 
 /// Live mini player window state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

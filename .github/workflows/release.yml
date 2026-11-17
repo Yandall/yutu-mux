@@ -5,8 +5,34 @@ on:
       - 'v*'
 permissions:
   contents: write
+# Build-only: tests and lint run locally before tagging (AGENTS.md
+# section 7), not here. A notes job creates the release from the
+# matching CHANGELOG.md section; the three build jobs then attach their
+# downloads to it in parallel.
 jobs:
+  release-notes:
+    name: release notes from CHANGELOG.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract this version's changelog section
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "error: CHANGELOG.md has no '## $version' section" >&2
+            exit 1
+          fi
+          cat notes.md
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
   linux-tarball:
+    needs: release-notes
     name: linux x86_64 tarball
     runs-on: ubuntu-latest
     steps:
@@ -16,13 +42,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev pkg-config libx11-dev libwayland-dev libxkbcommon-dev libmpv-dev
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test
-        run: cargo test --workspace --locked
-      - name: Feature checks (innertube + submit + mpv compile)
-        run: |
-          cargo check --workspace --all-features --locked
-          pkg-config --modversion mpv
-          cargo check -p yutu-player --features mpv --locked
       - name: Build portable tarball
         run: packaging/linux/build-tarball.sh --output dist
       - name: Upload to GitHub Release
@@ -32,8 +51,12 @@ jobs:
             dist/*/*.tar.gz
             dist/*/*.tar.gz.sha256
   macos-dmg:
+    needs: release-notes
     name: macOS arm64 disk image
-    runs-on: macos-latest
+    # Pinned, not macos-latest: Homebrew's libmpv/ffmpeg bottles require
+    # the runner's macOS, so the bundle only opens on that version or
+    # newer. build-app.sh fails the job if this drifts above MIN_MACOS.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Build deps (libmpv headers, dylibbundler for the self-contained bundle)
@@ -48,6 +71,7 @@ jobs:
             dist/*/*.dmg
             dist/*/*.dmg.sha256
   windows-zip-setup:
+    needs: release-notes
     name: windows x86_64 zip + installer
     runs-on: windows-latest
     steps:
@@ -55,79 +79,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Inno Setup (installer builder only)
         run: choco install innosetup --no-progress -y
-      - name: Fetch mpv dev package (link + run tests)
-        shell: pwsh
-        run: |
-          # The Test step below links libmpv (default features), but the
-          # runner ships no mpv: fetch the same dev package the bundle
-          # script uses (pin parsed from it, single source of truth),
-          # resolve or generate mpv.lib for the linker, and put the DLL
-          # dir on PATH so mpv-linked tests can also run.
-          $script = Get-Content packaging/windows/build-windows.ps1 -Raw
-          $tag = ([regex]::Match($script, '\[string\]\$MpvTag = "([^"]+)"')).Groups[1].Value
-          $commit = ([regex]::Match($script, '\[string\]\$MpvCommit = "([^"]+)"')).Groups[1].Value
-          if (-not $tag -or -not $commit) { throw "could not read mpv pin from build-windows.ps1" }
-          $tmp = Join-Path $env:RUNNER_TEMP "mpv-dev-test"
-          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/$tag/mpv-dev-x86_64-$tag-git-$commit.7z"
-          Invoke-WebRequest -Uri $url -OutFile "$tmp\mpv-dev.7z" -UseBasicParsing
-          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe" }
-          & $sevenZip x "$tmp\mpv-dev.7z" "-o$tmp\mpv-dev" -y | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "7z failed to unpack the mpv dev package" }
-          $lib = Get-ChildItem -Path "$tmp\mpv-dev" -Filter "mpv.lib" -Recurse | Select-Object -First 1
-          if ($lib) {
-            $libDir = $lib.DirectoryName
-          } else {
-            # Same dumpbin/lib generation as build-windows.ps1: the dev
-            # package ships a MinGW import lib, MSVC needs mpv.lib.
-            # Tool lookup mirrors Find-VsTool (filesystem search: vswhere
-            # -find matches nothing on some runner images).
-            $dll = Get-ChildItem -Path "$tmp\mpv-dev" -Filter "libmpv-2.dll" -Recurse | Select-Object -First 1
-            if (-not $dll) { throw "mpv dev package has no libmpv-2.dll" }
-            $dumpbin = $null
-            $roots = @()
-            if ($env:ProgramFiles) { $roots += $env:ProgramFiles }
-            if (${env:ProgramFiles(x86)}) { $roots += ${env:ProgramFiles(x86)} }
-            foreach ($pf in $roots) {
-              $hit = Get-ChildItem -Path (Join-Path $pf "Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe") -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($hit) { $dumpbin = $hit.FullName; break }
-            }
-            if (-not $dumpbin) { throw "dumpbin.exe not found (needs Visual Studio Build Tools with MSVC)" }
-            $bindir = Split-Path $dumpbin -Parent
-            $genDir = Join-Path $tmp "mpv-genlib"
-            New-Item -ItemType Directory -Path $genDir -Force | Out-Null
-            & "$bindir\dumpbin.exe" /exports $dll.FullName "/out:$genDir\mpv-exports.txt" | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "dumpbin failed" }
-            $names = @()
-            $inTable = $false
-            foreach ($line in (Get-Content "$genDir\mpv-exports.txt")) {
-              if (-not $inTable) {
-                if ($line -match "ordinal\s+hint\s+RVA\s+name") { $inTable = $true }
-                continue
-              }
-              # Blank lines separate the header from the rows: skip them
-              # (breaking on them parsed zero exports) and stop at the tail.
-              if ($line -match "Summary") { break }
-              if ($line -match "^\s*\d+\s+\w+\s+[0-9A-Fa-f]+\s+(\S+)\s*$") { $names += $Matches[1] }
-            }
-            if ($names.Count -eq 0) { throw "no exports parsed from libmpv-2.dll" }
-            $def = "LIBRARY libmpv-2`r`nEXPORTS`r`n" + ($names -join "`r`n") + "`r`n"
-            [IO.File]::WriteAllText("$genDir\mpv.def", $def, [Text.UTF8Encoding]::new($false))
-            & "$bindir\lib.exe" "/def:$genDir\mpv.def" "/out:$genDir\mpv.lib" /machine:x64 | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "lib.exe failed to create mpv.lib" }
-            $libDir = $genDir
-          }
-          $tail = if ($env:LIB) { ";$env:LIB" } else { "" }
-          "LIB=$libDir$tail" >> $env:GITHUB_ENV
-          $dllDir = (Get-ChildItem -Path "$tmp\mpv-dev" -Filter "libmpv-2.dll" -Recurse | Select-Object -First 1).DirectoryName
-          $dllDir >> $env:GITHUB_PATH
-      - name: Test
-        run: cargo test --workspace --locked
-      - name: Feature checks (innertube + submit + mpv compile)
-        run: |
-          cargo check --workspace --all-features --locked
-          cargo check -p yutu-player --features mpv --locked
       - name: Build self-contained staged zip (mpv DLLs + yt-dlp.exe beside the exe)
         shell: pwsh
         run: packaging/windows/build-windows.ps1 -Output dist

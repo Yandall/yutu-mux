@@ -11581,10 +11581,19 @@ fn mini_window_is_transparent_and_named() {
     let _ = s.update(Message::OpenMiniPlayer);
     let id = s.mini.unwrap().id;
     let other = iced::window::Id::unique();
-    // Only the capsule paints: the window background is clear.
+    // Only the capsule paints: the window background is clear. The
+    // platform is set explicitly (detection follows the test host,
+    // and Windows keeps the window opaque on purpose).
+    s.mini.as_mut().unwrap().platform = crate::mini_player::MiniPlatform::Wayland;
     assert_eq!(
         s.theme_for(id).palette().background,
         iced::Color::TRANSPARENT
+    );
+    // Windows: opaque window painted with the capsule surface.
+    s.mini.as_mut().unwrap().platform = crate::mini_player::MiniPlatform::Windows;
+    assert_eq!(
+        s.theme_for(id).palette().background,
+        crate::mini_player::MINI_SURFACE
     );
     assert_ne!(
         s.theme_for(other).palette().background,
