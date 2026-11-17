@@ -19,6 +19,8 @@
 - The mini player's Open button brings the main window forward on
   Hyprland too.
 - The mini player's cover is sharp on high-resolution screens.
+- macOS: opening or closing the mini player's lyrics no longer flickers
+  with stretched content.
 - `yutu-mux ctl mini` opens, closes and screenshots the mini player.
 - Scriptable control: start with `--control` and drive the running app
   (play, search, navigate, screenshots) via `yutu-mux ctl`.

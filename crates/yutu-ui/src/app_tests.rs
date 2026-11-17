@@ -11400,6 +11400,11 @@ fn player_bar_button_toggles_the_mini_player() {
 fn mini_platform_gates_each_workaround_to_its_platform() {
     use crate::mini_player::MiniPlatform::*;
     // Hyprland: hyprctl placement + the Wayland fixes.
+    // macOS alone pins the Metal layer's gravity (resize stretch).
+    assert!(MacOs.pins_layer_gravity());
+    for p in [Hyprland, Wayland, X11, Windows] {
+        assert!(!p.pins_layer_gravity(), "{p:?}");
+    }
     assert!(Hyprland.hyprland() && Hyprland.grab_leave() && Hyprland.pinned_size_hints());
     assert!(!Hyprland.client_positions());
     // Other Wayland: Wayland fixes, no hyprctl, no client positions.

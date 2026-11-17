@@ -15,7 +15,8 @@
 //!   - Platform workarounds are gated on [`MiniPlatform`] (detected at
 //!     open), never applied everywhere: Hyprland `hyprctl` placement and
 //!     focus, Wayland size-hint re-pin and grab leave, client positions
-//!     on X11, macOS and Windows.
+//!     on X11, macOS and Windows, macOS layer gravity (no stretched
+//!     frame while the lyrics toggle resizes the window).
 //!   - The art and title are the drag handle (no title bar).
 //!   - Sizes are logical units times the UI scale, so the window always
 //!     fits its content at any scale.
@@ -203,6 +204,17 @@ fn mini_resize(
         .chain(iced::window::resize(id, size))
 }
 
+/// macOS only: pin the window's layers to top-left contents gravity, so
+/// a resize never shows the last frame stretched (see
+/// `yutu_desktop::macos_window`). Runs on the main thread via iced.
+#[cfg(target_os = "macos")]
+fn macos_pin_layers(id: iced::window::Id) -> iced::Task<Message> {
+    iced::window::run(id, |w| {
+        yutu_desktop::macos_window::pin_contents_top_left(w);
+    })
+    .discard()
+}
+
 /// Run a blocking helper (`hyprctl`) off the UI thread.
 #[cfg(target_os = "linux")]
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -274,6 +286,13 @@ impl MiniPlatform {
     /// size, so a resize must re-pin both hints first.
     pub(crate) fn pinned_size_hints(self) -> bool {
         matches!(self, Self::Hyprland | Self::Wayland)
+    }
+
+    /// macOS: the Metal layer must not stretch the last frame while
+    /// the window resizes (pinned to top-left contents gravity).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn pins_layer_gravity(self) -> bool {
+        self == Self::MacOs
     }
 
     /// Hyprland: position, focus and the top edge go through `hyprctl`.
@@ -575,8 +594,12 @@ impl AppState {
             drag_hold: None,
             platform,
         });
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
         let mut open = open.discard();
+        #[cfg(target_os = "macos")]
+        if platform.pins_layer_gravity() {
+            open = open.chain(macos_pin_layers(id));
+        }
         // Hyprland: move it back where it was once it is mapped.
         #[cfg(target_os = "linux")]
         if let (true, Some(at)) = (platform.hyprland(), self.mini_pos) {
@@ -730,8 +753,14 @@ impl AppState {
             let _ = store.set_pref(MINI_LYRICS_PREF, if lyrics { "1" } else { "0" });
         }
         let size = mini_window_size(lyrics, self.mini_scale());
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
         let mut resize = mini_resize(platform, id, size);
+        // macOS: pin again right before resizing (the Metal layer may
+        // have been created after the open-time pin).
+        #[cfg(target_os = "macos")]
+        if platform.pins_layer_gravity() {
+            resize = macos_pin_layers(id).chain(resize);
+        }
         // Hyprland keeps a resized floating window's center, so the
         // ticker would grow up and down: read the top-left first, then
         // put it back once the new size is applied.

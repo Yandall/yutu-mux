@@ -16,6 +16,12 @@ tokio = { version = "1", features = ["rt", "macros", "time"] }
 # MPRemoteCommandCenter). Target-gated: other platforms never compile it.
 [target.'cfg(target_os = "macos")'.dependencies]
 souvlaki = "0.8"
+# Mini player resize: pin the Metal layer's contents gravity
+# (`macos_window.rs`). Same versions iced/wgpu already pull in.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer"] }
+raw-window-handle = "0.6"
 
 # Windows media keys + SMTC via souvlaki (SystemMediaTransportControls).
 # The hidden HWND owner is created with the `windows` crate (same 0.44

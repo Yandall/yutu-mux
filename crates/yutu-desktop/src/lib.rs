@@ -8,6 +8,7 @@
 //! * [`macos`] : macOS Now Playing + media keys driver (souvlaki).
 //! * [`windows`] : Windows SMTC + media keys driver (souvlaki).
 //! * [`macos_notes`] : macOS integration plan (kept: design constraints).
+//! * `macos_window` : macOS-only mini player resize fix (layer gravity).
 
 /// MPRIS identity advertised on D-Bus.
 pub const MPRIS_IDENTITY: &str = "yutu-mux";
@@ -16,6 +17,8 @@ pub const MPRIS_IDENTITY: &str = "yutu-mux";
 pub mod hyprland;
 pub mod macos;
 pub mod macos_notes;
+#[cfg(target_os = "macos")]
+pub mod macos_window;
 pub mod media;
 pub mod mpris;
 #[cfg(test)]
