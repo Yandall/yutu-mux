@@ -28,6 +28,9 @@
 //!     asks `hyprctl` instead (also to keep the top edge fixed when the
 //!     lyrics grow, since Hyprland keeps a resized window's center);
 //!     other Wayland compositors place it themselves.
+//!   - The synced ticker is a wheel picker: the current line sits on
+//!     the center band and the wheel glides (ease-out, 450ms) to the
+//!     next line; far seeks, new songs and disabled animations jump.
 //!   - The synced ticker never cuts the current verse: a long one wraps
 //!     whole, at a smaller size and with fewer neighbor lines when
 //!     needed (`MINI_TICKER_LAYOUTS`). Neighbor lines are one ellipsized
@@ -426,6 +429,157 @@ pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, 
         .unwrap_or_else(|| vec![(visible[cur].to_string(), 13.0, 0)])
 }
 
+/// How long the synced ticker glides from one line to the next.
+pub(crate) const MINI_WHEEL_MS: u128 = 450;
+
+/// iOS-picker-like deceleration: fast start, soft landing.
+pub(crate) fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// A glide of the synced ticker between two current lines (`None` =
+/// before the first verse).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TickerGlide {
+    pub(crate) from: Option<usize>,
+    pub(crate) to: Option<usize>,
+    pub(crate) started: std::time::Instant,
+}
+
+impl TickerGlide {
+    /// Eased progress 0..=1 (1 once finished).
+    pub(crate) fn progress(&self) -> f32 {
+        ease_out_cubic(self.started.elapsed().as_millis() as f32 / MINI_WHEEL_MS as f32)
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        self.started.elapsed().as_millis() < MINI_WHEEL_MS
+    }
+}
+
+/// One placed line of the synced ticker (a wheel slot).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WheelLine {
+    /// Index among the visible (non-empty) lyric lines.
+    pub(crate) index: usize,
+    pub(crate) text: String,
+    pub(crate) size: f32,
+    pub(crate) alpha: f32,
+    pub(crate) bold: bool,
+    /// Top edge inside the ticker (0 = its top).
+    pub(crate) top: f32,
+    pub(crate) height: f32,
+}
+
+/// Static wheel for one current line: `ticker_lines` placed so the
+/// current verse's center sits on the ticker's center (the picker's
+/// selection band), kept inside the ticker padding when it fits. With
+/// no current line yet, the upcoming lines are centered as a block.
+pub(crate) fn wheel_layout(visible: &[&str], at: Option<usize>) -> Vec<WheelLine> {
+    let width = ticker_text_width();
+    let mut lines: Vec<WheelLine> = ticker_lines(visible, at)
+        .into_iter()
+        .map(|(text, size, d)| {
+            let index = match at {
+                Some(c) => (c as i64 + d as i64).max(0) as usize,
+                None => (d - 1).max(0) as usize,
+            };
+            let current = at.is_some() && d == 0;
+            let height = if current {
+                wrapped_height(&text, width, size, bold_font())
+            } else {
+                line_h(size)
+            };
+            let alpha = match (current, d.unsigned_abs()) {
+                (true, _) => 1.0,
+                (false, 1) => 0.72,
+                _ => 0.5,
+            };
+            WheelLine {
+                index,
+                text,
+                size,
+                alpha,
+                bold: current,
+                top: 0.0,
+                height,
+            }
+        })
+        .collect();
+    let mut y = 0.0;
+    for l in lines.iter_mut() {
+        l.top = y;
+        y += l.height + MINI_TICKER_GAP;
+    }
+    let block = (y - MINI_TICKER_GAP).max(0.0);
+    let center = MINI_LYRICS_H / 2.0;
+    let mut offset = match lines.iter().find(|l| l.bold) {
+        Some(cur) => center - (cur.top + cur.height / 2.0),
+        None => center - block / 2.0,
+    };
+    // Lopsided wheels (first lines of a song) stay inside the padding
+    // when the whole block fits.
+    let pad = MINI_TICKER_PAD.0;
+    if block <= MINI_LYRICS_H - 2.0 * pad {
+        offset = offset.clamp(pad, MINI_LYRICS_H - pad - block);
+    }
+    for l in lines.iter_mut() {
+        l.top += offset;
+    }
+    lines
+}
+
+/// One frame of a glide from wheel `a` to wheel `b` at eased progress
+/// `p`: every line moves, resizes and fades between its two slots.
+/// Lines only in `a` roll out (fading to 0) with the wheel's motion,
+/// lines only in `b` roll in from it.
+pub(crate) fn wheel_frame(a: &[WheelLine], b: &[WheelLine], p: f32) -> Vec<WheelLine> {
+    let p = p.clamp(0.0, 1.0);
+    let lerp = |x: f32, y: f32| x + (y - x) * p;
+    // How far the wheel turned: the shift of a line both wheels show
+    // (the incoming current line when it is in both).
+    let shift = b
+        .iter()
+        .filter(|l| l.bold)
+        .chain(b.iter())
+        .find_map(|lb| {
+            a.iter()
+                .find(|la| la.index == lb.index)
+                .map(|la| lb.top - la.top)
+        })
+        .unwrap_or(0.0);
+    let mut out: Vec<WheelLine> = Vec::new();
+    for la in a {
+        match b.iter().find(|lb| lb.index == la.index) {
+            Some(lb) => out.push(WheelLine {
+                index: lb.index,
+                text: lb.text.clone(),
+                size: lerp(la.size, lb.size),
+                alpha: lerp(la.alpha, lb.alpha),
+                bold: if p < 0.5 { la.bold } else { lb.bold },
+                top: lerp(la.top, lb.top),
+                height: lerp(la.height, lb.height),
+            }),
+            None => out.push(WheelLine {
+                top: lerp(la.top, la.top + shift),
+                alpha: lerp(la.alpha, 0.0),
+                ..la.clone()
+            }),
+        }
+    }
+    for lb in b {
+        if a.iter().all(|la| la.index != lb.index) {
+            out.push(WheelLine {
+                top: lerp(lb.top - shift, lb.top),
+                alpha: lerp(0.0, lb.alpha),
+                ..lb.clone()
+            });
+        }
+    }
+    out.sort_by_key(|l| l.index);
+    out
+}
+
 /// Mini window theme: the dark theme with a transparent window
 /// background, so only the capsule paints (the capsule surface where
 /// the window is opaque).
@@ -745,6 +899,90 @@ impl AppState {
             mini.drag_hold = Some(std::time::Instant::now());
         }
         iced::window::drag(mini.id)
+    }
+
+    /// Follow the synced ticker's current line after every update: a
+    /// change of up to three lines on the same song starts a wheel
+    /// glide; a new song, a far seek, or disabled animations jump.
+    pub(crate) fn mini_ticker_sync(&mut self) {
+        let live = match (self.mini, self.queue.current()) {
+            (Some(m), Some(t)) if m.lyrics => Some((t.id.clone(), self.lyric_cursor_at(&t.id))),
+            _ => None,
+        };
+        if self.mini_glide.is_some_and(|g| !g.running()) {
+            self.mini_glide = None;
+        }
+        if live == self.mini_ticker_at {
+            return;
+        }
+        let glide = match (&self.mini_ticker_at, &live) {
+            (Some((was, from)), Some((now, to))) if was == now && self.animations_enabled => {
+                let near = match (from, to) {
+                    (Some(f), Some(t)) => f.abs_diff(*t) <= 3,
+                    (None, Some(t)) => *t <= 2,
+                    (Some(f), None) => *f <= 2,
+                    (None, None) => false,
+                };
+                near.then(|| TickerGlide {
+                    from: *from,
+                    to: *to,
+                    started: std::time::Instant::now(),
+                })
+            }
+            _ => None,
+        };
+        self.mini_glide = glide;
+        self.mini_ticker_at = live;
+    }
+
+    /// A ticker glide still running (drives the animation tick).
+    pub(crate) fn mini_ticker_gliding(&self) -> bool {
+        self.mini.is_some() && self.mini_glide.is_some_and(|g| g.running())
+    }
+
+    /// The synced ticker as a wheel: every line pinned at its slot,
+    /// mid-glide when the current line just changed.
+    fn mini_wheel(&self, visible: &[&str], at: Option<usize>) -> iced::Element<'_, Message> {
+        use iced::widget::{container, pin, text, text::Wrapping, Stack};
+        use iced::Fill;
+        let target = wheel_layout(visible, at);
+        let lines = match self.mini_glide.filter(|g| g.running() && g.to == at) {
+            Some(g) => wheel_frame(&wheel_layout(visible, g.from), &target, g.progress()),
+            None => target,
+        };
+        let width = ticker_text_width();
+        let mut wheel = Stack::new()
+            .width(Fill)
+            .height(iced::Length::Fixed(MINI_LYRICS_H));
+        for l in lines {
+            let mut line = text(l.text)
+                .size(l.size)
+                .color(iced::Color::from_rgba(
+                    1.0,
+                    1.0,
+                    1.0,
+                    l.alpha.clamp(0.0, 1.0),
+                ))
+                .align_x(iced::alignment::Horizontal::Center)
+                .width(Fill);
+            // The current verse wraps whole; neighbors are cut to one
+            // line already, so a measuring hair never wraps them.
+            line = if l.bold {
+                line.font(bold_font()).wrapping(Wrapping::WordOrGlyph)
+            } else {
+                line.wrapping(Wrapping::None)
+            };
+            wheel = wheel.push(
+                pin(container(line).width(iced::Length::Fixed(width)))
+                    .x(MINI_TICKER_PAD.1)
+                    .y(l.top),
+            );
+        }
+        container(wheel)
+            .width(Fill)
+            .height(iced::Length::Fixed(MINI_LYRICS_H))
+            .clip(true)
+            .into()
     }
 
     /// Player bar button: open the mini player, or close it when it is
@@ -1297,7 +1535,7 @@ impl AppState {
     /// neighbors smaller and fading with distance. Unsynced lyrics,
     /// instrumentals, loading and empty states show one quiet line.
     fn mini_ticker(&self) -> iced::Element<'_, Message> {
-        use iced::widget::{column, container, text, text::Wrapping};
+        use iced::widget::{container, text};
         use iced::Fill;
         let id = self.queue.current().map(|t| t.id.clone());
         let notice = |s: String| -> iced::Element<'_, Message> {
@@ -1319,34 +1557,7 @@ impl AppState {
                         .filter(|t| !t.is_empty())
                         .collect();
                     let at = self.lyric_cursor_at(id);
-                    let lines: Vec<iced::Element<'_, Message>> = ticker_lines(&visible, at)
-                        .into_iter()
-                        .map(|(cut, size, d)| {
-                            let color = match d.abs() {
-                                0 => iced::Color::WHITE,
-                                1 => iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72),
-                                _ => iced::Color::from_rgba(1.0, 1.0, 1.0, 0.5),
-                            };
-                            let line = text(cut)
-                                .size(size)
-                                .color(color)
-                                .align_x(iced::alignment::Horizontal::Center)
-                                .width(Fill);
-                            // Neighbors are already cut to one line: never
-                            // let a measuring hair wrap them anyway.
-                            if d == 0 {
-                                line.font(bold_font())
-                                    .wrapping(Wrapping::WordOrGlyph)
-                                    .into()
-                            } else {
-                                line.wrapping(Wrapping::None).into()
-                            }
-                        })
-                        .collect();
-                    column(lines)
-                        .spacing(MINI_TICKER_GAP)
-                        .align_x(iced::alignment::Horizontal::Center)
-                        .into()
+                    return self.mini_wheel(&visible, at);
                 }
                 // Plain lyrics carry no timing: the whole text, wrapped,
                 // static and scrollable by hand, so the ticker never

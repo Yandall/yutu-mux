@@ -11381,6 +11381,102 @@ fn mini_ring_uses_the_filtered_hero_cover_of_the_current_song() {
 }
 
 #[test]
+fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
+    use crate::mini_player::{wheel_frame, wheel_layout, MINI_LYRICS_H};
+    let visible = [
+        "first light",
+        "second wave",
+        "third bell",
+        "fourth gate",
+        "fifth door",
+    ];
+    let center = MINI_LYRICS_H / 2.0;
+    // Mid-song: the current line sits on the picker's center band.
+    let b = wheel_layout(&visible, Some(2));
+    let cur = b.iter().find(|l| l.bold).unwrap();
+    assert_eq!(cur.index, 2);
+    assert!((cur.top + cur.height / 2.0 - center).abs() < 0.5);
+    // Neighbors fade with distance, in index order, above and below.
+    let alpha = |i: usize| b.iter().find(|l| l.index == i).unwrap().alpha;
+    assert!(alpha(1) < 1.0 && alpha(0) < alpha(1));
+    assert!(b.windows(2).all(|w| w[0].top < w[1].top));
+    // The first line of a song stays inside the ticker padding.
+    let start = wheel_layout(&visible, Some(0));
+    assert!(start.first().unwrap().top >= 16.0 - 0.5);
+    // Glide from line 1 to line 2: p = 0 is the old wheel, p = 1 the new.
+    let a = wheel_layout(&visible, Some(1));
+    let at_start = wheel_frame(&a, &b, 0.0);
+    let at_end = wheel_frame(&a, &b, 1.0);
+    for la in &a {
+        let f = at_start.iter().find(|l| l.index == la.index).unwrap();
+        assert!((f.top - la.top).abs() < 0.01 && (f.alpha - la.alpha).abs() < 0.01);
+    }
+    for lb in &b {
+        let f = at_end.iter().find(|l| l.index == lb.index).unwrap();
+        assert!((f.top - lb.top).abs() < 0.01 && (f.size - lb.size).abs() < 0.01);
+    }
+    // The wheel turns up: the new current line rises toward center.
+    let mid = wheel_frame(&a, &b, 0.5);
+    let rising =
+        |frame: &[crate::mini_player::WheelLine]| frame.iter().find(|l| l.index == 2).unwrap().top;
+    assert!(rising(&at_start) > rising(&mid) && rising(&mid) > rising(&at_end));
+    // A line that rolls out fades away; one that rolls in fades up.
+    if let Some(gone) = a.iter().find(|la| b.iter().all(|lb| lb.index != la.index)) {
+        let f = at_end.iter().find(|l| l.index == gone.index).unwrap();
+        assert!(f.alpha.abs() < 0.01);
+    }
+    if let Some(new) = b.iter().find(|lb| a.iter().all(|la| la.index != lb.index)) {
+        let f = at_start.iter().find(|l| l.index == new.index).unwrap();
+        assert!(f.alpha.abs() < 0.01);
+    }
+    // Before the first verse: a centered block of upcoming lines.
+    let before = wheel_layout(&visible, None);
+    assert!(before.iter().all(|l| !l.bold));
+    let top = before.first().unwrap().top;
+    let bottom = before.last().map(|l| l.top + l.height).unwrap();
+    assert!(((top + bottom) / 2.0 - center).abs() < 0.5);
+}
+
+#[test]
+fn mini_ticker_glides_on_a_line_change_and_jumps_otherwise() {
+    let mut s = synced_state(1.0);
+    let _ = s.update(Message::OpenMiniPlayer);
+    if !s.mini.unwrap().lyrics {
+        let _ = s.update(Message::MiniToggleLyrics);
+    }
+    let _ = s.update(Message::NoOp);
+    assert_eq!(s.mini_ticker_at.as_ref().map(|(_, at)| *at), Some(Some(0)));
+    assert!(s.mini_glide.is_none());
+    // The song reaches the next line: a glide from 0 to 1 starts.
+    s.position_secs = 6.0;
+    let _ = s.update(Message::NoOp);
+    let g = s.mini_glide.expect("glide");
+    assert_eq!((g.from, g.to), (Some(0), Some(1)));
+    assert!(s.mini_ticker_gliding());
+    let id = s.mini.unwrap().id;
+    let _ = s.view_for(id);
+    // Once the glide has run its course it is dropped.
+    s.mini_glide.as_mut().unwrap().started = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(!s.mini_ticker_gliding());
+    let _ = s.update(Message::NoOp);
+    assert!(s.mini_glide.is_none());
+    // Animations off: the line changes without a glide.
+    s.animations_enabled = false;
+    s.position_secs = 11.0;
+    let _ = s.update(Message::NoOp);
+    assert!(s.mini_glide.is_none());
+    assert_eq!(s.mini_ticker_at.as_ref().map(|(_, at)| *at), Some(Some(2)));
+    // A new song jumps too (no glide across songs).
+    s.animations_enabled = true;
+    s.queue = Queue::default();
+    s.queue.push(mk_track("m2", "Other", "Band"));
+    let _ = s.update(Message::NoOp);
+    assert!(s.mini_glide.is_none());
+}
+
+#[test]
 fn player_bar_button_toggles_the_mini_player() {
     let mut s = test_state();
     s.queue.push(mk_track("m1", "T", "A"));
@@ -11653,6 +11749,8 @@ fn mini_player_snapshots() {
         // Windows: opaque window, the capsule alone, inline Open/Close.
         ("mini-windows", true, false, MiniPlatform::Windows),
         ("mini-windows-lyrics", true, true, MiniPlatform::Windows),
+        // A third of the way through a wheel glide to the next line.
+        ("mini-wheel-glide", false, true, MiniPlatform::Hyprland),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -11728,6 +11826,15 @@ fn mini_player_snapshots() {
         }
         if lyrics != s.mini.unwrap().lyrics {
             let _ = s.update(Message::MiniToggleLyrics);
+        }
+        if name == "mini-wheel-glide" {
+            s.mini_glide = Some(crate::mini_player::TickerGlide {
+                from: Some(1),
+                to: Some(2),
+                started: std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_millis(90))
+                    .unwrap(),
+            });
         }
         let settings = iced::Settings {
             fonts: vec![include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")

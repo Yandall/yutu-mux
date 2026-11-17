@@ -12,6 +12,8 @@
   downward only (X11, macOS, Windows, Hyprland).
 - The mini player always shows the current lyric line in full: long
   lines get smaller text and fewer surrounding lines instead of a cut.
+- Synced lyrics in the mini player roll to the next line like a wheel
+  picker instead of jumping (off with animations disabled).
 - Unsynced lyrics in the mini player show in full, wrapped, and scroll.
 - The mini player has its own window id (`yutu-mux-mini`); the README
   has a Hyprland rule that removes the frame around it.

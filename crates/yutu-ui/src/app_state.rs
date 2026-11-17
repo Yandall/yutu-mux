@@ -626,4 +626,8 @@ pub struct AppState {
     /// once (filtered), keyed by its hero URL; and the URL in flight.
     pub(crate) mini_cover: Option<(String, iced::widget::image::Handle)>,
     pub(crate) mini_cover_loading: Option<String>,
+    /// Synced ticker: the song and current line last shown, and the
+    /// wheel glide toward it while one runs.
+    pub(crate) mini_ticker_at: Option<(String, Option<usize>)>,
+    pub(crate) mini_glide: Option<crate::mini_player::TickerGlide>,
 }

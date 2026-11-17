@@ -208,6 +208,8 @@ impl AppState {
             mini_pos: None,
             mini_cover: None,
             mini_cover_loading: None,
+            mini_ticker_at: None,
+            mini_glide: None,
             error_log: Vec::new(),
             seek_hold_until: None,
             paused_seek: false,

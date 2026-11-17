@@ -1412,10 +1412,19 @@ impl AppState {
         }
     }
 
+    /// Iced entry point: dispatch the message, then let the mini
+    /// player's synced ticker notice a changed current line (the
+    /// position moves in many handlers; one place catches them all).
+    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+        let task = self.dispatch(message);
+        self.mini_ticker_sync();
+        task
+    }
+
     /// Dispatcher: actions with async follow-ups (scrobble submits) return
     /// their task directly; everything else goes through `update_sync`.
     /// MPRIS state is published on every path that returns here.
-    pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+    fn dispatch(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::Control(call) => {
                 let task = self.control(call);

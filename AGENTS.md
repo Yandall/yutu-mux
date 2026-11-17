@@ -167,6 +167,11 @@
   to the capsule, DWM-rounded; Open/Close replace the title on hover. Synced ticker (`ticker_lines`): the current
   verse is never cut; it steps down `MINI_TICKER_LAYOUTS` (smaller
   size, then fewer neighbors) until it fits. Neighbors: 1 line each.
+  It renders as a wheel (`wheel_layout`, current line on the center
+  band) and glides 450ms between lines (`TickerGlide`, `wheel_frame`).
+  `update` calls `mini_ticker_sync` after every message (the position
+  changes in many handlers); far seeks, new songs and disabled
+  animations jump instead of gliding.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in
