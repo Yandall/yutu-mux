@@ -2,15 +2,7 @@
 
 ## Unreleased
 
-### Fixed
-
-- macOS: the app opens again (the 0.2.0 download stopped at launch
-  with "cannot be opened because of a problem").
-- macOS: the download runs on macOS 14 and 15 too, not only 26+.
-- Windows: the zip and installer downloads are published again (the
-  0.2.0 release build stopped before them).
-
-## 0.2.0 - 2026-11-16
+## 0.2.0 - 2026-11-17
 
 ### Added
 
@@ -121,6 +113,7 @@
 
 ### Fixed
 
+- macOS: the app runs on macOS 14 and newer.
 - Now Playing lyrics keep following the current line to the end of
   the song instead of stopping on their own near the last verses.
 - Now Playing lyrics scroll to the next line in one smooth motion
