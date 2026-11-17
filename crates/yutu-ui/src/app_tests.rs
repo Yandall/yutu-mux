@@ -11991,6 +11991,22 @@ fn mini_position_is_remembered_across_opens_and_restarts() {
     assert_eq!(again.mini_pos, Some(iced::Point::new(300.0, 20.0)));
 }
 
+#[test]
+fn mini_player_first_open_centers_on_the_main_window() {
+    // Pure math: the mini rect's center is the main rect's center.
+    let at = crate::mini_player::centered_on(
+        iced::Point::new(100.0, 50.0),
+        iced::Size::new(1280.0, 720.0),
+        iced::Size::new(380.0, 112.0),
+    );
+    assert_eq!(at, iced::Point::new(550.0, 354.0));
+    // Main window moves are tracked for it.
+    let mut s = test_state();
+    assert_eq!(s.main_pos, None);
+    let _ = s.update(Message::MainMoved(iced::Point::new(40.0, 30.0)));
+    assert_eq!(s.main_pos, Some(iced::Point::new(40.0, 30.0)));
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn mini_window_has_its_own_app_id() {

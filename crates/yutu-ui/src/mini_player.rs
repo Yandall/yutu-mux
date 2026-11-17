@@ -21,13 +21,15 @@
 //!   - Sizes are logical units times the UI scale, so the window always
 //!     fits its content at any scale.
 //!   - Its own app id ([`MINI_APP_ID`], Linux) so compositor rules can
-//!     target it (README: Hyprland rule).
+//!     target it. Hyprland: the app strips the frame itself (no
+//!     border, shadow, blur), the README rule adds float + pin.
 //!   - Position: reopens where the user left it (`mini_pos` pref) where
 //!     the platform reports moves (X11, macOS, Windows). Wayland clients
 //!     cannot read or set their position, so under Hyprland the app
 //!     asks `hyprctl` instead (also to keep the top edge fixed when the
 //!     lyrics grow, since Hyprland keeps a resized window's center);
-//!     other Wayland compositors place it themselves.
+//!     other Wayland compositors place it themselves. The first open
+//!     (nothing saved) centers it on the main window.
 //!   - The synced ticker is a wheel picker: the current line sits on
 //!     the center band and the wheel glides (ease-out, 450ms) to the
 //!     next line; far seeks, new songs and disabled animations jump.
@@ -154,11 +156,21 @@ pub(crate) fn mini_window_size(lyrics: bool, scale: f32, platform: MiniPlatform)
     iced::Size::new((c.width * scale).ceil(), (c.height * scale).ceil())
 }
 
-/// First placement: top-right corner, so the lyrics grow downward into
-/// open screen instead of off the bottom edge. Compositors that place
-/// windows themselves (Wayland) ignore this.
+/// Fallback first placement when the main window's position is unknown:
+/// top-right corner, so the lyrics grow downward into open screen
+/// instead of off the bottom edge. Compositors that place windows
+/// themselves (Wayland) ignore this.
 fn mini_start_position(window: iced::Size, monitor: iced::Size) -> iced::Point {
     iced::Point::new((monitor.width - window.width - 24.0).max(0.0), 56.0)
+}
+
+/// First open: the mini window's top-left that centers it on the main
+/// window (both rects in the same coordinates).
+pub(crate) fn centered_on(main_at: iced::Point, main: iced::Size, mini: iced::Size) -> iced::Point {
+    iced::Point::new(
+        (main_at.x + (main.width - mini.width) / 2.0).round(),
+        (main_at.y + (main.height - mini.height) / 2.0).round(),
+    )
 }
 
 /// Window settings for the mini player: frameless, transparent (the
@@ -789,13 +801,17 @@ impl AppState {
         let platform = MiniPlatform::detect();
         // Only client positions go to the window settings (Hyprland's
         // are layout coordinates, and Wayland ignores them anyway).
-        let saved = self.mini_pos.filter(|_| platform.client_positions());
-        let (id, open) = iced::window::open(mini_window_settings(
-            lyrics,
-            self.mini_scale(),
-            saved,
-            platform,
-        ));
+        // First open: centered on the main window where its position
+        // is known.
+        let scale = self.mini_scale();
+        let saved = self
+            .mini_pos
+            .or_else(|| {
+                let size = mini_window_size(lyrics, scale, platform);
+                Some(centered_on(self.main_pos?, self.window?, size))
+            })
+            .filter(|_| platform.client_positions());
+        let (id, open) = iced::window::open(mini_window_settings(lyrics, scale, saved, platform));
         self.mini = Some(MiniPlayer {
             id,
             lyrics,
@@ -816,10 +832,13 @@ impl AppState {
         if platform.pins_layer_gravity() {
             open = open.chain(macos_pin_layers(id));
         }
-        // Hyprland: move it back where it was once it is mapped.
+        // Hyprland: once it is mapped, strip the compositor frame
+        // (border, shadow, blur: no user rule needed) and move it back
+        // where it was, or (first open) center it on the main window.
         #[cfg(target_os = "linux")]
-        if let (true, Some(at)) = (platform.hyprland(), self.mini_pos) {
+        if platform.hyprland() {
             use yutu_desktop::hyprland as hl;
+            let saved = self.mini_pos;
             open = open.chain(iced::Task::perform(
                 blocking(move || {
                     let w = hl::wait_class_window(
@@ -827,9 +846,28 @@ impl AppState {
                         None,
                         std::time::Duration::from_secs(2),
                     )?;
-                    hl::move_window(&w.address, at.x as i64, at.y as i64)
+                    let frame = hl::strip_frame(&w.address);
+                    let at = match saved {
+                        Some(at) => Some(at),
+                        None => hl::own_window().ok().map(|main| {
+                            centered_on(
+                                iced::Point::new(main.at.0 as f32, main.at.1 as f32),
+                                iced::Size::new(main.size.0 as f32, main.size.1 as f32),
+                                iced::Size::new(w.size.0 as f32, w.size.1 as f32),
+                            )
+                        }),
+                    };
+                    if let Some(at) = at {
+                        hl::move_window(&w.address, at.x as i64, at.y as i64)?;
+                    }
+                    frame
                 }),
-                |_| Message::NoOp,
+                |r: Option<Result<(), String>>| {
+                    if let Some(Err(e)) = r {
+                        yutu_core::app_log::warn("mini-player", format_args!("hyprland: {e}"));
+                    }
+                    Message::NoOp
+                },
             ));
         }
         let mut tasks = vec![open];

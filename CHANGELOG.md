@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- The mini player opens in the middle of the main window the first
+  time; after that it reopens where you left it.
+
+### Fixed
+
+- Hyprland: the mini player no longer shows a window border or shadow
+  around the pill; no window rule is needed for that anymore.
+
 ## 0.2.0 - 2026-11-17
 
 ### Added

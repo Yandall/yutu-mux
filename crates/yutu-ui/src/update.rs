@@ -2287,6 +2287,7 @@ impl AppState {
             Message::MiniHover(over) => self.mini_hover(over),
             Message::MiniDrag => return self.mini_drag(),
             Message::MiniMoved(at) => self.mini_moved(at),
+            Message::MainMoved(at) => self.main_pos = Some(at),
             Message::WindowClosed(id) => {
                 // The main window owns the session: closing it quits
                 // (the daemon would otherwise keep running headless).

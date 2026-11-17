@@ -19,6 +19,9 @@
 //!   player uses [`class_window`] / [`move_window`] to keep its top edge
 //!   and remember where the user left it (Wayland clients cannot read
 //!   or set their own position).
+//! - The mini player strips its own frame ([`strip_frame`]: no border,
+//!   shadow, blur or rounding) so it shows only the pill without a
+//!   user window rule; a user rule can still override it.
 
 /// Wayland app id (Hyprland class) of the mini player window.
 pub const MINI_CLASS: &str = "yutu-mux-mini";
@@ -183,6 +186,40 @@ pub fn resize_lua(address: &str, width: u32, height: u32) -> String {
     format!("hl.dsp.window.resize({{ window = \"address:{address}\", x = {width}, y = {height} }})")
 }
 
+/// Lua expression setting one window property by address.
+pub fn set_prop_lua(address: &str, prop: &str, value: &str) -> String {
+    format!(
+        "hl.dsp.window.set_prop({{ prop = \"{prop}\", value = \"{value}\", window = \"address:{address}\" }})"
+    )
+}
+
+/// Window properties that frame a window: the transparent mini window
+/// would otherwise show a bordered, shadowed, blurred box around the
+/// pill.
+pub const FRAMELESS_PROPS: &[(&str, &str)] = &[
+    ("border_size", "0"),
+    ("no_shadow", "1"),
+    ("no_blur", "1"),
+    ("rounding", "0"),
+];
+
+/// Remove the compositor frame (border, shadow, blur, rounding) from
+/// one window by address. Every property is tried; the first error is
+/// returned.
+pub fn strip_frame(address: &str) -> Result<(), String> {
+    let target = format!("address:{address}");
+    let mut first_err = None;
+    for (prop, value) in FRAMELESS_PROPS {
+        if let Err(e) = dispatch(
+            &set_prop_lua(address, prop, value),
+            &["setprop", &target, prop, value],
+        ) {
+            first_err.get_or_insert(e);
+        }
+    }
+    first_err.map_or(Ok(()), Err)
+}
+
 /// Set (or with `None` toggle) floating; returns the new floating state.
 pub fn set_floating(want: Option<bool>) -> Result<bool, String> {
     let w = own_window()?;
@@ -265,5 +302,15 @@ mod tests {
             resize_lua("0x2", 900, 700),
             r#"hl.dsp.window.resize({ window = "address:0x2", x = 900, y = 700 })"#
         );
+    }
+
+    #[test]
+    fn frame_props_go_to_one_window_by_address() {
+        assert_eq!(
+            set_prop_lua("0x3", "border_size", "0"),
+            r#"hl.dsp.window.set_prop({ prop = "border_size", value = "0", window = "address:0x3" })"#
+        );
+        let props: Vec<_> = FRAMELESS_PROPS.iter().map(|(p, _)| *p).collect();
+        assert_eq!(props, ["border_size", "no_shadow", "no_blur", "rounding"]);
     }
 }

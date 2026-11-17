@@ -780,6 +780,8 @@ pub enum Message {
     /// The mini window moved (or its position was read back): remember
     /// it for the next open.
     MiniMoved(iced::Point),
+    /// The main window moved (or its position was read at boot).
+    MainMoved(iced::Point),
     /// A window closed (the main one quits the app).
     WindowClosed(iced::window::Id),
     /// Drawer lyrics scroll offset (sticky header past 200px), the

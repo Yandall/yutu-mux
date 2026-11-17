@@ -84,7 +84,12 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>, control: bool) -> iced::Re
             state.publish_mpris();
             let (main, open) = iced::window::open(window_settings());
             state.main_window = Some(main);
-            (state, iced::Task::batch([open.discard(), task]))
+            // Its position (where reported) centers the mini player's
+            // first open; later moves arrive as window events.
+            let open = open
+                .then(iced::window::position)
+                .map(|at| at.map_or(Message::NoOp, Message::MainMoved));
+            (state, iced::Task::batch([open, task]))
         },
         AppState::update,
         AppState::view_for,

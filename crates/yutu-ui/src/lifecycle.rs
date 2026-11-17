@@ -210,6 +210,7 @@ impl AppState {
             mini: None,
             mini_lyrics_pref: false,
             mini_pos: None,
+            main_pos: None,
             mini_cover: None,
             mini_cover_loading: None,
             verse_at: None,
@@ -702,6 +703,12 @@ impl AppState {
             iced::Event::Window(iced::window::Event::Resized(size)) => {
                 Some(Message::WindowResized(size))
             }
+            iced::Event::Window(
+                iced::window::Event::Moved(at)
+                | iced::window::Event::Opened {
+                    position: Some(at), ..
+                },
+            ) => Some(Message::MainMoved(at)),
             // Mouse side buttons navigate like a browser (press, not
             // release, for browser feel and no drag-commit collision).
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {
