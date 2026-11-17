@@ -24,6 +24,32 @@ Some streams/playlists will 403 or be unavailable — expected.
    unlocked, so no OS password on every launch). Sign out clears the
    keychain entry and every fallback file.
 
+## Premium audio (256 kbps)
+
+Signed in with a YouTube Premium account, each song is first resolved
+as that account through yt-dlp's `web_music` client, which serves the
+256 kbps AAC stream (itag 141). yt-dlp needs a JavaScript runtime for
+this client (`deno` is enabled by default). Free accounts, a missing
+runtime or an expired session simply fall back to the standard 128 kbps
+path; the signed-in attempt then pauses for 30 minutes so songs do not
+pay for a failing lookup each time. The log line `signed-in audio for
+<id>: format 141` confirms Premium quality.
+
+How the session reaches yt-dlp (it only reads cookies from a file):
+
+- Read from the keychain on the resolver thread for each lookup; never
+  kept in app state, never on the command line (`ps` shows it to every
+  user) and never in environment variables.
+- Written to a fresh, randomly named directory created `0700` with a
+  `0600` file (`O_EXCL`, so a planted path or symlink is never used),
+  in `$XDG_RUNTIME_DIR` (per-user tmpfs, never on disk) when it is
+  private, else the OS temp dir.
+- Every row is limited to `.youtube.com` and `secure`, with a one-hour
+  expiry, so yt-dlp cannot send the session to any other host.
+- Deleted as soon as the yt-dlp run ends; jars left by a crash are
+  swept after an hour. The stream URL it returns must still be a
+  `googlevideo.com` URL, and playback itself sends no cookies.
+
 Warnings:
 
 - Unofficial API use violates YouTube ToS. Personal/open-source use only.
