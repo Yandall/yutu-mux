@@ -192,13 +192,7 @@ pub(crate) fn truncate_title(title: &str, max: usize) -> String {
 /// the view re-runs on every frame and the inputs rarely change (the
 /// mini player's ticker fits five lines per frame).
 pub(crate) fn fit_lines(s: &str, width: f32, size: f32, max_lines: usize) -> String {
-    fit_lines_font(
-        s,
-        width,
-        size,
-        max_lines,
-        crate::fonts::effective_font().to_iced_font(),
-    )
+    fit_lines_font(s, width, size, max_lines, crate::fonts::body_font())
 }
 
 /// Height of `s` wrapped (word or glyph) into `width` px at `size` px

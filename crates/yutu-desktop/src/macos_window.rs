@@ -45,3 +45,20 @@ pub fn pin_contents_top_left<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     }
     true
 }
+
+/// Backing scale factor of the main screen (1.0 on a non-Retina
+/// display, 2.0 on Retina), read through AppKit's `NSScreen`. `None`
+/// when AppKit reports no screen. Call it from the main thread
+/// (before iced starts is fine: AppKit answers without a window).
+pub fn main_screen_scale() -> Option<f64> {
+    use objc2::class;
+    // SAFETY: `+[NSScreen mainScreen]` returns a retained-or-nil
+    // NSScreen, and `backingScaleFactor` is a CGFloat (f64 on every
+    // 64-bit macOS target). Runs on the main thread (AppKit's rule).
+    unsafe {
+        let screen: Option<Retained<AnyObject>> = msg_send![class!(NSScreen), mainScreen];
+        let screen = screen?;
+        let scale: f64 = msg_send![&*screen, backingScaleFactor];
+        (scale.is_finite() && scale > 0.0).then_some(scale)
+    }
+}

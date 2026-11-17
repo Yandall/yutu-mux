@@ -73,6 +73,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>, control: bool) -> iced::Re
         .map(|raw| FontFamily::parse(&raw))
         .unwrap_or(FontFamily::Adwaita);
     let _ = EFFECTIVE_FONT.set(startup_family);
+    let _ = TEXT_BOOST.set(detect_text_boost());
     // A daemon instead of a single-window application: the mini player
     // is a second window. The main window opens at boot and closing it
     // quits (see `Message::WindowClosed`).
@@ -96,7 +97,7 @@ pub fn run(mpris: Option<yutu_desktop::SharedPlayer>, control: bool) -> iced::Re
     )
     .title(AppState::title_for)
     .font(include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf").as_slice())
-    .default_font(startup_family.to_iced_font())
+    .default_font(body_font())
     .scale_factor(|state: &AppState, _window| clamp_scale(state.ui_scale))
     .theme(AppState::theme_for)
     .subscription(AppState::subscription)

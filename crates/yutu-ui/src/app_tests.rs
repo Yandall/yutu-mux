@@ -9177,6 +9177,36 @@ fn animation_prefs_clamp_and_default() {
 }
 
 #[test]
+fn text_boost_only_on_low_dpi_macos_unless_forced() {
+    // 1x macOS gets heavier text (no Core Text smoothing in iced);
+    // Retina, unknown screens and other platforms keep normal weights.
+    assert!(text_boost_for(true, Some(1.0), None));
+    assert!(!text_boost_for(true, Some(2.0), None));
+    assert!(!text_boost_for(true, Some(TEXT_BOOST_MAX_SCALE), None));
+    assert!(!text_boost_for(true, None, None));
+    assert!(!text_boost_for(false, Some(1.0), None));
+    // The env override wins both ways; junk is ignored.
+    assert!(text_boost_for(false, None, Some("1")));
+    assert!(text_boost_for(true, Some(2.0), Some(" ON ")));
+    assert!(!text_boost_for(true, Some(1.0), Some("0")));
+    assert!(!text_boost_for(true, Some(1.0), Some("off")));
+    assert!(text_boost_for(true, Some(1.0), Some("maybe")));
+}
+
+#[test]
+fn boosted_weight_steps_body_and_medium_but_keeps_bold() {
+    use iced::font::Weight;
+    assert_eq!(boosted_weight(Weight::Normal, true), Weight::Medium);
+    assert_eq!(boosted_weight(Weight::Medium, true), Weight::Semibold);
+    assert_eq!(boosted_weight(Weight::Bold, true), Weight::Bold);
+    for w in [Weight::Normal, Weight::Medium, Weight::Bold] {
+        assert_eq!(boosted_weight(w, false), w);
+    }
+    // Off by default (Linux test runs): body text stays Regular.
+    assert_eq!(body_font().weight, Weight::Normal);
+}
+
+#[test]
 fn font_prefs_default_parse_and_persist() {
     // Adwaita Sans renders the same outlines on Linux and macOS, so it is
     // the default; System keeps the old platform-sans behavior.
