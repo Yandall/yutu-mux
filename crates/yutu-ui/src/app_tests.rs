@@ -548,7 +548,7 @@ fn scrollbar_fade_lights_and_decays() {
     let faded = s.scroll_opacity("queue");
     assert!(faded < 1.0 && faded > 0.0);
     // Drawer scrolling lights its own key through its own message.
-    let _ = s.update(Message::DrawerScrolled(10.0, 0.0));
+    let _ = s.update(Message::DrawerScrolled(10.0, 0.0, 0.0));
     assert_eq!(s.scroll_opacity("drawer"), 1.0);
 }
 
@@ -5415,20 +5415,20 @@ fn lyric_follow_centers_in_the_measured_viewport() {
     // park the highlight below the visible area.
     let mut s = synced_state(11.0);
     s.drawer_open = true;
-    let _ = s.update(Message::DrawerScrolled(0.0, 600.0));
+    let _ = s.update(Message::DrawerScrolled(0.0, 600.0, 0.0));
     let tall = s.lyric_follow_y("m1", 2).unwrap();
-    let _ = s.update(Message::DrawerScrolled(0.0, 200.0));
+    let _ = s.update(Message::DrawerScrolled(0.0, 200.0, 0.0));
     let short = s.lyric_follow_y("m1", 2).unwrap();
     assert!((short - tall - 200.0).abs() < 0.01);
     // Zero heights (tests, unknown bounds) keep the last measurement.
-    let _ = s.update(Message::DrawerScrolled(0.0, 0.0));
+    let _ = s.update(Message::DrawerScrolled(0.0, 0.0, 0.0));
     assert_eq!(s.drawer_view_h, Some(200.0));
     // A resize while following drops the recorded verse so the next
     // tick retargets to the new center.
     s.lyrics_follow = true;
     let _ = s.lyric_follow_task();
     assert!(s.lyrics_follow_at.is_some());
-    let _ = s.update(Message::DrawerScrolled(s.drawer_scroll, 260.0));
+    let _ = s.update(Message::DrawerScrolled(s.drawer_scroll, 260.0, 0.0));
     assert!(s.lyrics_follow_at.is_none());
     let _ = s.lyric_follow_task();
     assert!((s.lyrics_target - (short - 30.0)).abs() < 0.01);
@@ -5473,6 +5473,93 @@ fn lyric_follow_takes_the_measured_row_center() {
 }
 
 #[test]
+fn lyric_follow_survives_relayout_and_the_scroll_end() {
+    // The verse glide resizes rows every frame and late verses sit
+    // past the scroll end: neither may count as a user scroll.
+    let mut s = synced_state(6.0);
+    s.drawer_open = false;
+    let _ = s.update(Message::ToggleDrawer);
+    assert!(s.drawer_open);
+    for _ in 0..80 {
+        let _ = s.update(Message::Animate);
+    }
+    let _ = s.update(Message::DrawerScrolled(0.0, 300.0, 1000.0));
+    s.lyrics_follow = true;
+    s.lyrics_follow_at = None;
+    let _ = s.lyric_follow_task();
+    // Rows growing (content height changes) re-report the offset
+    // unchanged or clamped: a layout echo, follow stays on.
+    let _ = s.update(Message::DrawerScrolled(37.0, 300.0, 1030.0));
+    assert!(s.lyrics_follow, "relayout disengaged follow");
+    // A target past the end glides to the end and settles there.
+    s.lyrics_target = 900.0;
+    s.drawer_scroll = 500.0;
+    s.drawer_content_h = Some(900.0);
+    let mut commanded = false;
+    for _ in 0..80 {
+        let before = s.lyrics_cmds[0];
+        let _ = s.update(Message::Animate);
+        let cmd = s.lyrics_cmds[0];
+        if cmd.to_bits() != before.to_bits() {
+            commanded = true;
+            let _ = s.update(Message::DrawerScrolled(cmd.min(600.0), 300.0, 900.0));
+        }
+    }
+    assert!(commanded);
+    assert!((s.drawer_scroll - 600.0).abs() <= 1.0);
+    assert!(s.lyrics_follow, "clamped echo disengaged follow");
+    assert!(!s.lyrics_gliding(), "glide never settles at the end");
+    // An overshooting command echoed clamped is still an echo.
+    s.lyrics_cmds = [640.0, f32::NAN, f32::NAN];
+    let _ = s.update(Message::DrawerScrolled(600.0, 300.0, 900.0));
+    assert!(s.lyrics_follow);
+    // A real scroll (same content height, no matching command) still
+    // takes over.
+    let _ = s.update(Message::DrawerScrolled(420.0, 300.0, 900.0));
+    assert!(!s.lyrics_follow);
+}
+
+#[test]
+fn lyric_auto_follow_scrolls_quietly_and_tracks_resizing_lines() {
+    let mut s = synced_state(1.0);
+    s.drawer_open = false;
+    let _ = s.update(Message::ToggleDrawer);
+    for _ in 0..80 {
+        let _ = s.update(Message::Animate);
+    }
+    let _ = s.lyric_follow_task();
+    s.scroll_hint.clear();
+    // The follow's own scrolls (echoes, relayouts) keep the
+    // scrollbar hidden.
+    let _ = s.update(Message::Animate);
+    let cmd = s.lyrics_cmds[0];
+    assert!(cmd.is_finite(), "follow issued no scroll");
+    let _ = s.update(Message::DrawerScrolled(cmd, 300.0, 1000.0));
+    let _ = s.update(Message::DrawerScrolled(cmd, 300.0, 1012.0));
+    assert!(s.lyrics_follow);
+    assert!(
+        !s.scroll_hint.contains_key("drawer"),
+        "auto follow lit the scrollbar"
+    );
+    // A real scroll lights it (and takes over).
+    let _ = s.update(Message::DrawerScrolled(cmd + 200.0, 300.0, 1012.0));
+    assert!(!s.lyrics_follow);
+    assert!(s.scroll_hint.contains_key("drawer"));
+    // While lines resize after a verse change nothing is measured (the
+    // layout is mid-way); the first settled frame is.
+    s.lyrics_follow = true;
+    s.position_secs = 6.0;
+    let _ = s.update(Message::NoOp);
+    let _ = s.lyric_follow_task();
+    assert!(s.verse_gliding(), "verse change did not glide");
+    assert!(s.lyric_glide_probe().is_none());
+    assert!(s.lyric_glide_probe().is_none());
+    s.verse_glide = None;
+    assert!(s.lyric_glide_probe().is_some(), "no settle probe");
+    assert!(s.lyric_glide_probe().is_none());
+}
+
+#[test]
 fn lyric_follow_snaps_takeover_and_resumes() {
     let mut s = synced_state(1.0);
     // Opening the drawer arms a fresh follow run.
@@ -5492,7 +5579,7 @@ fn lyric_follow_snaps_takeover_and_resumes() {
     for _ in 0..80 {
         let _ = s.update(Message::Animate);
         let cmd = s.lyrics_cmds[0];
-        let _ = s.update(Message::DrawerScrolled(cmd, 0.0));
+        let _ = s.update(Message::DrawerScrolled(cmd, 0.0, 0.0));
         if (s.drawer_scroll - s.lyrics_target).abs() <= 1.0 {
             break;
         }
@@ -5505,7 +5592,7 @@ fn lyric_follow_snaps_takeover_and_resumes() {
     let _ = s.update(Message::Animate);
     let _ = s.update(Message::Animate);
     let stale = s.lyrics_cmds[2];
-    let _ = s.update(Message::DrawerScrolled(stale, 0.0));
+    let _ = s.update(Message::DrawerScrolled(stale, 0.0, 0.0));
     assert!(s.lyrics_follow);
     // Same verse next tick: target holds.
     let _ = s.lyric_follow_task();
@@ -5517,12 +5604,12 @@ fn lyric_follow_snaps_takeover_and_resumes() {
     assert!(s.lyrics_target > y0);
     assert!(s.lyrics_gliding());
     // A real scroll away disengages...
-    let _ = s.update(Message::DrawerScrolled(900.0, 0.0));
+    let _ = s.update(Message::DrawerScrolled(900.0, 0.0, 0.0));
     assert!(!s.lyrics_follow);
     assert!(!s.lyrics_gliding());
     // ...and scrolling back near the verse resumes silently.
     let back = s.lyrics_target - 50.0;
-    let _ = s.update(Message::DrawerScrolled(back, 0.0));
+    let _ = s.update(Message::DrawerScrolled(back, 0.0, 0.0));
     let _ = s.lyric_follow_task();
     assert!(s.lyrics_follow);
     // Closed drawer and plain lyrics are always a no-op.
@@ -5560,7 +5647,7 @@ fn track_change_resets_open_drawer_to_top() {
     // Drawer open with a stale deep scroll (the user read far down
     // the old lyrics, disengaging follow).
     let _ = s.update(Message::ToggleDrawer);
-    let _ = s.update(Message::DrawerScrolled(500.0, 0.0));
+    let _ = s.update(Message::DrawerScrolled(500.0, 0.0, 0.0));
     assert!(!s.lyrics_follow);
     // Changing song snaps back to the hero and re-arms follow.
     let _ = s.update(Message::PlayNow("m2".into()));
@@ -5569,7 +5656,7 @@ fn track_change_resets_open_drawer_to_top() {
     assert!(s.lyrics_follow);
     assert!(s.lyrics_follow_at.is_none());
     // The 0.0 echo matches the command ring, so no takeover fires.
-    let _ = s.update(Message::DrawerScrolled(0.0, 0.0));
+    let _ = s.update(Message::DrawerScrolled(0.0, 0.0, 0.0));
     assert!(s.lyrics_follow);
     // Closed drawer: stale offsets are untouched, nothing re-arms.
     let mut s = test_state();
@@ -10518,6 +10605,125 @@ fn lyric_probe_measures_live_layout_in_short_window() {
     // At the measured target the row sits fully inside the viewport.
     let row_top_on_screen = g.top - s.lyrics_target;
     assert!(row_top_on_screen >= 0.0 && row_top_on_screen + g.h <= g.view_h);
+}
+
+/// Verse change in the drawer, frame by frame on the real layout: the
+/// follow scroll moves one way only (no overshoot then settle back as
+/// lines resize) and lands on the new verse's settled center. Run with
+/// `--ignored` (needs the renderer).
+#[test]
+#[ignore]
+fn lyric_follow_never_bounces_on_verse_change() {
+    for (w, h, text) in [
+        (1280.0, 800.0, "Paper lanterns drifting over the harbor"),
+        (
+            420.0,
+            700.0,
+            "Paper lanterns drifting over the harbor while the tide keeps every promise",
+        ),
+    ] {
+        never_bounces_at(w, h, text);
+    }
+}
+
+fn never_bounces_at(w: f32, h: f32, text: &str) {
+    let mut s = synced_state(0.0);
+    let _ = s.update(Message::WindowResized(iced::Size::new(w, h)));
+    let synced: Vec<yutu_core::LyricLine> = (0..30)
+        .map(|i| yutu_core::LyricLine {
+            start_ms: i * 3000,
+            text: format!("{text} {i}"),
+        })
+        .collect();
+    s.lyrics_cache
+        .get_mut(&("m1".to_string(), LyricsProvider::Lrclib))
+        .unwrap()
+        .synced = synced;
+    let settings = iced::Settings {
+        fonts: vec![include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")
+            .as_slice()
+            .into()],
+        default_font: iced::Font::with_name("Adwaita Sans"),
+        ..iced::Settings::default()
+    };
+    let measure = |s: &AppState| -> Option<LyricRowGeom> {
+        let (track, at) = s.lyrics_follow_at.clone()?;
+        let mut sim =
+            iced_test::Simulator::with_size(settings.clone(), iced::Size::new(w, h), s.view());
+        let (b, cb, row) = sim
+            .find(ProbeSel {
+                row_id: lyric_row_id(at),
+                scroll: None,
+            })
+            .ok()?;
+        Some(LyricRowGeom {
+            track,
+            at,
+            top: row.y - cb.y,
+            h: row.height,
+            view_h: b.height,
+            max_y: cb.height - b.height,
+        })
+    };
+    // One frame of the runtime: probe (when asked), one glide step, its
+    // echo. `ms` = time since the verse changed.
+    let frame = |s: &mut AppState, ms: u64, probe: bool| {
+        if let Some(g) = s.verse_glide.as_mut() {
+            g.started = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(ms))
+                .unwrap();
+        }
+        if probe {
+            if let Some(g) = measure(s) {
+                let _ = s.update(Message::LyricRowMeasured(g));
+            }
+        }
+        let _ = s.lyrics_glide_task();
+        let y = s.lyrics_cmds[0];
+        let (vh, ch) = (
+            s.drawer_view_h.unwrap_or(0.0),
+            s.drawer_content_h.unwrap_or(0.0),
+        );
+        if y.is_finite() {
+            let _ = s.update(Message::DrawerScrolled(y, vh, ch));
+        }
+    };
+    // Let the drawer slide finish (it renders off-screen until then).
+    for _ in 0..80 {
+        let _ = s.update(Message::Animate);
+    }
+    // Settle on verse 8 first.
+    s.position_secs = 24.5;
+    let _ = s.update(Message::NoOp);
+    s.verse_glide = None;
+    let _ = s.lyric_follow_task();
+    for _ in 0..120 {
+        frame(&mut s, 10_000, true);
+    }
+    assert!(s.lyrics_follow);
+    let start = s.drawer_scroll;
+    // Verse 9 starts: the Tick path (target + probe), then frames.
+    s.position_secs = 27.5;
+    let _ = s.update(Message::NoOp);
+    assert!(s.verse_gliding());
+    let _ = s.lyric_follow_task();
+    let mut ys = vec![start];
+    for f in 0..60u64 {
+        let ms = f * ANIM_TICK_MS;
+        let probe = s.lyric_glide_probe().is_some();
+        frame(&mut s, ms, probe);
+        ys.push(s.drawer_scroll);
+    }
+    let settled = measure(&s).expect("row on screen").center_y();
+    eprintln!("{w}x{h} start {start:.1} settled {settled:.1} path {ys:.1?}");
+    assert!(s.lyrics_follow, "follow disengaged");
+    for pair in ys.windows(2) {
+        assert!(pair[1] >= pair[0] - 0.5, "scroll moved back: {ys:.1?}");
+    }
+    assert!(
+        (s.drawer_scroll - settled).abs() <= 1.5,
+        "did not settle: {ys:.1?}"
+    );
 }
 
 #[test]

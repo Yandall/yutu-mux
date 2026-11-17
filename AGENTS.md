@@ -177,8 +177,10 @@
   Commands parse in `yutu_core::control` and execute in
   `yutu-ui/src/control.rs` strictly by dispatching existing `Message`s
   (no side doors around UI contracts). New user actions should get a
-  `ctl` command too. Agents: drive the app with `yutu-mux ctl` (state,
-  play, search, nav, screenshot) rather than synthetic input.
+  `ctl` command too. Agents: no live testing (launching the app,
+  `yutu-mux ctl`) unless the user explicitly asks for it (see the
+  workflow rules); when asked, drive it with `ctl` (state, play,
+  search, nav, screenshot) rather than synthetic input.
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -249,6 +251,13 @@
   lyrics view uses one look, `mini_player::verse_style` (size, opacity,
   bold by distance from the current line), and one line-change glide
   (`verse_sync` after every update, `verse_focus`).
+- Drawer follow (`lyric_follow_task`): a verse change steps from the
+  settled measured target by the modeled distance between the verses
+  (`lyric_center_y`) and scrolls on the verse glide's clock; probes are
+  ignored mid-resize (one confirms after). Only real user scrolls (not
+  command echoes, clamped echoes or relayouts) light the scrollbar or
+  take over. `lyric_follow_never_bounces_on_verse_change` (ignored,
+  needs the renderer) checks the path frame by frame.
 
 ## 6. Features & build matrix
 
@@ -326,6 +335,12 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
   Trivial direct-to-`main` pushes are for docs/changelog-only or
   seconds-old broken commits (`force-with-lease` only there).
 - Run `cargo run` = real app. User verifies GUI/audio on their machine.
+- **No live testing unless asked (hard rule)**: never launch the app or
+  drive it with `yutu-mux ctl` to test a change unless the user
+  explicitly asks for a live test (the user runs their own instance
+  while agents work). Verify with unit tests, the headless
+  `iced_test` simulator and the layout snapshots instead; when only
+  a live check would confirm a fix, say so and offer it.
 - Commit messages: `feat|fix|docs(scope): ...` with behavior + test
   summary. Verify 3-config clippy + fmt + workspace tests and the
   `CHANGELOG.md` entry before push.
