@@ -1417,7 +1417,7 @@ impl AppState {
     /// position moves in many handlers; one place catches them all).
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         let task = self.dispatch(message);
-        self.mini_ticker_sync();
+        self.verse_sync();
         task
     }
 

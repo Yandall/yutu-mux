@@ -169,7 +169,7 @@
   size, then fewer neighbors) until it fits. Neighbors: 1 line each.
   It renders as a wheel (`wheel_layout`, current line on the center
   band) and glides 450ms between lines (`TickerGlide`, `wheel_frame`).
-  `update` calls `mini_ticker_sync` after every message (the position
+  `update` calls `verse_sync` after every message (the position
   changes in many handlers); far seeks, new songs and disabled
   animations jump instead of gliding.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
@@ -245,7 +245,10 @@
 - `thumbnail_large_url` needs `pick_large_thumb_url` (max width);
   `pick_thumb_url` stays min-width. Both return `None` on empty input.
 - Lyrics cache keyed by track id; `lyrics_content(id)` helper is shared by
-  the lyrics page and the Now Playing drawer: don't fork it.
+  the lyrics page and the Now Playing drawer: don't fork it. Every
+  lyrics view uses one look, `mini_player::verse_style` (size, opacity,
+  bold by distance from the current line), and one line-change glide
+  (`verse_sync` after every update, `verse_focus`).
 
 ## 6. Features & build matrix
 

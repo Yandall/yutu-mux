@@ -1371,7 +1371,7 @@ impl AppState {
             || self.pipeline_busy()
             || self.artist_full_loading.is_some()
             || self.lyrics_gliding()
-            || self.mini_ticker_gliding()
+            || self.verse_gliding()
             || self.modal_animating()
             || self.update_checking
             || self.update_phase != UpdatePhase::Idle

@@ -429,6 +429,24 @@ pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, 
         .unwrap_or_else(|| vec![(visible[cur].to_string(), 13.0, 0)])
 }
 
+/// Synced lyric line look by its (continuous) distance from the
+/// current line: text size, white opacity, bold. One scale for every
+/// lyrics view (mini player wheel, Now Playing, Lyrics page): the
+/// current line 21px bold, its neighbors 14px at 72%, the rest 12px
+/// at 50%, blended in between while a glide runs.
+pub(crate) fn verse_style(distance: f32) -> (f32, f32, bool) {
+    let x = distance.abs();
+    let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let (size, alpha) = if x <= 1.0 {
+        (mix(21.0, 14.0, x), mix(1.0, 0.72, x))
+    } else if x <= 2.0 {
+        (mix(14.0, 12.0, x - 1.0), mix(0.72, 0.5, x - 1.0))
+    } else {
+        (12.0, 0.5)
+    };
+    (size, alpha, x < 0.5)
+}
+
 /// How long the synced ticker glides from one line to the next.
 pub(crate) const MINI_WHEEL_MS: u128 = 450;
 
@@ -901,21 +919,25 @@ impl AppState {
         iced::window::drag(mini.id)
     }
 
-    /// Follow the synced ticker's current line after every update: a
-    /// change of up to three lines on the same song starts a wheel
+    /// Follow the current synced line after every update, for every
+    /// lyrics view on screen (mini player ticker, Now Playing, Lyrics
+    /// page): a change of up to three lines on the same song starts a
     /// glide; a new song, a far seek, or disabled animations jump.
-    pub(crate) fn mini_ticker_sync(&mut self) {
-        let live = match (self.mini, self.queue.current()) {
-            (Some(m), Some(t)) if m.lyrics => Some((t.id.clone(), self.lyric_cursor_at(&t.id))),
+    pub(crate) fn verse_sync(&mut self) {
+        let shown = self.mini.is_some_and(|m| m.lyrics)
+            || self.drawer_open
+            || matches!(self.route, Route::Lyrics(_));
+        let live = match self.queue.current() {
+            Some(t) if shown => Some((t.id.clone(), self.lyric_cursor_at(&t.id))),
             _ => None,
         };
-        if self.mini_glide.is_some_and(|g| !g.running()) {
-            self.mini_glide = None;
+        if self.verse_glide.is_some_and(|g| !g.running()) {
+            self.verse_glide = None;
         }
-        if live == self.mini_ticker_at {
+        if live == self.verse_at {
             return;
         }
-        let glide = match (&self.mini_ticker_at, &live) {
+        let glide = match (&self.verse_at, &live) {
             (Some((was, from)), Some((now, to))) if was == now && self.animations_enabled => {
                 let near = match (from, to) {
                     (Some(f), Some(t)) => f.abs_diff(*t) <= 3,
@@ -931,13 +953,32 @@ impl AppState {
             }
             _ => None,
         };
-        self.mini_glide = glide;
-        self.mini_ticker_at = live;
+        self.verse_glide = glide;
+        self.verse_at = live;
     }
 
-    /// A ticker glide still running (drives the animation tick).
-    pub(crate) fn mini_ticker_gliding(&self) -> bool {
-        self.mini.is_some() && self.mini_glide.is_some_and(|g| g.running())
+    /// A verse glide still running (drives the animation tick).
+    pub(crate) fn verse_gliding(&self) -> bool {
+        self.verse_glide.is_some_and(|g| g.running())
+    }
+
+    /// Continuous position of the current line of track `id` for its
+    /// synced lyrics: mid-glide it moves from the old line to the new
+    /// (before the first verse counts as line -1, so the opening lines
+    /// read as upcoming). Lines are styled by their distance from it.
+    pub(crate) fn verse_focus(&self, id: &str, at: Option<usize>) -> f32 {
+        let pos = |at: Option<usize>| at.map_or(-1.0, |i| i as f32);
+        let ours = self.verse_at.as_ref().is_some_and(|(t, _)| t == id);
+        match self
+            .verse_glide
+            .filter(|g| ours && g.running() && g.to == at)
+        {
+            Some(g) => {
+                let (from, to) = (pos(g.from), pos(g.to));
+                from + (to - from) * g.progress()
+            }
+            None => pos(at),
+        }
     }
 
     /// The synced ticker as a wheel: every line pinned at its slot,
@@ -946,7 +987,7 @@ impl AppState {
         use iced::widget::{container, pin, text, text::Wrapping, Stack};
         use iced::Fill;
         let target = wheel_layout(visible, at);
-        let lines = match self.mini_glide.filter(|g| g.running() && g.to == at) {
+        let lines = match self.verse_glide.filter(|g| g.running() && g.to == at) {
             Some(g) => wheel_frame(&wheel_layout(visible, g.from), &target, g.progress()),
             None => target,
         };

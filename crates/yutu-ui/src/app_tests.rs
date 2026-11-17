@@ -5350,22 +5350,24 @@ fn synced_state(pos_secs: f64) -> AppState {
 
 #[test]
 fn lyric_follow_centers_each_verse() {
-    // col 560, viewport 540: plain rows 30.5, current 34.6, gap 16.
+    // col 560, viewport 540, mini player sizes at line height 1.3
+    // plus 8px padding: current row 35.3, one away 26.2, two away
+    // 23.6; rows 6 apart; stanza gap 16.
     let s = synced_state(1.0);
     assert_eq!(s.lyric_cursor_at("m1"), Some(0));
-    // Verse 0 top 444, center 444 + 17.3 - 270.
+    // Verse 0 top 444, center 444 + 17.65 - 270.
     let y0 = s.lyric_follow_y("m1", 0).expect("verse 0 targets");
-    assert!((y0 - 191.3).abs() < 1.0, "got {y0}");
-    // Verse 1 sits past a stanza gap: top 496.5, taller current row.
+    assert!((y0 - 191.65).abs() < 1.0, "got {y0}");
+    // Verse 1 sits past a stanza gap: top 492.2, taller current row.
     let s = synced_state(6.0);
     assert_eq!(s.lyric_cursor_at("m1"), Some(1));
     let y1 = s.lyric_follow_y("m1", 1).expect("verse 1 targets");
-    assert!((y1 - 243.8).abs() < 1.0, "got {y1}");
+    assert!((y1 - 239.85).abs() < 1.0, "got {y1}");
     assert!(y1 > y0);
-    // Verse 2 advances again.
+    // Verse 2 advances again (rows above shrink with distance).
     let s = synced_state(11.0);
     let y2 = s.lyric_follow_y("m1", 2).expect("verse 2 targets");
-    assert!((y2 - 280.3).abs() < 1.0, "got {y2}");
+    assert!((y2 - 269.45).abs() < 1.0, "got {y2}");
     assert!(y2 > y1);
     // No highlight (position before the first timestamp): no target.
     let mut s = synced_state(0.0);
@@ -8773,6 +8775,34 @@ fn layout_snapshots() {
                     s.drawer_open = true;
                     let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();
                     fake_backdrop(&mut s, url);
+                    // Made-up synced lyrics: the mini player's look in
+                    // the drawer (current line on the third verse).
+                    let id = s.queue.current().unwrap().id.clone();
+                    let verses = [
+                        "We left the porch light burning",
+                        "for the ones who find their way",
+                        "",
+                        "Paper lanterns on the water",
+                        "carry everything we could not say",
+                        "Hold the river, hold it steady",
+                        "till the morning pulls us in",
+                    ];
+                    s.lyrics_cache.insert(
+                        (id, LyricsProvider::Lrclib),
+                        yutu_core::LyricsResult {
+                            plain: String::new(),
+                            synced: verses
+                                .iter()
+                                .enumerate()
+                                .map(|(i, v)| yutu_core::LyricLine {
+                                    start_ms: i as u64 * 8_000,
+                                    text: (*v).into(),
+                                })
+                                .collect(),
+                            instrumental: false,
+                        },
+                    );
+                    s.position_secs = 25.0;
                 }
                 "library" => {
                     if s.layout().panels_overlay() {
@@ -11445,35 +11475,73 @@ fn mini_ticker_glides_on_a_line_change_and_jumps_otherwise() {
         let _ = s.update(Message::MiniToggleLyrics);
     }
     let _ = s.update(Message::NoOp);
-    assert_eq!(s.mini_ticker_at.as_ref().map(|(_, at)| *at), Some(Some(0)));
-    assert!(s.mini_glide.is_none());
+    assert_eq!(s.verse_at.as_ref().map(|(_, at)| *at), Some(Some(0)));
+    assert!(s.verse_glide.is_none());
     // The song reaches the next line: a glide from 0 to 1 starts.
     s.position_secs = 6.0;
     let _ = s.update(Message::NoOp);
-    let g = s.mini_glide.expect("glide");
+    let g = s.verse_glide.expect("glide");
     assert_eq!((g.from, g.to), (Some(0), Some(1)));
-    assert!(s.mini_ticker_gliding());
+    assert!(s.verse_gliding());
     let id = s.mini.unwrap().id;
     let _ = s.view_for(id);
     // Once the glide has run its course it is dropped.
-    s.mini_glide.as_mut().unwrap().started = std::time::Instant::now()
+    s.verse_glide.as_mut().unwrap().started = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(2))
         .unwrap();
-    assert!(!s.mini_ticker_gliding());
+    assert!(!s.verse_gliding());
     let _ = s.update(Message::NoOp);
-    assert!(s.mini_glide.is_none());
+    assert!(s.verse_glide.is_none());
     // Animations off: the line changes without a glide.
     s.animations_enabled = false;
     s.position_secs = 11.0;
     let _ = s.update(Message::NoOp);
-    assert!(s.mini_glide.is_none());
-    assert_eq!(s.mini_ticker_at.as_ref().map(|(_, at)| *at), Some(Some(2)));
+    assert!(s.verse_glide.is_none());
+    assert_eq!(s.verse_at.as_ref().map(|(_, at)| *at), Some(Some(2)));
     // A new song jumps too (no glide across songs).
     s.animations_enabled = true;
     s.queue = Queue::default();
     s.queue.push(mk_track("m2", "Other", "Band"));
     let _ = s.update(Message::NoOp);
-    assert!(s.mini_glide.is_none());
+    assert!(s.verse_glide.is_none());
+}
+
+#[test]
+fn now_playing_lyrics_share_the_mini_player_look_and_glide() {
+    use crate::mini_player::verse_style;
+    // One scale for every lyrics view: current 21 bold white, one away
+    // 14 at 72%, further 12 at 50%, blended in between.
+    assert_eq!(verse_style(0.0), (21.0, 1.0, true));
+    assert_eq!(verse_style(1.0), (14.0, 0.72, false));
+    assert_eq!(verse_style(-2.0), (12.0, 0.5, false));
+    assert_eq!(verse_style(5.0), (12.0, 0.5, false));
+    let (mid, _, bold) = verse_style(0.5);
+    assert!(mid < 21.0 && mid > 14.0 && !bold);
+    // The drawer tracks the current line like the mini player does,
+    // even with the mini player closed.
+    let mut s = synced_state(1.0);
+    assert!(s.mini.is_none() && s.drawer_open);
+    let _ = s.update(Message::NoOp);
+    assert_eq!(s.verse_focus("m1", Some(0)), 0.0);
+    s.position_secs = 6.0;
+    let _ = s.update(Message::NoOp);
+    let g = s.verse_glide.expect("drawer glide");
+    assert_eq!((g.from, g.to), (Some(0), Some(1)));
+    // Mid-glide the focus sits between the two lines.
+    s.verse_glide.as_mut().unwrap().started = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(100))
+        .unwrap();
+    let f = s.verse_focus("m1", Some(1));
+    assert!(f > 0.0 && f < 1.0, "focus {f}");
+    // Another track's lyrics (Lyrics page) never borrow the glide.
+    assert_eq!(s.verse_focus("other", Some(1)), 1.0);
+    // Rendering every state still works.
+    let _ = s.view();
+    let _ = s.lyrics_content("m1");
+    s.verse_glide = None;
+    assert_eq!(s.verse_focus("m1", Some(1)), 1.0);
+    // Before the first verse the opening lines read as upcoming.
+    assert_eq!(s.verse_focus("m1", None), -1.0);
 }
 
 #[test]
@@ -11828,7 +11896,7 @@ fn mini_player_snapshots() {
             let _ = s.update(Message::MiniToggleLyrics);
         }
         if name == "mini-wheel-glide" {
-            s.mini_glide = Some(crate::mini_player::TickerGlide {
+            s.verse_glide = Some(crate::mini_player::TickerGlide {
                 from: Some(1),
                 to: Some(2),
                 started: std::time::Instant::now()

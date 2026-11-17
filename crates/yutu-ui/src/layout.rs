@@ -152,9 +152,9 @@ pub(crate) const LYRIC_ROW_SPACING: f32 = 6.0;
 pub(crate) const LYRIC_GAP_H: f32 = 10.0;
 /// Lyric button vertical padding (4 top + 4 bottom).
 pub(crate) const LYRIC_BTN_PAD: f32 = 8.0;
-/// Horizontal chrome beside lyric text (25px rail/icon + 8px button
-/// padding; both row arms sum the same, so one constant serves).
-pub(crate) const LYRIC_ROW_CHROME: f32 = 33.0;
+/// Horizontal chrome beside lyric text (8px button padding; lines are
+/// centered with no icon rail, in the mini player's style).
+pub(crate) const LYRIC_ROW_CHROME: f32 = 8.0;
 /// Window chrome above the drawer viewport (header + player).
 pub(crate) const LYRIC_VIEWPORT_PAD: f32 = 260.0;
 /// Any user scroll disengages follow (glide echoes match the command
