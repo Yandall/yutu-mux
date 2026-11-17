@@ -144,6 +144,9 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
     # ("Library not loaded ... duplicate LC_RPATH"), so the app never
     # launches. Drop the extras and re-sign what changed.
     echo "==> removing duplicate LC_RPATH entries"
+    # Homebrew's dylibs can arrive read-only: install_name_tool and
+    # codesign rewrite them in place, so make the bundle owner-writable.
+    chmod -R u+w "$APP/Contents"
     rpaths() {
         otool -l "$1" | awk '/cmd LC_RPATH/ { r = 1; next }
             r && $1 == "path" { print $2; r = 0 }'
