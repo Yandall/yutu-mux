@@ -16,6 +16,8 @@
   picker instead of jumping (off with animations disabled).
 - Now Playing and the Lyrics page show lyrics in the mini player's
   style (slightly larger): centered, current line bold, the rest fading.
+- Hovering a lyric line shows a faint frosted highlight instead of a
+  solid gray box.
 - Unsynced lyrics in the mini player show in full, wrapped, and scroll.
 - The mini player has its own window id (`yutu-mux-mini`); the README
   has a Hyprland rule that removes the frame around it.

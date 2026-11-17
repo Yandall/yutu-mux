@@ -1667,7 +1667,7 @@ impl AppState {
                     // row through it (exact wrap, no estimate).
                     let row_el: iced::Element<'_, Message> = container(
                         row_button(line)
-                            .style(hover_row)
+                            .style(glass_row)
                             .on_press(Message::SeekToMs(ms))
                             .padding(4)
                             .width(Fill),
