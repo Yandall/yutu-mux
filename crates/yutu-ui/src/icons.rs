@@ -44,6 +44,8 @@ pub(crate) fn icon_bytes(name: &str) -> &'static [u8] {
         "volume-x" => include_bytes!("../assets/icons/volume-x.svg"),
         "mic" => include_bytes!("../assets/icons/mic.svg"),
         "mic-vocal" => include_bytes!("../assets/icons/mic-vocal.svg"),
+        "picture-in-picture-2" => include_bytes!("../assets/icons/picture-in-picture-2.svg"),
+        "maximize-2" => include_bytes!("../assets/icons/maximize-2.svg"),
         "user-round" => include_bytes!("../assets/icons/user-round.svg"),
         "radio" => include_bytes!("../assets/icons/radio.svg"),
         "settings" => include_bytes!("../assets/icons/settings.svg"),

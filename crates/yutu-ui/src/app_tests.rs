@@ -5350,22 +5350,24 @@ fn synced_state(pos_secs: f64) -> AppState {
 
 #[test]
 fn lyric_follow_centers_each_verse() {
-    // col 560, viewport 540: plain rows 30.5, current 34.6, gap 16.
+    // col 560, viewport 540, mini player sizes x1.12 at line height
+    // 1.3 plus 8px padding: current row 38.58, one away 28.38, two
+    // away 25.47; rows 6 apart; stanza gap 16.
     let s = synced_state(1.0);
     assert_eq!(s.lyric_cursor_at("m1"), Some(0));
-    // Verse 0 top 444, center 444 + 17.3 - 270.
+    // Verse 0 top 444, center 444 + 19.29 - 270.
     let y0 = s.lyric_follow_y("m1", 0).expect("verse 0 targets");
-    assert!((y0 - 191.3).abs() < 1.0, "got {y0}");
-    // Verse 1 sits past a stanza gap: top 496.5, taller current row.
+    assert!((y0 - 193.29).abs() < 1.0, "got {y0}");
+    // Verse 1 sits past a stanza gap: top 494.4, taller current row.
     let s = synced_state(6.0);
     assert_eq!(s.lyric_cursor_at("m1"), Some(1));
     let y1 = s.lyric_follow_y("m1", 1).expect("verse 1 targets");
-    assert!((y1 - 243.8).abs() < 1.0, "got {y1}");
+    assert!((y1 - 243.67).abs() < 1.0, "got {y1}");
     assert!(y1 > y0);
-    // Verse 2 advances again.
+    // Verse 2 advances again (rows above shrink with distance).
     let s = synced_state(11.0);
     let y2 = s.lyric_follow_y("m1", 2).expect("verse 2 targets");
-    assert!((y2 - 280.3).abs() < 1.0, "got {y2}");
+    assert!((y2 - 275.14).abs() < 1.0, "got {y2}");
     assert!(y2 > y1);
     // No highlight (position before the first timestamp): no target.
     let mut s = synced_state(0.0);
@@ -8773,6 +8775,34 @@ fn layout_snapshots() {
                     s.drawer_open = true;
                     let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();
                     fake_backdrop(&mut s, url);
+                    // Made-up synced lyrics: the mini player's look in
+                    // the drawer (current line on the third verse).
+                    let id = s.queue.current().unwrap().id.clone();
+                    let verses = [
+                        "We left the porch light burning",
+                        "for the ones who find their way",
+                        "",
+                        "Paper lanterns on the water",
+                        "carry everything we could not say",
+                        "Hold the river, hold it steady",
+                        "till the morning pulls us in",
+                    ];
+                    s.lyrics_cache.insert(
+                        (id, LyricsProvider::Lrclib),
+                        yutu_core::LyricsResult {
+                            plain: String::new(),
+                            synced: verses
+                                .iter()
+                                .enumerate()
+                                .map(|(i, v)| yutu_core::LyricLine {
+                                    start_ms: i as u64 * 8_000,
+                                    text: (*v).into(),
+                                })
+                                .collect(),
+                            instrumental: false,
+                        },
+                    );
+                    s.position_secs = 25.0;
                 }
                 "library" => {
                     if s.layout().panels_overlay() {
@@ -11199,6 +11229,702 @@ fn favorites_drag_needs_manual() {
     assert!(s.pl_drag.is_none());
 }
 
+#[test]
+fn mini_ticker_window_centers_on_the_current_verse() {
+    use crate::mini_player::ticker_window;
+    // Middle: two above, two below.
+    assert_eq!(
+        ticker_window(10, Some(5)),
+        vec![(3, -2), (4, -1), (5, 0), (6, 1), (7, 2)]
+    );
+    // Edges clamp instead of padding with phantom lines.
+    assert_eq!(ticker_window(10, Some(0)), vec![(0, 0), (1, 1), (2, 2)]);
+    assert_eq!(ticker_window(10, Some(9)), vec![(7, -2), (8, -1), (9, 0)]);
+    // Before the first timestamp the opening lines are upcoming.
+    assert_eq!(ticker_window(10, None), vec![(0, 1), (1, 2), (2, 3)]);
+    assert_eq!(ticker_window(1, None), vec![(0, 1)]);
+    // No lines, or a stale cursor past the end: nothing to show.
+    assert!(ticker_window(0, None).is_empty());
+    assert!(ticker_window(0, Some(0)).is_empty());
+    assert_eq!(ticker_window(2, Some(7)), vec![(0, 1), (1, 2)]);
+}
+
+#[test]
+fn mini_window_size_follows_the_ticker_and_the_ui_scale() {
+    use crate::mini_player::*;
+    let collapsed = mini_window_size(false, 1.0, MiniPlatform::Hyprland);
+    let open = mini_window_size(true, 1.0, MiniPlatform::Hyprland);
+    assert_eq!(collapsed.width, MINI_W + 2.0 * MINI_MARGIN);
+    assert_eq!(open.width, collapsed.width);
+    // The lyrics grow the window downward by exactly the ticker.
+    assert_eq!(open.height - collapsed.height, MINI_LYRICS_H);
+    // Scaled UI scales the window, so the content never clips.
+    let big = mini_window_size(false, 1.5, MiniPlatform::Hyprland);
+    assert_eq!(big.width, (collapsed.width * 1.5).ceil());
+    assert_eq!(big.height, (collapsed.height * 1.5).ceil());
+}
+
+#[test]
+fn mini_player_opens_once_toggles_lyrics_and_closes() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::OpenMiniPlayer);
+    let mini = s.mini.expect("mini player open");
+    assert!(!mini.lyrics && !mini.hovered);
+    // A second open focuses the same window instead of stacking one.
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert_eq!(s.mini.unwrap().id, mini.id);
+    // Hover shows the chips; leaving hides them.
+    let _ = s.update(Message::MiniHover(true));
+    assert!(s.mini.unwrap().hovered);
+    let _ = s.update(Message::MiniHover(false));
+    assert!(!s.mini.unwrap().hovered);
+    // Lyrics toggle flips and is remembered for the next open.
+    let _ = s.update(Message::MiniToggleLyrics);
+    assert!(s.mini.unwrap().lyrics);
+    assert!(s.mini_lyrics_pref);
+    let _ = s.update(Message::MiniClose);
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert!(s.mini.unwrap().lyrics, "reopens with the ticker open");
+    // The pref survives a restart (same library).
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert!(again.mini_lyrics_pref);
+    // Restore closes the mini window too; drags with none open no-op.
+    let _ = s.update(Message::MiniRestore);
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::MiniDrag);
+    let _ = s.update(Message::MiniToggleLyrics);
+    assert!(s.mini.is_none());
+}
+
+#[test]
+fn mini_window_closed_from_outside_is_forgotten() {
+    let mut s = test_state();
+    let main = iced::window::Id::unique();
+    s.main_window = Some(main);
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    // Another window id closing leaves the mini player alone.
+    let _ = s.update(Message::WindowClosed(iced::window::Id::unique()));
+    assert!(s.mini.is_some());
+    let _ = s.update(Message::WindowClosed(id));
+    assert!(s.mini.is_none());
+    // The bar button opens a fresh one afterwards.
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert!(s.mini.is_some_and(|m| m.id != id));
+}
+
+#[test]
+fn mini_player_renders_every_lyrics_state() {
+    // Synced: before, on, and past the verses (collapsed and open).
+    let mut s = synced_state(6.0);
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    let _ = s.view_for(id);
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniToggleLyrics);
+    for pos in [0.0, 6.0, 60.0] {
+        s.position_secs = pos;
+        let _ = s.view_for(id);
+    }
+    // Instrumental, plain, loading and missing lyrics.
+    let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
+    entry.instrumental = true;
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry.clone());
+    let _ = s.view_for(id);
+    entry.instrumental = false;
+    entry.synced.clear();
+    entry.plain = "one\n\ntwo\nthree".into();
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry);
+    let _ = s.view_for(id);
+    s.lyrics_cache.clear();
+    let _ = s.view_for(id);
+    // Empty queue still renders (no song, no ring progress).
+    s.queue = Queue::default();
+    s.paused = true;
+    let _ = s.view_for(id);
+    // Any other window id is the app itself.
+    let _ = s.view_for(iced::window::Id::unique());
+}
+
+#[test]
+fn mini_window_is_transparent_and_named() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "Song", "Band"));
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    let other = iced::window::Id::unique();
+    // Only the capsule paints: the window background is clear.
+    assert_eq!(
+        s.theme_for(id).palette().background,
+        iced::Color::TRANSPARENT
+    );
+    assert_ne!(
+        s.theme_for(other).palette().background,
+        iced::Color::TRANSPARENT
+    );
+    assert_eq!(s.title_for(other), "Song · Band");
+    assert_eq!(s.title_for(id), "Mini player · Song · Band");
+    s.language = Language::Spanish;
+    assert_eq!(s.title_for(id), "Minirreproductor · Song · Band");
+}
+
+#[test]
+fn mini_ring_uses_the_filtered_hero_cover_of_the_current_song() {
+    use crate::mini_player::MINI_COVER_PX;
+    let mut s = test_state();
+    let mut t = mk_track("cover1", "T", "A");
+    t.thumbnail_url = Some("https://example.invalid/cover1.jpg".into());
+    s.catalog.remove(&t.id);
+    s.queue.push(t.clone());
+    // Closed: no downscale work at all.
+    let _ = s.mini_cover_task();
+    assert!(s.mini_cover_loading.is_none());
+    let _ = s.update(Message::OpenMiniPlayer);
+    let hero = s.hero_art_for(&t).unwrap();
+    let px = MINI_COVER_PX as usize;
+    let _ = s.update(Message::MiniCoverReady {
+        url: hero.clone(),
+        rgba: Some(vec![200; px * px * 4]),
+    });
+    assert_eq!(
+        s.mini_cover.as_ref().map(|(u, _)| u.as_str()),
+        Some(hero.as_str())
+    );
+    // Already decoded for this song: nothing new starts.
+    let _ = s.mini_cover_task();
+    assert!(s.mini_cover_loading.is_none());
+    let id = s.mini.unwrap().id;
+    let _ = s.view_for(id);
+    // A failed decode keeps the last cover and clears the in-flight mark.
+    s.mini_cover_loading = Some("other".into());
+    let _ = s.update(Message::MiniCoverReady {
+        url: "other".into(),
+        rgba: None,
+    });
+    assert!(s.mini_cover_loading.is_none());
+    assert!(s.mini_cover.is_some());
+}
+
+#[test]
+fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
+    use crate::mini_player::{wheel_frame, wheel_layout, MINI_LYRICS_H};
+    let visible = [
+        "first light",
+        "second wave",
+        "third bell",
+        "fourth gate",
+        "fifth door",
+    ];
+    let center = MINI_LYRICS_H / 2.0;
+    // Mid-song: the current line sits on the picker's center band.
+    let b = wheel_layout(&visible, Some(2));
+    let cur = b.iter().find(|l| l.bold).unwrap();
+    assert_eq!(cur.index, 2);
+    assert!((cur.top + cur.height / 2.0 - center).abs() < 0.5);
+    // Neighbors fade with distance, in index order, above and below.
+    let alpha = |i: usize| b.iter().find(|l| l.index == i).unwrap().alpha;
+    assert!(alpha(1) < 1.0 && alpha(0) < alpha(1));
+    assert!(b.windows(2).all(|w| w[0].top < w[1].top));
+    // The first line of a song stays inside the ticker padding.
+    let start = wheel_layout(&visible, Some(0));
+    assert!(start.first().unwrap().top >= 16.0 - 0.5);
+    // Glide from line 1 to line 2: p = 0 is the old wheel, p = 1 the new.
+    let a = wheel_layout(&visible, Some(1));
+    let at_start = wheel_frame(&a, &b, 0.0);
+    let at_end = wheel_frame(&a, &b, 1.0);
+    for la in &a {
+        let f = at_start.iter().find(|l| l.index == la.index).unwrap();
+        assert!((f.top - la.top).abs() < 0.01 && (f.alpha - la.alpha).abs() < 0.01);
+    }
+    for lb in &b {
+        let f = at_end.iter().find(|l| l.index == lb.index).unwrap();
+        assert!((f.top - lb.top).abs() < 0.01 && (f.size - lb.size).abs() < 0.01);
+    }
+    // The wheel turns up: the new current line rises toward center.
+    let mid = wheel_frame(&a, &b, 0.5);
+    let rising =
+        |frame: &[crate::mini_player::WheelLine]| frame.iter().find(|l| l.index == 2).unwrap().top;
+    assert!(rising(&at_start) > rising(&mid) && rising(&mid) > rising(&at_end));
+    // A line that rolls out fades away; one that rolls in fades up.
+    if let Some(gone) = a.iter().find(|la| b.iter().all(|lb| lb.index != la.index)) {
+        let f = at_end.iter().find(|l| l.index == gone.index).unwrap();
+        assert!(f.alpha.abs() < 0.01);
+    }
+    if let Some(new) = b.iter().find(|lb| a.iter().all(|la| la.index != lb.index)) {
+        let f = at_start.iter().find(|l| l.index == new.index).unwrap();
+        assert!(f.alpha.abs() < 0.01);
+    }
+    // Before the first verse: a centered block of upcoming lines.
+    let before = wheel_layout(&visible, None);
+    assert!(before.iter().all(|l| !l.bold));
+    let top = before.first().unwrap().top;
+    let bottom = before.last().map(|l| l.top + l.height).unwrap();
+    assert!(((top + bottom) / 2.0 - center).abs() < 0.5);
+}
+
+#[test]
+fn mini_ticker_glides_on_a_line_change_and_jumps_otherwise() {
+    let mut s = synced_state(1.0);
+    let _ = s.update(Message::OpenMiniPlayer);
+    if !s.mini.unwrap().lyrics {
+        let _ = s.update(Message::MiniToggleLyrics);
+    }
+    let _ = s.update(Message::NoOp);
+    assert_eq!(s.verse_at.as_ref().map(|(_, at)| *at), Some(Some(0)));
+    assert!(s.verse_glide.is_none());
+    // The song reaches the next line: a glide from 0 to 1 starts.
+    s.position_secs = 6.0;
+    let _ = s.update(Message::NoOp);
+    let g = s.verse_glide.expect("glide");
+    assert_eq!((g.from, g.to), (Some(0), Some(1)));
+    assert!(s.verse_gliding());
+    let id = s.mini.unwrap().id;
+    let _ = s.view_for(id);
+    // Once the glide has run its course it is dropped.
+    s.verse_glide.as_mut().unwrap().started = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(!s.verse_gliding());
+    let _ = s.update(Message::NoOp);
+    assert!(s.verse_glide.is_none());
+    // Animations off: the line changes without a glide.
+    s.animations_enabled = false;
+    s.position_secs = 11.0;
+    let _ = s.update(Message::NoOp);
+    assert!(s.verse_glide.is_none());
+    assert_eq!(s.verse_at.as_ref().map(|(_, at)| *at), Some(Some(2)));
+    // A new song jumps too (no glide across songs).
+    s.animations_enabled = true;
+    s.queue = Queue::default();
+    s.queue.push(mk_track("m2", "Other", "Band"));
+    let _ = s.update(Message::NoOp);
+    assert!(s.verse_glide.is_none());
+}
+
+#[test]
+fn now_playing_lyrics_share_the_mini_player_look_and_glide() {
+    use crate::mini_player::verse_style;
+    // One scale for every lyrics view: current 21 bold white, one away
+    // 14 at 72%, further 12 at 50%, blended in between.
+    assert_eq!(verse_style(0.0), (21.0, 1.0, true));
+    assert_eq!(verse_style(1.0), (14.0, 0.72, false));
+    assert_eq!(verse_style(-2.0), (12.0, 0.5, false));
+    assert_eq!(verse_style(5.0), (12.0, 0.5, false));
+    let (mid, _, bold) = verse_style(0.5);
+    assert!(mid < 21.0 && mid > 14.0 && !bold);
+    // The drawer tracks the current line like the mini player does,
+    // even with the mini player closed.
+    let mut s = synced_state(1.0);
+    assert!(s.mini.is_none() && s.drawer_open);
+    let _ = s.update(Message::NoOp);
+    assert_eq!(s.verse_focus("m1", Some(0)), 0.0);
+    s.position_secs = 6.0;
+    let _ = s.update(Message::NoOp);
+    let g = s.verse_glide.expect("drawer glide");
+    assert_eq!((g.from, g.to), (Some(0), Some(1)));
+    // Mid-glide the focus sits between the two lines.
+    s.verse_glide.as_mut().unwrap().started = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(100))
+        .unwrap();
+    let f = s.verse_focus("m1", Some(1));
+    assert!(f > 0.0 && f < 1.0, "focus {f}");
+    // Another track's lyrics (Lyrics page) never borrow the glide.
+    assert_eq!(s.verse_focus("other", Some(1)), 1.0);
+    // Rendering every state still works.
+    let _ = s.view();
+    let _ = s.lyrics_content("m1");
+    s.verse_glide = None;
+    assert_eq!(s.verse_focus("m1", Some(1)), 1.0);
+    // Before the first verse the opening lines read as upcoming.
+    assert_eq!(s.verse_focus("m1", None), -1.0);
+}
+
+#[test]
+fn player_bar_button_toggles_the_mini_player() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    let _ = s.update(Message::ToggleMiniPlayer);
+    let id = s.mini.expect("opened").id;
+    // Same button again closes it (playback untouched).
+    let _ = s.update(Message::ToggleMiniPlayer);
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::ToggleMiniPlayer);
+    assert!(s.mini.is_some_and(|m| m.id != id), "a fresh window");
+    // Open from the menu or `ctl mini open` never closes it.
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert!(s.mini.is_some());
+}
+
+#[test]
+fn mini_platform_gates_each_workaround_to_its_platform() {
+    use crate::mini_player::MiniPlatform::*;
+    // Hyprland: hyprctl placement + the Wayland fixes.
+    // macOS alone pins the Metal layer's gravity (resize stretch).
+    assert!(MacOs.pins_layer_gravity());
+    for p in [Hyprland, Wayland, X11, Windows] {
+        assert!(!p.pins_layer_gravity(), "{p:?}");
+    }
+    assert!(Hyprland.hyprland() && Hyprland.grab_leave() && Hyprland.pinned_size_hints());
+    assert!(!Hyprland.client_positions());
+    // Other Wayland: Wayland fixes, no hyprctl, no client positions.
+    assert!(!Wayland.hyprland() && Wayland.grab_leave() && Wayland.pinned_size_hints());
+    assert!(!Wayland.client_positions());
+    // X11, macOS, Windows: none of the Wayland/Hyprland workarounds.
+    for p in [X11, MacOs, Windows] {
+        assert!(
+            !p.hyprland() && !p.grab_leave() && !p.pinned_size_hints(),
+            "{p:?}"
+        );
+        assert!(p.client_positions(), "{p:?}");
+    }
+    let detected = crate::mini_player::MiniPlatform::detect();
+    #[cfg(target_os = "macos")]
+    assert_eq!(detected, MacOs);
+    #[cfg(target_os = "windows")]
+    assert_eq!(detected, Windows);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    assert!(matches!(detected, Hyprland | Wayland | X11));
+}
+
+#[test]
+fn mini_drag_on_macos_windows_and_x11_never_holds_the_chips() {
+    use crate::mini_player::MiniPlatform;
+    for p in [
+        MiniPlatform::MacOs,
+        MiniPlatform::Windows,
+        MiniPlatform::X11,
+    ] {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "T", "A"));
+        let _ = s.update(Message::OpenMiniPlayer);
+        s.mini.as_mut().unwrap().platform = p;
+        let _ = s.update(Message::MiniHover(true));
+        let _ = s.update(Message::MiniDrag);
+        assert!(s.mini.unwrap().drag_hold.is_none(), "{p:?}");
+        // The pointer leaving right after the drag hides the chips.
+        let _ = s.update(Message::MiniHover(false));
+        assert!(!s.mini.unwrap().hovered, "{p:?}");
+    }
+}
+
+#[test]
+fn mini_drag_keeps_the_chips_until_a_real_exit() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    let _ = s.update(Message::OpenMiniPlayer);
+    // Wayland only (the compositor's move grab sends the leave).
+    s.mini.as_mut().unwrap().platform = crate::mini_player::MiniPlatform::Wayland;
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniDrag);
+    let mini = s.mini.unwrap();
+    assert!(mini.hovered && mini.drag_hold.is_some());
+    // Wayland: the compositor's move grab sends a leave as the drag
+    // starts; the chips stay (the pointer is still on the window).
+    let _ = s.update(Message::MiniHover(false));
+    assert!(s.mini.unwrap().hovered, "chips survive the grab leave");
+    assert!(
+        s.mini.unwrap().drag_hold.is_none(),
+        "only one leave is held"
+    );
+    // The next leave is a real one.
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniHover(false));
+    assert!(!s.mini.unwrap().hovered);
+    // A leave long after the drag started is real.
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniDrag);
+    let earlier = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(2))
+        .unwrap();
+    s.mini.as_mut().unwrap().drag_hold = Some(earlier);
+    let _ = s.update(Message::MiniHover(false));
+    assert!(!s.mini.unwrap().hovered, "a late leave is real");
+    // A drag that starts without a hover still shows the chips.
+    let _ = s.update(Message::MiniDrag);
+    assert!(s.mini.unwrap().hovered);
+}
+
+#[test]
+fn mini_ticker_long_lines_stay_inside_their_slots() {
+    use crate::mini_player::{
+        ticker_budget, ticker_content_height, ticker_lines, ticker_neighbor_size, ticker_text_width,
+    };
+    let long = "and every word we never said is drifting down the river \
+                past the porch light and the lanterns and the morning";
+    let longer = "the kettle sang a tune about the harbor and the gulls, \
+                  the ferry bells, the salt upon the window and the long \
+                  gray afternoons we spent counting boats beyond the pier";
+    let w = ticker_text_width();
+    // A long current verse is never cut: whole, bold, smaller than
+    // the 21px of a short verse, and the layout fits the ticker.
+    let visible = vec![long, long, long, "short", long];
+    let lines = ticker_lines(&visible, Some(2));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!(cur.0, long, "the verse stays whole");
+    assert!(cur.1 < 21.0);
+    assert!(ticker_content_height(&lines) <= ticker_budget());
+    // Neighbors: one line each, ellipsized when too wide.
+    for (text, size, d) in lines.iter().filter(|l| l.2 != 0) {
+        assert_eq!(*size, ticker_neighbor_size(*d));
+        assert_eq!(fit_lines(text, w, *size, 1), *text, "{d} fits one line");
+        if text != "short" {
+            assert!(text.ends_with('…'), "{d}: {text}");
+        }
+    }
+    // A much longer verse gives up neighbor lines instead of words.
+    let visible = vec![long, long, longer, long, long];
+    let lines = ticker_lines(&visible, Some(2));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!(cur.0, longer, "the verse stays whole");
+    assert!(lines.len() < 5, "fewer neighbors make room");
+    assert!(ticker_content_height(&lines) <= ticker_budget());
+    // A short current verse keeps the full size and all five slots.
+    let visible = vec![long, long, long, "short", long];
+    let lines = ticker_lines(&visible, Some(3));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!((cur.0.as_str(), cur.1), ("short", 21.0));
+    assert_eq!(lines.len(), 4, "index 3 of 5: two above, one below");
+    // Before the first verse: upcoming lines only, never panics.
+    assert_eq!(ticker_lines(&visible, None).len(), 3);
+    // Rendering long lines never panics (synced and plain).
+    let mut s = synced_state(6.0);
+    let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
+    for l in entry.synced.iter_mut() {
+        if !l.text.is_empty() {
+            l.text = long.into();
+        }
+    }
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry.clone());
+    let _ = s.update(Message::OpenMiniPlayer);
+    let id = s.mini.unwrap().id;
+    if !s.mini.unwrap().lyrics {
+        let _ = s.update(Message::MiniToggleLyrics);
+    }
+    for pos in [0.0, 6.0, 60.0] {
+        s.position_secs = pos;
+        let _ = s.view_for(id);
+    }
+    entry.synced.clear();
+    entry.plain = format!("{long}\n{long}");
+    s.lyrics_cache
+        .insert(("m1".into(), LyricsProvider::Lrclib), entry);
+    let _ = s.view_for(id);
+}
+
+#[test]
+fn mini_position_is_remembered_across_opens_and_restarts() {
+    use crate::mini_player::{format_mini_pos, mini_window_settings, parse_mini_pos, MiniPlatform};
+    assert_eq!(
+        parse_mini_pos(&format_mini_pos(iced::Point::new(12.4, -30.6))),
+        Some(iced::Point::new(12.0, -31.0))
+    );
+    assert_eq!(parse_mini_pos("nope"), None);
+    assert_eq!(parse_mini_pos("1,NaN"), None);
+    // No saved spot: the first placement (top-right); saved: exactly it.
+    assert!(matches!(
+        mini_window_settings(false, 1.0, None, MiniPlatform::X11).position,
+        iced::window::Position::SpecificWith(_)
+    ));
+    assert!(matches!(
+        mini_window_settings(false, 1.0, Some(iced::Point::new(5.0, 6.0)), MiniPlatform::X11).position,
+        iced::window::Position::Specific(p) if p == iced::Point::new(5.0, 6.0)
+    ));
+    let mut s = test_state();
+    let _ = s.update(Message::OpenMiniPlayer);
+    let _ = s.update(Message::MiniMoved(iced::Point::new(700.0, 40.0)));
+    let _ = s.update(Message::MiniMoved(iced::Point::new(800.0, 50.0)));
+    assert_eq!(s.mini_pos, Some(iced::Point::new(800.0, 50.0)));
+    let _ = s.update(Message::MiniClose);
+    // Saved on close, back after a restart.
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(again.mini_pos, Some(iced::Point::new(800.0, 50.0)));
+    // A position read back after close (Hyprland) is saved at once.
+    let _ = s.update(Message::MiniMoved(iced::Point::new(90.0, 60.0)));
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(again.mini_pos, Some(iced::Point::new(90.0, 60.0)));
+    // Quitting (main window closed) with the mini open keeps its spot.
+    let main = iced::window::Id::unique();
+    s.main_window = Some(main);
+    let _ = s.update(Message::OpenMiniPlayer);
+    let _ = s.update(Message::MiniMoved(iced::Point::new(300.0, 20.0)));
+    let _ = s.update(Message::WindowClosed(main));
+    assert!(s.mini.is_none());
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert_eq!(again.mini_pos, Some(iced::Point::new(300.0, 20.0)));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mini_window_has_its_own_app_id() {
+    // One id: the window's app id is the class the Hyprland helper skips.
+    assert_eq!(
+        crate::mini_player::MINI_APP_ID,
+        yutu_desktop::hyprland::MINI_CLASS
+    );
+    let mini = crate::mini_player::mini_window_settings(
+        false,
+        1.0,
+        None,
+        crate::mini_player::MiniPlatform::Hyprland,
+    );
+    assert_eq!(mini.platform_specific.application_id, "yutu-mux-mini");
+    assert_eq!(
+        window_settings().platform_specific.application_id,
+        "yutu-mux"
+    );
+}
+
+#[test]
+fn player_bar_shows_the_mini_player_button_in_every_layout() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    for w in [400.0, 700.0, 1280.0] {
+        let _ = s.update(Message::WindowResized(iced::Size::new(w, 800.0)));
+        let _ = s.player_view();
+        let _ = s.update(Message::OpenMiniPlayer);
+        let _ = s.player_view();
+        let _ = s.update(Message::MiniClose);
+    }
+}
+
+/// Headless mini player screenshots (collapsed, hovered, lyrics open)
+/// with a fake cover glow, written next to the layout snapshots. The
+/// window background is transparent, so the PNGs keep alpha. Run with
+/// `cargo test -p yutu-ui --lib mini_player_snapshots -- --ignored`.
+#[test]
+#[ignore]
+fn mini_player_snapshots() {
+    let dir = std::env::var("YUTU_SNAPSHOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/layout-snapshots")
+        });
+    std::fs::create_dir_all(&dir).unwrap();
+    use crate::mini_player::MiniPlatform;
+    for (name, hovered, lyrics, platform) in [
+        ("mini-collapsed", false, false, MiniPlatform::Hyprland),
+        ("mini-hovered", true, false, MiniPlatform::Hyprland),
+        ("mini-lyrics", true, true, MiniPlatform::Hyprland),
+        ("mini-long-lyrics", false, true, MiniPlatform::Hyprland),
+        ("mini-plain-lyrics", false, true, MiniPlatform::Hyprland),
+        ("mini-very-long-verse", false, true, MiniPlatform::Hyprland),
+        // Windows: opaque window, the capsule alone, inline Open/Close.
+        ("mini-windows", true, false, MiniPlatform::Windows),
+        ("mini-windows-lyrics", true, true, MiniPlatform::Windows),
+        // A third of the way through a wheel glide to the next line.
+        ("mini-wheel-glide", false, true, MiniPlatform::Hyprland),
+    ] {
+        let mut s = synced_state(6.0);
+        let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
+        t.thumbnail_url = Some("https://example.invalid/m1.jpg".into());
+        s.queue = Queue::default();
+        s.queue.push(t.clone());
+        let url = s.hero_art_for(&t).unwrap();
+        fake_backdrop(&mut s, url);
+        let verses = if name == "mini-very-long-verse" {
+            [
+                "We left the porch light burning for the ones who never came back home",
+                "for the ones who find their way across the water in the dark of night",
+                "Paper lanterns on the water, every one a little wish we could not keep, \
+                 every one a name we whispered to the tide before the bells began to ring \
+                 and the harbor lights went out across the bay",
+                "carry everything we could not say before the river took the words away",
+                "Hold the river, hold it steady, hold it till the morning pulls us in",
+                "till the morning pulls us in",
+            ]
+        } else if name == "mini-long-lyrics" || name == "mini-plain-lyrics" {
+            [
+                "We left the porch light burning for the ones who never came back home",
+                "for the ones who find their way across the water in the dark of night",
+                "Paper lanterns on the water, every one a little wish we could not keep",
+                "carry everything we could not say before the river took the words away",
+                "Hold the river, hold it steady, hold it till the morning pulls us in",
+                "till the morning pulls us in",
+            ]
+        } else {
+            [
+                "We left the porch light burning",
+                "for the ones who find their way",
+                "Paper lanterns on the water",
+                "carry everything we could not say",
+                "Hold the river, hold it steady",
+                "till the morning pulls us in",
+            ]
+        };
+        s.lyrics_cache.insert(
+            ("pip1".into(), LyricsProvider::Lrclib),
+            yutu_core::LyricsResult {
+                plain: String::new(),
+                synced: verses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| yutu_core::LyricLine {
+                        start_ms: 50_000 + i as u64 * 8_000,
+                        text: (*v).into(),
+                    })
+                    .collect(),
+                instrumental: false,
+            },
+        );
+        // Unsynced: the whole text, wrapped, scrollable.
+        if name == "mini-plain-lyrics" {
+            let plain = verses.join("\n") + "\n\n" + &verses.join("\n");
+            s.lyrics_cache.insert(
+                ("pip1".into(), LyricsProvider::Lrclib),
+                yutu_core::LyricsResult {
+                    plain,
+                    synced: Vec::new(),
+                    instrumental: false,
+                },
+            );
+        }
+        // A third of the way in, on the third verse.
+        s.position_secs = 67.0;
+        let _ = s.update(Message::OpenMiniPlayer);
+        let id = s.mini.unwrap().id;
+        s.mini.as_mut().unwrap().platform = platform;
+        if hovered {
+            let _ = s.update(Message::MiniHover(true));
+        }
+        if lyrics != s.mini.unwrap().lyrics {
+            let _ = s.update(Message::MiniToggleLyrics);
+        }
+        if name == "mini-wheel-glide" {
+            s.verse_glide = Some(crate::mini_player::TickerGlide {
+                from: Some(1),
+                to: Some(2),
+                started: std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_millis(90))
+                    .unwrap(),
+            });
+        }
+        let settings = iced::Settings {
+            fonts: vec![include_bytes!("../assets/fonts/AdwaitaSans-Regular.ttf")
+                .as_slice()
+                .into()],
+            default_font: iced::Font::with_name("Adwaita Sans"),
+            ..iced::Settings::default()
+        };
+        let theme = s.theme_for(id);
+        let size = crate::mini_player::mini_content_size(lyrics, platform);
+        let mut sim = iced_test::Simulator::with_size(settings, size, s.view_for(id));
+        let snap = sim.snapshot(&theme).unwrap();
+        for f in std::fs::read_dir(&dir).unwrap().flatten() {
+            let n = f.file_name().to_string_lossy().into_owned();
+            if n.starts_with(&format!("{name}-")) || n == format!("{name}.png") {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+        snap.matches_image(dir.join(format!("{name}.png"))).unwrap();
+    }
+}
+
 /// Send one control command through `update`, return its JSON reply.
 fn control_call(s: &mut AppState, words: &str) -> Result<serde_json::Value, String> {
     let args: Vec<String> = words.split_whitespace().map(String::from).collect();
@@ -11261,4 +11987,31 @@ fn control_play_result_needs_a_result() {
     assert!(control_call(&mut s, "play-result 0").is_err());
     let p = control_call(&mut s, "playlists").unwrap();
     assert_eq!(p[0]["id"], AppState::FAVORITES_ID);
+}
+
+#[test]
+fn control_mini_commands_drive_the_mini_player() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    assert_eq!(
+        control_call(&mut s, "state").unwrap()["mini"]["open"],
+        false
+    );
+    assert!(control_call(&mut s, "mini lyrics on").is_err(), "closed");
+    assert!(control_call(&mut s, "mini screenshot").is_err(), "closed");
+    control_call(&mut s, "mini").unwrap();
+    assert!(s.mini.is_some());
+    control_call(&mut s, "mini lyrics on").unwrap();
+    assert!(s.mini.unwrap().lyrics);
+    // Already on: no toggle back off.
+    control_call(&mut s, "mini lyrics on").unwrap();
+    assert!(s.mini.unwrap().lyrics);
+    let st = control_call(&mut s, "state").unwrap();
+    assert_eq!(st["mini"]["open"], true);
+    assert_eq!(st["mini"]["lyrics"], true);
+    control_call(&mut s, "mini").unwrap();
+    assert!(s.mini.is_none());
+    control_call(&mut s, "mini open").unwrap();
+    control_call(&mut s, "mini restore").unwrap();
+    assert!(s.mini.is_none());
 }

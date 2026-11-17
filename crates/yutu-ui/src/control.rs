@@ -13,7 +13,7 @@
 use super::*;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use yutu_core::control::{Command, RepeatArg};
+use yutu_core::control::{Command, MiniArg, RepeatArg};
 use yutu_core::Track;
 
 /// What the handler sends back to the socket task.
@@ -177,6 +177,12 @@ impl AppState {
                 "delete_confirm": self.pending_playlist_delete,
                 "rename_dialog": self.pending_playlist_rename,
             },
+            "mini": {
+                "open": self.mini.is_some(),
+                "lyrics": self.mini.map_or(self.mini_lyrics_pref, |m| m.lyrics),
+                "hovered": self.mini.is_some_and(|m| m.hovered),
+                "position": self.mini_pos.map(|p| json!({"x": p.x, "y": p.y})),
+            },
         })
     }
 
@@ -251,6 +257,15 @@ impl AppState {
             "paused": self.paused,
             "status": self.status,
         })
+    }
+
+    /// The main window (the latest window when windowless tests or an
+    /// early boot have not recorded it).
+    fn control_main_window(&self) -> iced::Task<Option<iced::window::Id>> {
+        match self.main_window {
+            Some(id) => iced::Task::done(Some(id)),
+            None => iced::window::latest(),
+        }
     }
 
     /// Run UI messages in order, then reply with the summary.
@@ -472,7 +487,9 @@ impl AppState {
                     });
                 }
                 reply.ok(json!({ "width": size.width, "height": size.height }));
-                return iced::window::latest().then(move |id| match id {
+                // The main window, never the mini player (the latest
+                // window once it is open).
+                return self.control_main_window().then(move |id| match id {
                     Some(id) => iced::window::resize(id, size),
                     None => iced::Task::none(),
                 });
@@ -499,34 +516,64 @@ impl AppState {
                 reply.ok(json!({ "quitting": true }));
                 #[cfg(unix)]
                 let _ = std::fs::remove_file(yutu_core::control::socket_path());
-                // A short grace so the reply line reaches the client.
-                return iced::Task::future(tokio::time::sleep(std::time::Duration::from_millis(
-                    200,
-                )))
-                .then(|_| iced::exit());
+                // Keep the mini player's spot for the next launch, then a
+                // short grace so the reply line reaches the client.
+                return self.close_mini_player().chain(
+                    iced::Task::future(tokio::time::sleep(std::time::Duration::from_millis(200)))
+                        .then(|_| iced::exit()),
+                );
             }
+            Command::Mini(arg) => match arg {
+                MiniArg::Toggle => vec![Message::ToggleMiniPlayer],
+                MiniArg::Open => vec![Message::OpenMiniPlayer],
+                MiniArg::Close => vec![Message::MiniClose],
+                MiniArg::Restore => vec![Message::MiniRestore],
+                MiniArg::Lyrics(want) => match self.mini {
+                    None => {
+                        reply.err("the mini player is closed (`mini open` first)");
+                        return iced::Task::none();
+                    }
+                    Some(m) if want.is_some_and(|w| w == m.lyrics) => vec![],
+                    Some(_) => vec![Message::MiniToggleLyrics],
+                },
+                MiniArg::Screenshot(path) => {
+                    let Some(mini) = self.mini else {
+                        reply.err("the mini player is closed (`mini open` first)");
+                        return iced::Task::none();
+                    };
+                    let path = path.unwrap_or_else(yutu_core::control::default_screenshot_path);
+                    return control_screenshot(Some(mini.id), path, reply);
+                }
+            },
             Command::Screenshot(path) => {
                 let path = path.unwrap_or_else(yutu_core::control::default_screenshot_path);
-                return iced::window::latest().then(move |id| {
-                    let reply = reply.clone();
-                    let path = path.clone();
-                    match id {
-                        Some(id) => iced::window::screenshot(id).map(move |shot| {
-                            reply.send(ControlReply::Screenshot {
-                                shot,
-                                path: path.clone(),
-                            });
-                            Message::NoOp
-                        }),
-                        None => {
-                            reply.err("no window to capture");
-                            iced::Task::none()
-                        }
-                    }
-                });
+                return self
+                    .control_main_window()
+                    .then(move |id| control_screenshot(id, path.clone(), reply.clone()));
             }
         };
         self.control_run(msgs, &reply)
+    }
+}
+
+/// Capture one window to a PNG and reply with the saved file.
+fn control_screenshot(
+    id: Option<iced::window::Id>,
+    path: std::path::PathBuf,
+    reply: ReplySlot,
+) -> iced::Task<Message> {
+    match id {
+        Some(id) => iced::window::screenshot(id).map(move |shot| {
+            reply.send(ControlReply::Screenshot {
+                shot,
+                path: path.clone(),
+            });
+            Message::NoOp
+        }),
+        None => {
+            reply.err("no window to capture");
+            iced::Task::none()
+        }
     }
 }
 

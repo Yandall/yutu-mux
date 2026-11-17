@@ -188,23 +188,86 @@ pub(crate) fn truncate_title(title: &str, max: usize) -> String {
 /// `size` px (default font, word-or-glyph wrapping), cutting it with
 /// "…" when it would spill onto another line. Measured with the
 /// renderer's own font system, so the cut matches what is drawn.
-/// The last (text, width, size, lines) result is memoized: the view
-/// re-runs on every frame and the inputs rarely change.
+/// The last few (text, width, size, lines, font) results are memoized:
+/// the view re-runs on every frame and the inputs rarely change (the
+/// mini player's ticker fits five lines per frame).
 pub(crate) fn fit_lines(s: &str, width: f32, size: f32, max_lines: usize) -> String {
+    fit_lines_font(
+        s,
+        width,
+        size,
+        max_lines,
+        crate::fonts::effective_font().to_iced_font(),
+    )
+}
+
+/// Height of `s` wrapped (word or glyph) into `width` px at `size` px
+/// in `font`, measured with the renderer's own font system. The last
+/// few results are memoized (the view re-runs on every frame).
+pub(crate) fn wrapped_height(s: &str, width: f32, size: f32, font: iced::Font) -> f32 {
     use iced::advanced::text::Paragraph as _;
     use std::cell::RefCell;
-    type Key = (String, u32, u32, usize);
+    type Key = (String, u32, u32, iced::Font);
+    const KEEP: usize = 8;
     thread_local! {
-        static LAST: RefCell<Option<(Key, String)>> = const { RefCell::new(None) };
+        static RECENT: RefCell<Vec<(Key, f32)>> = const { RefCell::new(Vec::new()) };
+    }
+    let key: Key = (s.to_owned(), width.to_bits(), size.to_bits(), font);
+    if let Some(hit) = RECENT.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| *v))
+    {
+        return hit;
+    }
+    let p = iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
+        content: s,
+        bounds: iced::Size::new(width.max(1.0), f32::INFINITY),
+        size: iced::Pixels(size),
+        line_height: iced::widget::text::LineHeight::default(),
+        font,
+        align_x: iced::advanced::text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: iced::widget::text::Shaping::default(),
+        wrapping: iced::widget::text::Wrapping::WordOrGlyph,
+    });
+    let h = p.min_bounds().height;
+    RECENT.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= KEEP {
+            c.remove(0);
+        }
+        c.push((key, h));
+    });
+    h
+}
+
+/// [`fit_lines`] measured in a given font (bold lines wrap sooner).
+pub(crate) fn fit_lines_font(
+    s: &str,
+    width: f32,
+    size: f32,
+    max_lines: usize,
+    font: iced::Font,
+) -> String {
+    use iced::advanced::text::Paragraph as _;
+    use std::cell::RefCell;
+    type Key = (String, u32, u32, usize, iced::Font);
+    const KEEP: usize = 8;
+    thread_local! {
+        static RECENT: RefCell<Vec<(Key, String)>> = const { RefCell::new(Vec::new()) };
     }
     if !width.is_finite() || width <= 0.0 || max_lines == 0 {
         return s.to_owned();
     }
-    let key: Key = (s.to_owned(), width.to_bits(), size.to_bits(), max_lines);
-    if let Some(hit) = LAST.with(|c| {
+    let key: Key = (
+        s.to_owned(),
+        width.to_bits(),
+        size.to_bits(),
+        max_lines,
+        font,
+    );
+    if let Some(hit) = RECENT.with(|c| {
         c.borrow()
-            .as_ref()
-            .filter(|(k, _)| *k == key)
+            .iter()
+            .find(|(k, _)| *k == key)
             .map(|(_, v)| v.clone())
     }) {
         return hit;
@@ -218,7 +281,7 @@ pub(crate) fn fit_lines(s: &str, width: f32, size: f32, max_lines: usize) -> Str
             bounds: iced::Size::new(width, f32::INFINITY),
             size: iced::Pixels(size),
             line_height: iced::widget::text::LineHeight::default(),
-            font: crate::fonts::effective_font().to_iced_font(),
+            font,
             align_x: iced::advanced::text::Alignment::Default,
             align_y: iced::alignment::Vertical::Top,
             shaping: iced::widget::text::Shaping::default(),
@@ -244,6 +307,12 @@ pub(crate) fn fit_lines(s: &str, width: f32, size: f32, max_lines: usize) -> Str
         let head: String = chars[..lo].iter().collect();
         format!("{}…", head.trim_end())
     };
-    LAST.with(|c| *c.borrow_mut() = Some((key, out.clone())));
+    RECENT.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= KEEP {
+            c.remove(0);
+        }
+        c.push((key, out.clone()));
+    });
     out
 }

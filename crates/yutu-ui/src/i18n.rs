@@ -464,6 +464,15 @@ impl Language {
     pub fn now_playing(self) -> String {
         self.tr("now-playing")
     }
+    pub fn mini_player(self) -> String {
+        self.tr("mini-player")
+    }
+    pub fn mini_open(self) -> String {
+        self.tr("mini-open")
+    }
+    pub fn mini_close(self) -> String {
+        self.tr("mini-close")
+    }
     pub fn nothing_queued(self) -> String {
         self.tr("nothing-queued")
     }

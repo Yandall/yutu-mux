@@ -609,4 +609,25 @@ pub struct AppState {
     /// Which playlist the in-flight manual drag belongs to (stale drags
     /// from a navigated-away list never commit).
     pub(crate) pl_drag_id: Option<String>,
+    /// The main window (None in tests, which run without windows): its
+    /// events alone drive the app's cursor, layout and drag tracking,
+    /// and closing it quits the app.
+    pub(crate) main_window: Option<iced::window::Id>,
+    /// The picture-in-picture mini player window, while open.
+    pub(crate) mini: Option<crate::mini_player::MiniPlayer>,
+    /// Mini player lyrics ticker open last time (`mini_lyrics` pref).
+    pub(crate) mini_lyrics_pref: bool,
+    /// Where the user last left the mini player (`mini_pos` pref):
+    /// logical screen position from window moves (X11, macOS,
+    /// Windows), or Hyprland layout coordinates read via `hyprctl`.
+    /// Other Wayland compositors place it themselves.
+    pub(crate) mini_pos: Option<iced::Point>,
+    /// The ring cover for the current song: the hero art downscaled
+    /// once (filtered), keyed by its hero URL; and the URL in flight.
+    pub(crate) mini_cover: Option<(String, iced::widget::image::Handle)>,
+    pub(crate) mini_cover_loading: Option<String>,
+    /// Synced ticker: the song and current line last shown, and the
+    /// wheel glide toward it while one runs.
+    pub(crate) verse_at: Option<(String, Option<usize>)>,
+    pub(crate) verse_glide: Option<crate::mini_player::TickerGlide>,
 }

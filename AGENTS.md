@@ -142,6 +142,36 @@
   `song_match::resolve_foreign` (songs first, video fallback); misses
   and capped reads show in the dialog summary (release status lines
   hide info).
+- **Mini player** (`mini_player.rs`, design "Pill · Glow"): the app is
+  an `iced::daemon`; the main window opens at boot and closing it
+  quits (`Message::WindowClosed`). The mini player is a second
+  frameless, transparent, always-on-top window and never minimizes
+  or hides the main one (Wayland cannot restore it). Window events
+  are filtered to `main_window`, so the mini window never moves the
+  app's cursor, layout mode or drag arming. Views/titles/themes go
+  through `view_for` / `title_for` / `theme_for`; `view()` stays the
+  main window. Lyrics toggle resizes downward, kept in `mini_lyrics`.
+  Own app id `yutu-mux-mini` (README has the Hyprland rule). Position
+  saved in `mini_pos`: window `Moved` events (X11/macOS/Windows), or
+  `hyprctl` under Hyprland (read on close, moved back on open, top
+  edge re-pinned after a lyrics resize since Hyprland keeps centers).
+  Hyprland dispatchers address windows by `address:`, never `pid:`
+  (two windows). Platform workarounds are gated on `MiniPlatform`
+  (detected at open: Hyprland, Wayland, X11, MacOs, Windows), never
+  applied everywhere; macOS/Windows get their own fixes when needed,
+  and tests set the platform explicitly. Wayland only: the move grab's
+  leave (within `MINI_GRAB_LEAVE_MS` of a drag) is ignored and resizes
+  re-pin the size hints. macOS only: the Metal layers are pinned to
+  top-left gravity (no stretched frame on resize). Windows only: the
+  window is opaque (iced's DX12 surface cannot be transparent), sized
+  to the capsule, DWM-rounded; Open/Close replace the title on hover. Synced ticker (`ticker_lines`): the current
+  verse is never cut; it steps down `MINI_TICKER_LAYOUTS` (smaller
+  size, then fewer neighbors) until it fits. Neighbors: 1 line each.
+  It renders as a wheel (`wheel_layout`, current line on the center
+  band) and glides 450ms between lines (`TickerGlide`, `wheel_frame`).
+  `update` calls `verse_sync` after every message (the position
+  changes in many handlers); far seeks, new songs and disabled
+  animations jump instead of gliding.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in
@@ -215,7 +245,10 @@
 - `thumbnail_large_url` needs `pick_large_thumb_url` (max width);
   `pick_thumb_url` stays min-width. Both return `None` on empty input.
 - Lyrics cache keyed by track id; `lyrics_content(id)` helper is shared by
-  the lyrics page and the Now Playing drawer: don't fork it.
+  the lyrics page and the Now Playing drawer: don't fork it. Every
+  lyrics view uses one look, `mini_player::verse_style` (size, opacity,
+  bold by distance from the current line), and one line-change glide
+  (`verse_sync` after every update, `verse_focus`).
 
 ## 6. Features & build matrix
 
@@ -319,6 +352,8 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 - `crates/yutu-core/src/ytdlp.rs`: yt-dlp resolver flags.
 - `crates/yutu-core/src/lyrics_providers.rs`: `parse_lrc`, `line_at`,
   LRCLIB fetch.
+- `crates/yutu-ui/src/mini_player.rs`: mini player window (settings,
+  pill view, progress ring, lyrics ticker, per-window dispatch).
 - `crates/yutu-ui/src/i18n.rs`: app `Language`, Fluent lookup with
   English fallback, per-language failure markers.
 - `crates/yutu-ui/assets/locales/<lang>/app.ftl`: UI strings per

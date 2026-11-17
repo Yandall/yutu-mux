@@ -4,6 +4,32 @@
 
 ### Added
 
+- Mini player: a small floating window with the current song, playback
+  controls and a progress ring, tinted with the cover's colors.
+- The mini player's lyrics button grows it into a five-line synced
+  lyrics ticker; it remembers whether lyrics were open.
+- The mini player reopens where you left it and its lyrics grow
+  downward only (X11, macOS, Windows, Hyprland).
+- The mini player always shows the current lyric line in full: long
+  lines get smaller text and fewer surrounding lines instead of a cut.
+- Synced lyrics in the mini player roll to the next line like a wheel
+  picker instead of jumping (off with animations disabled).
+- Now Playing and the Lyrics page show lyrics in the mini player's
+  style (slightly larger): centered, current line bold, the rest fading.
+- Hovering a lyric line shows a faint frosted highlight instead of a
+  solid gray box.
+- Unsynced lyrics in the mini player show in full, wrapped, and scroll.
+- The mini player has its own window id (`yutu-mux-mini`); the README
+  has a Hyprland rule that removes the frame around it.
+- The player bar's mini player button also closes it when it is open.
+- The mini player's Open button brings the main window forward on
+  Hyprland too.
+- The mini player's cover is sharp on high-resolution screens.
+- macOS: opening or closing the mini player's lyrics no longer flickers
+  with stretched content.
+- Windows: the mini player no longer sits on a black box; it is a
+  rounded panel, with Open and Close in place of the title on hover.
+- `yutu-mux ctl mini` opens, closes and screenshots the mini player.
 - Scriptable control: start with `--control` and drive the running app
   (play, search, navigate, screenshots) via `yutu-mux ctl`.
 - `yutu-mux ctl quit` closes the app, and `ctl float` toggles tiling

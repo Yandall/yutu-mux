@@ -152,9 +152,13 @@ pub(crate) const LYRIC_ROW_SPACING: f32 = 6.0;
 pub(crate) const LYRIC_GAP_H: f32 = 10.0;
 /// Lyric button vertical padding (4 top + 4 bottom).
 pub(crate) const LYRIC_BTN_PAD: f32 = 8.0;
-/// Horizontal chrome beside lyric text (25px rail/icon + 8px button
-/// padding; both row arms sum the same, so one constant serves).
-pub(crate) const LYRIC_ROW_CHROME: f32 = 33.0;
+/// Now Playing / Lyrics page text scale over the mini player's lyric
+/// sizes (`mini_player::verse_style`): same proportions, a touch larger
+/// for the bigger view.
+pub(crate) const LYRICS_VIEW_SCALE: f32 = 1.12;
+/// Horizontal chrome beside lyric text (8px button padding; lines are
+/// centered with no icon rail, in the mini player's style).
+pub(crate) const LYRIC_ROW_CHROME: f32 = 8.0;
 /// Window chrome above the drawer viewport (header + player).
 pub(crate) const LYRIC_VIEWPORT_PAD: f32 = 260.0;
 /// Any user scroll disengages follow (glide echoes match the command
@@ -270,8 +274,9 @@ pub(crate) const PAGE_BACKDROP_OPACITY: f32 = 0.65;
 /// How strongly the stretched cover shows through the sheet.
 pub(crate) const NP_BACKDROP_OPACITY: f32 = 0.7;
 /// Stacked player: horizontal chrome beside the title (art, padding,
-/// heart and Now Playing buttons) and the volume slider's width cap.
-pub(crate) const MINI_INFO_CHROME: f32 = 160.0;
+/// heart, mini player and Now Playing buttons) and the volume slider's
+/// width cap.
+pub(crate) const MINI_INFO_CHROME: f32 = 200.0;
 pub(crate) const MINI_VOLUME_W: f32 = 110.0;
 /// Mute button width: 18px `ctrl_box` + 6px padding per side.
 pub(crate) const MUTE_BUTTON_W: f32 = 30.0;

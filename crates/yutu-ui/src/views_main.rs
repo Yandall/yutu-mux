@@ -1189,6 +1189,7 @@ impl AppState {
                 .spacing(1)
                 .width(Fill),
                 info_like,
+                self.mini_player_button(),
                 drawer_btn,
             ]
             .spacing(8)
@@ -1342,19 +1343,27 @@ impl AppState {
                     // slider gives up width (capped at its normal size),
                     // so the mute and Now Playing icons never shrink.
                     container(
-                        row![self.volume_group(volume_w, 8.0, true), {
-                            if self.drawer_open {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+                        row![
+                            self.volume_group(volume_w, 8.0, true),
+                            self.mini_player_button(),
+                            {
+                                if self.drawer_open {
+                                    button(ctrl_box(btn_icon(
+                                        "mic-vocal",
+                                        14.0,
+                                        iced::Color::WHITE,
+                                    )))
                                     .style(accent_button)
                                     .on_press(Message::ToggleDrawer)
                                     .padding(7)
-                            } else {
-                                button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
-                                    .style(icon_hover)
-                                    .on_press(Message::ToggleDrawer)
-                                    .padding(7)
-                            }
-                        },]
+                                } else {
+                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, MUTED)))
+                                        .style(icon_hover)
+                                        .on_press(Message::ToggleDrawer)
+                                        .padding(7)
+                                }
+                            },
+                        ]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
                     )
@@ -1397,8 +1406,12 @@ impl AppState {
     /// lyrics column width times the sized line height, plus button
     /// padding. Wrapping is approximate (average advance), so callers
     /// treat the result as a centering hint, never truth.
-    pub(crate) fn lyric_row_h(text_len: usize, current: bool, col_w: f32) -> f32 {
-        let (size, lh) = if current { (19.0, 1.4) } else { (15.0, 1.5) };
+    /// `distance` = lines away from the current one (sizes follow
+    /// [`crate::mini_player::verse_style`], default 1.3 line height).
+    pub(crate) fn lyric_row_h(text_len: usize, distance: usize, col_w: f32) -> f32 {
+        let (size, _, _) = crate::mini_player::verse_style(distance as f32);
+        let size = size * LYRICS_VIEW_SCALE;
+        let lh = 1.3;
         let avail = (col_w - LYRIC_ROW_CHROME).max(120.0);
         let per_line = (avail / (size * 0.47)).max(8.0) as usize;
         let lines = text_len.max(1).div_ceil(per_line);
@@ -1440,7 +1453,7 @@ impl AppState {
                 continue;
             }
             let current = vi == at;
-            let h = Self::lyric_row_h(l.text.chars().count(), current, col_w);
+            let h = Self::lyric_row_h(l.text.chars().count(), vi.abs_diff(at), col_w);
             if current {
                 target = Some(y + h / 2.0 - viewport / 2.0);
             }
@@ -1605,16 +1618,26 @@ impl AppState {
     /// construction below exactly (gaps, pitches, current-row size):
     /// keep the two in sync when this layout changes.
     pub(crate) fn lyrics_content(&self, id: &str) -> iced::Element<'_, Message> {
-        use iced::widget::{column, row, text};
-        match self.lyrics_display_entry(id) {
-            Some((_, cached)) if cached.instrumental => text(self.language.instrumental())
-                .size(14)
+        use iced::widget::{column, container, text};
+        use iced::Fill;
+        // The mini player's look (centered lines, white text fading
+        // with distance from the current line, which is bold and large),
+        // as a full scrollable list with click-to-seek rows.
+        let notice = |s: String| -> iced::Element<'_, Message> {
+            text(s)
+                .size(13)
                 .color(MUTED)
-                .into(),
+                .align_x(iced::alignment::Horizontal::Center)
+                .width(Fill)
+                .into()
+        };
+        match self.lyrics_display_entry(id) {
+            Some((_, cached)) if cached.instrumental => notice(self.language.instrumental()),
             Some((_, cached)) if !cached.synced.is_empty() => {
                 // Highlight reads through the shared cursor so the
                 // follow geometry can never disagree with it.
                 let at = self.lyric_cursor_at(id);
+                let focus = self.verse_focus(id, at);
                 let mut rows: Vec<iced::Element<'_, Message>> = Vec::new();
                 let mut vi = 0usize;
                 for l in &cached.synced {
@@ -1622,62 +1645,54 @@ impl AppState {
                         rows.push(
                             iced::widget::Space::new()
                                 .height(iced::Length::Fixed(10.0))
-                                .width(iced::Fill)
+                                .width(Fill)
                                 .into(),
                         );
                         continue;
                     }
-                    let is_current = Some(vi) == at;
+                    let (size, alpha, bold) = crate::mini_player::verse_style(vi as f32 - focus);
+                    let size = size * LYRICS_VIEW_SCALE;
                     let row_id = lyric_row_id(vi);
                     vi += 1;
                     let ms = l.start_ms;
-                    let line: iced::Element<'_, Message> = if is_current {
-                        row![
-                            btn_icon("music", 15.0, ACCENT),
-                            text(l.text.clone())
-                                .size(19)
-                                .line_height(iced::widget::text::LineHeight::Relative(1.4),)
-                                .font(bold_font())
-                                .color(ACCENT),
-                        ]
-                        .spacing(10)
-                        .align_y(iced::alignment::Vertical::Center)
-                        .into()
-                    } else {
-                        row![
-                            iced::widget::Space::new().width(iced::Length::Fixed(25.0)),
-                            btn_text(l.text.clone(), 15)
-                                .line_height(iced::widget::text::LineHeight::Relative(1.5),)
-                                .color(iced::Color::from_rgb8(0xD6, 0xD6, 0xD6)),
-                        ]
-                        .align_y(iced::alignment::Vertical::Center)
-                        .into()
-                    };
+                    let mut line = text(l.text.trim().to_string())
+                        .size(size)
+                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha))
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .width(Fill);
+                    if bold {
+                        line = line.font(bold_font());
+                    }
                     // Id'd wrapper: the drawer follow measures the live
                     // row through it (exact wrap, no estimate).
-                    let row_el: iced::Element<'_, Message> = iced::widget::container(
+                    let row_el: iced::Element<'_, Message> = container(
                         row_button(line)
-                            .style(hover_row)
+                            .style(glass_row)
                             .on_press(Message::SeekToMs(ms))
                             .padding(4)
-                            .width(iced::Fill),
+                            .width(Fill),
                     )
                     .id(row_id)
-                    .width(iced::Fill)
+                    .width(Fill)
                     .into();
                     rows.push(row_el);
                 }
                 column(rows).spacing(6).into()
             }
+            // Unsynced: the whole text, centered and quiet (no line is
+            // current), as in the mini player.
             Some((_, cached)) => column(
                 cached
                     .plain
                     .lines()
-                    .filter(|l| !l.trim().is_empty())
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
                     .map(|l| {
                         text(l.to_string())
-                            .size(15)
-                            .line_height(iced::widget::text::LineHeight::Relative(1.6))
+                            .size(13)
+                            .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .width(Fill)
                             .into()
                     })
                     .collect::<Vec<_>>(),
@@ -1685,11 +1700,9 @@ impl AppState {
             .spacing(6)
             .into(),
             None if self.lyrics_fetch_pending(id) => {
-                text(self.language.loading_lyrics(self.lyrics_provider.label()))
-                    .color(MUTED)
-                    .into()
+                notice(self.language.loading_lyrics(self.lyrics_provider.label()))
             }
-            None => text(self.language.no_lyrics()).color(MUTED).into(),
+            None => notice(self.language.no_lyrics()),
         }
     }
 

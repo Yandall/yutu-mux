@@ -487,6 +487,34 @@ pub(crate) fn hover_row(
     }
 }
 
+/// Row hover over a blurred backdrop (Now Playing / Lyrics page
+/// lyrics): a faint translucent white tint and hairline edge instead of
+/// `hover_row`'s solid fill, so the frosted cover glow still shows
+/// through. Pressed reads a touch stronger.
+pub(crate) fn glass_row(
+    _: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button::Status;
+    let (fill, edge) = match status {
+        Status::Pressed => (0.12, 0.10),
+        Status::Hovered => (0.07, 0.07),
+        _ => (0.0, 0.0),
+    };
+    iced::widget::button::Style {
+        background: (fill > 0.0).then_some(iced::Background::Color(iced::Color::from_rgba(
+            1.0, 1.0, 1.0, fill,
+        ))),
+        text_color: iced::Color::WHITE,
+        border: iced::Border {
+            color: iced::Color::from_rgba(1.0, 1.0, 1.0, edge),
+            width: if edge > 0.0 { 1.0 } else { 0.0 },
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 /// Secondary button: visible dark fill + border at rest, so standalone
 /// text actions never read as plain text. The red `accent_button` stays
 /// the CTA; menus and rows keep `hover_row` (hover feedback only).
