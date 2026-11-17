@@ -5392,6 +5392,22 @@ fn lyric_follow_centers_each_verse() {
 }
 
 #[test]
+fn lyrics_of_a_song_not_playing_never_highlight() {
+    // m2's lyrics opened from a context menu while m1 plays at 6s:
+    // the page must not follow m1's clock.
+    let mut s = synced_state(6.0);
+    let lines = s
+        .lyrics_cache
+        .get(&("m1".to_string(), LyricsProvider::Lrclib))
+        .unwrap()
+        .clone();
+    s.lyrics_cache
+        .insert(("m2".into(), LyricsProvider::Lrclib), lines);
+    assert_eq!(s.lyric_cursor_at("m1"), Some(1));
+    assert_eq!(s.lyric_cursor_at("m2"), None);
+}
+
+#[test]
 fn lyric_follow_centers_in_the_measured_viewport() {
     // Short windows: the scrollable reports its own height and the
     // verse centers in it, not in a window-height guess that would

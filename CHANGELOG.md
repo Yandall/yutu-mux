@@ -109,6 +109,8 @@
 
 ### Fixed
 
+- Lyrics opened for a song that is not playing no longer highlight
+  verses using the playing song's time.
 - The playlist menu button no longer wraps under the search box on
   medium-width windows.
 - Clicking an empty spot inside a dialog no longer closes it.
