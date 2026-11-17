@@ -113,7 +113,7 @@
 
 ### Fixed
 
-- macOS: the app runs on macOS 14 and newer.
+- macOS: the app runs on macOS 15 and newer.
 - Now Playing lyrics keep following the current line to the end of
   the song instead of stopping on their own near the last verses.
 - Now Playing lyrics scroll to the next line in one smooth motion
