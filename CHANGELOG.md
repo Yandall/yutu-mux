@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- YouTube Premium accounts signed in with cookies now stream in 256 kbps
+  AAC; other accounts keep the standard 128 kbps.
+
 ### Fixed
 
 - macOS: text on non-Retina screens is drawn slightly heavier, so small
