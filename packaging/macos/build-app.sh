@@ -139,6 +139,35 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
         -d "$APP/Contents/libs" \
         -p @executable_path/../libs \
         -of
+    # dylibbundler adds its -p rpath once per fix pass, and libmpv gets
+    # it twice; recent dyld rejects a duplicate LC_RPATH outright
+    # ("Library not loaded ... duplicate LC_RPATH"), so the app never
+    # launches. Drop the extras and re-sign what changed.
+    echo "==> removing duplicate LC_RPATH entries"
+    rpaths() {
+        otool -l "$1" | awk '/cmd LC_RPATH/ { r = 1; next }
+            r && $1 == "path" { print $2; r = 0 }'
+    }
+    while IFS= read -r -d '' f; do
+        file -b "$f" | grep -q 'Mach-O' || continue
+        changed=0
+        while IFS= read -r rp; do
+            [ -n "$rp" ] || continue
+            # One delete removes one occurrence: repeat until one is left.
+            while [ "$(rpaths "$f" | grep -cxF -- "$rp")" -gt 1 ]; do
+                install_name_tool -delete_rpath "$rp" "$f"
+                changed=1
+            done
+        done < <(rpaths "$f" | sort | uniq -d)
+        if [ "$changed" -eq 1 ]; then
+            echo "    deduplicated: ${f#"$APP/"}"
+            codesign -s - --force "$f" >/dev/null
+        fi
+        if [ -n "$(rpaths "$f" | sort | uniq -d)" ]; then
+            echo "error: duplicate LC_RPATH left in ${f#"$APP/"}" >&2
+            exit 1
+        fi
+    done < <(find "$APP/Contents/MacOS" "$APP/Contents/libs" -type f -print0)
     echo "==> fetching standalone yt-dlp"
     curl -fsSL -o "$APP/Contents/MacOS/yt-dlp" \
         https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos

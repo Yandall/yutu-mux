@@ -4,8 +4,9 @@
 
 ### Fixed
 
-- macOS: the app opens again on macOS 14 and 15 (the 0.2.0 download
-  only started on macOS 26).
+- macOS: the app opens again (the 0.2.0 download stopped at launch
+  with "cannot be opened because of a problem").
+- macOS: the download runs on macOS 14 and 15 too, not only 26+.
 - Windows: the zip and installer downloads are published again (the
   0.2.0 release build stopped before them).
 
