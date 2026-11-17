@@ -11404,16 +11404,29 @@ fn mini_drag_keeps_the_chips_until_a_real_exit() {
     let _ = s.update(Message::MiniHover(true));
     let _ = s.update(Message::MiniDrag);
     let mini = s.mini.unwrap();
-    assert!(mini.hovered && mini.drag_hold);
-    // The compositor's move grab sends a leave: the chips stay.
+    assert!(mini.hovered && mini.drag_hold.is_some());
+    // Wayland: the compositor's move grab sends a leave as the drag
+    // starts; the chips stay (the pointer is still on the window).
     let _ = s.update(Message::MiniHover(false));
     assert!(s.mini.unwrap().hovered, "chips survive the grab leave");
-    // The pointer seen over the window again ends the hold, so the
-    // next leave is a real one.
+    assert!(
+        s.mini.unwrap().drag_hold.is_none(),
+        "only one leave is held"
+    );
+    // The next leave is a real one.
     let _ = s.update(Message::MiniHover(true));
-    assert!(!s.mini.unwrap().drag_hold);
     let _ = s.update(Message::MiniHover(false));
     assert!(!s.mini.unwrap().hovered);
+    // macOS: no grab leave during the drag; the pointer leaving later
+    // hides the chips right away (it used to need a re-hover).
+    let _ = s.update(Message::MiniHover(true));
+    let _ = s.update(Message::MiniDrag);
+    let earlier = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(2))
+        .unwrap();
+    s.mini.as_mut().unwrap().drag_hold = Some(earlier);
+    let _ = s.update(Message::MiniHover(false));
+    assert!(!s.mini.unwrap().hovered, "a late leave is real");
     // A drag that starts without a hover still shows the chips.
     let _ = s.update(Message::MiniDrag);
     assert!(s.mini.unwrap().hovered);

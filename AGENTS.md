@@ -156,8 +156,9 @@
   `hyprctl` under Hyprland (read on close, moved back on open, top
   edge re-pinned after a lyrics resize since Hyprland keeps centers).
   Hyprland dispatchers address windows by `address:`, never `pid:`
-  (two windows). A drag holds the chips (`drag_hold`) until the
-  pointer is seen again. Ticker lines are fitted (`ticker_lines`):
+  (two windows). A drag ignores only the leave that arrives within
+  `MINI_GRAB_LEAVE_MS` of it (the Wayland move grab's); macOS sends no
+  such leave, so any later leave hides the chips. Ticker lines are fitted (`ticker_lines`):
   neighbors 1 line, current verse at most 2 at a smaller size.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.

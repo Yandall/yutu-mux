@@ -10,9 +10,10 @@
 //!     player never minimizes or hides it (Wayland cannot restore a
 //!     minimized window from the app, so nothing would bring it back).
 //!   - Window actions (Open, Close) float above the capsule only while
-//!     the pointer is over the mini window. A drag keeps them up until
-//!     the pointer really leaves (the compositor's move grab sends a
-//!     leave while the pointer is still over the window).
+//!     the pointer is over the mini window. A drag keeps them up: the
+//!     leave a compositor's move grab sends as the drag starts (Wayland)
+//!     is ignored, any later leave hides them (macOS sends no grab
+//!     leave, so its first leave after a drag is a real one).
 //!   - The art and title are the drag handle (no title bar).
 //!   - Sizes are logical units times the UI scale, so the window always
 //!     fits its content at any scale.
@@ -86,10 +87,16 @@ pub struct MiniPlayer {
     pub(crate) lyrics: bool,
     /// Pointer over the mini window (shows the Open/Close chips).
     pub(crate) hovered: bool,
-    /// A drag started: ignore the leave the compositor's move grab
-    /// sends, until the pointer is seen over the window again.
-    pub(crate) drag_hold: bool,
+    /// When the last drag started: a leave right after it is the
+    /// compositor's move grab (Wayland), not the pointer leaving.
+    pub(crate) drag_hold: Option<std::time::Instant>,
 }
+
+/// How long after a drag starts a leave still counts as the move
+/// grab's. The grab's leave lands within a few frames of the press;
+/// platforms with no grab leave (macOS, X11) send only real leaves,
+/// which come later and hide the chips as usual.
+pub(crate) const MINI_GRAB_LEAVE_MS: u128 = 400;
 
 /// Parse the `mini_pos` pref ("x,y", finite numbers).
 pub(crate) fn parse_mini_pos(s: &str) -> Option<iced::Point> {
@@ -456,7 +463,7 @@ impl AppState {
             id,
             lyrics,
             hovered: false,
-            drag_hold: false,
+            drag_hold: None,
         });
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut open = open.discard();
@@ -533,16 +540,20 @@ impl AppState {
     }
 
     /// Pointer over / off the mini window. A leave right after a drag
-    /// is the compositor's move grab, not the pointer leaving: the
-    /// chips stay until the pointer is seen over the window again.
+    /// starts is the compositor's move grab, not the pointer leaving:
+    /// the chips stay (the pointer is still on the window once the
+    /// drag ends). Any later leave is real and hides them.
     pub(crate) fn mini_hover(&mut self, over: bool) {
         let Some(mini) = self.mini.as_mut() else {
             return;
         };
+        let grab_leave = mini
+            .drag_hold
+            .is_some_and(|at| at.elapsed().as_millis() < MINI_GRAB_LEAVE_MS);
+        mini.drag_hold = None;
         if over {
             mini.hovered = true;
-            mini.drag_hold = false;
-        } else if !mini.drag_hold {
+        } else if !grab_leave {
             mini.hovered = false;
         }
     }
@@ -553,7 +564,7 @@ impl AppState {
             return iced::Task::none();
         };
         mini.hovered = true;
-        mini.drag_hold = true;
+        mini.drag_hold = Some(std::time::Instant::now());
         iced::window::drag(mini.id)
     }
 
