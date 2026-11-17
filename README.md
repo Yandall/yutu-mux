@@ -33,8 +33,8 @@ surface as errors.
 
 ## Screenshots
 
-![Home with quick picks, library, and queue](assets/screenshots/home.png)
-![Now Playing drawer with synced lyrics](assets/screenshots/now-playing.png)
+![Playlist view](assets/screenshots/yutu-mux-screenshot-1)
+![Now Playing drawer with synced lyrics](assets/screenshots/yutu-mux-screenshot-2.png)
 
 ## Install
 
