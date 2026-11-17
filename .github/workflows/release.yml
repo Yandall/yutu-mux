@@ -136,6 +136,14 @@ jobs:
           $dllDir >> $env:GITHUB_PATH
       - name: Test
         run: cargo test --workspace --locked
+      - uses: taiki-e/install-action@nextest
+      - name: Per-test timings (throwaway diagnostics)
+        shell: pwsh
+        run: |
+          cargo nextest run -p yutu-ui --lib --locked --no-fail-fast --status-level all --final-status-level slow 2>&1 | Tee-Object nextest.txt | Out-Null
+          Get-Content nextest.txt | Select-String -Pattern '^\s*(PASS|FAIL|SLOW)' | ForEach-Object { $_.Line } | Sort-Object { [double]([regex]::Match($_, '\[\s*([0-9.]+)s\]').Groups[1].Value) } -Descending | Select-Object -First 40
+          Get-Content nextest.txt | Select-Object -Last 5
+          exit 0
       - name: Feature checks (all features compile)
         run: |
           cargo check --workspace --all-features --locked
