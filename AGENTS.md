@@ -161,8 +161,9 @@
   applied everywhere; macOS/Windows get their own fixes when needed,
   and tests set the platform explicitly. Wayland only: the move grab's
   leave (within `MINI_GRAB_LEAVE_MS` of a drag) is ignored and resizes
-  re-pin the size hints. Ticker lines are fitted (`ticker_lines`):
-  neighbors 1 line, current verse at most 2 at a smaller size.
+  re-pin the size hints. Synced ticker (`ticker_lines`): the current
+  verse is never cut; it steps down `MINI_TICKER_LAYOUTS` (smaller
+  size, then fewer neighbors) until it fits. Neighbors: 1 line each.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in

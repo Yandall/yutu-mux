@@ -201,6 +201,44 @@ pub(crate) fn fit_lines(s: &str, width: f32, size: f32, max_lines: usize) -> Str
     )
 }
 
+/// Height of `s` wrapped (word or glyph) into `width` px at `size` px
+/// in `font`, measured with the renderer's own font system. The last
+/// few results are memoized (the view re-runs on every frame).
+pub(crate) fn wrapped_height(s: &str, width: f32, size: f32, font: iced::Font) -> f32 {
+    use iced::advanced::text::Paragraph as _;
+    use std::cell::RefCell;
+    type Key = (String, u32, u32, iced::Font);
+    const KEEP: usize = 8;
+    thread_local! {
+        static RECENT: RefCell<Vec<(Key, f32)>> = const { RefCell::new(Vec::new()) };
+    }
+    let key: Key = (s.to_owned(), width.to_bits(), size.to_bits(), font);
+    if let Some(hit) = RECENT.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| *v))
+    {
+        return hit;
+    }
+    let p = iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
+        content: s,
+        bounds: iced::Size::new(width.max(1.0), f32::INFINITY),
+        size: iced::Pixels(size),
+        line_height: iced::widget::text::LineHeight::default(),
+        font,
+        align_x: iced::advanced::text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: iced::widget::text::Shaping::default(),
+        wrapping: iced::widget::text::Wrapping::WordOrGlyph,
+    });
+    let h = p.min_bounds().height;
+    RECENT.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= KEEP {
+            c.remove(0);
+        }
+        c.push((key, h));
+    });
+    h
+}
+
 /// [`fit_lines`] measured in a given font (bold lines wrap sooner).
 pub(crate) fn fit_lines_font(
     s: &str,

@@ -27,9 +27,10 @@
 //!     asks `hyprctl` instead (also to keep the top edge fixed when the
 //!     lyrics grow, since Hyprland keeps a resized window's center);
 //!     other Wayland compositors place it themselves.
-//!   - The synced ticker never wraps past its slots: neighbor lines are
-//!     one ellipsized line, the current verse at most two (smaller text
-//!     when long), so all five slots always fit. Unsynced lyrics show
+//!   - The synced ticker never cuts the current verse: a long one wraps
+//!     whole, at a smaller size and with fewer neighbor lines when
+//!     needed (`MINI_TICKER_LAYOUTS`). Neighbor lines are one ellipsized
+//!     line each. Unsynced lyrics show
 //!     in full instead, wrapped and scrollable by hand.
 
 use super::*;
@@ -70,10 +71,19 @@ const MINI_TITLE_CHARS: usize = 18;
 /// Ticker padding (vertical, horizontal) and gap between lines.
 const MINI_TICKER_PAD: (f32, f32) = (16.0, 24.0);
 const MINI_TICKER_GAP: f32 = 10.0;
-/// Current verse size, and the smaller size a verse too long for one
-/// line drops to (then wrapped to at most two lines).
-const MINI_CUR_SIZE: f32 = 21.0;
-const MINI_CUR_LONG_SIZE: f32 = 16.0;
+/// Synced ticker layouts, best first: (current verse size, how far
+/// the neighbor lines reach). A long verse is never cut: it steps down
+/// in size, then gives up neighbor lines, until it fits whole.
+const MINI_TICKER_LAYOUTS: [(f32, u32); 8] = [
+    (21.0, 2),
+    (16.0, 2),
+    (14.0, 2),
+    (16.0, 1),
+    (14.0, 1),
+    (16.0, 0),
+    (14.0, 0),
+    (13.0, 0),
+];
 /// Glow strength over the base surface, then a dark veil on top so
 /// white text always reads (same idea as the Now Playing sheet).
 const MINI_GLOW_OPACITY: f32 = 0.9;
@@ -288,15 +298,13 @@ fn hypr_mini_window() -> iced::Task<Option<yutu_desktop::hyprland::HyprWindow>> 
     )
 }
 
-/// Text size and line budget of a ticker slot `distance` lines from
-/// the current verse (`long`: the current verse does not fit one line
-/// at full size).
-pub(crate) fn ticker_slot(distance: i32, long: bool) -> (f32, usize) {
-    match distance.unsigned_abs() {
-        0 if long => (MINI_CUR_LONG_SIZE, 2),
-        0 => (MINI_CUR_SIZE, 1),
-        1 => (14.0, 1),
-        _ => (12.0, 1),
+/// Text size of a neighbor line `distance` lines from the current
+/// verse (always one line, ellipsized).
+pub(crate) fn ticker_neighbor_size(distance: i32) -> f32 {
+    if distance.unsigned_abs() <= 1 {
+        14.0
+    } else {
+        12.0
     }
 }
 
@@ -305,47 +313,71 @@ pub(crate) fn ticker_text_width() -> f32 {
     MINI_W - 2.0 * MINI_TICKER_PAD.1
 }
 
-#[cfg(test)]
-/// Tallest the ticker content can get: the current verse at its larger
-/// budget, two neighbors on each side at one line each, the gaps.
-pub(crate) fn ticker_worst_height() -> f32 {
-    let line = |(size, lines): (f32, usize)| {
-        iced::widget::text::LineHeight::default()
-            .to_absolute(iced::Pixels(size))
-            .0
-            * lines as f32
-    };
-    let current = line(ticker_slot(0, false)).max(line(ticker_slot(0, true)));
-    current
-        + 2.0 * line(ticker_slot(1, false))
-        + 2.0 * line(ticker_slot(2, false))
-        + 4.0 * MINI_TICKER_GAP
+/// Height the ticker content may take (inside its padding).
+pub(crate) fn ticker_budget() -> f32 {
+    MINI_LYRICS_H - 2.0 * MINI_TICKER_PAD.0
 }
 
-/// Ticker lines ready to draw: `(text cut to its slot, size, distance)`.
-/// Measured with the real font (bold for the current verse), so the
-/// cut matches what is drawn.
-pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, f32, i32)> {
+fn line_h(size: f32) -> f32 {
+    iced::widget::text::LineHeight::default()
+        .to_absolute(iced::Pixels(size))
+        .0
+}
+
+/// Measured height of drawn ticker lines (the current verse wrapped
+/// in bold, neighbors one line each) plus the gaps between them.
+pub(crate) fn ticker_content_height(lines: &[(String, f32, i32)]) -> f32 {
     let width = ticker_text_width();
-    ticker_window(visible.len(), at)
-        .into_iter()
-        .map(|(i, d)| {
-            let line = visible[i];
-            if d == 0 {
-                let bold = bold_font();
-                let (size, lines) = ticker_slot(0, false);
-                let one = fit_lines_font(line, width, size, lines, bold);
-                if one == line {
-                    return (one, size, 0);
-                }
-                let (size, lines) = ticker_slot(0, true);
-                (fit_lines_font(line, width, size, lines, bold), size, 0)
+    let rows: f32 = lines
+        .iter()
+        .map(|(text, size, d)| {
+            if *d == 0 {
+                wrapped_height(text, width, *size, bold_font())
             } else {
-                let (size, lines) = ticker_slot(d, false);
-                (fit_lines(line, width, size, lines), size, d)
+                line_h(*size)
             }
         })
-        .collect()
+        .sum();
+    rows + MINI_TICKER_GAP * lines.len().saturating_sub(1) as f32
+}
+
+/// Synced ticker lines ready to draw: `(text, size, distance)`. The
+/// current verse is always whole (wrapped, bold); the first layout of
+/// `MINI_TICKER_LAYOUTS` that fits the ticker picks its size and how
+/// many neighbor lines stay. Neighbors are one ellipsized line each.
+/// Measured with the real font, so the fit matches what is drawn.
+pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, f32, i32)> {
+    let width = ticker_text_width();
+    let window = ticker_window(visible.len(), at);
+    let neighbor = |i: usize, d: i32| {
+        let size = ticker_neighbor_size(d);
+        (fit_lines(visible[i], width, size, 1), size, d)
+    };
+    let Some(&(cur, _)) = window.iter().find(|(_, d)| *d == 0) else {
+        // Before the first verse: upcoming lines only.
+        return window.into_iter().map(|(i, d)| neighbor(i, d)).collect();
+    };
+    let layout = |(size, reach): (f32, u32)| -> Vec<(String, f32, i32)> {
+        window
+            .iter()
+            .filter(|(_, d)| d.unsigned_abs() <= reach)
+            .map(|&(i, d)| {
+                if d == 0 {
+                    (visible[i].to_string(), size, 0)
+                } else {
+                    neighbor(i, d)
+                }
+            })
+            .collect()
+    };
+    let budget = ticker_budget();
+    MINI_TICKER_LAYOUTS
+        .into_iter()
+        .map(layout)
+        .find(|lines| ticker_content_height(lines) <= budget)
+        // Longer than the ticker even alone at the smallest size: the
+        // verse still shows whole, centered (rare; the clip trims).
+        .unwrap_or_else(|| vec![(visible[cur].to_string(), 13.0, 0)])
 }
 
 /// Mini window theme: the dark theme with a transparent window

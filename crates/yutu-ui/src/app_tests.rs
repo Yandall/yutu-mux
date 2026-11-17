@@ -11483,39 +11483,45 @@ fn mini_drag_keeps_the_chips_until_a_real_exit() {
 #[test]
 fn mini_ticker_long_lines_stay_inside_their_slots() {
     use crate::mini_player::{
-        ticker_lines, ticker_slot, ticker_text_width, ticker_worst_height, MINI_LYRICS_H,
+        ticker_budget, ticker_content_height, ticker_lines, ticker_neighbor_size, ticker_text_width,
     };
-    // Budget: every slot at its maximum still fits inside the ticker.
-    assert!(ticker_worst_height() <= MINI_LYRICS_H - 2.0 * 16.0);
-    assert_eq!(ticker_slot(0, false).1, 1);
-    assert_eq!(ticker_slot(0, true).1, 2);
-    assert!(ticker_slot(0, true).0 < ticker_slot(0, false).0);
-    for d in [-2, -1, 1, 2] {
-        assert_eq!(ticker_slot(d, false).1, 1, "neighbors are one line");
-    }
     let long = "and every word we never said is drifting down the river \
                 past the porch light and the lanterns and the morning";
-    let visible = vec![long, long, long, "short", long];
-    // Current verse long: smaller, at most two lines, cut with "…".
-    let lines = ticker_lines(&visible, Some(2));
-    assert_eq!(lines.len(), 5);
+    let longer = "the kettle sang a tune about the harbor and the gulls, \
+                  the ferry bells, the salt upon the window and the long \
+                  gray afternoons we spent counting boats beyond the pier";
     let w = ticker_text_width();
-    for (cut, size, d) in &lines {
-        let (_, max) = ticker_slot(*d, *d == 0);
-        if cut == "short" {
-            continue;
-        }
-        assert!(cut.ends_with('…'), "{d}: {cut}");
-        assert!(cut.chars().count() < long.chars().count());
-        if *d != 0 {
-            assert_eq!(fit_lines(cut, w, *size, max), *cut, "{d} fits one line");
+    // A long current verse is never cut: whole, bold, smaller than
+    // the 21px of a short verse, and the layout fits the ticker.
+    let visible = vec![long, long, long, "short", long];
+    let lines = ticker_lines(&visible, Some(2));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!(cur.0, long, "the verse stays whole");
+    assert!(cur.1 < 21.0);
+    assert!(ticker_content_height(&lines) <= ticker_budget());
+    // Neighbors: one line each, ellipsized when too wide.
+    for (text, size, d) in lines.iter().filter(|l| l.2 != 0) {
+        assert_eq!(*size, ticker_neighbor_size(*d));
+        assert_eq!(fit_lines(text, w, *size, 1), *text, "{d} fits one line");
+        if text != "short" {
+            assert!(text.ends_with('…'), "{d}: {text}");
         }
     }
-    assert_eq!(lines[2].1, ticker_slot(0, true).0);
-    // A short current verse keeps the full size, untouched.
+    // A much longer verse gives up neighbor lines instead of words.
+    let visible = vec![long, long, longer, long, long];
+    let lines = ticker_lines(&visible, Some(2));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!(cur.0, longer, "the verse stays whole");
+    assert!(lines.len() < 5, "fewer neighbors make room");
+    assert!(ticker_content_height(&lines) <= ticker_budget());
+    // A short current verse keeps the full size and all five slots.
+    let visible = vec![long, long, long, "short", long];
     let lines = ticker_lines(&visible, Some(3));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
-    assert_eq!((cur.0.as_str(), cur.1), ("short", ticker_slot(0, false).0));
+    assert_eq!((cur.0.as_str(), cur.1), ("short", 21.0));
+    assert_eq!(lines.len(), 4, "index 3 of 5: two above, one below");
+    // Before the first verse: upcoming lines only, never panics.
+    assert_eq!(ticker_lines(&visible, None).len(), 3);
     // Rendering long lines never panics (synced and plain).
     let mut s = synced_state(6.0);
     let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
@@ -11632,6 +11638,7 @@ fn mini_player_snapshots() {
         ("mini-lyrics", true, true),
         ("mini-long-lyrics", false, true),
         ("mini-plain-lyrics", false, true),
+        ("mini-very-long-verse", false, true),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -11640,7 +11647,18 @@ fn mini_player_snapshots() {
         s.queue.push(t.clone());
         let url = s.hero_art_for(&t).unwrap();
         fake_backdrop(&mut s, url);
-        let verses = if name == "mini-long-lyrics" || name == "mini-plain-lyrics" {
+        let verses = if name == "mini-very-long-verse" {
+            [
+                "We left the porch light burning for the ones who never came back home",
+                "for the ones who find their way across the water in the dark of night",
+                "Paper lanterns on the water, every one a little wish we could not keep, \
+                 every one a name we whispered to the tide before the bells began to ring \
+                 and the harbor lights went out across the bay",
+                "carry everything we could not say before the river took the words away",
+                "Hold the river, hold it steady, hold it till the morning pulls us in",
+                "till the morning pulls us in",
+            ]
+        } else if name == "mini-long-lyrics" || name == "mini-plain-lyrics" {
             [
                 "We left the porch light burning for the ones who never came back home",
                 "for the ones who find their way across the water in the dark of night",
