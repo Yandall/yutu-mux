@@ -635,6 +635,10 @@ pub struct AppState {
     /// Windows), or Hyprland layout coordinates read via `hyprctl`.
     /// Other Wayland compositors place it themselves.
     pub(crate) mini_pos: Option<iced::Point>,
+    /// The main window's outer top-left (logical), where the platform
+    /// reports it (X11, macOS, Windows; never Wayland): the mini
+    /// player's first open centers on the main window from it.
+    pub(crate) main_pos: Option<iced::Point>,
     /// The ring cover for the current song: the hero art downscaled
     /// once (filtered), keyed by its hero URL; and the URL in flight.
     pub(crate) mini_cover: Option<(String, iced::widget::image::Handle)>,

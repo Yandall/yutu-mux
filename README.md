@@ -117,8 +117,10 @@ Hyprland. Other Wayland compositors choose its position themselves.
 
 Its window has its own app id, `yutu-mux-mini`, so compositor rules can
 target it. Tiling compositors frame and blur the whole transparent
-window (the pill then sits on a box); on Hyprland 0.57+ (Lua config)
-this rule keeps only the pill, floating above every workspace:
+window (the pill then sits on a box). On Hyprland the app removes the
+border, shadow, blur and rounding itself; on Hyprland 0.57+ (Lua
+config) this optional rule also keeps it floating above every
+workspace:
 
 ```lua
 hl.window_rule({
