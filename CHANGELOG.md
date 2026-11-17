@@ -111,6 +111,10 @@
 
 - Now Playing lyrics keep following the current line to the end of
   the song instead of stopping on their own near the last verses.
+- Now Playing lyrics scroll to the next line in one smooth motion
+  instead of overshooting and settling back.
+- The lyrics scrollbar no longer flashes on every automatic scroll;
+  it shows only when you scroll yourself.
 - Lyrics opened for a song that is not playing no longer highlight
   verses using the playing song's time.
 - The playlist menu button no longer wraps under the search box on

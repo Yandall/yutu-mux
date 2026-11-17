@@ -1434,6 +1434,12 @@ impl AppState {
     /// size), viewport centering, floored at zero. Takes the cursor
     /// instead of recomputing it (one clone per tick, not two).
     pub(crate) fn lyric_follow_y(&self, id: &str, at: usize) -> Option<f32> {
+        self.lyric_center_y(id, at).map(|t| t.max(0.0))
+    }
+
+    /// [`Self::lyric_follow_y`] before the floor at zero: differences
+    /// between two verses stay exact near the top.
+    pub(crate) fn lyric_center_y(&self, id: &str, at: usize) -> Option<f32> {
         let (_, cached) = self.lyrics_display_entry(id)?;
         if cached.synced.is_empty() || cached.instrumental {
             return None;
@@ -1470,7 +1476,7 @@ impl AppState {
             y += h + LYRIC_ROW_SPACING;
             vi += 1;
         }
-        target.map(|t| t.max(0.0))
+        target
     }
 
     /// Lyrics follow step (drawer only): on verse or track change with
@@ -1522,10 +1528,23 @@ impl AppState {
         if !changed_track && self.lyrics_follow_at == Some((id.clone(), at)) {
             return probe;
         }
-        self.lyrics_follow_at = Some((id.clone(), at));
-        let jump = match self.lyric_follow_y(&id, at) {
+        let prev = self.lyrics_follow_at.replace((id.clone(), at));
+        // Next verse of a settled follow: the measured target plus the
+        // modeled distance between the two verses at their final sizes.
+        // Lines are still resizing, so a measurement now would land
+        // short and then creep (a bounce); the model's wrap error
+        // cancels in the difference.
+        let stepped = match (&prev, &self.lyrics_target_for) {
+            (Some(p), Some(t)) if !changed_track && p == t && p.1.abs_diff(at) <= 3 => self
+                .lyric_center_y(&id, p.1)
+                .zip(self.lyric_center_y(&id, at))
+                .map(|(a, b)| (self.lyrics_target + b - a).max(0.0)),
+            _ => None,
+        };
+        let jump = match stepped.or_else(|| self.lyric_follow_y(&id, at)) {
             Some(y) => {
                 self.lyrics_target = y;
+                self.lyrics_target_for = Some((id.clone(), at));
                 if self.animations_enabled {
                     // The ticker glides there (smooth follow).
                     iced::Task::none()
@@ -1554,9 +1573,26 @@ impl AppState {
         .map(Message::LyricRowMeasured)
     }
 
+    /// Measurement of the followed verse on the first frame after the
+    /// lines finish resizing (see [`Self::verse_gliding`]): confirms
+    /// the stepped target on the settled layout right away instead of
+    /// at the next tick. None when the drawer is not following.
+    pub(crate) fn lyric_glide_probe(&mut self) -> Option<iced::Task<Message>> {
+        let resizing = self.verse_gliding();
+        let settle = std::mem::replace(&mut self.lyric_probe_settle, resizing);
+        if resizing || !settle || !self.drawer_open || !self.lyrics_follow {
+            return None;
+        }
+        let (track, at) = self.lyrics_follow_at.clone()?;
+        Some(Self::lyric_probe_task(track, at))
+    }
+
     /// Apply a measured row: retarget the follow to its exact center
     /// while it is still the followed verse (stale probes and manual
     /// takeovers are ignored). Snaps directly with animations off.
+    /// Ignored while lines resize after a verse change: that layout is
+    /// mid-way, the stepped target already points at the settled one
+    /// and a probe right after the resize confirms it.
     pub(crate) fn apply_lyric_row(&mut self, g: LyricRowGeom) -> iced::Task<Message> {
         if !self.drawer_open
             || !self.lyrics_follow
@@ -1565,6 +1601,10 @@ impl AppState {
             return iced::Task::none();
         }
         self.drawer_view_h = Some(g.view_h);
+        if self.verse_gliding() {
+            return iced::Task::none();
+        }
+        self.lyrics_target_for = Some((g.track.clone(), g.at));
         let y = g.center_y();
         if (y - self.lyrics_target).abs() <= 1.0 {
             return iced::Task::none();
@@ -1620,7 +1660,11 @@ impl AppState {
 
     /// One follow-glide step: ease the drawer toward the verse target
     /// (ease-out: 25% of the remaining gap per tick, 2px floor) and
-    /// command the scrollable there. `None` when settled, closed,
+    /// command the scrollable there. During a verse change the scroll
+    /// instead runs on the line resize's own clock (same easing, from
+    /// where it started toward the live, re-measured target), so both
+    /// finish together: catching up early and then backing off as the
+    /// lines settle read as a bounce. `None` when settled, closed,
     /// disengaged, or unfollowed. The commanded offset is recorded so
     /// its echo never trips the manual-takeover check (snaps land
     /// exactly: only real user scrolls differ).
@@ -1629,12 +1673,34 @@ impl AppState {
             return None;
         }
         let target = self.clamp_follow(self.lyrics_target);
-        let gap = target - self.drawer_scroll;
-        if gap.abs() <= 1.0 {
-            return None;
+        // Keyed by the verse change (its start instant), so each change
+        // starts from where the drawer was when it began, whichever of
+        // the follow retarget and the verse change ran first.
+        let running = self.verse_glide.filter(|g| g.running());
+        if let Some(g) = running {
+            if self.lyrics_glide_from.is_none_or(|(at, _)| at != g.started) {
+                self.lyrics_glide_from = Some((g.started, self.drawer_scroll));
+            }
         }
-        let step = (gap.abs() * 0.25).max(2.0);
-        let y = ease_toward(self.drawer_scroll, target, step);
+        let synced = running.zip(self.lyrics_glide_from.map(|(_, y)| y));
+        let y = match synced {
+            Some((g, from)) => {
+                let y = from + (target - from) * g.progress();
+                if (y - self.drawer_scroll).abs() <= 0.25 {
+                    return None;
+                }
+                y
+            }
+            None => {
+                self.lyrics_glide_from = None;
+                let gap = target - self.drawer_scroll;
+                if gap.abs() <= 1.0 {
+                    return None;
+                }
+                let step = (gap.abs() * 0.25).max(2.0);
+                ease_toward(self.drawer_scroll, target, step)
+            }
+        };
         self.lyrics_cmds = [y, self.lyrics_cmds[0], self.lyrics_cmds[1]];
         Some(Self::lyrics_scroll_task(y))
     }

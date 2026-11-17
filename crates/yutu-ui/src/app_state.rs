@@ -312,6 +312,15 @@ pub struct AppState {
     /// viewport). Bounds the follow target, and a change marks a
     /// layout echo (rows resizing), never a user scroll.
     pub(crate) drawer_content_h: Option<f32>,
+    /// A verse resize was running on the last animation frame: probe
+    /// the followed verse once more on the settled layout.
+    pub(crate) lyric_probe_settle: bool,
+    /// Drawer offset where the follow scroll of the running verse
+    /// change started (it eases on the verse resize clock from here).
+    pub(crate) lyrics_glide_from: Option<(std::time::Instant, f32)>,
+    /// Verse `lyrics_target` was computed for (estimate, measurement or
+    /// step): the next verse steps from it only when it matches.
+    pub(crate) lyrics_target_for: Option<(String, usize)>,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
     /// scroll motion lights the bar, the ticker fades it after idle.
     /// Never persisted; missing keys read as invisible.

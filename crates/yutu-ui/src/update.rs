@@ -2243,11 +2243,17 @@ impl AppState {
                     if self.update_checking || self.update_phase != UpdatePhase::Idle {
                         self.spin_frame = self.spin_frame.wrapping_add(1);
                     }
+                    // While lines resize after a verse change, re-measure
+                    // the followed verse every frame: the target moves
+                    // with the line to its final spot instead of being
+                    // corrected (a visible bounce) after the resize.
+                    let probe = self.lyric_glide_probe();
                     // Lyrics follow glide: ease toward the verse target
                     // one step per tick (smooth follow instead of a jump).
-                    if let Some(glide) = self.lyrics_glide_task() {
+                    let glide = self.lyrics_glide_task();
+                    if glide.is_some() || probe.is_some() {
                         self.publish_mpris();
-                        return glide;
+                        return iced::Task::batch(glide.into_iter().chain(probe));
                     }
                 }
             }
@@ -2316,11 +2322,13 @@ impl AppState {
                         self.lyrics_follow_at = None;
                     }
                 }
-                self.lit_scroll("drawer");
-                // Follow takeover: anything but a recent command echo
-                // (exact, or clamped to the scroll end) or a relayout
-                // is a real user scroll.
-                if self.lyrics_follow && !relayout && !self.lyrics_echo(self.drawer_scroll) {
+                // Anything but a recent follow command echo (exact, or
+                // clamped to the scroll end) or a relayout is a real
+                // user scroll: only that lights the scrollbar (the auto
+                // follow scrolls quietly) and takes over from follow.
+                let user_scroll = !relayout && !self.lyrics_echo(self.drawer_scroll);
+                if user_scroll {
+                    self.lit_scroll("drawer");
                     self.lyrics_follow = false;
                 }
             }

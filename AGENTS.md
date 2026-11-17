@@ -249,6 +249,13 @@
   lyrics view uses one look, `mini_player::verse_style` (size, opacity,
   bold by distance from the current line), and one line-change glide
   (`verse_sync` after every update, `verse_focus`).
+- Drawer follow (`lyric_follow_task`): a verse change steps from the
+  settled measured target by the modeled distance between the verses
+  (`lyric_center_y`) and scrolls on the verse glide's clock; probes are
+  ignored mid-resize (one confirms after). Only real user scrolls (not
+  command echoes, clamped echoes or relayouts) light the scrollbar or
+  take over. `lyric_follow_never_bounces_on_verse_change` (ignored,
+  needs the renderer) checks the path frame by frame.
 
 ## 6. Features & build matrix
 
