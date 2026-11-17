@@ -156,9 +156,12 @@
   `hyprctl` under Hyprland (read on close, moved back on open, top
   edge re-pinned after a lyrics resize since Hyprland keeps centers).
   Hyprland dispatchers address windows by `address:`, never `pid:`
-  (two windows). A drag ignores only the leave that arrives within
-  `MINI_GRAB_LEAVE_MS` of it (the Wayland move grab's); macOS sends no
-  such leave, so any later leave hides the chips. Ticker lines are fitted (`ticker_lines`):
+  (two windows). Platform workarounds are gated on `MiniPlatform`
+  (detected at open: Hyprland, Wayland, X11, MacOs, Windows), never
+  applied everywhere; macOS/Windows get their own fixes when needed,
+  and tests set the platform explicitly. Wayland only: the move grab's
+  leave (within `MINI_GRAB_LEAVE_MS` of a drag) is ignored and resizes
+  re-pin the size hints. Ticker lines are fitted (`ticker_lines`):
   neighbors 1 line, current verse at most 2 at a smaller size.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.

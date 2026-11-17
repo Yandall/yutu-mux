@@ -11397,10 +11397,59 @@ fn player_bar_button_toggles_the_mini_player() {
 }
 
 #[test]
+fn mini_platform_gates_each_workaround_to_its_platform() {
+    use crate::mini_player::MiniPlatform::*;
+    // Hyprland: hyprctl placement + the Wayland fixes.
+    assert!(Hyprland.hyprland() && Hyprland.grab_leave() && Hyprland.pinned_size_hints());
+    assert!(!Hyprland.client_positions());
+    // Other Wayland: Wayland fixes, no hyprctl, no client positions.
+    assert!(!Wayland.hyprland() && Wayland.grab_leave() && Wayland.pinned_size_hints());
+    assert!(!Wayland.client_positions());
+    // X11, macOS, Windows: none of the Wayland/Hyprland workarounds.
+    for p in [X11, MacOs, Windows] {
+        assert!(
+            !p.hyprland() && !p.grab_leave() && !p.pinned_size_hints(),
+            "{p:?}"
+        );
+        assert!(p.client_positions(), "{p:?}");
+    }
+    let detected = crate::mini_player::MiniPlatform::detect();
+    #[cfg(target_os = "macos")]
+    assert_eq!(detected, MacOs);
+    #[cfg(target_os = "windows")]
+    assert_eq!(detected, Windows);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    assert!(matches!(detected, Hyprland | Wayland | X11));
+}
+
+#[test]
+fn mini_drag_on_macos_windows_and_x11_never_holds_the_chips() {
+    use crate::mini_player::MiniPlatform;
+    for p in [
+        MiniPlatform::MacOs,
+        MiniPlatform::Windows,
+        MiniPlatform::X11,
+    ] {
+        let mut s = test_state();
+        s.queue.push(mk_track("m1", "T", "A"));
+        let _ = s.update(Message::OpenMiniPlayer);
+        s.mini.as_mut().unwrap().platform = p;
+        let _ = s.update(Message::MiniHover(true));
+        let _ = s.update(Message::MiniDrag);
+        assert!(s.mini.unwrap().drag_hold.is_none(), "{p:?}");
+        // The pointer leaving right after the drag hides the chips.
+        let _ = s.update(Message::MiniHover(false));
+        assert!(!s.mini.unwrap().hovered, "{p:?}");
+    }
+}
+
+#[test]
 fn mini_drag_keeps_the_chips_until_a_real_exit() {
     let mut s = test_state();
     s.queue.push(mk_track("m1", "T", "A"));
     let _ = s.update(Message::OpenMiniPlayer);
+    // Wayland only (the compositor's move grab sends the leave).
+    s.mini.as_mut().unwrap().platform = crate::mini_player::MiniPlatform::Wayland;
     let _ = s.update(Message::MiniHover(true));
     let _ = s.update(Message::MiniDrag);
     let mini = s.mini.unwrap();
@@ -11417,8 +11466,7 @@ fn mini_drag_keeps_the_chips_until_a_real_exit() {
     let _ = s.update(Message::MiniHover(true));
     let _ = s.update(Message::MiniHover(false));
     assert!(!s.mini.unwrap().hovered);
-    // macOS: no grab leave during the drag; the pointer leaving later
-    // hides the chips right away (it used to need a re-hover).
+    // A leave long after the drag started is real.
     let _ = s.update(Message::MiniHover(true));
     let _ = s.update(Message::MiniDrag);
     let earlier = std::time::Instant::now()

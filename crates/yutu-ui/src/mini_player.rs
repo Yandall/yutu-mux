@@ -10,10 +10,12 @@
 //!     player never minimizes or hides it (Wayland cannot restore a
 //!     minimized window from the app, so nothing would bring it back).
 //!   - Window actions (Open, Close) float above the capsule only while
-//!     the pointer is over the mini window. A drag keeps them up: the
-//!     leave a compositor's move grab sends as the drag starts (Wayland)
-//!     is ignored, any later leave hides them (macOS sends no grab
-//!     leave, so its first leave after a drag is a real one).
+//!     the pointer is over the mini window. Wayland only: the leave the
+//!     compositor's move grab sends as a drag starts is ignored.
+//!   - Platform workarounds are gated on [`MiniPlatform`] (detected at
+//!     open), never applied everywhere: Hyprland `hyprctl` placement and
+//!     focus, Wayland size-hint re-pin and grab leave, client positions
+//!     on X11, macOS and Windows.
 //!   - The art and title are the drag handle (no title bar).
 //!   - Sizes are logical units times the UI scale, so the window always
 //!     fits its content at any scale.
@@ -87,15 +89,15 @@ pub struct MiniPlayer {
     pub(crate) lyrics: bool,
     /// Pointer over the mini window (shows the Open/Close chips).
     pub(crate) hovered: bool,
-    /// When the last drag started: a leave right after it is the
-    /// compositor's move grab (Wayland), not the pointer leaving.
+    /// When the last drag started (Wayland only): a leave right after
+    /// it is the compositor's move grab, not the pointer leaving.
     pub(crate) drag_hold: Option<std::time::Instant>,
+    /// Detected when the window opened; gates every workaround.
+    pub(crate) platform: MiniPlatform,
 }
 
-/// How long after a drag starts a leave still counts as the move
-/// grab's. The grab's leave lands within a few frames of the press;
-/// platforms with no grab leave (macOS, X11) send only real leaves,
-/// which come later and hide the chips as usual.
+/// Wayland only: how long after a drag starts a leave still counts as
+/// the move grab's (it lands within a few frames of the press).
 pub(crate) const MINI_GRAB_LEAVE_MS: u128 = 400;
 
 /// Parse the `mini_pos` pref ("x,y", finite numbers).
@@ -171,13 +173,20 @@ pub(crate) fn mini_window_settings(
     }
 }
 
-/// Resize the (non-resizable) mini window. A non-resizable window pins
-/// min = max = its first size (winit stores those hints and restores
-/// them even when unlocked), so a bare resize is clamped by the
-/// compositor. Re-pin both hints at the new size, then resize: max is
-/// cleared first so the new min never exceeds the old max. Chained so
-/// the steps land in order.
-fn mini_resize(id: iced::window::Id, size: iced::Size) -> iced::Task<Message> {
+/// Resize the (non-resizable) mini window. On Wayland a non-resizable
+/// window pins min = max = its first size (winit stores those hints
+/// and restores them even when unlocked), so a bare resize is clamped
+/// by the compositor: re-pin both hints at the new size, then resize
+/// (max cleared first so the new min never exceeds the old max;
+/// chained so the steps land in order). Elsewhere a plain resize.
+fn mini_resize(
+    platform: MiniPlatform,
+    id: iced::window::Id,
+    size: iced::Size,
+) -> iced::Task<Message> {
+    if !platform.pinned_size_hints() {
+        return iced::window::resize(id, size);
+    }
     iced::window::set_max_size(id, None)
         .chain(iced::window::set_min_size(id, Some(size)))
         .chain(iced::window::set_max_size(id, Some(size)))
@@ -190,15 +199,83 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tokio::task::spawn_blocking(f).await.ok()
 }
 
-/// Under Hyprland the app places the mini window itself via `hyprctl`.
-fn on_hyprland() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        yutu_desktop::hyprland::available()
+/// The windowing platform the mini player runs on, detected once when
+/// it opens. Every platform workaround is gated on it, never applied
+/// everywhere: a Wayland fix can break macOS and the other way round.
+// Each OS builds only its own variants outside tests.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MiniPlatform {
+    /// Wayland under Hyprland (`hyprctl` reachable).
+    Hyprland,
+    /// Any other Wayland compositor.
+    Wayland,
+    /// X11 (or an unknown Unix backend).
+    X11,
+    MacOs,
+    Windows,
+}
+
+impl MiniPlatform {
+    pub(crate) fn detect() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::MacOs
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self::Windows
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            // winit prefers Wayland whenever a Wayland display is set,
+            // unless the user forces X11.
+            let var = |k: &str| std::env::var(k).unwrap_or_default();
+            let forced_x11 = var("WINIT_UNIX_BACKEND").eq_ignore_ascii_case("x11");
+            if forced_x11 || var("WAYLAND_DISPLAY").is_empty() {
+                Self::X11
+            } else if Self::hyprland_available() {
+                Self::Hyprland
+            } else {
+                Self::Wayland
+            }
+        }
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    fn hyprland_available() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            yutu_desktop::hyprland::available()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// Wayland: the compositor's move grab sends a leave as a drag
+    /// starts, while the pointer is still on the window.
+    pub(crate) fn grab_leave(self) -> bool {
+        matches!(self, Self::Hyprland | Self::Wayland)
+    }
+
+    /// Wayland: a non-resizable window keeps min = max at its first
+    /// size, so a resize must re-pin both hints first.
+    pub(crate) fn pinned_size_hints(self) -> bool {
+        matches!(self, Self::Hyprland | Self::Wayland)
+    }
+
+    /// Hyprland: position, focus and the top edge go through `hyprctl`.
+    pub(crate) fn hyprland(self) -> bool {
+        self == Self::Hyprland
+    }
+
+    /// Where `mini_pos` comes from: window Moved events here. Wayland
+    /// clients never learn their position (Hyprland reads it through
+    /// `hyprctl`, in layout coordinates, never a client position).
+    pub(crate) fn client_positions(self) -> bool {
+        matches!(self, Self::X11 | Self::MacOs | Self::Windows)
     }
 }
 
@@ -454,22 +531,23 @@ impl AppState {
             return iced::window::gain_focus(mini.id);
         }
         let lyrics = self.mini_lyrics_pref;
-        let hypr = on_hyprland();
-        // Hyprland coordinates are not client positions: never hand
-        // them to the window settings (Wayland ignores them anyway).
-        let saved = if hypr { None } else { self.mini_pos };
+        let platform = MiniPlatform::detect();
+        // Only client positions go to the window settings (Hyprland's
+        // are layout coordinates, and Wayland ignores them anyway).
+        let saved = self.mini_pos.filter(|_| platform.client_positions());
         let (id, open) = iced::window::open(mini_window_settings(lyrics, self.mini_scale(), saved));
         self.mini = Some(MiniPlayer {
             id,
             lyrics,
             hovered: false,
             drag_hold: None,
+            platform,
         });
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut open = open.discard();
         // Hyprland: move it back where it was once it is mapped.
         #[cfg(target_os = "linux")]
-        if let (true, Some(at)) = (hypr, self.mini_pos) {
+        if let (true, Some(at)) = (platform.hyprland(), self.mini_pos) {
             use yutu_desktop::hyprland as hl;
             open = open.chain(iced::Task::perform(
                 blocking(move || {
@@ -506,7 +584,7 @@ impl AppState {
         // Hyprland: read where the user left it before it goes away
         // (the answer lands after close and is saved then).
         #[cfg(target_os = "linux")]
-        if on_hyprland() {
+        if mini.platform.hyprland() {
             let id = mini.id;
             return hypr_mini_window().then(move |w| {
                 let close = iced::window::close(id);
@@ -539,10 +617,10 @@ impl AppState {
         }
     }
 
-    /// Pointer over / off the mini window. A leave right after a drag
-    /// starts is the compositor's move grab, not the pointer leaving:
-    /// the chips stay (the pointer is still on the window once the
-    /// drag ends). Any later leave is real and hides them.
+    /// Pointer over / off the mini window. Wayland only: a leave right
+    /// after a drag starts is the compositor's move grab, not the
+    /// pointer leaving, so the chips stay (the pointer is still on the
+    /// window once the drag ends). Every other leave hides them.
     pub(crate) fn mini_hover(&mut self, over: bool) {
         let Some(mini) = self.mini.as_mut() else {
             return;
@@ -564,7 +642,9 @@ impl AppState {
             return iced::Task::none();
         };
         mini.hovered = true;
-        mini.drag_hold = Some(std::time::Instant::now());
+        if mini.platform.grab_leave() {
+            mini.drag_hold = Some(std::time::Instant::now());
+        }
         iced::window::drag(mini.id)
     }
 
@@ -583,6 +663,8 @@ impl AppState {
     /// `misc:focus_on_activate` is set, so there the app asks the
     /// compositor to focus its main window (switching workspace too).
     pub(crate) fn restore_from_mini(&mut self) -> iced::Task<Message> {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+        let platform = self.mini.map(|m| m.platform);
         let close = self.close_mini_player();
         let Some(main) = self.main_window else {
             return close;
@@ -594,7 +676,7 @@ impl AppState {
             iced::window::gain_focus(main),
         ];
         #[cfg(target_os = "linux")]
-        if on_hyprland() {
+        if platform.is_some_and(MiniPlatform::hyprland) {
             tasks.push(iced::Task::perform(
                 blocking(yutu_desktop::hyprland::focus_main),
                 |_| Message::NoOp,
@@ -610,23 +692,23 @@ impl AppState {
             return iced::Task::none();
         };
         mini.lyrics = !mini.lyrics;
-        let (id, lyrics) = (mini.id, mini.lyrics);
+        let (id, lyrics, platform) = (mini.id, mini.lyrics, mini.platform);
         self.mini_lyrics_pref = lyrics;
         if let Ok(store) = yutu_core::LibraryStore::open(&self.library_path) {
             let _ = store.set_pref(MINI_LYRICS_PREF, if lyrics { "1" } else { "0" });
         }
         let size = mini_window_size(lyrics, self.mini_scale());
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
-        let mut resize = mini_resize(id, size);
+        let mut resize = mini_resize(platform, id, size);
         // Hyprland keeps a resized floating window's center, so the
         // ticker would grow up and down: read the top-left first, then
         // put it back once the new size is applied.
         #[cfg(target_os = "linux")]
-        if on_hyprland() {
+        if platform.hyprland() {
             use yutu_desktop::hyprland as hl;
             let want = (size.width.round() as i64, size.height.round() as i64);
             resize = hypr_mini_window().then(move |before| {
-                let resize = mini_resize(id, size);
+                let resize = mini_resize(platform, id, size);
                 let Some(w) = before else { return resize };
                 resize.chain(iced::Task::perform(
                     blocking(move || {
