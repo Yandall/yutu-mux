@@ -123,13 +123,21 @@ pub(crate) fn format_mini_pos(at: iced::Point) -> String {
     format!("{},{}", at.x.round(), at.y.round())
 }
 
-/// Content size in UI units: capsule plus chip row plus shadow margin.
-pub(crate) fn mini_content_size(lyrics: bool) -> iced::Size {
+/// Windows: corner radius of the opaque capsule window (matches the
+/// rounded corners Windows 11 draws on it, so no square edge shows).
+pub(crate) const MINI_WIN_RADIUS: f32 = 8.0;
+
+/// Content size in UI units: capsule plus chip row plus shadow margin,
+/// or only the capsule where the window cannot be transparent.
+pub(crate) fn mini_content_size(lyrics: bool, platform: MiniPlatform) -> iced::Size {
     let body = if lyrics {
         MINI_PILL_H + MINI_LYRICS_H
     } else {
         MINI_PILL_H
     };
+    if platform.opaque_window() {
+        return iced::Size::new(MINI_W, body);
+    }
     iced::Size::new(
         MINI_W + 2.0 * MINI_MARGIN,
         MINI_CHIPS_H + MINI_CHIPS_GAP + body + 2.0 * MINI_MARGIN,
@@ -138,8 +146,8 @@ pub(crate) fn mini_content_size(lyrics: bool) -> iced::Size {
 
 /// Logical window size: the content scaled by the UI scale, so the
 /// layout never clips when the user enlarges the interface.
-pub(crate) fn mini_window_size(lyrics: bool, scale: f32) -> iced::Size {
-    let c = mini_content_size(lyrics);
+pub(crate) fn mini_window_size(lyrics: bool, scale: f32, platform: MiniPlatform) -> iced::Size {
+    let c = mini_content_size(lyrics, platform);
     iced::Size::new((c.width * scale).ceil(), (c.height * scale).ceil())
 }
 
@@ -158,6 +166,7 @@ pub(crate) fn mini_window_settings(
     lyrics: bool,
     scale: f32,
     saved: Option<iced::Point>,
+    platform: MiniPlatform,
 ) -> iced::window::Settings {
     let base = window_settings();
     #[cfg(target_os = "linux")]
@@ -168,7 +177,7 @@ pub(crate) fn mini_window_settings(
     #[cfg(not(target_os = "linux"))]
     let platform_specific = base.platform_specific.clone();
     iced::window::Settings {
-        size: mini_window_size(lyrics, scale),
+        size: mini_window_size(lyrics, scale, platform),
         min_size: None,
         position: match saved {
             Some(at) => iced::window::Position::Specific(at),
@@ -176,7 +185,7 @@ pub(crate) fn mini_window_settings(
         },
         resizable: false,
         decorations: false,
-        transparent: true,
+        transparent: !platform.opaque_window(),
         minimizable: false,
         level: iced::window::Level::AlwaysOnTop,
         platform_specific,
@@ -211,6 +220,16 @@ fn mini_resize(
 fn macos_pin_layers(id: iced::window::Id) -> iced::Task<Message> {
     iced::window::run(id, |w| {
         yutu_desktop::macos_window::pin_contents_top_left(w);
+    })
+    .discard()
+}
+
+/// Windows only: ask DWM for rounded corners on the opaque capsule
+/// window (Windows 11; older versions keep square corners).
+#[cfg(target_os = "windows")]
+fn windows_round_corners(id: iced::window::Id) -> iced::Task<Message> {
+    iced::window::run(id, |w| {
+        yutu_desktop::windows_window::round_corners(w);
     })
     .discard()
 }
@@ -286,6 +305,14 @@ impl MiniPlatform {
     /// size, so a resize must re-pin both hints first.
     pub(crate) fn pinned_size_hints(self) -> bool {
         matches!(self, Self::Hyprland | Self::Wayland)
+    }
+
+    /// Windows: the window cannot be transparent (iced's wgpu DX12
+    /// surface is opaque-only, so clear pixels show black). The window
+    /// is the capsule alone, with Windows 11 rounded corners, and the
+    /// Open/Close chips replace the title in the header row on hover.
+    pub(crate) fn opaque_window(self) -> bool {
+        self == Self::Windows
     }
 
     /// macOS: the Metal layer must not stretch the last frame while
@@ -400,10 +427,15 @@ pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, 
 }
 
 /// Mini window theme: the dark theme with a transparent window
-/// background, so only the capsule paints.
-pub(crate) fn mini_theme() -> iced::Theme {
+/// background, so only the capsule paints (the capsule surface where
+/// the window is opaque).
+pub(crate) fn mini_theme(platform: MiniPlatform) -> iced::Theme {
     let palette = iced::theme::Palette {
-        background: iced::Color::TRANSPARENT,
+        background: if platform.opaque_window() {
+            MINI_SURFACE
+        } else {
+            iced::Color::TRANSPARENT
+        },
         ..iced::Theme::Dark.palette()
     };
     iced::Theme::custom("yutu-mux mini", palette)
@@ -586,7 +618,12 @@ impl AppState {
         // Only client positions go to the window settings (Hyprland's
         // are layout coordinates, and Wayland ignores them anyway).
         let saved = self.mini_pos.filter(|_| platform.client_positions());
-        let (id, open) = iced::window::open(mini_window_settings(lyrics, self.mini_scale(), saved));
+        let (id, open) = iced::window::open(mini_window_settings(
+            lyrics,
+            self.mini_scale(),
+            saved,
+            platform,
+        ));
         self.mini = Some(MiniPlayer {
             id,
             lyrics,
@@ -594,8 +631,15 @@ impl AppState {
             drag_hold: None,
             platform,
         });
-        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
+        #[cfg_attr(
+            not(any(target_os = "linux", target_os = "macos", target_os = "windows")),
+            allow(unused_mut)
+        )]
         let mut open = open.discard();
+        #[cfg(target_os = "windows")]
+        if platform.opaque_window() {
+            open = open.chain(windows_round_corners(id));
+        }
         #[cfg(target_os = "macos")]
         if platform.pins_layer_gravity() {
             open = open.chain(macos_pin_layers(id));
@@ -752,7 +796,7 @@ impl AppState {
         if let Ok(store) = yutu_core::LibraryStore::open(&self.library_path) {
             let _ = store.set_pref(MINI_LYRICS_PREF, if lyrics { "1" } else { "0" });
         }
-        let size = mini_window_size(lyrics, self.mini_scale());
+        let size = mini_window_size(lyrics, self.mini_scale(), platform);
         #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
         let mut resize = mini_resize(platform, id, size);
         // macOS: pin again right before resizing (the Metal layer may
@@ -822,8 +866,8 @@ impl AppState {
 
     /// Theme per window: the mini window paints only its capsule.
     pub fn theme_for(&self, window: iced::window::Id) -> iced::Theme {
-        if self.mini.is_some_and(|m| m.id == window) {
-            mini_theme()
+        if let Some(mini) = self.mini.filter(|m| m.id == window) {
+            mini_theme(mini.platform)
         } else {
             self.theme()
         }
@@ -846,6 +890,7 @@ impl AppState {
         let Some(mini) = self.mini else {
             return Space::new().into();
         };
+        let opaque = mini.platform.opaque_window();
         let chips: iced::Element<'_, Message> = if mini.hovered {
             row![
                 Space::new().width(Fill),
@@ -865,28 +910,67 @@ impl AppState {
                 .height(iced::Length::Fixed(MINI_CHIPS_H))
                 .into()
         };
-        let mut body = column![self.mini_header_row(mini.lyrics)];
+        let mut body = column![self.mini_header_row(mini.lyrics, opaque && mini.hovered)];
         if mini.lyrics {
             body = body.push(self.mini_ticker());
         }
-        let radius = if mini.lyrics { 26.0 } else { MINI_PILL_H / 2.0 };
+        let radius = if opaque {
+            MINI_WIN_RADIUS
+        } else if mini.lyrics {
+            26.0
+        } else {
+            MINI_PILL_H / 2.0
+        };
         let body_h = if mini.lyrics {
             MINI_PILL_H + MINI_LYRICS_H
         } else {
             MINI_PILL_H
         };
-        let capsule = self.mini_capsule(body.into(), radius, body_h);
-        let content = column![chips, capsule]
-            .spacing(MINI_CHIPS_GAP)
-            .width(iced::Length::Fixed(MINI_W));
-        mouse_area(
-            container(content)
-                .padding(MINI_MARGIN)
-                .width(Fill)
-                .height(Fill),
+        let capsule = self.mini_capsule(body.into(), radius, body_h, !opaque);
+        // Opaque window (Windows): the window is the capsule itself, no
+        // chip row or shadow margin (they would paint black).
+        let content: iced::Element<'_, Message> = if opaque {
+            capsule
+        } else {
+            container(
+                column![chips, capsule]
+                    .spacing(MINI_CHIPS_GAP)
+                    .width(iced::Length::Fixed(MINI_W)),
+            )
+            .padding(MINI_MARGIN)
+            .width(Fill)
+            .height(Fill)
+            .into()
+        };
+        mouse_area(content)
+            .on_enter(Message::MiniHover(true))
+            .on_exit(Message::MiniHover(false))
+            .into()
+    }
+
+    /// Opaque window (Windows): Open/Close as small icon buttons in the
+    /// header row (in place of the title while hovered), labelled by a
+    /// tooltip.
+    fn mini_inline_chip(
+        &self,
+        icon_name: &'static str,
+        label: String,
+        msg: Message,
+    ) -> iced::Element<'static, Message> {
+        use iced::widget::{button, text, tooltip};
+        tooltip(
+            button(ctrl_box(btn_icon(
+                icon_name,
+                12.0,
+                iced::Color::from_rgb8(0xE0, 0xE0, 0xE0),
+            )))
+            .style(mini_icon_hover)
+            .on_press(msg)
+            .padding(5),
+            text(label).size(11),
+            tooltip::Position::Bottom,
         )
-        .on_enter(Message::MiniHover(true))
-        .on_exit(Message::MiniHover(false))
+        .gap(6)
         .into()
     }
 
@@ -919,6 +1003,7 @@ impl AppState {
         content: iced::Element<'a, Message>,
         radius: f32,
         height: f32,
+        shadow: bool,
     ) -> iced::Element<'a, Message> {
         use iced::widget::{container, image, Space, Stack};
         use iced::Fill;
@@ -958,10 +1043,14 @@ impl AppState {
                     width: 1.0,
                     radius: radius.into(),
                 },
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 3.0),
-                    blur_radius: 8.0,
+                shadow: if shadow {
+                    iced::Shadow {
+                        color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                        offset: iced::Vector::new(0.0, 3.0),
+                        blur_radius: 8.0,
+                    }
+                } else {
+                    iced::Shadow::default()
                 },
                 ..Default::default()
             })
@@ -974,8 +1063,9 @@ impl AppState {
     }
 
     /// Header row: ring art and title (the drag handle), transport,
-    /// lyrics toggle.
-    fn mini_header_row(&self, lyrics_open: bool) -> iced::Element<'_, Message> {
+    /// lyrics toggle; with `inline_chips` (opaque window, hovered) the
+    /// Open/Close actions as icon buttons in place of the title.
+    fn mini_header_row(&self, lyrics_open: bool, inline_chips: bool) -> iced::Element<'_, Message> {
         use iced::widget::{button, column, container, mouse_area, row, text, text::Wrapping};
         use iced::Fill;
         let current = self.queue.current();
@@ -992,8 +1082,21 @@ impl AppState {
         } else {
             0.0
         };
-        let handle = row![
-            self.mini_ring_art(frac),
+        // Inline chips (opaque window, hovered) take the title's place,
+        // so neither is squeezed; the title is back once the pointer
+        // leaves. The space around them still drags the window.
+        let info: iced::Element<'_, Message> = if inline_chips {
+            row![
+                self.mini_inline_chip(
+                    "maximize-2",
+                    self.language.mini_open(),
+                    Message::MiniRestore
+                ),
+                self.mini_inline_chip("x", self.language.mini_close(), Message::MiniClose),
+            ]
+            .spacing(4)
+            .into()
+        } else {
             column![
                 text(truncate_title(&title, MINI_TITLE_CHARS))
                     .size(13)
@@ -1005,7 +1108,11 @@ impl AppState {
                     .wrapping(Wrapping::None),
             ]
             .spacing(2)
-            .width(Fill),
+            .into()
+        };
+        let handle = row![
+            self.mini_ring_art(frac),
+            container(info).width(Fill).clip(true),
         ]
         .spacing(10)
         .align_y(iced::alignment::Vertical::Center);
@@ -1019,31 +1126,30 @@ impl AppState {
         } else {
             mini_icon_button("mic-vocal", Message::MiniToggleLyrics).into()
         };
-        container(
-            row![
-                mouse_area(handle)
-                    .on_press(Message::MiniDrag)
-                    .interaction(iced::mouse::Interaction::Grab),
-                mini_icon_button("skip-back", Message::Prev),
-                button(ctrl_box(btn_icon(play_icon, 16.0, iced::Color::BLACK)))
-                    .style(mini_play_button)
-                    .on_press(Message::TogglePause)
-                    .padding(9),
-                mini_icon_button("skip-forward", Message::Next),
-                lyrics_btn,
-            ]
-            .spacing(6)
-            .align_y(iced::alignment::Vertical::Center),
-        )
-        .padding(iced::Padding {
-            top: 0.0,
-            right: 10.0,
-            bottom: 0.0,
-            left: 4.0,
-        })
-        .height(iced::Length::Fixed(MINI_PILL_H))
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
+        let controls = row![
+            mouse_area(handle)
+                .on_press(Message::MiniDrag)
+                .interaction(iced::mouse::Interaction::Grab),
+            mini_icon_button("skip-back", Message::Prev),
+            button(ctrl_box(btn_icon(play_icon, 16.0, iced::Color::BLACK)))
+                .style(mini_play_button)
+                .on_press(Message::TogglePause)
+                .padding(9),
+            mini_icon_button("skip-forward", Message::Next),
+            lyrics_btn,
+        ]
+        .spacing(6)
+        .align_y(iced::alignment::Vertical::Center);
+        container(controls)
+            .padding(iced::Padding {
+                top: 0.0,
+                right: 10.0,
+                bottom: 0.0,
+                left: 4.0,
+            })
+            .height(iced::Length::Fixed(MINI_PILL_H))
+            .align_y(iced::alignment::Vertical::Center)
+            .into()
     }
 
     /// Ring cover downscale for the current song, once its hero art is

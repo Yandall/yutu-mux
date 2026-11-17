@@ -161,7 +161,10 @@
   applied everywhere; macOS/Windows get their own fixes when needed,
   and tests set the platform explicitly. Wayland only: the move grab's
   leave (within `MINI_GRAB_LEAVE_MS` of a drag) is ignored and resizes
-  re-pin the size hints. Synced ticker (`ticker_lines`): the current
+  re-pin the size hints. macOS only: the Metal layers are pinned to
+  top-left gravity (no stretched frame on resize). Windows only: the
+  window is opaque (iced's DX12 surface cannot be transparent), sized
+  to the capsule, DWM-rounded; Open/Close replace the title on hover. Synced ticker (`ticker_lines`): the current
   verse is never cut; it steps down `MINI_TICKER_LAYOUTS` (smaller
   size, then fewer neighbors) until it fits. Neighbors: 1 line each.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /

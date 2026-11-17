@@ -9,6 +9,7 @@
 //! * [`windows`] : Windows SMTC + media keys driver (souvlaki).
 //! * [`macos_notes`] : macOS integration plan (kept: design constraints).
 //! * `macos_window` : macOS-only mini player resize fix (layer gravity).
+//! * `windows_window` : Windows-only mini player rounded corners (DWM).
 
 /// MPRIS identity advertised on D-Bus.
 pub const MPRIS_IDENTITY: &str = "yutu-mux";
@@ -26,6 +27,8 @@ mod mpris_tests;
 pub mod sleep_guard;
 pub mod tray;
 pub mod windows;
+#[cfg(target_os = "windows")]
+pub mod windows_window;
 
 pub use mpris::{
     LoopStatus, MprisPlayer, MprisRoot, MprisService, PlaybackStatus, PlayerCommand, SharedPlayer,

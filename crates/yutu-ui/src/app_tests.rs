@@ -11222,14 +11222,14 @@ fn mini_ticker_window_centers_on_the_current_verse() {
 #[test]
 fn mini_window_size_follows_the_ticker_and_the_ui_scale() {
     use crate::mini_player::*;
-    let collapsed = mini_window_size(false, 1.0);
-    let open = mini_window_size(true, 1.0);
+    let collapsed = mini_window_size(false, 1.0, MiniPlatform::Hyprland);
+    let open = mini_window_size(true, 1.0, MiniPlatform::Hyprland);
     assert_eq!(collapsed.width, MINI_W + 2.0 * MINI_MARGIN);
     assert_eq!(open.width, collapsed.width);
     // The lyrics grow the window downward by exactly the ticker.
     assert_eq!(open.height - collapsed.height, MINI_LYRICS_H);
     // Scaled UI scales the window, so the content never clips.
-    let big = mini_window_size(false, 1.5);
+    let big = mini_window_size(false, 1.5, MiniPlatform::Hyprland);
     assert_eq!(big.width, (collapsed.width * 1.5).ceil());
     assert_eq!(big.height, (collapsed.height * 1.5).ceil());
 }
@@ -11555,7 +11555,7 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
 
 #[test]
 fn mini_position_is_remembered_across_opens_and_restarts() {
-    use crate::mini_player::{format_mini_pos, mini_window_settings, parse_mini_pos};
+    use crate::mini_player::{format_mini_pos, mini_window_settings, parse_mini_pos, MiniPlatform};
     assert_eq!(
         parse_mini_pos(&format_mini_pos(iced::Point::new(12.4, -30.6))),
         Some(iced::Point::new(12.0, -31.0))
@@ -11564,11 +11564,11 @@ fn mini_position_is_remembered_across_opens_and_restarts() {
     assert_eq!(parse_mini_pos("1,NaN"), None);
     // No saved spot: the first placement (top-right); saved: exactly it.
     assert!(matches!(
-        mini_window_settings(false, 1.0, None).position,
+        mini_window_settings(false, 1.0, None, MiniPlatform::X11).position,
         iced::window::Position::SpecificWith(_)
     ));
     assert!(matches!(
-        mini_window_settings(false, 1.0, Some(iced::Point::new(5.0, 6.0))).position,
+        mini_window_settings(false, 1.0, Some(iced::Point::new(5.0, 6.0)), MiniPlatform::X11).position,
         iced::window::Position::Specific(p) if p == iced::Point::new(5.0, 6.0)
     ));
     let mut s = test_state();
@@ -11603,7 +11603,12 @@ fn mini_window_has_its_own_app_id() {
         crate::mini_player::MINI_APP_ID,
         yutu_desktop::hyprland::MINI_CLASS
     );
-    let mini = crate::mini_player::mini_window_settings(false, 1.0, None);
+    let mini = crate::mini_player::mini_window_settings(
+        false,
+        1.0,
+        None,
+        crate::mini_player::MiniPlatform::Hyprland,
+    );
     assert_eq!(mini.platform_specific.application_id, "yutu-mux-mini");
     assert_eq!(
         window_settings().platform_specific.application_id,
@@ -11637,13 +11642,17 @@ fn mini_player_snapshots() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/layout-snapshots")
         });
     std::fs::create_dir_all(&dir).unwrap();
-    for (name, hovered, lyrics) in [
-        ("mini-collapsed", false, false),
-        ("mini-hovered", true, false),
-        ("mini-lyrics", true, true),
-        ("mini-long-lyrics", false, true),
-        ("mini-plain-lyrics", false, true),
-        ("mini-very-long-verse", false, true),
+    use crate::mini_player::MiniPlatform;
+    for (name, hovered, lyrics, platform) in [
+        ("mini-collapsed", false, false, MiniPlatform::Hyprland),
+        ("mini-hovered", true, false, MiniPlatform::Hyprland),
+        ("mini-lyrics", true, true, MiniPlatform::Hyprland),
+        ("mini-long-lyrics", false, true, MiniPlatform::Hyprland),
+        ("mini-plain-lyrics", false, true, MiniPlatform::Hyprland),
+        ("mini-very-long-verse", false, true, MiniPlatform::Hyprland),
+        // Windows: opaque window, the capsule alone, inline Open/Close.
+        ("mini-windows", true, false, MiniPlatform::Windows),
+        ("mini-windows-lyrics", true, true, MiniPlatform::Windows),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -11713,6 +11722,7 @@ fn mini_player_snapshots() {
         s.position_secs = 67.0;
         let _ = s.update(Message::OpenMiniPlayer);
         let id = s.mini.unwrap().id;
+        s.mini.as_mut().unwrap().platform = platform;
         if hovered {
             let _ = s.update(Message::MiniHover(true));
         }
@@ -11727,7 +11737,7 @@ fn mini_player_snapshots() {
             ..iced::Settings::default()
         };
         let theme = s.theme_for(id);
-        let size = crate::mini_player::mini_content_size(lyrics);
+        let size = crate::mini_player::mini_content_size(lyrics, platform);
         let mut sim = iced_test::Simulator::with_size(settings, size, s.view_for(id));
         let snap = sim.snapshot(&theme).unwrap();
         for f in std::fs::read_dir(&dir).unwrap().flatten() {
