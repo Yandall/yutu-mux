@@ -308,6 +308,10 @@ pub struct AppState {
     /// until the first report; follow centering falls back to a
     /// window-height estimate then.
     pub(crate) drawer_view_h: Option<f32>,
+    /// Measured drawer lyrics content height (reported with the
+    /// viewport). Bounds the follow target, and a change marks a
+    /// layout echo (rows resizing), never a user scroll.
+    pub(crate) drawer_content_h: Option<f32>,
     /// Scrollbar fade per scrollable key (last motion + opacity 0..1):
     /// scroll motion lights the bar, the ticker fades it after idle.
     /// Never persisted; missing keys read as invisible.

@@ -782,9 +782,10 @@ pub enum Message {
     MiniMoved(iced::Point),
     /// A window closed (the main one quits the app).
     WindowClosed(iced::window::Id),
-    /// Drawer lyrics scroll offset (sticky header past 200px) and the
-    /// viewport height it was measured in (0 = unknown).
-    DrawerScrolled(f32, f32),
+    /// Drawer lyrics scroll offset (sticky header past 200px), the
+    /// viewport height it was measured in and the content height
+    /// (0 = unknown, for both).
+    DrawerScrolled(f32, f32, f32),
     /// Live layout of the followed lyric row (see [`LyricRowProbe`]):
     /// replaces the estimated follow target with the exact center.
     LyricRowMeasured(LyricRowGeom),

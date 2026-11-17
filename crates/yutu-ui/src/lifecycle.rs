@@ -172,6 +172,7 @@ impl AppState {
             artist_expanded: false,
             drawer_scroll: 0.0,
             drawer_view_h: None,
+            drawer_content_h: None,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
             art_buckets: HashMap::new(),

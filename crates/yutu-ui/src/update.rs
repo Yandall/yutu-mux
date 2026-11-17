@@ -2291,8 +2291,19 @@ impl AppState {
                 self.mini_window_closed(id);
             }
             Message::LyricRowMeasured(g) => return self.apply_lyric_row(g),
-            Message::DrawerScrolled(y, view_h) => {
+            Message::DrawerScrolled(y, view_h, content_h) => {
                 self.drawer_scroll = y.max(0.0);
+                // Rows resizing (the verse glide grows and shrinks lines
+                // every frame) re-report the viewport with a new content
+                // height and can clamp the offset near the end: that is
+                // a layout echo, never a user scroll.
+                let relayout = content_h > 0.0
+                    && self
+                        .drawer_content_h
+                        .is_some_and(|old| (old - content_h).abs() > 0.5);
+                if content_h > 0.0 {
+                    self.drawer_content_h = Some(content_h);
+                }
                 if view_h > 0.0 {
                     // A resized viewport (window resize, sticky header
                     // showing up) moves the centering point: drop the
@@ -2307,10 +2318,9 @@ impl AppState {
                 }
                 self.lit_scroll("drawer");
                 // Follow takeover: anything but a recent command echo
-                // is a real user scroll (echoes match the ring exactly,
-                // even lagged ones; end-of-song clamping may trip this,
-                // which is harmless).
-                if self.lyrics_follow && !self.lyrics_cmds.contains(&self.drawer_scroll) {
+                // (exact, or clamped to the scroll end) or a relayout
+                // is a real user scroll.
+                if self.lyrics_follow && !relayout && !self.lyrics_echo(self.drawer_scroll) {
                     self.lyrics_follow = false;
                 }
             }

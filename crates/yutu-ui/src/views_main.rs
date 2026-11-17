@@ -1505,6 +1505,7 @@ impl AppState {
             // enough to the top that resuming would drag them back down.
             if let Some(y) = self
                 .lyric_follow_y(&id, at)
+                .map(|y| self.clamp_follow(y))
                 .filter(|_| self.drawer_scroll > LYRIC_TOP_HOLD_PX)
             {
                 if (self.drawer_scroll - y).abs() <= LYRIC_RESUME_PX {
@@ -1577,6 +1578,32 @@ impl AppState {
         }
     }
 
+    /// Furthest the drawer lyrics can scroll (content minus viewport),
+    /// once both are measured.
+    pub(crate) fn drawer_max_y(&self) -> Option<f32> {
+        let content = self.drawer_content_h?;
+        let view = self.drawer_view_h?;
+        Some((content - view).max(0.0))
+    }
+
+    /// Follow target bounded to where the drawer can actually scroll: a
+    /// target past the end would glide forever against the clamp.
+    pub(crate) fn clamp_follow(&self, y: f32) -> f32 {
+        match self.drawer_max_y() {
+            Some(max) => y.clamp(0.0, max),
+            None => y.max(0.0),
+        }
+    }
+
+    /// True when offset `y` is the echo of a recent follow command:
+    /// exactly, or as the scrollable clamped it to its end.
+    pub(crate) fn lyrics_echo(&self, y: f32) -> bool {
+        let max = self.drawer_max_y();
+        self.lyrics_cmds
+            .iter()
+            .any(|&c| c == y || max.is_some_and(|m| c > m && (y - m).abs() <= 0.5))
+    }
+
     /// Command the drawer lyrics scrollable to an absolute y (single
     /// jump; the glide chains these per tick).
     pub(crate) fn lyrics_scroll_task(y: f32) -> iced::Task<Message> {
@@ -1601,12 +1628,13 @@ impl AppState {
         if !self.drawer_open || !self.lyrics_follow || self.lyrics_follow_at.is_none() {
             return None;
         }
-        let gap = self.lyrics_target - self.drawer_scroll;
+        let target = self.clamp_follow(self.lyrics_target);
+        let gap = target - self.drawer_scroll;
         if gap.abs() <= 1.0 {
             return None;
         }
         let step = (gap.abs() * 0.25).max(2.0);
-        let y = ease_toward(self.drawer_scroll, self.lyrics_target, step);
+        let y = ease_toward(self.drawer_scroll, target, step);
         self.lyrics_cmds = [y, self.lyrics_cmds[0], self.lyrics_cmds[1]];
         Some(Self::lyrics_scroll_task(y))
     }
@@ -1618,7 +1646,7 @@ impl AppState {
             && self.drawer_open
             && self.lyrics_follow
             && self.lyrics_follow_at.is_some()
-            && (self.drawer_scroll - self.lyrics_target).abs() > 1.0
+            && (self.drawer_scroll - self.clamp_follow(self.lyrics_target)).abs() > 1.0
     }
 
     /// Shared synced-lyrics body (lyrics page + Now Playing drawer):
@@ -1860,7 +1888,13 @@ impl AppState {
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
             .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
-            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y, v.bounds().height));
+            .on_scroll(|v| {
+                Message::DrawerScrolled(
+                    v.absolute_offset().y,
+                    v.bounds().height,
+                    v.content_bounds().height,
+                )
+            });
             let body: iced::Element<'_, Message> = container(
                 row![
                     container(hero).width(iced::Length::Fixed(NP_HERO_COL_W)),
@@ -1909,7 +1943,13 @@ impl AppState {
             .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
             .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("drawer")))
             .id(iced::widget::Id::new(LYRICS_SCROLL_ID))
-            .on_scroll(|v| Message::DrawerScrolled(v.absolute_offset().y, v.bounds().height)),
+            .on_scroll(|v| {
+                Message::DrawerScrolled(
+                    v.absolute_offset().y,
+                    v.bounds().height,
+                    v.content_bounds().height,
+                )
+            }),
         ]
         .spacing(8)
         .into();
