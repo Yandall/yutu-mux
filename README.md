@@ -33,7 +33,7 @@ surface as errors.
 
 ## Screenshots
 
-![Playlist view](assets/screenshots/yutu-mux-screenshot-1)
+![Playlist view](assets/screenshots/yutu-mux-screenshot-1.png)
 ![Now Playing drawer with synced lyrics](assets/screenshots/yutu-mux-screenshot-2.png)
 
 ## Install
