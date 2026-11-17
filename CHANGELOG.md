@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-16
+
 ### Added
 
 - Mini player: a small floating window with the current song, playback

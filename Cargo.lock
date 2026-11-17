@@ -7145,7 +7145,7 @@ dependencies = [
 
 [[package]]
 name = "yutu-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "futures",
@@ -7165,7 +7165,7 @@ dependencies = [
 
 [[package]]
 name = "yutu-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
@@ -7181,7 +7181,7 @@ dependencies = [
 
 [[package]]
 name = "yutu-mux"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iced",
  "mimalloc",
@@ -7196,7 +7196,7 @@ dependencies = [
 
 [[package]]
 name = "yutu-player"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libmpv2",
  "reqwest",
@@ -7210,7 +7210,7 @@ dependencies = [
 
 [[package]]
 name = "yutu-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fluent-bundle",
