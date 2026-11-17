@@ -63,6 +63,8 @@
 
 ### Changed
 
+- On launch the restored song starts from 0:00 instead of where you
+  left off (queue and current song are still restored).
 - On narrow windows the playlist menu button sits on its own line, so
   the playlist search keeps its full width.
 - The library's New playlist button now sits at the top of the

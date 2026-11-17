@@ -95,8 +95,8 @@ impl AppState {
     }
 
     /// Rebuild the queue from the persisted snapshot (unknown ids drop:
-    /// the track was never cached). Starts paused at the saved position
-    /// with repeat/volume/mute restored. Shuffle always starts off (the
+    /// the track was never cached). Starts paused at 00:00 (the saved
+    /// position is ignored on purpose) with repeat/volume/mute restored. Shuffle always starts off (the
     /// saved order is kept as-is): a fresh launch never opens shuffled.
     pub(crate) fn restore_queue(&mut self) {
         let Ok(store) = LibraryStore::open(&self.library_path) else {
@@ -121,7 +121,7 @@ impl AppState {
         self.volume = snap.volume;
         self.muted = snap.muted;
         self.apply_volume();
-        self.position_secs = snap.position_secs;
+        self.position_secs = 0.0;
         self.paused = true;
         self.playing_from = snap.playing_from.clone();
         self.queue_saved = Some(snap);

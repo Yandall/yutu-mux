@@ -3611,7 +3611,8 @@ fn queue_session_persists_and_restores_across_restart() {
     s.volume = 0.5;
     s.persist_queue();
     drop(s);
-    // Reopen: queue, index, position and modes come back paused,
+    // Reopen: queue, index and modes come back paused at 00:00 (the
+    // saved position is not restored),
     // but shuffle always starts off (order kept as saved). With an
     // audio backend the restored track starts buffering paused
     // (autoload); without one it waits for the first play.
@@ -3619,7 +3620,7 @@ fn queue_session_persists_and_restores_across_restart() {
     assert_eq!(s2.queue.len(), 5);
     assert_eq!(s2.queue.position(), Some(2));
     assert_eq!(s2.queue.current().map(|t| t.id.as_str()), Some("m3"));
-    assert!((s2.position_secs - 42.0).abs() < 1e-6);
+    assert_eq!(s2.position_secs, 0.0);
     assert!(!s2.queue.shuffle);
     assert_eq!(s2.queue.repeat, yutu_player::RepeatMode::All);
     assert!((s2.volume - 0.5).abs() < f32::EPSILON);
@@ -3628,7 +3629,7 @@ fn queue_session_persists_and_restores_across_restart() {
         assert!(!s2.restored_pending);
         assert!(s2.autoload);
         assert_eq!(s2.loading_track.as_deref(), Some("m3"));
-        assert_eq!(s2.pending_resume, Some(42.0));
+        assert_eq!(s2.pending_resume, None);
         assert!(s2.status.contains("Loading"));
     } else {
         assert!(s2.restored_pending);
