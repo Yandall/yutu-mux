@@ -5350,24 +5350,24 @@ fn synced_state(pos_secs: f64) -> AppState {
 
 #[test]
 fn lyric_follow_centers_each_verse() {
-    // col 560, viewport 540, mini player sizes at line height 1.3
-    // plus 8px padding: current row 35.3, one away 26.2, two away
-    // 23.6; rows 6 apart; stanza gap 16.
+    // col 560, viewport 540, mini player sizes x1.12 at line height
+    // 1.3 plus 8px padding: current row 38.58, one away 28.38, two
+    // away 25.47; rows 6 apart; stanza gap 16.
     let s = synced_state(1.0);
     assert_eq!(s.lyric_cursor_at("m1"), Some(0));
-    // Verse 0 top 444, center 444 + 17.65 - 270.
+    // Verse 0 top 444, center 444 + 19.29 - 270.
     let y0 = s.lyric_follow_y("m1", 0).expect("verse 0 targets");
-    assert!((y0 - 191.65).abs() < 1.0, "got {y0}");
-    // Verse 1 sits past a stanza gap: top 492.2, taller current row.
+    assert!((y0 - 193.29).abs() < 1.0, "got {y0}");
+    // Verse 1 sits past a stanza gap: top 494.4, taller current row.
     let s = synced_state(6.0);
     assert_eq!(s.lyric_cursor_at("m1"), Some(1));
     let y1 = s.lyric_follow_y("m1", 1).expect("verse 1 targets");
-    assert!((y1 - 239.85).abs() < 1.0, "got {y1}");
+    assert!((y1 - 243.67).abs() < 1.0, "got {y1}");
     assert!(y1 > y0);
     // Verse 2 advances again (rows above shrink with distance).
     let s = synced_state(11.0);
     let y2 = s.lyric_follow_y("m1", 2).expect("verse 2 targets");
-    assert!((y2 - 269.45).abs() < 1.0, "got {y2}");
+    assert!((y2 - 275.14).abs() < 1.0, "got {y2}");
     assert!(y2 > y1);
     // No highlight (position before the first timestamp): no target.
     let mut s = synced_state(0.0);

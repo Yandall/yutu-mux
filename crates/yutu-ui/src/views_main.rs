@@ -1410,6 +1410,7 @@ impl AppState {
     /// [`crate::mini_player::verse_style`], default 1.3 line height).
     pub(crate) fn lyric_row_h(text_len: usize, distance: usize, col_w: f32) -> f32 {
         let (size, _, _) = crate::mini_player::verse_style(distance as f32);
+        let size = size * LYRICS_VIEW_SCALE;
         let lh = 1.3;
         let avail = (col_w - LYRIC_ROW_CHROME).max(120.0);
         let per_line = (avail / (size * 0.47)).max(8.0) as usize;
@@ -1650,6 +1651,7 @@ impl AppState {
                         continue;
                     }
                     let (size, alpha, bold) = crate::mini_player::verse_style(vi as f32 - focus);
+                    let size = size * LYRICS_VIEW_SCALE;
                     let row_id = lyric_row_id(vi);
                     vi += 1;
                     let ms = l.start_ms;
