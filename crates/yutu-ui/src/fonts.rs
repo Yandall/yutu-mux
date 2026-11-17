@@ -206,7 +206,7 @@ pub(crate) fn text_line_width(s: &str) -> f32 {
             bounds: iced::Size::INFINITE,
             size: iced::Pixels(16.0),
             line_height: iced::widget::text::LineHeight::default(),
-            font: effective_font().to_iced_font(),
+            font: body_font(),
             align_x: iced::advanced::text::Alignment::Default,
             align_y: iced::alignment::Vertical::Top,
             shaping: iced::widget::text::Shaping::Advanced,
@@ -220,6 +220,76 @@ pub(crate) fn text_line_width(s: &str) -> f32 {
 
 pub(crate) fn effective_font() -> FontFamily {
     *EFFECTIVE_FONT.get_or_init(|| FontFamily::Adwaita)
+}
+
+/// Startup-fixed "heavier text" switch for low-DPI macOS screens.
+/// Rules:
+///   - iced rasterizes glyphs itself (no Core Text font smoothing), so
+///     at 1x small light-on-dark text renders thin and faint; one
+///     weight step up stands in for that smoothing. Retina (2x) text
+///     already looks right and keeps the normal weights.
+///   - Decided once at launch from the main screen's scale (the
+///     renderer's default font is fixed at launch, like the family);
+///     moving to another screen applies on relaunch.
+///   - `YUTU_TEXT_BOOST=1|0` forces it on or off on any platform.
+pub(crate) static TEXT_BOOST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Below this screen scale a macOS screen counts as low-DPI.
+pub(crate) const TEXT_BOOST_MAX_SCALE: f64 = 1.5;
+
+/// Pure boost decision: an explicit override wins (`1`/`true`/`on`
+/// vs `0`/`false`/`off`, anything else ignored); otherwise only a
+/// macOS screen known to be below [`TEXT_BOOST_MAX_SCALE`] boosts.
+pub(crate) fn text_boost_for(
+    is_macos: bool,
+    screen_scale: Option<f64>,
+    env_override: Option<&str>,
+) -> bool {
+    match env_override
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("1" | "true" | "on") => return true,
+        Some("0" | "false" | "off") => return false,
+        _ => {}
+    }
+    is_macos && screen_scale.is_some_and(|s| s < TEXT_BOOST_MAX_SCALE)
+}
+
+/// Read the platform + override and decide (call once at launch,
+/// on the main thread: the macOS probe asks AppKit).
+pub(crate) fn detect_text_boost() -> bool {
+    #[cfg(target_os = "macos")]
+    let scale = yutu_desktop::macos_window::main_screen_scale();
+    #[cfg(not(target_os = "macos"))]
+    let scale: Option<f64> = None;
+    let env = std::env::var("YUTU_TEXT_BOOST").ok();
+    text_boost_for(cfg!(target_os = "macos"), scale, env.as_deref())
+}
+
+pub(crate) fn text_boost() -> bool {
+    *TEXT_BOOST.get_or_init(|| false)
+}
+
+/// One weight step up under the boost (Regular to Medium, Medium to
+/// Semibold); Bold is already heavy enough and stays.
+pub(crate) fn boosted_weight(weight: iced::font::Weight, boost: bool) -> iced::font::Weight {
+    use iced::font::Weight;
+    match (boost, weight) {
+        (true, Weight::Normal) => Weight::Medium,
+        (true, Weight::Medium) => Weight::Semibold,
+        (_, w) => w,
+    }
+}
+
+/// Body text font: the effective family at body weight (boosted on
+/// low-DPI macOS). The renderer default and every measurement of
+/// default-font text use it, so measured and drawn widths agree.
+pub(crate) fn body_font() -> iced::Font {
+    iced::Font {
+        weight: boosted_weight(iced::font::Weight::Normal, text_boost()),
+        ..effective_font().to_iced_font()
+    }
 }
 
 /// True when the pick differs from the startup-effective family
@@ -268,7 +338,7 @@ pub(crate) fn clamp_scale(raw: f32) -> f32 {
 /// Family follows the startup-effective pick (see [`EFFECTIVE_FONT`]).
 pub(crate) fn medium_font() -> iced::Font {
     iced::Font {
-        weight: iced::font::Weight::Medium,
+        weight: boosted_weight(iced::font::Weight::Medium, text_boost()),
         ..effective_font().to_iced_font()
     }
 }

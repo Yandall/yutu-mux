@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- macOS: text on non-Retina screens is drawn slightly heavier, so small
+  and grey text is no longer thin and blurry.
+
 ## 0.2.1 - 2026-11-17
 
 ### Changed
