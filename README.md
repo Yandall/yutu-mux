@@ -27,8 +27,8 @@ Native Rust YouTube Music desktop app. Iced UI (no webview). Linux, macOS, and W
 - Local file scan, scrobble (Last.fm + ListenBrainz), live MPRIS
 - Cookie import sign-in with two-way library sync
 
-Honest limits: free-tier bitrate ceiling (128-256kbps AAC/Opus is
-YouTube's, not ours), no offline keep (streaming only), PO-token 403s
+Honest limits: free-tier bitrate ceiling (128 kbps AAC is YouTube's,
+not ours; a signed-in Premium account streams 256 kbps AAC), no offline keep (streaming only), PO-token 403s
 surface as errors.
 
 ## Screenshots
@@ -106,7 +106,9 @@ the portable tarball, `docs/TROUBLESHOOTING.md` for common failures.
 Settings imports a Netscape `cookies.txt` (private window, export via a
 "Get cookies.txt" extension). The file picker reads it, the app never
 shows its contents, the session is stored at 0600. Never paste cookie
-contents anywhere. Details and ToS notes in `docs/AUTH.md`.
+contents anywhere. With a Premium account, songs stream in 256 kbps
+AAC (needs a JS runtime for yt-dlp, e.g. `deno`). Details and ToS notes
+in `docs/AUTH.md`.
 
 ## Disclaimer of use
 

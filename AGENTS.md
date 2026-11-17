@@ -40,6 +40,10 @@
   (`t=o:w=1`): Hertz widths are inaudible 1 Hz slivers on music.
 - Resolver: **yt-dlp sidecar primary** (`--get-url --quiet --no-warnings`,
   AAC preferred). Raw rustypipe path removed.
+  Signed-in cookie sessions try `web_music` first for Premium 256 kbps
+  AAC (itag 141), falling back to the anonymous path (30 min backoff).
+  Cookies reach yt-dlp only via `cookie_jar.rs` (private 0700 dir,
+  0600 file, `.youtube.com` rows, removed after the run): never argv/env.
 - Lyrics: **LRCLIB** (free, no credentials). No Genius/Musixmatch for MVP.
 - No mock data in the app. Real search, real click-to-play, real queue.
   `MockBackend` exists only for tests.
