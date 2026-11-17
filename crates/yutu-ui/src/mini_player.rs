@@ -36,8 +36,10 @@ pub(crate) const MINI_LYRICS_PREF: &str = "mini_lyrics";
 /// Pref remembering where the mini window was last left ("x,y").
 pub(crate) const MINI_POS_PREF: &str = "mini_pos";
 /// Linux app id (Wayland) / class of the mini window, for compositor
-/// rules (shared with the Hyprland helper, which skips it for `ctl`).
-pub(crate) const MINI_APP_ID: &str = yutu_desktop::hyprland::MINI_CLASS;
+/// rules. Equal to `yutu_desktop::hyprland::MINI_CLASS` (a test pins
+/// it); spelled out here because that module is Linux-only.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const MINI_APP_ID: &str = "yutu-mux-mini";
 /// Capsule width (content units).
 pub(crate) const MINI_W: f32 = 360.0;
 /// Capsule height when collapsed (the header row when expanded).
@@ -55,6 +57,11 @@ const MINI_ART: f32 = 40.0;
 const MINI_RING: f32 = 52.0;
 /// Ring stroke width.
 const MINI_RING_W: f32 = 3.0;
+/// Ring cover raster: the 544px hero downscaled once with a Triangle
+/// filter. Drawing the hero itself at 40px (bilinear, no mipmaps)
+/// aliases, and the 120px row raster upscales video thumbnails; 160px
+/// stays sharp at 2x hidpi with room for a larger UI scale.
+pub(crate) const MINI_COVER_PX: u32 = 160;
 /// Char budget for the title/artist beside the controls.
 const MINI_TITLE_CHARS: usize = 18;
 /// Ticker padding (vertical, horizontal) and gap between lines.
@@ -426,7 +433,7 @@ impl AppState {
             button(ctrl_box(btn_icon("picture-in-picture-2", 14.0, MUTED))).style(icon_hover)
         };
         tooltip(
-            btn.on_press(Message::OpenMiniPlayer).padding(7),
+            btn.on_press(Message::ToggleMiniPlayer).padding(7),
             text(self.language.mini_player()).size(12),
             tooltip::Position::Top,
         )
@@ -470,6 +477,11 @@ impl AppState {
             ));
         }
         let mut tasks = vec![open];
+        // The ring shows the hero cover (sharp at any scale): warm it
+        // when a restored session never started the track.
+        if let Some(t) = self.queue.current().cloned() {
+            tasks.extend(self.large_art_task(&t));
+        }
         if lyrics {
             tasks.extend(self.mini_lyrics_fetch());
         }
@@ -545,18 +557,39 @@ impl AppState {
         iced::window::drag(mini.id)
     }
 
-    /// Close the mini player and bring the main window forward
-    /// (best effort: some compositors refuse focus requests).
+    /// Player bar button: open the mini player, or close it when it is
+    /// already open.
+    pub(crate) fn toggle_mini_player(&mut self) -> iced::Task<Message> {
+        if self.mini.is_some() {
+            self.close_mini_player()
+        } else {
+            self.open_mini_player()
+        }
+    }
+
+    /// Close the mini player and bring the main window forward. Most
+    /// platforms honor the focus request; Hyprland ignores it unless
+    /// `misc:focus_on_activate` is set, so there the app asks the
+    /// compositor to focus its main window (switching workspace too).
     pub(crate) fn restore_from_mini(&mut self) -> iced::Task<Message> {
         let close = self.close_mini_player();
         let Some(main) = self.main_window else {
             return close;
         };
-        iced::Task::batch([
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut tasks = vec![
             close,
             iced::window::minimize(main, false),
             iced::window::gain_focus(main),
-        ])
+        ];
+        #[cfg(target_os = "linux")]
+        if on_hyprland() {
+            tasks.push(iced::Task::perform(
+                blocking(yutu_desktop::hyprland::focus_main),
+                |_| Message::NoOp,
+            ));
+        }
+        iced::Task::batch(tasks)
     }
 
     /// Lyrics ticker on/off: grows or shrinks the window downward and
@@ -859,15 +892,76 @@ impl AppState {
         .into()
     }
 
+    /// Ring cover downscale for the current song, once its hero art is
+    /// on disk (the hero is fetched when a song starts; run on Tick).
+    pub(crate) fn mini_cover_task(&mut self) -> iced::Task<Message> {
+        if self.mini.is_none() {
+            return iced::Task::none();
+        }
+        let Some(url) = self.queue.current().and_then(|t| self.hero_art_for(t)) else {
+            return iced::Task::none();
+        };
+        if self.mini_cover.as_ref().is_some_and(|(u, _)| *u == url)
+            || self.mini_cover_loading.as_ref() == Some(&url)
+        {
+            return iced::Task::none();
+        }
+        let Some(path) = artwork_path_for(&url).filter(|p| std::path::Path::new(p).exists()) else {
+            return iced::Task::none();
+        };
+        self.mini_cover_loading = Some(url.clone());
+        iced::Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let img = image::open(&path).ok()?;
+                    Some(
+                        img.resize_to_fill(
+                            MINI_COVER_PX,
+                            MINI_COVER_PX,
+                            image::imageops::FilterType::Triangle,
+                        )
+                        .to_rgba8()
+                        .into_raw(),
+                    )
+                })
+                .await
+                .ok()
+                .flatten()
+            },
+            move |rgba| Message::MiniCoverReady {
+                url: url.clone(),
+                rgba,
+            },
+        )
+    }
+
+    pub(crate) fn mini_cover_ready(&mut self, url: String, rgba: Option<Vec<u8>>) {
+        if self.mini_cover_loading.as_ref() == Some(&url) {
+            self.mini_cover_loading = None;
+        }
+        if let Some(rgba) = rgba {
+            let handle = iced::widget::image::Handle::from_rgba(MINI_COVER_PX, MINI_COVER_PX, rgba);
+            self.mini_cover = Some((url, handle));
+        }
+    }
+
     /// Round cover inside the progress ring (fixed size placeholder
-    /// until the art lands, so the row never jumps).
+    /// until the art lands, so the row never jumps). The filtered hero
+    /// downscale (`mini_cover`) keeps it sharp on hidpi screens; the
+    /// 120px row raster is only the fallback until it lands.
     fn mini_ring_art(&self, frac: f32) -> iced::Element<'_, Message> {
         use iced::widget::{canvas, container, image, Stack};
-        let handle = self
-            .queue
-            .current()
-            .and_then(|t| self.art_url_for(t, MINI_ART))
-            .and_then(|u| self.art_handle(&u));
+        let handle = self.queue.current().and_then(|t| {
+            let hero = self.hero_art_for(t);
+            self.mini_cover
+                .as_ref()
+                .filter(|(u, _)| hero.as_ref() == Some(u))
+                .map(|(_, h)| h.clone())
+                .or_else(|| {
+                    self.art_url_for(t, MINI_ART)
+                        .and_then(|u| self.art_handle(&u))
+                })
+        });
         let art: iced::Element<'_, Message> = match handle {
             Some(h) => image(h)
                 .content_fit(iced::ContentFit::Cover)

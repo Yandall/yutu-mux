@@ -765,6 +765,8 @@ pub enum Message {
     ToggleDrawer,
     /// Open the picture-in-picture mini player (focus it when open).
     OpenMiniPlayer,
+    /// Player bar button: open the mini player, or close it if open.
+    ToggleMiniPlayer,
     /// Close the mini player window (playback continues).
     MiniClose,
     /// Close the mini player and bring the main window forward.
@@ -993,6 +995,12 @@ pub enum Message {
         track_id: String,
         provider: LyricsProvider,
         result: Result<LyricsResult, String>,
+    },
+    /// Mini player ring cover downscaled from the hero art (`None`:
+    /// the cover did not decode).
+    MiniCoverReady {
+        url: String,
+        rgba: Option<Vec<u8>>,
     },
     /// Backdrop downscale finished (`None`: the cover did not decode).
     ArtBlurReady {

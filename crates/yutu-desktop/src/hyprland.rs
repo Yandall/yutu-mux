@@ -135,6 +135,21 @@ pub fn move_lua(address: &str, x: i64, y: i64) -> String {
     format!("hl.dsp.window.move({{ window = \"address:{address}\", x = {x}, y = {y} }})")
 }
 
+/// Lua expression focusing one window by address (switches to its
+/// workspace when it sits on another one).
+pub fn focus_lua(address: &str) -> String {
+    format!("hl.dsp.focus({{ window = \"address:{address}\" }})")
+}
+
+/// Focus this process's main window. Hyprland ignores a client's own
+/// activation request unless `misc:focus_on_activate` is on, so the
+/// mini player's Open asks the compositor directly.
+pub fn focus_main() -> Result<(), String> {
+    let w = own_window()?;
+    let target = format!("address:{}", w.address);
+    dispatch(&focus_lua(&w.address), &["focuswindow", &target])
+}
+
 /// Move a window (by address) to an absolute layout position.
 pub fn move_window(address: &str, x: i64, y: i64) -> Result<(), String> {
     let arg = format!("exact {x} {y},address:{address}");
@@ -230,6 +245,10 @@ mod tests {
         assert_eq!(m.at, (1500, 60));
         assert_eq!(m.size, (380, 112));
         assert!(parse_class_window(CLIENTS, 10, MINI_CLASS).is_err());
+        assert_eq!(
+            focus_lua("0x2"),
+            r#"hl.dsp.focus({ window = "address:0x2" })"#
+        );
         assert_eq!(
             move_lua("0x3", 10, 20),
             r#"hl.dsp.window.move({ window = "address:0x3", x = 10, y = 20 })"#

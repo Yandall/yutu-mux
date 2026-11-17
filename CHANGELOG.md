@@ -15,6 +15,10 @@
 - Unsynced lyrics in the mini player show in full, wrapped, and scroll.
 - The mini player has its own window id (`yutu-mux-mini`); the README
   has a Hyprland rule that removes the frame around it.
+- The player bar's mini player button also closes it when it is open.
+- The mini player's Open button brings the main window forward on
+  Hyprland too.
+- The mini player's cover is sharp on high-resolution screens.
 - `yutu-mux ctl mini` opens, closes and screenshots the mini player.
 - Scriptable control: start with `--control` and drive the running app
   (play, search, navigate, screenshots) via `yutu-mux ctl`.

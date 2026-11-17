@@ -11344,6 +11344,59 @@ fn mini_window_is_transparent_and_named() {
 }
 
 #[test]
+fn mini_ring_uses_the_filtered_hero_cover_of_the_current_song() {
+    use crate::mini_player::MINI_COVER_PX;
+    let mut s = test_state();
+    let mut t = mk_track("cover1", "T", "A");
+    t.thumbnail_url = Some("https://example.invalid/cover1.jpg".into());
+    s.catalog.remove(&t.id);
+    s.queue.push(t.clone());
+    // Closed: no downscale work at all.
+    let _ = s.mini_cover_task();
+    assert!(s.mini_cover_loading.is_none());
+    let _ = s.update(Message::OpenMiniPlayer);
+    let hero = s.hero_art_for(&t).unwrap();
+    let px = MINI_COVER_PX as usize;
+    let _ = s.update(Message::MiniCoverReady {
+        url: hero.clone(),
+        rgba: Some(vec![200; px * px * 4]),
+    });
+    assert_eq!(
+        s.mini_cover.as_ref().map(|(u, _)| u.as_str()),
+        Some(hero.as_str())
+    );
+    // Already decoded for this song: nothing new starts.
+    let _ = s.mini_cover_task();
+    assert!(s.mini_cover_loading.is_none());
+    let id = s.mini.unwrap().id;
+    let _ = s.view_for(id);
+    // A failed decode keeps the last cover and clears the in-flight mark.
+    s.mini_cover_loading = Some("other".into());
+    let _ = s.update(Message::MiniCoverReady {
+        url: "other".into(),
+        rgba: None,
+    });
+    assert!(s.mini_cover_loading.is_none());
+    assert!(s.mini_cover.is_some());
+}
+
+#[test]
+fn player_bar_button_toggles_the_mini_player() {
+    let mut s = test_state();
+    s.queue.push(mk_track("m1", "T", "A"));
+    let _ = s.update(Message::ToggleMiniPlayer);
+    let id = s.mini.expect("opened").id;
+    // Same button again closes it (playback untouched).
+    let _ = s.update(Message::ToggleMiniPlayer);
+    assert!(s.mini.is_none());
+    let _ = s.update(Message::ToggleMiniPlayer);
+    assert!(s.mini.is_some_and(|m| m.id != id), "a fresh window");
+    // Open from the menu or `ctl mini open` never closes it.
+    let _ = s.update(Message::OpenMiniPlayer);
+    assert!(s.mini.is_some());
+}
+
+#[test]
 fn mini_drag_keeps_the_chips_until_a_real_exit() {
     let mut s = test_state();
     s.queue.push(mk_track("m1", "T", "A"));
@@ -11473,6 +11526,11 @@ fn mini_position_is_remembered_across_opens_and_restarts() {
 #[cfg(target_os = "linux")]
 #[test]
 fn mini_window_has_its_own_app_id() {
+    // One id: the window's app id is the class the Hyprland helper skips.
+    assert_eq!(
+        crate::mini_player::MINI_APP_ID,
+        yutu_desktop::hyprland::MINI_CLASS
+    );
     let mini = crate::mini_player::mini_window_settings(false, 1.0, None);
     assert_eq!(mini.platform_specific.application_id, "yutu-mux-mini");
     assert_eq!(

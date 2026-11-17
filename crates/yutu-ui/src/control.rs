@@ -523,31 +523,28 @@ impl AppState {
                         .then(|_| iced::exit()),
                 );
             }
-            Command::Mini(arg) => {
-                let open = self.mini.is_some();
-                match arg {
-                    MiniArg::Toggle if open => vec![Message::MiniClose],
-                    MiniArg::Toggle | MiniArg::Open => vec![Message::OpenMiniPlayer],
-                    MiniArg::Close => vec![Message::MiniClose],
-                    MiniArg::Restore => vec![Message::MiniRestore],
-                    MiniArg::Lyrics(want) => match self.mini {
-                        None => {
-                            reply.err("the mini player is closed (`mini open` first)");
-                            return iced::Task::none();
-                        }
-                        Some(m) if want.is_some_and(|w| w == m.lyrics) => vec![],
-                        Some(_) => vec![Message::MiniToggleLyrics],
-                    },
-                    MiniArg::Screenshot(path) => {
-                        let Some(mini) = self.mini else {
-                            reply.err("the mini player is closed (`mini open` first)");
-                            return iced::Task::none();
-                        };
-                        let path = path.unwrap_or_else(yutu_core::control::default_screenshot_path);
-                        return control_screenshot(Some(mini.id), path, reply);
+            Command::Mini(arg) => match arg {
+                MiniArg::Toggle => vec![Message::ToggleMiniPlayer],
+                MiniArg::Open => vec![Message::OpenMiniPlayer],
+                MiniArg::Close => vec![Message::MiniClose],
+                MiniArg::Restore => vec![Message::MiniRestore],
+                MiniArg::Lyrics(want) => match self.mini {
+                    None => {
+                        reply.err("the mini player is closed (`mini open` first)");
+                        return iced::Task::none();
                     }
+                    Some(m) if want.is_some_and(|w| w == m.lyrics) => vec![],
+                    Some(_) => vec![Message::MiniToggleLyrics],
+                },
+                MiniArg::Screenshot(path) => {
+                    let Some(mini) = self.mini else {
+                        reply.err("the mini player is closed (`mini open` first)");
+                        return iced::Task::none();
+                    };
+                    let path = path.unwrap_or_else(yutu_core::control::default_screenshot_path);
+                    return control_screenshot(Some(mini.id), path, reply);
                 }
-            }
+            },
             Command::Screenshot(path) => {
                 let path = path.unwrap_or_else(yutu_core::control::default_screenshot_path);
                 return self

@@ -206,6 +206,8 @@ impl AppState {
             mini: None,
             mini_lyrics_pref: false,
             mini_pos: None,
+            mini_cover: None,
+            mini_cover_loading: None,
             error_log: Vec::new(),
             seek_hold_until: None,
             paused_seek: false,

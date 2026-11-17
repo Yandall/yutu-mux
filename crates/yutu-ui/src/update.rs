@@ -744,6 +744,7 @@ impl AppState {
                 }
                 return self.update(Message::SetLyricsProvider(next));
             }
+            Message::MiniCoverReady { url, rgba } => self.mini_cover_ready(url, rgba),
             Message::ArtBlurReady { url, rgba } => {
                 self.art_blur_loading.remove(&url);
                 if let Some(rgba) = rgba {
@@ -2273,6 +2274,7 @@ impl AppState {
                 }
             }
             Message::OpenMiniPlayer => return self.open_mini_player(),
+            Message::ToggleMiniPlayer => return self.toggle_mini_player(),
             Message::MiniClose => return self.close_mini_player(),
             Message::MiniRestore => return self.restore_from_mini(),
             Message::MiniToggleLyrics => return self.toggle_mini_lyrics(),
@@ -3757,7 +3759,11 @@ impl AppState {
             }
             Message::Tick(now) => {
                 // Desktop transport commands first (widget / media keys).
-                let mut tasks = vec![self.drain_player_commands(), self.art_blur_task()];
+                let mut tasks = vec![
+                    self.drain_player_commands(),
+                    self.art_blur_task(),
+                    self.mini_cover_task(),
+                ];
                 // Playlist page cover: keep asking for the large art (the
                 // fetch itself skips cached, in-flight and cooled URLs),
                 // so a cover that missed the open warm still lands.
