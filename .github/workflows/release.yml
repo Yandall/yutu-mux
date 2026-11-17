@@ -5,6 +5,12 @@ on:
       - 'v*'
 permissions:
   contents: write
+env:
+  # CI never debugs the test binaries: no debug info means much less to
+  # write and link (largest win on Windows), and incremental caches are
+  # wasted on a fresh runner. Release builds are unaffected.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
 jobs:
   linux-tarball:
     name: linux x86_64 tarball
@@ -18,11 +24,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         run: cargo test --workspace --locked
-      - name: Feature checks (innertube + submit + mpv compile)
+      - name: Feature checks (all features compile)
         run: |
           cargo check --workspace --all-features --locked
           pkg-config --modversion mpv
-          cargo check -p yutu-player --features mpv --locked
       - name: Build portable tarball
         run: packaging/linux/build-tarball.sh --output dist
       - name: Upload to GitHub Release
@@ -124,10 +129,9 @@ jobs:
           $dllDir >> $env:GITHUB_PATH
       - name: Test
         run: cargo test --workspace --locked
-      - name: Feature checks (innertube + submit + mpv compile)
+      - name: Feature checks (all features compile)
         run: |
           cargo check --workspace --all-features --locked
-          cargo check -p yutu-player --features mpv --locked
       - name: Build self-contained staged zip (mpv DLLs + yt-dlp.exe beside the exe)
         shell: pwsh
         run: packaging/windows/build-windows.ps1 -Output dist
