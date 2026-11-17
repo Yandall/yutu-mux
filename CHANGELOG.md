@@ -6,6 +6,8 @@
 
 - macOS: the app opens again on macOS 14 and 15 (the 0.2.0 download
   only started on macOS 26).
+- Windows: the zip and installer downloads are published again (the
+  0.2.0 release build stopped before them).
 
 ## 0.2.0 - 2026-11-16
 
