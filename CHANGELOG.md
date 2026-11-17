@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- macOS: the app opens again on macOS 14 and 15 (the 0.2.0 download
+  only started on macOS 26).
+
 ## 0.2.0 - 2026-11-16
 
 ### Added

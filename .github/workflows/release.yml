@@ -33,7 +33,10 @@ jobs:
             dist/*/*.tar.gz.sha256
   macos-dmg:
     name: macOS arm64 disk image
-    runs-on: macos-latest
+    # Pinned, not macos-latest: Homebrew's libmpv/ffmpeg bottles require
+    # the runner's macOS, so the bundle only opens on that version or
+    # newer. build-app.sh fails the job if this drifts above MIN_MACOS.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Build deps (libmpv headers, dylibbundler for the self-contained bundle)

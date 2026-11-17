@@ -54,6 +54,12 @@ APP_NAME="YutuMux"
 IDENTIFIER="org.yutu_mux.YutuMux"
 VERSION="$(grep -m1 '^version *= *"' "$ROOT/Cargo.toml" | cut -d'"' -f2)"
 ARCH="$(uname -m)"
+# Oldest macOS the bundle supports: Info.plist LSMinimumSystemVersion,
+# the Rust deployment target, and the ceiling the bundled-library check
+# below enforces. Homebrew bottles carry the build host's macOS as their
+# minimum, so the release runner must be this macOS (or older) too.
+MIN_MACOS="${MIN_MACOS:-14.0}"
+export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
 # shellcheck disable=SC2086
 [ -n "${CARGO_FLAGS:-}" ] && echo "cargo flags: $CARGO_FLAGS"
 
@@ -115,7 +121,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIconFile</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
@@ -138,6 +144,32 @@ if [ "$SELF_CONTAINED" -eq 1 ]; then
         https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
     chmod +x "$APP/Contents/MacOS/yt-dlp"
 fi
+
+# Every Mach-O in the bundle must load on MIN_MACOS: a library built
+# for a newer macOS makes dyld refuse the launch ("cannot be opened
+# because of a problem"), which right-click Open cannot bypass.
+echo "==> checking minimum macOS of bundled binaries (<= $MIN_MACOS)"
+ver_num() { echo "$1" | awk -F. '{ printf "%d%03d%03d", $1, $2, $3 }'; }
+MIN_NUM="$(ver_num "$MIN_MACOS")"
+TOO_NEW=0
+while IFS= read -r -d '' f; do
+    file -b "$f" | grep -q 'Mach-O' || continue
+    # LC_BUILD_VERSION ("minos X") or legacy LC_VERSION_MIN_MACOSX ("version X").
+    v="$(otool -l "$f" | awk '
+        /cmd LC_BUILD_VERSION/ { b = 1 }
+        /cmd LC_VERSION_MIN_MACOSX/ { m = 1 }
+        b && $1 == "minos" { print $2; exit }
+        m && $1 == "version" { print $2; exit }')"
+    [ -n "$v" ] || continue
+    if [ "$(ver_num "$v")" -gt "$MIN_NUM" ]; then
+        echo "error: ${f#"$APP/"} needs macOS $v (bundle minimum $MIN_MACOS)" >&2
+        TOO_NEW=1
+    fi
+done < <(find "$APP/Contents" -type f -print0)
+[ "$TOO_NEW" -eq 0 ] || {
+    echo "build on macOS $MIN_MACOS (or set MIN_MACOS) so Homebrew libs match" >&2
+    exit 1
+}
 
 echo "==> building app icon (.icns from the grey master)"
 ICONSET_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yutu-iconset.XXXXXX")"
