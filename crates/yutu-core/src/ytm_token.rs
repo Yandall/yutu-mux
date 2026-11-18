@@ -116,10 +116,20 @@ impl std::fmt::Debug for ModernBrowserToken {
 /// for client version / visitor data). Errors name the failure, never
 /// cookie material.
 async fn fetch_login_page(cookies: Option<&str>) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(PAGE_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| format!("login http client failed: {e}"))?;
+    // One client for the process: each connect used to build its own
+    // (root-cert parse plus a fresh TLS handshake). No cookie store, so
+    // the per-request header below is the only credential sent.
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = match CLIENT.get() {
+        Some(c) => c,
+        None => {
+            let built = crate::static_client_builder()
+                .timeout(std::time::Duration::from_secs(PAGE_TIMEOUT_SECS))
+                .build()
+                .map_err(|e| format!("login http client failed: {e}"))?;
+            CLIENT.get_or_init(|| built)
+        }
+    };
     let mut req = client.get(YTM_URL).header("User-Agent", USER_AGENT);
     if let Some(cookies) = cookies {
         req = req.header("Cookie", cookies);

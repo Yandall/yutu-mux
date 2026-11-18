@@ -7823,10 +7823,15 @@ fn lyric_click_highlights_exact_verse() {
 #[test]
 fn favorites_leads_and_maps_to_likes() {
     let mut s = test_state();
-    assert_eq!(s.all_playlists()[0].id, "__favorites");
-    assert!(s.all_playlists()[0].tracks.is_empty());
+    assert_eq!(s.playlist_heads()[0].id, "__favorites");
+    assert_eq!(s.playlist_heads()[0].len, 0);
+    assert!(s.playlist_heads()[0].first.is_none());
     let _ = s.update(Message::Like("m1".into()));
-    assert_eq!(s.all_playlists()[0].tracks.len(), 1);
+    assert_eq!(s.playlist_heads()[0].len, 1);
+    assert_eq!(
+        s.playlist_heads()[0].first.map(|t| t.id.as_str()),
+        Some("m1")
+    );
     assert!(s.playlist_has("__favorites", "m1"));
     // Flyout add maps to like, remove maps to unlike.
     let _ = s.update(Message::AddToPlaylist {
@@ -7836,9 +7841,13 @@ fn favorites_leads_and_maps_to_likes() {
     assert!(s.liked.contains("m2"));
     assert!(s.playlist_has("__favorites", "m2"));
     // Add order, not alphabetical: m1 liked before m2.
-    let all = s.all_playlists();
-    let fav_ids: Vec<&str> = all[0].tracks.iter().map(|t| t.id.as_str()).collect();
+    let fav_ids: Vec<String> = s.favorite_tracks().into_iter().map(|t| t.id).collect();
     assert_eq!(fav_ids, vec!["m1", "m2"]);
+    assert_eq!(s.playlist_heads()[0].len, 2);
+    assert_eq!(
+        s.playlist_heads()[0].first.map(|t| t.id.as_str()),
+        Some("m1")
+    );
     let _ = s.update(Message::AddToPlaylist {
         playlist_id: "__favorites".into(),
         track_id: "m2".into(),
@@ -7852,7 +7861,7 @@ fn favorites_leads_and_maps_to_likes() {
     // Deleting Favorites is a no-op.
     let _ = s.update(Message::DeletePlaylist("__favorites".into()));
     assert!(s.user_playlists.is_empty());
-    assert_eq!(s.all_playlists()[0].id, "__favorites");
+    assert_eq!(s.playlist_heads()[0].id, "__favorites");
     // Play Favorites queues exactly the resolved likes.
     let _ = s.update(Message::PlayPlaylist("__favorites".into()));
     assert_eq!(s.queue.len(), 1);
@@ -12319,4 +12328,33 @@ fn control_mini_commands_drive_the_mini_player() {
     control_call(&mut s, "mini open").unwrap();
     control_call(&mut s, "mini restore").unwrap();
     assert!(s.mini.is_none());
+}
+
+/// Borrowed playlist heads mirror the library order (Favorites, then
+/// user playlists) with each list's own count and stored first row.
+#[test]
+fn playlist_heads_follow_library_order() {
+    let mut s = test_state();
+    let row = |id: &str| mk_track(id, id, "A");
+    s.user_playlists = vec![
+        Playlist {
+            id: "u1".into(),
+            title: "Road".into(),
+            tracks: vec![row("x1"), row("x2")],
+        },
+        Playlist {
+            id: "u2".into(),
+            title: "Empty".into(),
+            tracks: Vec::new(),
+        },
+    ];
+    let heads = s.playlist_heads();
+    let ids: Vec<&str> = heads.iter().map(|h| h.id).collect();
+    assert_eq!(ids, vec!["__favorites", "u1", "u2"]);
+    assert_eq!((heads[1].title, heads[1].len), ("Road", 2));
+    assert_eq!(heads[1].first.map(|t| t.id.as_str()), Some("x1"));
+    assert_eq!((heads[2].len, heads[2].first.is_none()), (0, true));
+    // Lookups clone only the asked playlist.
+    assert_eq!(s.find_playlist("u1").map(|p| p.tracks.len()), Some(2));
+    assert!(s.find_playlist("nope").is_none());
 }

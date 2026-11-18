@@ -155,6 +155,16 @@ pub(crate) fn server_playlist_of(list: &ytmapi_rs::parse::LibraryPlaylist) -> Se
     }
 }
 
+/// `YtMusic` handle on the process-wide client ([`crate::ytm_client`]).
+/// Building on an existing client cannot fail (ytmapi only errors while
+/// constructing its own), so this is infallible like `from_auth_token`.
+fn ytm_with_token<A: ytmapi_rs::auth::AuthToken>(token: A) -> YtMusic<A> {
+    ytmapi_rs::YtMusicBuilder::new_with_client(crate::ytm_client())
+        .with_auth_token(token)
+        .build()
+        .expect("ytmapi build with an existing client never fails")
+}
+
 impl InnertubeBackend {
     /// Connect without credentials (fewer queries supported server-side).
     ///
@@ -165,7 +175,7 @@ impl InnertubeBackend {
             .await
             .map_err(|e| format!("innertube anonymous connect failed: {e}"))?;
         Ok(Self {
-            inner: Inner::Anonymous(YtMusic::from_auth_token(token)),
+            inner: Inner::Anonymous(ytm_with_token(token)),
         })
     }
 
@@ -188,19 +198,19 @@ impl InnertubeBackend {
             .await
             .map_err(|e| format!("innertube cookie login failed ({e}; bad/expired cookie?)"))?;
         Ok(Self {
-            inner: Inner::Cookie(YtMusic::from_auth_token(token)),
+            inner: Inner::Cookie(ytm_with_token(token)),
         })
     }
 
     /// Connect with a Google OAuth token bundle (see
     /// [`crate::auth::poll_google_login`]).
     ///
-    /// Synchronous: `YtMusic::from_auth_token` performs no network I/O
+    /// Synchronous: building the `YtMusic` handle performs no network I/O
     /// (unlike the cookie path, which fetches the login page up front).
     /// The token material is never logged.
     pub fn connect_with_oauth(persist: &OAuthPersist) -> Result<Self, String> {
         Ok(Self {
-            inner: Inner::OAuth(YtMusic::from_auth_token(persist.to_token())),
+            inner: Inner::OAuth(ytm_with_token(persist.to_token())),
         })
     }
 

@@ -439,37 +439,40 @@ impl AppState {
     /// catalog order, so the shelf is deterministic).
     pub(crate) fn more_from_artist(&self, artist: &str, n: usize) -> Vec<Track> {
         let counts = self.play_counts();
-        let catalog = self.catalog_tracks();
-        let mut tracks: Vec<(&Track, usize)> = catalog
-            .iter()
+        // Title order first (stable sort keeps it among equal counts).
+        let mut tracks: Vec<(&Track, usize)> = self
+            .catalog
+            .values()
             .filter(|t| t.artist == artist)
             .map(|t| (t, counts.get(t.id.as_str()).copied().unwrap_or(0)))
             .collect();
+        tracks.sort_by(|a, b| a.0.title.cmp(&b.0.title));
         tracks.sort_by_key(|a| std::cmp::Reverse(a.1));
-        tracks.into_iter().map(|(t, _)| t.clone()).take(n).collect()
+        tracks.into_iter().take(n).map(|(t, _)| t.clone()).collect()
     }
 
     /// Recommended albums: catalog tracks grouped by (album, artist),
     /// scored by summed plays, most-played group first. Only groups
     /// with artwork render as cards (the art is the draw).
     pub(crate) fn recommended_albums(&self, n: usize) -> Vec<AlbumGroup> {
+        // Borrowed grouping: only the n kept groups clone their tracks
+        // (this ran per frame once and cloned the whole catalog).
         let counts = self.play_counts();
-        let catalog = self.catalog_tracks();
-        let mut groups: std::collections::HashMap<(String, String), Vec<Track>> =
+        let mut groups: std::collections::HashMap<(&str, &str), Vec<&Track>> =
             std::collections::HashMap::new();
-        for t in catalog {
-            if t.album.is_none() {
+        for t in self.catalog.values() {
+            let Some(album) = t.album.as_deref() else {
                 continue;
-            }
+            };
             if t.thumbnail_url.is_none() && t.thumbnail_large_url.is_none() {
                 continue;
             }
             groups
-                .entry((t.album.clone().unwrap_or_default(), t.artist.clone()))
+                .entry((album, t.artist.as_str()))
                 .or_default()
                 .push(t);
         }
-        let mut scored: Vec<AlbumGroup> = groups
+        let mut scored: Vec<(&str, &str, usize, Vec<&Track>)> = groups
             .into_iter()
             .map(|((album, artist), mut tracks)| {
                 let plays: usize = tracks
@@ -477,23 +480,26 @@ impl AppState {
                     .map(|t| counts.get(t.id.as_str()).copied().unwrap_or(0))
                     .sum();
                 tracks.sort_by(|a, b| a.id.cmp(&b.id));
-                AlbumGroup {
-                    title: album,
-                    artist,
-                    plays,
-                    tracks,
-                }
+                (album, artist, plays, tracks)
             })
             .collect();
         // Most-played group first; bigger groups then titles break
         // ties so the shelf order never shuffles between frames.
         scored.sort_by(|a, b| {
-            b.plays
-                .cmp(&a.plays)
-                .then_with(|| b.tracks.len().cmp(&a.tracks.len()))
-                .then_with(|| a.title.cmp(&b.title))
+            b.2.cmp(&a.2)
+                .then_with(|| b.3.len().cmp(&a.3.len()))
+                .then_with(|| a.0.cmp(b.0))
         });
-        scored.into_iter().take(n).collect()
+        scored
+            .into_iter()
+            .take(n)
+            .map(|(album, artist, plays, tracks)| AlbumGroup {
+                title: album.to_string(),
+                artist: artist.to_string(),
+                plays,
+                tracks: tracks.into_iter().cloned().collect(),
+            })
+            .collect()
     }
 
     /// Tracks for one recommended-album group, in card order (id
@@ -633,8 +639,8 @@ impl AppState {
                 // positions follow the row index, not the art count.
                 const PITCH: f32 = 58.0;
                 let mut slots = Vec::new();
-                for (i, pl) in self.all_playlists().into_iter().enumerate() {
-                    if let Some(t) = pl.tracks.first() {
+                for (i, pl) in self.playlist_heads().into_iter().enumerate() {
+                    if let Some(t) = pl.first {
                         let t = self.find_track(&t.id).unwrap_or_else(|| t.clone());
                         slots.extend(Self::track_row_slots(&[t], i as f32 * PITCH, PITCH));
                     }

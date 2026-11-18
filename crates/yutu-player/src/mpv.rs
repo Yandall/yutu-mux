@@ -160,6 +160,12 @@ impl MpvBackend {
             init.set_option("vo", "null")?;
             init.set_option("audio-display", "no")?;
             init.set_option("gapless-audio", "yes")?;
+            // Read-ahead caps: the defaults (150 MiB ahead, 50 MiB
+            // behind) are sized for video. A song is a few MB, so this
+            // still buffers whole tracks; long mixes refetch by range
+            // on seeks outside the window instead of growing RAM.
+            init.set_option("demuxer-max-bytes", "16MiB")?;
+            init.set_option("demuxer-max-back-bytes", "4MiB")?;
             // We hand mpv resolved googlevideo URLs: its ytdl_hook
             // fallback re-runs yt-dlp on those (which cannot work) after
             // any open failure, delaying the error. Best-effort: builds
