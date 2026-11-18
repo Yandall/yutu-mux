@@ -560,22 +560,31 @@ impl InnertubeBackend {
     pub async fn playlist_details_count(&self, playlist_id: &str) -> Result<usize, String> {
         // Same `browse` endpoint as track reads: `VL`-prefixed id.
         let browse = crate::library::browse_playlist_id(playlist_id);
-        let details = match &self.inner {
+        let typed = match &self.inner {
             Inner::Anonymous(client) => client
                 .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
-                .map_err(|e| format!("playlist details failed: {e}"))?,
+                .map_err(|e| format!("playlist details failed: {e}")),
             Inner::Cookie(client) => client
                 .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
-                .map_err(|e| format!("playlist details failed: {e}"))?,
+                .map_err(|e| format!("playlist details failed: {e}")),
             Inner::OAuth(client) => client
                 .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
-                .map_err(|e| format!("playlist details failed: {e}"))?,
+                .map_err(|e| format!("playlist details failed: {e}")),
         };
-        parse_leading_count(&details.track_count_text)
-            .ok_or_else(|| format!("no count in {:?}", details.track_count_text))
+        let text = match typed {
+            Ok(details) => details.track_count_text,
+            Err(e) => {
+                crate::app_log::warn("yutu-import", format_args!("{e}, reading header raw"));
+                self.raw_playlist_header(&browse)
+                    .await?
+                    .count_text
+                    .ok_or("playlist details failed: no count in header")?
+            }
+        };
+        parse_leading_count(&text).ok_or_else(|| format!("no count in {text:?}"))
     }
 
     /// All playlists in the user's library (id + title; fetch tracks per
@@ -994,8 +1003,46 @@ impl InnertubeBackend {
                     .await
             }
         }
+        .map_err(|e| format!("playlist details failed: {e}"));
+        match details {
+            Ok(details) => Ok(details.title),
+            Err(e) => {
+                crate::app_log::warn("yutu-import", format_args!("{e}, reading header raw"));
+                self.raw_playlist_header(&browse)
+                    .await?
+                    .title
+                    .ok_or_else(|| "playlist details failed: no title in header".to_string())
+            }
+        }
+    }
+
+    /// Tolerant playlist header read (see [`raw_playlist_header`]): the
+    /// typed details parser rejects whole headers over one missing field
+    /// (observed live: public lists with no author strapline), which
+    /// cost link imports their source title and progress bars their
+    /// total. `browse` is the `VL`-prefixed id.
+    async fn raw_playlist_header(&self, browse: &str) -> Result<RawPlaylistHeader, String> {
+        use ytmapi_rs::query::GetPlaylistDetailsQuery;
+        let query = GetPlaylistDetailsQuery::new(PlaylistID::from_raw(browse));
+        let raw = match &self.inner {
+            Inner::Anonymous(client) => {
+                client
+                    .raw_json_query::<GetPlaylistDetailsQuery>(query)
+                    .await
+            }
+            Inner::Cookie(client) => {
+                client
+                    .raw_json_query::<GetPlaylistDetailsQuery>(query)
+                    .await
+            }
+            Inner::OAuth(client) => {
+                client
+                    .raw_json_query::<GetPlaylistDetailsQuery>(query)
+                    .await
+            }
+        }
         .map_err(|e| format!("playlist details failed: {e}"))?;
-        Ok(details.title)
+        Ok(raw_playlist_header(&raw))
     }
 
     /// Append a video to a YouTube Music playlist you own.
@@ -1425,6 +1472,95 @@ where
     failed
 }
 
+/// Playlist track pages as raw JSON, paged with a tolerant
+/// continuation reader.
+///
+/// Upstream's `raw_json_stream` finds the next page through the typed
+/// parser, so a page it rejects (one odd row) also loses the
+/// continuation token and every raw reader stopped at the first 100
+/// rows. This query wraps the same `browse` request but reads the token
+/// straight from the page JSON ([`playlist_continuation_token`]).
+struct TolerantPlaylistQuery<'q, 'a>(&'q ytmapi_rs::query::GetPlaylistTracksQuery<'a>);
+
+/// One raw playlist page (see [`TolerantPlaylistQuery`]).
+#[derive(Debug)]
+struct RawPlaylistPage(String);
+
+impl ytmapi_rs::query::PostQuery for TolerantPlaylistQuery<'_, '_> {
+    fn header(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.0.header()
+    }
+    fn params(&self) -> Vec<(&str, std::borrow::Cow<'_, str>)> {
+        self.0.params()
+    }
+    fn path(&self) -> &str {
+        self.0.path()
+    }
+}
+
+impl<A: ytmapi_rs::auth::AuthToken> ytmapi_rs::query::Query<A> for TolerantPlaylistQuery<'_, '_> {
+    type Output = RawPlaylistPage;
+    type Method = ytmapi_rs::query::PostMethod;
+}
+
+impl<'q, 'a> ytmapi_rs::continuations::ParseFromContinuable<TolerantPlaylistQuery<'q, 'a>>
+    for RawPlaylistPage
+{
+    fn parse_from_continuable(
+        p: ytmapi_rs::ProcessedResult<TolerantPlaylistQuery<'q, 'a>>,
+    ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
+        Ok(raw_page_with_token(p.source))
+    }
+    fn parse_continuation(
+        p: ytmapi_rs::ProcessedResult<
+            ytmapi_rs::query::GetContinuationsQuery<'_, TolerantPlaylistQuery<'q, 'a>>,
+        >,
+    ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
+        Ok(raw_page_with_token(p.source))
+    }
+}
+
+fn raw_page_with_token(
+    source: String,
+) -> (
+    RawPlaylistPage,
+    Option<ytmapi_rs::common::ContinuationParams<'static>>,
+) {
+    use ytmapi_rs::common::YoutubeID as _;
+    let token =
+        playlist_continuation_token(&source).map(ytmapi_rs::common::ContinuationParams::from_raw);
+    (RawPlaylistPage(source), token)
+}
+
+/// Next-page token of one raw playlist page: the trailing
+/// `continuationItemRenderer` row (first page shelf or appended
+/// continuation items), else the legacy shelf `nextContinuationData`.
+/// `None` on the last page or unparseable JSON.
+pub(crate) fn playlist_continuation_token(raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let shelf = value.pointer(
+        "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer",
+    );
+    let rows = shelf
+        .and_then(|s| s.get("contents"))
+        .or_else(|| {
+            value.pointer(
+                "/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems",
+            )
+        })
+        .and_then(serde_json::Value::as_array);
+    rows.and_then(|rows| rows.last())
+        .and_then(|last| {
+            last.pointer("/continuationItemRenderer/continuationEndpoint/continuationCommand/token")
+        })
+        .or_else(|| {
+            shelf.and_then(|s| s.pointer("/continuations/0/nextContinuationData/continuation"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
 /// Raw pages mapped tolerantly + reported as each arrives, deduping
 /// against typed-mapped rows kept from the failed pass. Returns true on
 /// transport error (the caller errors only when nothing survived).
@@ -1439,12 +1575,13 @@ where
     F: FnMut(usize) + Send,
 {
     use futures::StreamExt as _;
-    let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
+    let tolerant = TolerantPlaylistQuery(query);
+    let stream = client.stream(&tolerant);
     futures::pin_mut!(stream);
     let mut failed = false;
     while let Some(page) = stream.next().await {
         match page {
-            Ok(json) => {
+            Ok(RawPlaylistPage(json)) => {
                 for t in tolerant_playlist_rows(&json) {
                     if !out.iter().any(|x| x.id == t.id) {
                         out.push(t);
@@ -1477,12 +1614,13 @@ where
     A: ytmapi_rs::auth::AuthToken,
 {
     use futures::StreamExt as _;
-    let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
+    let tolerant = TolerantPlaylistQuery(query);
+    let stream = client.stream(&tolerant);
     futures::pin_mut!(stream);
     let mut failed = false;
     while let Some(page) = stream.next().await {
         match page {
-            Ok(json) => {
+            Ok(RawPlaylistPage(json)) => {
                 for pair in extract_set_video_pairs(&json) {
                     if !out.contains(&pair) {
                         out.push(pair);
@@ -1583,6 +1721,60 @@ pub(crate) fn deep_find_first_string(value: &serde_json::Value, keys: &[&str]) -
 
 /// Leading integer of a details count text ("248 songs", "1,234
 /// videos"): `None` when no leading number exists.
+/// Title and track-count text of a playlist header, each optional (see
+/// [`InnertubeBackend::raw_playlist_header`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RawPlaylistHeader {
+    pub title: Option<String>,
+    pub count_text: Option<String>,
+}
+
+/// Tolerant header fields from a raw playlist `browse` page. The header
+/// is the responsive header, or the one nested in the editable header
+/// (own playlists). Title = title runs joined; count = the third run
+/// from the end of `secondSubtitle` ("N songs" before " • " and the
+/// duration, as upstream reads it). Missing pieces are `None`.
+pub(crate) fn raw_playlist_header(raw: &str) -> RawPlaylistHeader {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return RawPlaylistHeader::default();
+    };
+    let item = value
+        .pointer("/contents/twoColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents/0");
+    let header = item.and_then(|i| {
+        i.get("musicResponsiveHeaderRenderer").or_else(|| {
+            i.pointer(
+                "/musicEditablePlaylistDetailHeaderRenderer/header/musicResponsiveHeaderRenderer",
+            )
+        })
+    });
+    let Some(header) = header else {
+        return RawPlaylistHeader::default();
+    };
+    let runs_text = |runs: Option<&serde_json::Value>| -> Vec<String> {
+        runs.and_then(serde_json::Value::as_array)
+            .map(|runs| {
+                runs.iter()
+                    .filter_map(|r| r.get("text").and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let title = runs_text(header.pointer("/title/runs")).concat();
+    let second = runs_text(header.pointer("/secondSubtitle/runs"));
+    let count_text = second
+        .iter()
+        .rev()
+        .nth(2)
+        .filter(|t| parse_leading_count(t).is_some())
+        .or_else(|| second.iter().find(|t| parse_leading_count(t).is_some()))
+        .cloned();
+    RawPlaylistHeader {
+        title: Some(title.trim().to_string()).filter(|t| !t.is_empty()),
+        count_text,
+    }
+}
+
 pub(crate) fn parse_leading_count(text: &str) -> Option<usize> {
     let digits: String = text
         .trim_start()
