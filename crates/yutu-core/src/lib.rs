@@ -24,6 +24,8 @@ pub mod raw_browse;
 #[cfg(feature = "innertube")]
 pub mod raw_lyrics;
 #[cfg(feature = "innertube")]
+pub mod raw_queue;
+#[cfg(feature = "innertube")]
 pub mod raw_search;
 #[cfg(all(test, feature = "innertube"))]
 mod raw_search_tests;

@@ -10,6 +10,8 @@
   no longer stops at the first 100.
 - An imported YouTube Music playlist keeps its original name when you
   leave the name empty, instead of "Imported playlist".
+- Songs that showed no length (some search results, artist top songs
+  and playlist rows) now show it without having to play them first.
 
 ## 0.2.1 - 2026-11-17
 
