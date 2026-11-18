@@ -560,22 +560,31 @@ impl InnertubeBackend {
     pub async fn playlist_details_count(&self, playlist_id: &str) -> Result<usize, String> {
         // Same `browse` endpoint as track reads: `VL`-prefixed id.
         let browse = crate::library::browse_playlist_id(playlist_id);
-        let details = match &self.inner {
+        let typed = match &self.inner {
             Inner::Anonymous(client) => client
                 .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
-                .map_err(|e| format!("playlist details failed: {e}"))?,
+                .map_err(|e| format!("playlist details failed: {e}")),
             Inner::Cookie(client) => client
                 .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
-                .map_err(|e| format!("playlist details failed: {e}"))?,
+                .map_err(|e| format!("playlist details failed: {e}")),
             Inner::OAuth(client) => client
                 .get_playlist_details(PlaylistID::from_raw(browse.as_str()))
                 .await
-                .map_err(|e| format!("playlist details failed: {e}"))?,
+                .map_err(|e| format!("playlist details failed: {e}")),
         };
-        parse_leading_count(&details.track_count_text)
-            .ok_or_else(|| format!("no count in {:?}", details.track_count_text))
+        let text = match typed {
+            Ok(details) => details.track_count_text,
+            Err(e) => {
+                crate::app_log::warn("yutu-import", format_args!("{e}, reading header raw"));
+                self.raw_playlist_header(&browse)
+                    .await?
+                    .count_text
+                    .ok_or("playlist details failed: no count in header")?
+            }
+        };
+        parse_leading_count(&text).ok_or_else(|| format!("no count in {text:?}"))
     }
 
     /// All playlists in the user's library (id + title; fetch tracks per
@@ -994,8 +1003,46 @@ impl InnertubeBackend {
                     .await
             }
         }
+        .map_err(|e| format!("playlist details failed: {e}"));
+        match details {
+            Ok(details) => Ok(details.title),
+            Err(e) => {
+                crate::app_log::warn("yutu-import", format_args!("{e}, reading header raw"));
+                self.raw_playlist_header(&browse)
+                    .await?
+                    .title
+                    .ok_or_else(|| "playlist details failed: no title in header".to_string())
+            }
+        }
+    }
+
+    /// Tolerant playlist header read (see [`raw_playlist_header`]): the
+    /// typed details parser rejects whole headers over one missing field
+    /// (observed live: public lists with no author strapline), which
+    /// cost link imports their source title and progress bars their
+    /// total. `browse` is the `VL`-prefixed id.
+    async fn raw_playlist_header(&self, browse: &str) -> Result<RawPlaylistHeader, String> {
+        use ytmapi_rs::query::GetPlaylistDetailsQuery;
+        let query = GetPlaylistDetailsQuery::new(PlaylistID::from_raw(browse));
+        let raw = match &self.inner {
+            Inner::Anonymous(client) => {
+                client
+                    .raw_json_query::<GetPlaylistDetailsQuery>(query)
+                    .await
+            }
+            Inner::Cookie(client) => {
+                client
+                    .raw_json_query::<GetPlaylistDetailsQuery>(query)
+                    .await
+            }
+            Inner::OAuth(client) => {
+                client
+                    .raw_json_query::<GetPlaylistDetailsQuery>(query)
+                    .await
+            }
+        }
         .map_err(|e| format!("playlist details failed: {e}"))?;
-        Ok(details.title)
+        Ok(raw_playlist_header(&raw))
     }
 
     /// Append a video to a YouTube Music playlist you own.
@@ -1674,6 +1721,60 @@ pub(crate) fn deep_find_first_string(value: &serde_json::Value, keys: &[&str]) -
 
 /// Leading integer of a details count text ("248 songs", "1,234
 /// videos"): `None` when no leading number exists.
+/// Title and track-count text of a playlist header, each optional (see
+/// [`InnertubeBackend::raw_playlist_header`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RawPlaylistHeader {
+    pub title: Option<String>,
+    pub count_text: Option<String>,
+}
+
+/// Tolerant header fields from a raw playlist `browse` page. The header
+/// is the responsive header, or the one nested in the editable header
+/// (own playlists). Title = title runs joined; count = the third run
+/// from the end of `secondSubtitle` ("N songs" before " • " and the
+/// duration, as upstream reads it). Missing pieces are `None`.
+pub(crate) fn raw_playlist_header(raw: &str) -> RawPlaylistHeader {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return RawPlaylistHeader::default();
+    };
+    let item = value
+        .pointer("/contents/twoColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents/0");
+    let header = item.and_then(|i| {
+        i.get("musicResponsiveHeaderRenderer").or_else(|| {
+            i.pointer(
+                "/musicEditablePlaylistDetailHeaderRenderer/header/musicResponsiveHeaderRenderer",
+            )
+        })
+    });
+    let Some(header) = header else {
+        return RawPlaylistHeader::default();
+    };
+    let runs_text = |runs: Option<&serde_json::Value>| -> Vec<String> {
+        runs.and_then(serde_json::Value::as_array)
+            .map(|runs| {
+                runs.iter()
+                    .filter_map(|r| r.get("text").and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let title = runs_text(header.pointer("/title/runs")).concat();
+    let second = runs_text(header.pointer("/secondSubtitle/runs"));
+    let count_text = second
+        .iter()
+        .rev()
+        .nth(2)
+        .filter(|t| parse_leading_count(t).is_some())
+        .or_else(|| second.iter().find(|t| parse_leading_count(t).is_some()))
+        .cloned();
+    RawPlaylistHeader {
+        title: Some(title.trim().to_string()).filter(|t| !t.is_empty()),
+        count_text,
+    }
+}
+
 pub(crate) fn parse_leading_count(text: &str) -> Option<usize> {
     let digits: String = text
         .trim_start()
