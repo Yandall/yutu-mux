@@ -43,11 +43,13 @@ unic-langid = { version = "0.9", features = ["macros"] }
 # Default is the real app: live search/radio + scrobble submission + mpv
 # playback (seek/position/EQ). `--no-default-features` is the offline
 # compile check (empty states, rodio-only).
-default = ["submit", "innertube", "mpv", "lyrics", "update"]
+default = ["submit", "innertube", "mpv", "lyrics", "update", "romaji"]
 innertube = ["yutu-core/innertube", "dep:rfd"]
 submit = ["yutu-core/submit"]
 mpv = ["yutu-player/mpv"]
 lyrics = ["yutu-core/lyrics"]
+# Romaji under Japanese lyrics (dictionary downloaded on first enable).
+romaji = ["yutu-core/romaji"]
 # Self-update check (About section + startup probe): own yutu-core
 # feature so `--no-default-features` stays HTTP-free.
 update = ["yutu-core/update"]

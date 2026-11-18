@@ -29,6 +29,7 @@ pub mod raw_queue;
 pub mod raw_search;
 #[cfg(all(test, feature = "innertube"))]
 mod raw_search_tests;
+pub mod romaji;
 pub mod scrobble;
 pub mod secure_store;
 pub mod security;

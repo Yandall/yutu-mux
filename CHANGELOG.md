@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Romaji under Japanese lyrics, so you can sing along without reading
+  Japanese: turn it on in Settings or with the button by the lyrics.
+- The first time romaji is turned on, a Japanese dictionary is
+  downloaded once (about 13 MB).
+
 ### Changed
 
 - Uses noticeably less memory (about a fifth less in a typical

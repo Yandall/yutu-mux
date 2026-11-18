@@ -42,7 +42,8 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 - MIT / MIT OR Apache-2.0: `iced`, `tokio`, `reqwest`, `serde`,
   `serde_json`, `rusqlite` (SQLite itself is public domain),
-  `ytmapi-rs`, `resvg`, `fontdb`, `mimalloc`, `num-traits`, `zbus`.
+  `ytmapi-rs`, `resvg`, `fontdb`, `mimalloc`, `num-traits`, `zbus`,
+  `lindera` (Japanese lyrics romaji).
 - BSD-3-Clause: `tiny-skia`.
 - Apache-2.0: `cpal`.
 - MPL-2.0 (weak file-level copyleft, notice only): `symphonia-*`
@@ -58,6 +59,14 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 - The `--no-default-features` build (rodio-only) is GPL-free.
 - Install: `sudo pacman -S mpv` / `sudo apt install libmpv-dev` /
   `brew install mpv`.
+
+## Runtime data: IPADIC (NAIST license, downloaded on demand)
+
+- Romaji under Japanese lyrics uses the IPADIC dictionary
+  (mecab-ipadic 2.7.0, Copyright 2000-2003 Nara Institute of Science
+  and Technology, permissive NAIST/ICOT terms). It is not bundled: the
+  app downloads it (pinned SHA-256) only when the user turns romaji on,
+  and builds it into its data dir (`romaji/`).
 
 ## Runtime sidecar: yt-dlp (Unlicense, unlinked)
 
