@@ -1425,6 +1425,95 @@ where
     failed
 }
 
+/// Playlist track pages as raw JSON, paged with a tolerant
+/// continuation reader.
+///
+/// Upstream's `raw_json_stream` finds the next page through the typed
+/// parser, so a page it rejects (one odd row) also loses the
+/// continuation token and every raw reader stopped at the first 100
+/// rows. This query wraps the same `browse` request but reads the token
+/// straight from the page JSON ([`playlist_continuation_token`]).
+struct TolerantPlaylistQuery<'q, 'a>(&'q ytmapi_rs::query::GetPlaylistTracksQuery<'a>);
+
+/// One raw playlist page (see [`TolerantPlaylistQuery`]).
+#[derive(Debug)]
+struct RawPlaylistPage(String);
+
+impl ytmapi_rs::query::PostQuery for TolerantPlaylistQuery<'_, '_> {
+    fn header(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.0.header()
+    }
+    fn params(&self) -> Vec<(&str, std::borrow::Cow<'_, str>)> {
+        self.0.params()
+    }
+    fn path(&self) -> &str {
+        self.0.path()
+    }
+}
+
+impl<A: ytmapi_rs::auth::AuthToken> ytmapi_rs::query::Query<A> for TolerantPlaylistQuery<'_, '_> {
+    type Output = RawPlaylistPage;
+    type Method = ytmapi_rs::query::PostMethod;
+}
+
+impl<'q, 'a> ytmapi_rs::continuations::ParseFromContinuable<TolerantPlaylistQuery<'q, 'a>>
+    for RawPlaylistPage
+{
+    fn parse_from_continuable(
+        p: ytmapi_rs::ProcessedResult<TolerantPlaylistQuery<'q, 'a>>,
+    ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
+        Ok(raw_page_with_token(p.source))
+    }
+    fn parse_continuation(
+        p: ytmapi_rs::ProcessedResult<
+            ytmapi_rs::query::GetContinuationsQuery<'_, TolerantPlaylistQuery<'q, 'a>>,
+        >,
+    ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
+        Ok(raw_page_with_token(p.source))
+    }
+}
+
+fn raw_page_with_token(
+    source: String,
+) -> (
+    RawPlaylistPage,
+    Option<ytmapi_rs::common::ContinuationParams<'static>>,
+) {
+    use ytmapi_rs::common::YoutubeID as _;
+    let token =
+        playlist_continuation_token(&source).map(ytmapi_rs::common::ContinuationParams::from_raw);
+    (RawPlaylistPage(source), token)
+}
+
+/// Next-page token of one raw playlist page: the trailing
+/// `continuationItemRenderer` row (first page shelf or appended
+/// continuation items), else the legacy shelf `nextContinuationData`.
+/// `None` on the last page or unparseable JSON.
+pub(crate) fn playlist_continuation_token(raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let shelf = value.pointer(
+        "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer",
+    );
+    let rows = shelf
+        .and_then(|s| s.get("contents"))
+        .or_else(|| {
+            value.pointer(
+                "/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems",
+            )
+        })
+        .and_then(serde_json::Value::as_array);
+    rows.and_then(|rows| rows.last())
+        .and_then(|last| {
+            last.pointer("/continuationItemRenderer/continuationEndpoint/continuationCommand/token")
+        })
+        .or_else(|| {
+            shelf.and_then(|s| s.pointer("/continuations/0/nextContinuationData/continuation"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
 /// Raw pages mapped tolerantly + reported as each arrives, deduping
 /// against typed-mapped rows kept from the failed pass. Returns true on
 /// transport error (the caller errors only when nothing survived).
@@ -1439,12 +1528,13 @@ where
     F: FnMut(usize) + Send,
 {
     use futures::StreamExt as _;
-    let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
+    let tolerant = TolerantPlaylistQuery(query);
+    let stream = client.stream(&tolerant);
     futures::pin_mut!(stream);
     let mut failed = false;
     while let Some(page) = stream.next().await {
         match page {
-            Ok(json) => {
+            Ok(RawPlaylistPage(json)) => {
                 for t in tolerant_playlist_rows(&json) {
                     if !out.iter().any(|x| x.id == t.id) {
                         out.push(t);
@@ -1477,12 +1567,13 @@ where
     A: ytmapi_rs::auth::AuthToken,
 {
     use futures::StreamExt as _;
-    let stream = client.raw_json_stream::<ytmapi_rs::query::GetPlaylistTracksQuery>(query);
+    let tolerant = TolerantPlaylistQuery(query);
+    let stream = client.stream(&tolerant);
     futures::pin_mut!(stream);
     let mut failed = false;
     while let Some(page) = stream.next().await {
         match page {
-            Ok(json) => {
+            Ok(RawPlaylistPage(json)) => {
                 for pair in extract_set_video_pairs(&json) {
                     if !out.contains(&pair) {
                         out.push(pair);

@@ -469,6 +469,47 @@ fn tolerant_rows_parse_continuation_pages_and_reject_garbage() {
     assert!(tolerant_playlist_rows("{}").is_empty());
 }
 
+/// Raw readers page past 100 rows even when the typed parser rejects a
+/// row: the next-page token comes straight from the page JSON.
+#[test]
+fn continuation_token_reads_first_and_appended_pages() {
+    let cont_row = |t: &str| {
+        serde_json::json!({"continuationItemRenderer": {"continuationEndpoint":
+            {"continuationCommand": {"token": t}}}})
+    };
+    let first = serde_json::json!({"contents": {"twoColumnBrowseResultsRenderer": {"secondaryContents":
+    {"sectionListRenderer": {"contents": [{"musicPlaylistShelfRenderer": {"contents": [
+        {"musicResponsiveListItemRenderer": {}},
+        cont_row("PAGE2"),
+    ]}}]}}}}});
+    assert_eq!(
+        playlist_continuation_token(&first.to_string()).as_deref(),
+        Some("PAGE2")
+    );
+    let appended = serde_json::json!({"onResponseReceivedActions": [{"appendContinuationItemsAction":
+        {"continuationItems": [{"musicResponsiveListItemRenderer": {}}, cont_row("PAGE3")]}}]});
+    assert_eq!(
+        playlist_continuation_token(&appended.to_string()).as_deref(),
+        Some("PAGE3")
+    );
+    // Last page: rows but no trailing continuation row.
+    let last = serde_json::json!({"onResponseReceivedActions": [{"appendContinuationItemsAction":
+        {"continuationItems": [{"musicResponsiveListItemRenderer": {}}]}}]});
+    assert_eq!(playlist_continuation_token(&last.to_string()), None);
+    // Legacy shelf continuation data.
+    let legacy = serde_json::json!({"contents": {"twoColumnBrowseResultsRenderer": {"secondaryContents":
+    {"sectionListRenderer": {"contents": [{"musicPlaylistShelfRenderer": {
+        "contents": [{"musicResponsiveListItemRenderer": {}}],
+        "continuations": [{"nextContinuationData": {"continuation": "OLD"}}],
+    }}]}}}}});
+    assert_eq!(
+        playlist_continuation_token(&legacy.to_string()).as_deref(),
+        Some("OLD")
+    );
+    assert_eq!(playlist_continuation_token("not json"), None);
+    assert_eq!(playlist_continuation_token("{}"), None);
+}
+
 #[test]
 fn library_status_split_covers_like_dislike_indifferent() {
     use ytmapi_rs::common::LikeStatus;

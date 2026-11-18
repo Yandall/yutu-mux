@@ -6,6 +6,8 @@
 
 - macOS: text on non-Retina screens is drawn slightly heavier, so small
   and grey text is no longer thin and blurry.
+- Importing or syncing a YouTube Music playlist with more than 100 songs
+  no longer stops at the first 100.
 
 ## 0.2.1 - 2026-11-17
 
