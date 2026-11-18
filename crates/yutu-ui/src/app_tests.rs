@@ -11766,7 +11766,7 @@ fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
     ];
     let center = MINI_LYRICS_H / 2.0;
     // Mid-song: the current line sits on the picker's center band.
-    let b = wheel_layout(&visible, Some(2));
+    let b = wheel_layout(&visible, &[], Some(2));
     let cur = b.iter().find(|l| l.bold).unwrap();
     assert_eq!(cur.index, 2);
     assert!((cur.top + cur.height / 2.0 - center).abs() < 0.5);
@@ -11775,10 +11775,10 @@ fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
     assert!(alpha(1) < 1.0 && alpha(0) < alpha(1));
     assert!(b.windows(2).all(|w| w[0].top < w[1].top));
     // The first line of a song stays inside the ticker padding.
-    let start = wheel_layout(&visible, Some(0));
+    let start = wheel_layout(&visible, &[], Some(0));
     assert!(start.first().unwrap().top >= 16.0 - 0.5);
     // Glide from line 1 to line 2: p = 0 is the old wheel, p = 1 the new.
-    let a = wheel_layout(&visible, Some(1));
+    let a = wheel_layout(&visible, &[], Some(1));
     let at_start = wheel_frame(&a, &b, 0.0);
     let at_end = wheel_frame(&a, &b, 1.0);
     for la in &a {
@@ -11804,7 +11804,7 @@ fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
         assert!(f.alpha.abs() < 0.01);
     }
     // Before the first verse: a centered block of upcoming lines.
-    let before = wheel_layout(&visible, None);
+    let before = wheel_layout(&visible, &[], None);
     assert!(before.iter().all(|l| !l.bold));
     let top = before.first().unwrap().top;
     let bottom = before.last().map(|l| l.top + l.height).unwrap();
@@ -12007,13 +12007,13 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
     // A long current verse is never cut: whole, bold, smaller than
     // the 21px of a short verse, and the layout fits the ticker.
     let visible = vec![long, long, long, "short", long];
-    let lines = ticker_lines(&visible, Some(2));
+    let lines = ticker_lines(&visible, &[], Some(2));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
     assert_eq!(cur.0, long, "the verse stays whole");
     assert!(cur.1 < 21.0);
     assert!(ticker_content_height(&lines) <= ticker_budget());
     // Neighbors: one line each, ellipsized when too wide.
-    for (text, size, d) in lines.iter().filter(|l| l.2 != 0) {
+    for (text, size, d, _) in lines.iter().filter(|l| l.2 != 0) {
         assert_eq!(*size, ticker_neighbor_size(*d));
         assert_eq!(fit_lines(text, w, *size, 1), *text, "{d} fits one line");
         if text != "short" {
@@ -12022,19 +12022,19 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
     }
     // A much longer verse gives up neighbor lines instead of words.
     let visible = vec![long, long, longer, long, long];
-    let lines = ticker_lines(&visible, Some(2));
+    let lines = ticker_lines(&visible, &[], Some(2));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
     assert_eq!(cur.0, longer, "the verse stays whole");
     assert!(lines.len() < 5, "fewer neighbors make room");
     assert!(ticker_content_height(&lines) <= ticker_budget());
     // A short current verse keeps the full size and all five slots.
     let visible = vec![long, long, long, "short", long];
-    let lines = ticker_lines(&visible, Some(3));
+    let lines = ticker_lines(&visible, &[], Some(3));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
     assert_eq!((cur.0.as_str(), cur.1), ("short", 21.0));
     assert_eq!(lines.len(), 4, "index 3 of 5: two above, one below");
     // Before the first verse: upcoming lines only, never panics.
-    assert_eq!(ticker_lines(&visible, None).len(), 3);
+    assert_eq!(ticker_lines(&visible, &[], None).len(), 3);
     // Rendering long lines never panics (synced and plain).
     let mut s = synced_state(6.0);
     let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
@@ -12179,6 +12179,8 @@ fn mini_player_snapshots() {
         ("mini-windows-lyrics", true, true, MiniPlatform::Windows),
         // A third of the way through a wheel glide to the next line.
         ("mini-wheel-glide", false, true, MiniPlatform::Hyprland),
+        // Japanese verses with romaji under each (the option on).
+        ("mini-romaji", false, true, MiniPlatform::Hyprland),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -12197,6 +12199,15 @@ fn mini_player_snapshots() {
                 "carry everything we could not say before the river took the words away",
                 "Hold the river, hold it steady, hold it till the morning pulls us in",
                 "till the morning pulls us in",
+            ]
+        } else if name == "mini-romaji" {
+            [
+                "夜に駆ける",
+                "沈むように溶けてゆくように",
+                "二人だけの空が広がる夜に",
+                "Oh yeah",
+                "僕はずっと君を待っていた",
+                "夢ならばどれほどよかったでしょう",
             ]
         } else if name == "mini-long-lyrics" || name == "mini-plain-lyrics" {
             [
@@ -12243,6 +12254,19 @@ fn mini_player_snapshots() {
                     instrumental: false,
                 },
             );
+        }
+        if name == "mini-romaji" {
+            for (v, r) in verses.iter().zip([
+                Some("yoru ni kakeru"),
+                Some("shizumu you ni toketeyuku you ni"),
+                Some("futari dake no sora ga hirogaru yoru ni"),
+                None,
+                Some("boku wa zutto kimi o matteita"),
+                Some("yume naraba dorehodo yokatta deshou"),
+            ]) {
+                s.romaji_lines.insert((*v).into(), r.map(Into::into));
+            }
+            s.lyrics_romaji = true;
         }
         // A third of the way in, on the third verse.
         s.position_secs = 67.0;
@@ -12521,4 +12545,50 @@ fn enabling_romaji_starts_setup_once() {
     let _ = s.update(Message::SetLyricsRomaji(false));
     let _ = s.update(Message::SetLyricsRomaji(true));
     assert_eq!(s.romaji_setup, RomajiSetup::Preparing);
+}
+
+#[test]
+fn mini_ticker_fits_romaji_under_each_verse() {
+    use crate::mini_player::{
+        ticker_budget, ticker_content_height, ticker_lines, wheel_frame, wheel_layout,
+        MINI_LYRICS_H,
+    };
+    let visible = [
+        "夜に駆ける",
+        "沈むように",
+        "溶けてゆくように",
+        "Oh yeah",
+        "僕は君を",
+    ];
+    let romaji = [
+        Some("yoru ni kakeru"),
+        Some("shizumu you ni"),
+        Some("toketeyuku you ni"),
+        None,
+        Some("boku wa kimi o"),
+    ];
+    let plain = ticker_lines(&visible, &[], Some(2));
+    let lines = ticker_lines(&visible, &romaji, Some(2));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!(cur.0, "溶けてゆくように", "the verse stays whole");
+    assert_eq!(cur.3.as_deref(), Some("toketeyuku you ni"));
+    assert!(ticker_content_height(&lines) <= ticker_budget());
+    assert!(lines.len() <= plain.len(), "romaji takes neighbor room");
+    // English neighbors get no second line.
+    assert!(lines
+        .iter()
+        .filter(|l| l.0 == "Oh yeah")
+        .all(|l| l.3.is_none()));
+    // The wheel slot grows with the romaji and stays centered.
+    let with = wheel_layout(&visible, &romaji, Some(2));
+    let without = wheel_layout(&visible, &[], Some(2));
+    let h = |w: &[crate::mini_player::WheelLine]| w.iter().find(|l| l.bold).unwrap().height;
+    assert!(h(&with) > h(&without));
+    let c = with.iter().find(|l| l.bold).unwrap();
+    assert!((c.top + c.height / 2.0 - MINI_LYRICS_H / 2.0).abs() < 0.5);
+    // A glide carries the romaji with its line.
+    let a = wheel_layout(&visible, &romaji, Some(1));
+    let mid = wheel_frame(&a, &with, 0.5);
+    let l1 = mid.iter().find(|l| l.index == 1).unwrap();
+    assert_eq!(l1.romaji.as_deref(), Some("shizumu you ni"));
 }

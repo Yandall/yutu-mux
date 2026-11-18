@@ -180,8 +180,10 @@
   (pinned SHA-256) and builds it with lindera into `<data>/romaji/`.
   Romaji is computed when lyrics land, never in `view`. Songs need
   kana to count as Japanese (kanji-only reads as Chinese); lines
-  without Japanese get no romaji. Lyrics page + drawer only (the mini
-  ticker shows the original); `lyric_row_h` counts the romaji line.
+  without Japanese get no romaji. Every lyrics view shows it (page,
+  drawer, mini ticker); `lyric_row_h` and the ticker fit
+  (`ticker_slot_height`) count the romaji line, so the mini wheel
+  drops neighbors before it would cut a verse.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in
