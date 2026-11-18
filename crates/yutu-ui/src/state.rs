@@ -1106,6 +1106,12 @@ pub enum Message {
         requested: Vec<String>,
         tracks: Vec<Track>,
     },
+    /// Length probe landed: `found` holds `(id, seconds)` for the ids
+    /// the server answered; the rest of `requested` cool down.
+    DurationsFetched {
+        requested: Vec<String>,
+        found: Vec<(String, u32)>,
+    },
 }
 
 /// Self-update install phase (modal progress; `Idle` the rest of the

@@ -10505,6 +10505,33 @@ fn stored_rows_borrow_the_catalog_length_and_unknown_is_blank() {
 }
 
 #[test]
+fn lengthless_search_rows_get_probed_and_filled() {
+    let mut s = test_state();
+    let mut a = mk_track("dur-a", "Holy Thunderforce", "Rhapsody");
+    a.duration_secs = 0;
+    let mut b = mk_track("dur-b", "Blocked", "X");
+    b.duration_secs = 0;
+    let known = mk_track("dur-c", "Known", "Y");
+    s.all_results.tracks = vec![a.clone(), b.clone(), known];
+    s.route = Route::Search;
+    // Only rows with no known length are asked for, once each.
+    assert_eq!(s.duration_candidates(), vec!["dur-a", "dur-b"]);
+    s.duration_probing
+        .extend(["dur-a".to_string(), "dur-b".to_string()]);
+    assert!(s.duration_candidates().is_empty());
+    s.apply_durations(
+        vec!["dur-a".into(), "dur-b".into()],
+        vec![("dur-a".into(), 289)],
+    );
+    // The answered row shows its length; the silent one cools down
+    // instead of being re-asked on every scan.
+    assert_eq!(s.track_secs(&a), 289);
+    assert_eq!(s.track_secs(&b), 0);
+    assert!(s.duration_probing.is_empty());
+    assert!(s.duration_candidates().is_empty());
+}
+
+#[test]
 fn playback_teaches_a_missing_length_once() {
     let mut s = test_state();
     let mut video = mk_track("len-3", "Video", "B");

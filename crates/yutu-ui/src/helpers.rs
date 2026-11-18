@@ -165,6 +165,8 @@ pub(crate) const SEARCH_CACHE_CAP: usize = 30;
 /// chaining re-scans the visible screenful on every arrival, so without
 /// this a permanently failing URL or video would refetch in a loop.
 pub(crate) const FAILED_COOLDOWN_SECS: u64 = 120;
+/// Seconds between scans for rows missing a length (Tick-driven).
+pub(crate) const DURATION_SCAN_SECS: u64 = 2;
 
 /// Normalize a query for cache keys (case, edges, inner runs).
 pub(crate) fn search_cache_key(query: &str) -> String {

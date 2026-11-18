@@ -465,6 +465,14 @@ pub struct AppState {
     /// Ids with a metadata probe in flight (dedups lazy batches
     /// across navigations and ticks: no repeat fetch while pending).
     pub(crate) hydrating: HashSet<String>,
+    /// Ids with a length probe in flight (rows from sources that carry
+    /// no duration: see [`Self::duration_tasks`]).
+    pub(crate) duration_probing: HashSet<String>,
+    /// Ids whose length probe answered nothing, with the instant
+    /// (blocked or live videos): not re-probed for a cooldown.
+    pub(crate) duration_cooldown: HashMap<String, std::time::Instant>,
+    /// Last length scan (Tick throttle: the scan walks whole lists).
+    pub(crate) duration_scan_at: Option<std::time::Instant>,
     /// First Tick after launch runs the Home lazy batch (startup
     /// itself does zero network so the window appears instantly).
     pub(crate) lazy_init_done: bool,
