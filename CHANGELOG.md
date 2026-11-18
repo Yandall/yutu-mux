@@ -10,6 +10,10 @@
   no longer stops at the first 100.
 - An imported YouTube Music playlist keeps its original name when you
   leave the name empty, instead of "Imported playlist".
+- Imported YouTube Music playlists swap music videos for their song
+  versions again, including more loosely titled uploads.
+- Songs from imported or synced YouTube Music playlists show their real
+  album and duration (the album showed the song length).
 
 ## 0.2.1 - 2026-11-17
 
