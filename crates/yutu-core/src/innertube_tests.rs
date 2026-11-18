@@ -1259,3 +1259,26 @@ fn raw_playlist_header_reads_title_and_count_without_author() {
     assert_eq!(raw_playlist_header("{}"), RawPlaylistHeader::default());
     assert_eq!(raw_playlist_header("nope"), RawPlaylistHeader::default());
 }
+
+/// Current pages carry the video type in the music config, not on the
+/// endpoint: music videos must still read as videos so imports swap them.
+#[test]
+fn tolerant_row_reads_music_config_video_type() {
+    let row = |kind: &str| {
+        serde_json::json!({"musicResponsiveListItemRenderer": {
+            "flexColumns": [
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Song"}]}}},
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Artist"}]}}},
+            ],
+            "overlay": {"musicItemThumbnailOverlayRenderer": {"content": {"musicPlayButtonRenderer":
+                {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "vid12345678",
+                    "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig":
+                        {"musicVideoType": kind}}}}}}}},
+        }})
+    };
+    let is_video = |kind: &str| tolerant_row_to_track(&row(kind)).map(|t| t.is_video);
+    assert_eq!(is_video("MUSIC_VIDEO_TYPE_OMV"), Some(true));
+    assert_eq!(is_video("MUSIC_VIDEO_TYPE_UGC"), Some(true));
+    assert_eq!(is_video("MUSIC_VIDEO_TYPE_ATV"), Some(false));
+    assert_eq!(is_video("MUSIC_VIDEO_TYPE_PODCAST_EPISODE"), None);
+}

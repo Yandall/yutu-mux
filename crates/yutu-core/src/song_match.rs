@@ -64,15 +64,44 @@ pub fn clean_channel(channel: &str) -> String {
 
 /// Artist + title a video most likely stands for. Video titles commonly
 /// read `Artist - Song (Official Video)`: the left side wins as artist
-/// then; otherwise the cleaned channel name is the artist.
+/// then (see [`split_artist_title`] for the accepted separators);
+/// otherwise the cleaned channel name is the artist.
 pub fn video_artist_title(video: &Track) -> (String, String) {
-    if let Some((left, right)) = video.title.split_once(" - ") {
-        let (left, right) = (left.trim(), right.trim());
-        if !left.is_empty() && !right.is_empty() {
-            return (left.to_string(), right.to_string());
+    split_artist_title(&video.title)
+        .unwrap_or_else(|| (clean_channel(&video.artist), video.title.trim().to_string()))
+}
+
+/// `Artist <sep> Song` split of a video title, first separator that
+/// leaves both sides non-empty. Spaced dashes and `~`, `|`, `:` first;
+/// tight dashes (`Iron Maiden-The Trooper`, `System Of A Down- X`) only
+/// when one side has a space, so `Spider-Man` stays one word. Asides on
+/// the artist side (`[HQ] Powerwolf`) are dropped.
+fn split_artist_title(title: &str) -> Option<(String, String)> {
+    const SPACED: [&str; 7] = [" - ", " – ", " — ", " ~ ", " | ", ": ", " -- "];
+    const TIGHT: [&str; 3] = ["- ", " -", "-"];
+    let pick = |sep: &str, tight: bool| {
+        let (left, right) = title.split_once(sep)?;
+        let left = strip_asides(left);
+        let right = right.trim();
+        if left.is_empty() || right.is_empty() {
+            return None;
         }
-    }
-    (clean_channel(&video.artist), video.title.trim().to_string())
+        if tight && sep == "-" && !left.contains(' ') && !right.contains(' ') {
+            return None;
+        }
+        Some((left, right.to_string()))
+    };
+    SPACED
+        .iter()
+        .find_map(|sep| pick(sep, false))
+        .or_else(|| TIGHT.iter().find_map(|sep| pick(sep, true)))
+}
+
+/// Matching form of a title: accents folded and `&` read as `and`
+/// (`Girls & Boys` is the song of the `Girls and Boys` video). Titles
+/// only: in artist lists `&` joins names, as `,` does.
+fn match_form(s: &str) -> String {
+    fold_accents(s).replace('&', " and ")
 }
 
 /// Song search text for a video (`artist title`, asides kept out so the
@@ -157,20 +186,22 @@ fn best_match<'a>(
     candidates: impl Iterator<Item = &'a Track>,
     allow_videos: bool,
 ) -> Option<&'a Track> {
-    let want_lower = fold_accents(&want_title.to_lowercase());
+    let want_lower = match_form(&want_title.to_lowercase());
     let no_artist = queries.iter().all(|(a, _)| a.trim().is_empty());
     // Accent-blind on both sides: catalogs disagree on diacritics
     // ("Olvidarás" vs "Olvidaras", "Colón" vs "Colon"), and the scorer
     // would read those as different words.
     let queries: Vec<(String, String)> = queries
         .iter()
-        .map(|(a, t)| (fold_accents(a), fold_accents(t)))
+        .map(|(a, t)| (fold_accents(a), match_form(t)))
         .collect();
     let min = if no_artist { 100 } else { SWAP_MIN_SCORE };
     candidates
         .filter(|c| !c.id.is_empty() && (allow_videos || !c.is_video))
         .filter(|c| {
-            let got = fold_accents(&c.title.to_lowercase());
+            // Markers count on the artist too: karaoke and cover
+            // catalogs tag the artist ("The Rolling Stones (Karaoke)").
+            let got = match_form(&format!("{} {}", c.title, c.artist).to_lowercase());
             !VERSION_MARKERS
                 .iter()
                 .any(|m| has_word(&got, m) && !has_word(&want_lower, m))
@@ -182,7 +213,7 @@ fn best_match<'a>(
             } else {
                 (c.artist.clone(), c.title.clone())
             };
-            let (artist, title) = (fold_accents(&artist), fold_accents(&title));
+            let (artist, title) = (fold_accents(&artist), match_form(&title));
             let candidate = MatchCandidate {
                 track_name: &title,
                 artist_name: &artist,
@@ -637,6 +668,82 @@ mod tests {
         let bare = row("Bohemian Rhapsody", "", 0);
         let c = [t("q", "Bohemian Rhapsody", "Queen", 355, false)];
         assert_eq!(best_foreign_match(&bare, &c, false).unwrap().id, "q");
+    }
+
+    #[test]
+    fn loose_separators_and_ampersands_still_match() {
+        let song = |id, title: &str, artist: &str, secs| t(id, title, artist, secs, false);
+        let cases = [
+            (
+                t("v1", "Iron Maiden-The Trooper", "Imperio Metal", 253, true),
+                song("x1", "The Trooper", "Iron Maiden", 253),
+                "Iron Maiden The Trooper",
+            ),
+            (
+                t("v2", "System Of A Down- X", "2azaz", 119, true),
+                song("x2", "X", "System Of A Down", 119),
+                "System Of A Down X",
+            ),
+            (
+                t("v3", "Black Sabbath ~ War Pigs", "Someone", 475, true),
+                song("x3", "War Pigs", "Black Sabbath", 470),
+                "Black Sabbath War Pigs",
+            ),
+            (
+                t(
+                    "v4",
+                    "Metallica: One (Official Music Video)",
+                    "Metallica",
+                    465,
+                    true,
+                ),
+                song("x4", "One", "Metallica", 448),
+                "Metallica One",
+            ),
+            (
+                t(
+                    "v5",
+                    "[HQ] Powerwolf - Christ and Combat [Lyrics]",
+                    "Natchan",
+                    220,
+                    true,
+                ),
+                song("x5", "Christ & Combat", "Powerwolf", 220),
+                "Powerwolf Christ and Combat",
+            ),
+            (
+                t("v6", "Girls and Boys", "Blur", 254, true),
+                song("x6", "Girls & Boys", "Blur", 260),
+                "Blur Girls and Boys",
+            ),
+        ];
+        for (video, want, query) in cases {
+            assert_eq!(song_query(&video), query);
+            let got = best_song_match(&video, std::slice::from_ref(&want));
+            assert_eq!(
+                got.map(|t| t.id.as_str()),
+                Some(want.id.as_str()),
+                "{}",
+                video.title
+            );
+        }
+        // A karaoke catalog tags the artist, not the title.
+        let v = t("v9", "Paint It, Black", "The Rolling Stones", 227, true);
+        let karaoke = [song(
+            "x9",
+            "Paint It Black",
+            "The Rolling Stones (Karaoke)",
+            227,
+        )];
+        assert!(best_song_match(&v, &karaoke).is_none());
+        // A hyphenated word is not an artist split.
+        let v = t("v7", "Spider-Man", "Danny Elfman", 200, true);
+        assert_eq!(song_query(&v), "Danny Elfman Spider-Man");
+        // A different song sharing a word is still rejected now that
+        // durations are known ("I Can Talk" is not "Talk").
+        let v = t("v8", "Two Door Cinema Club - I Can Talk", "A M", 178, true);
+        let other = [song("x8", "Talk", "Two Door Cinema Club", 265)];
+        assert!(best_song_match(&v, &other).is_none());
     }
 
     #[test]
