@@ -2787,12 +2787,7 @@ impl AppState {
                                 .results
                                 .albums
                                 .iter()
-                                .map(|a| {
-                                    let id = a.id.clone();
-                                    iced::widget::mouse_area(self.album_card(a))
-                                        .on_right_press(Message::OpenAlbumMenu(id))
-                                        .into()
-                                })
+                                .map(|a| self.album_card(a))
                                 .collect();
                             let list: iced::Element<'_, Message> = if cards.is_empty() {
                                 text(self.language.no_albums_for(&query))
@@ -3334,7 +3329,7 @@ impl AppState {
                     tracks
                         .iter()
                         .enumerate()
-                        .map(|(i, t)| self.numbered_track_row("album", t, i + 1, &play))
+                        .map(|(i, t)| self.album_track_row(t, i + 1, &play))
                         .collect()
                 };
                 let meta = if year.is_empty() {
@@ -3362,6 +3357,14 @@ impl AppState {
                                     self.language.shuffle_label(),
                                     Message::PlayAllShuffled
                                 ),
+                                iced::widget::button(ctrl_box(btn_icon(
+                                    "ellipsis",
+                                    18.0,
+                                    iced::Color::WHITE
+                                )))
+                                .style(icon_hover)
+                                .on_press(Message::OpenAlbumMenu(id.clone()))
+                                .padding(11),
                             ]
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center)
@@ -3716,6 +3719,146 @@ impl AppState {
 
     /// Search popup content, if the gate holds (window-level layer above
     /// the drawer; dismissed by scrim, Esc, navigation, or any action).
+    /// Menu row that opens the playlist flyout to the side (track and
+    /// album menus): hover opens it (no click needed), the Tick grace
+    /// closes it once both the toggle and the panel are cold. `key`
+    /// names the owning menu (track id or album flyout key).
+    pub(crate) fn playlist_flyout_toggle(
+        &self,
+        icon_name: &'static str,
+        key: String,
+        label: String,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{container, mouse_area, row};
+        use iced::Fill;
+        let open = self.submenu_playlists_for.as_deref() == Some(key.as_str());
+        mouse_area(
+            row_button(
+                row![
+                    btn_icon(icon_name, 14.0, iced::Color::WHITE),
+                    btn_text(label, 14).width(Fill),
+                    container(btn_icon("chevron-right", 14.0, MUTED)).padding(iced::Padding {
+                        bottom: 2.0,
+                        ..Default::default()
+                    }),
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .width(Fill)
+                .height(Fill),
+            )
+            .style(if open { selected_row } else { hover_row })
+            .on_press(Message::TogglePlaylistSubmenu(key.clone()))
+            .padding(8)
+            .width(Fill)
+            .height(iced::Length::Fixed(MENU_ROW_H)),
+        )
+        .on_enter(Message::SubmenuTriggerHot(Some(key)))
+        .on_exit(Message::SubmenuTriggerHot(None))
+        .into()
+    }
+
+    /// One playlist row in the flyout: cover, title, and a hint line
+    /// (accent when `marked`, i.e. the song or album is already in it).
+    pub(crate) fn flyout_row(
+        &self,
+        pl_id: &str,
+        pl_title: &str,
+        sub: String,
+        marked: bool,
+        msg: Message,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{column, row, text};
+        use iced::Fill;
+        let mut row_items: Vec<iced::Element<'_, Message>> = Vec::new();
+        if let Some(pl) = self.find_playlist(pl_id) {
+            row_items.push(self.playlist_cover(&pl, 28.0));
+        }
+        row_items.push(
+            column![
+                text(truncate_title(pl_title, 20)).size(13),
+                text(sub)
+                    .size(11)
+                    .color(if marked { ACCENT } else { MUTED }),
+            ]
+            .spacing(1)
+            .width(Fill)
+            .into(),
+        );
+        row_button(
+            row(row_items)
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(hover_row)
+        .on_press(msg)
+        .padding(6)
+        .width(Fill)
+        .into()
+    }
+
+    /// Playlist flyout panel placed beside a menu anchored at
+    /// (`mx`, `my`): docks right of the 300px menu, flipping left when
+    /// there is no room, top-aligned with the toggle row at
+    /// `toggle_idx` (menu top padding 14 + header thumb 56 + gap 8,
+    /// then MENU_ROW_H per row above it, so the anchor cannot drift).
+    pub(crate) fn playlist_flyout_layer<'a>(
+        &'a self,
+        mut fly_rows: Vec<iced::Element<'a, Message>>,
+        mx: f32,
+        my: f32,
+        toggle_idx: usize,
+    ) -> iced::Element<'a, Message> {
+        use iced::widget::{column, container, mouse_area, row, text};
+        use iced::Fill;
+        if fly_rows.is_empty() {
+            fly_rows.push(
+                text(self.language.no_playlists_menu())
+                    .size(12)
+                    .color(MUTED)
+                    .into(),
+            );
+        }
+        let fly_h = ((fly_rows.len() as f32) * 44.0).min(340.0);
+        let flyout: iced::Element<'_, Message> = mouse_area(
+            container(
+                iced::widget::scrollable(column(fly_rows).spacing(2).width(Fill))
+                    .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                    .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("flyout")))
+                    .on_scroll(|v| Message::Scrolled("flyout", v.absolute_offset().y))
+                    .height(iced::Length::Fixed(fly_h))
+                    .width(Fill),
+            )
+            .style(card_bg)
+            .padding(10)
+            .width(iced::Length::Fixed(280.0)),
+        )
+        .on_enter(Message::SubmenuFlyHot(true))
+        .on_exit(Message::SubmenuFlyHot(false))
+        .into();
+        let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
+        let wh = self.window.map(|s| s.height).unwrap_or(800.0);
+        let mx2 = if mx + 300.0 + 8.0 + 280.0 <= ww {
+            mx + 300.0 + 8.0
+        } else {
+            (mx - 280.0 - 8.0).max(0.0)
+        };
+        let header_h = 78.0;
+        let my2 = (my + header_h + toggle_idx as f32 * MENU_ROW_H)
+            .min((wh - fly_h - 16.0).max(0.0))
+            .max(0.0);
+        container(column![
+            iced::widget::Space::new().height(iced::Length::Fixed(my2)),
+            row![
+                iced::widget::Space::new().width(iced::Length::Fixed(mx2)),
+                flyout,
+            ],
+        ])
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }
+
     pub(crate) fn suggest_popup(&self) -> Option<iced::Element<'_, Message>> {
         use iced::widget::{column, container, row, text};
         use iced::Fill;
@@ -4144,39 +4287,12 @@ impl AppState {
                 // Hover opens it (no click needed); the Tick grace
                 // closes it once both the toggle and the panel are
                 // cold. Its index below anchors the flyout height.
-                let sub_id = t.id.clone();
-                let sub_open = self.submenu_playlists_for.as_deref() == Some(t.id.as_str());
                 let toggle_idx = items.len();
-                let sub_id_enter = sub_id.clone();
-                items.push(
-                    mouse_area(
-                        row_button(
-                            row![
-                                btn_icon("queue", 14.0, iced::Color::WHITE),
-                                btn_text(self.language.playlists_toggle(membership.len()), 14)
-                                    .width(Fill),
-                                container(btn_icon("chevron-right", 14.0, MUTED)).padding(
-                                    iced::Padding {
-                                        bottom: 2.0,
-                                        ..Default::default()
-                                    },
-                                ),
-                            ]
-                            .spacing(8)
-                            .align_y(iced::alignment::Vertical::Center)
-                            .width(Fill)
-                            .height(Fill),
-                        )
-                        .style(if sub_open { selected_row } else { hover_row })
-                        .on_press(Message::TogglePlaylistSubmenu(sub_id))
-                        .padding(8)
-                        .width(Fill)
-                        .height(iced::Length::Fixed(MENU_ROW_H)),
-                    )
-                    .on_enter(Message::SubmenuTriggerHot(Some(sub_id_enter)))
-                    .on_exit(Message::SubmenuTriggerHot(None))
-                    .into(),
-                );
+                items.push(self.playlist_flyout_toggle(
+                    "queue",
+                    t.id.clone(),
+                    self.language.playlists_toggle(membership.len()),
+                ));
                 // Playlist adds leave the menu open (multi-add); everything else
                 // closes it via its own handler.
                 let menu = container(
@@ -4231,116 +4347,30 @@ impl AppState {
                 // Tick grace closes it once both sides are cold. The
                 // menu stays open so multi-add keeps working.
                 if self.submenu_playlists_for.as_deref() == Some(t.id.as_str()) {
-                    let mut fly_rows: Vec<iced::Element<'_, Message>> = Vec::new();
-                    for (pl_id, pl_title, in_pl) in &membership {
-                        let msg = if *in_pl {
-                            Message::RemoveFromPlaylist {
-                                playlist_id: pl_id.clone(),
-                                track_id: t.id.clone(),
-                            }
-                        } else {
-                            Message::AddToPlaylist {
-                                playlist_id: pl_id.clone(),
-                                track_id: t.id.clone(),
-                            }
-                        };
-                        let cover = self
-                            .find_playlist(pl_id)
-                            .map(|pl| self.playlist_cover(&pl, 28.0));
-                        let mut row_items: Vec<iced::Element<'_, Message>> = Vec::new();
-                        if let Some(cover) = cover {
-                            row_items.push(cover);
-                        }
-                        row_items.push(
-                            column![
-                                text(truncate_title(pl_title, 20)).size(13),
-                                text(if *in_pl {
-                                    "Tap to remove"
-                                } else {
-                                    "Tap to add"
-                                })
-                                .size(11)
-                                .color(if *in_pl {
-                                    ACCENT
-                                } else {
-                                    MUTED
-                                }),
-                            ]
-                            .spacing(1)
-                            .width(Fill)
-                            .into(),
-                        );
-                        fly_rows.push(
-                            row_button(
-                                row(row_items)
-                                    .spacing(8)
-                                    .align_y(iced::alignment::Vertical::Center),
-                            )
-                            .style(hover_row)
-                            .on_press(msg)
-                            .padding(6)
-                            .width(Fill)
-                            .into(),
-                        );
-                    }
-                    if fly_rows.is_empty() {
-                        fly_rows.push(
-                            text(self.language.no_playlists_menu())
-                                .size(12)
-                                .color(MUTED)
-                                .into(),
-                        );
-                    }
-                    let fly_h = ((fly_rows.len() as f32) * 44.0).min(340.0);
-                    let flyout: iced::Element<'_, Message> = mouse_area(
-                        container(
-                            iced::widget::scrollable(column(fly_rows).spacing(2).width(Fill))
-                                .direction(
-                                    iced::widget::scrollable::Direction::Vertical(slim_bar()),
+                    let fly_rows: Vec<iced::Element<'_, Message>> = membership
+                        .iter()
+                        .map(|(pl_id, pl_title, in_pl)| {
+                            let (sub, msg) = if *in_pl {
+                                (
+                                    self.language.flyout_tap_remove(),
+                                    Message::RemoveFromPlaylist {
+                                        playlist_id: pl_id.clone(),
+                                        track_id: t.id.clone(),
+                                    },
                                 )
-                                .style(move |t, s| {
-                                    slim_scroll_alpha(t, s, self.scroll_opacity("flyout"))
-                                })
-                                .on_scroll(|v| Message::Scrolled("flyout", v.absolute_offset().y))
-                                .height(iced::Length::Fixed(fly_h))
-                                .width(Fill),
-                        )
-                        .style(card_bg)
-                        .padding(10)
-                        .width(iced::Length::Fixed(280.0)),
-                    )
-                    .on_enter(Message::SubmenuFlyHot(true))
-                    .on_exit(Message::SubmenuFlyHot(false))
-                    .into();
-                    let ww = self.window.map(|s| s.width).unwrap_or(1280.0);
-                    let wh = self.window.map(|s| s.height).unwrap_or(800.0);
-                    // Dock right of the menu; flip left when there is no
-                    // room (right-edge menus would bury themselves).
-                    let mx2 = if mx + 300.0 + 8.0 + 280.0 <= ww {
-                        mx + 300.0 + 8.0
-                    } else {
-                        (mx - 280.0 - 8.0).max(0.0)
-                    };
-                    // Top-aligned with the Playlists toggle row: menu top
-                    // padding (14) + header thumb (56) + column gap (8)
-                    // plus the rows above its recorded index. The index
-                    // is measured and every row is MENU_ROW_H by
-                    // construction, so the anchor cannot drift.
-                    let header_h = 78.0;
-                    let my2 = (my + header_h + toggle_idx as f32 * MENU_ROW_H)
-                        .min((wh - fly_h - 16.0).max(0.0))
-                        .max(0.0);
-                    let placed_fly: iced::Element<'_, Message> = container(column![
-                        iced::widget::Space::new().height(iced::Length::Fixed(my2)),
-                        row![
-                            iced::widget::Space::new().width(iced::Length::Fixed(mx2)),
-                            flyout,
-                        ],
-                    ])
-                    .width(Fill)
-                    .height(Fill)
-                    .into();
-                    layers.push(placed_fly);
+                            } else {
+                                (
+                                    self.language.flyout_tap_add(),
+                                    Message::AddToPlaylist {
+                                        playlist_id: pl_id.clone(),
+                                        track_id: t.id.clone(),
+                                    },
+                                )
+                            };
+                            self.flyout_row(pl_id, pl_title, sub, *in_pl, msg)
+                        })
+                        .collect();
+                    layers.push(self.playlist_flyout_layer(fly_rows, mx, my, toggle_idx));
                 }
             }
         }
@@ -4525,17 +4555,16 @@ impl AppState {
         if let Some(menu) = self.coll_menu.clone() {
             let hit: Option<(iced::Element<'_, Message>, String, String)> = match &menu {
                 CollectionMenu::Album(id) => {
-                    self.results.albums.iter().find(|a| &a.id == id).map(|a| {
-                        let sub = match a.year {
-                            Some(y) => self.language.album_sub_year(&a.artist, y),
-                            None => self.language.album_sub(&a.artist),
-                        };
-                        (
-                            self.art_thumb(self.album_cover(a).as_deref(), 56.0),
-                            a.title.clone(),
-                            sub,
-                        )
-                    })
+                    let (title, artist, year) = self.album_menu_info(id);
+                    let sub = match year {
+                        Some(y) => self.language.album_sub_year(&artist, y),
+                        None => self.language.album_sub(&artist),
+                    };
+                    Some((
+                        self.art_thumb(self.album_menu_cover(id).as_deref(), 56.0),
+                        title,
+                        sub,
+                    ))
                 }
                 CollectionMenu::Artist(id) => {
                     self.results.artists.iter().find(|a| &a.id == id).map(|a| {
@@ -4581,23 +4610,43 @@ impl AppState {
                         )
                     }),
             };
+            // Album menus act on the same list the album page shows.
+            let album_menu_tracks: Vec<Track> = match &menu {
+                CollectionMenu::Album(id) => self.album_display_tracks(id),
+                _ => Vec::new(),
+            };
+            let mut album_toggle_idx: Option<usize> = None;
             if let Some((art, title, sub)) = hit {
                 let mut items: Vec<iced::Element<'_, Message>> = Vec::new();
-                match menu {
+                match menu.clone() {
                     CollectionMenu::Album(id) => {
-                        let artist = self
-                            .results
-                            .albums
-                            .iter()
-                            .find(|a| a.id == id)
-                            .map(|a| a.artist.clone())
-                            .unwrap_or_default();
-                        let tracks = self.album_tracks(&id);
+                        let (_, artist, _) = self.album_menu_info(&id);
+                        let tracks = album_menu_tracks.clone();
                         if let Some(seed) = tracks.first().map(|t| t.id.clone()) {
+                            items.push(menu_item(
+                                "play",
+                                self.language.play_label(),
+                                Message::PlayAlbumAt {
+                                    album_id: id.clone(),
+                                    index: 0,
+                                    track_id: seed.clone(),
+                                },
+                            ));
                             items.push(menu_item(
                                 "shuffle",
                                 self.language.shuffle_play(),
                                 Message::PlayAlbumShuffled(id.clone()),
+                            ));
+                            items.push(menu_item(
+                                "plus",
+                                self.language.add_to_queue(),
+                                Message::QueueAlbum(id.clone()),
+                            ));
+                            album_toggle_idx = Some(items.len());
+                            items.push(self.playlist_flyout_toggle(
+                                "list-plus",
+                                Self::album_submenu_key(&id),
+                                self.language.add_to_playlist(),
                             ));
                             items.push(menu_item(
                                 "radio",
@@ -4733,6 +4782,38 @@ impl AppState {
                 .into();
                 layers.push(coll_scrim);
                 layers.push(coll_placed);
+                // Album playlist flyout: same hover/grace contract as
+                // the track menu's; a press adds the whole album.
+                if let (CollectionMenu::Album(album_id), Some(toggle_idx)) =
+                    (&menu, album_toggle_idx)
+                {
+                    let key = Self::album_submenu_key(album_id);
+                    if self.submenu_playlists_for.as_deref() == Some(key.as_str()) {
+                        let fly_rows: Vec<iced::Element<'_, Message>> = self
+                            .playlist_heads()
+                            .into_iter()
+                            .map(|pl| {
+                                let done = self.album_in_playlist(pl.id, &album_menu_tracks);
+                                let sub = if done {
+                                    self.language.flyout_all_added()
+                                } else {
+                                    self.language.flyout_tap_add()
+                                };
+                                self.flyout_row(
+                                    pl.id,
+                                    pl.title,
+                                    sub,
+                                    done,
+                                    Message::AddAlbumToPlaylist {
+                                        playlist_id: pl.id.to_string(),
+                                        album_id: album_id.clone(),
+                                    },
+                                )
+                            })
+                            .collect();
+                        layers.push(self.playlist_flyout_layer(fly_rows, mx, my, toggle_idx));
+                    }
+                }
             }
         }
         // Cookie cleanup modal: topmost (above menus), centered card over

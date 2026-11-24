@@ -1485,6 +1485,23 @@ impl AppState {
         self.update_gen += 1;
     }
 
+    /// Playlist flyout key for an album menu (track menus key the
+    /// flyout by track id; video ids never carry this prefix).
+    pub(crate) fn album_submenu_key(id: &str) -> String {
+        format!("album-menu:{id}")
+    }
+
+    /// The menu owning flyout `key` is the open one: a track menu by
+    /// its id, an album menu by [`Self::album_submenu_key`]. Foreign
+    /// keys never steal the flyout.
+    pub(crate) fn submenu_owner_open(&self, key: &str) -> bool {
+        self.context_menu.as_deref() == Some(key)
+            || matches!(
+                &self.coll_menu,
+                Some(CollectionMenu::Album(id)) if Self::album_submenu_key(id) == key
+            )
+    }
+
     /// Close the playlist flyout and drop its hover state (one place,
     /// so a stale hot flag can never pin a dead panel open).
     pub(crate) fn close_playlist_submenu(&mut self) {
@@ -1650,7 +1667,13 @@ impl AppState {
     /// search menu).
     pub(crate) fn coll_hit_present(&self, menu: &CollectionMenu) -> bool {
         match menu {
-            CollectionMenu::Album(id) => self.results.albums.iter().any(|a| &a.id == id),
+            // Album menus also open from the album page and artist
+            // page cards: any album the app can list (or fetch) counts.
+            CollectionMenu::Album(id) => {
+                self.results.albums.iter().any(|a| &a.id == id)
+                    || self.album_browse_id(id).is_some()
+                    || !self.album_display_tracks(id).is_empty()
+            }
             CollectionMenu::Artist(id) => self.results.artists.iter().any(|a| &a.id == id),
             CollectionMenu::Playlist(id) => self.results.playlists.iter().any(|p| &p.id == id),
             CollectionMenu::HomeAlbum { album, artist } => self

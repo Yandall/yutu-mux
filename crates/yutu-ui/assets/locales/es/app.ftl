@@ -31,6 +31,10 @@ rename-playlist-cancel = Cancelar
 rename-playlist-placeholder = Nuevo nombre…
 done-button = Listo
 playlists-toggle = Listas ({ $n })
+add-to-playlist = Añadir a una lista
+flyout-tap-add = Toca para añadir
+flyout-tap-remove = Toca para quitar
+flyout-all-added = Añadido
 
 ## Navigation & sidebar
 
@@ -389,6 +393,7 @@ removed-track-playlist = { $id } eliminado de { $title }.
 playlist-readonly = La lista { $id } es integrada (solo lectura) o no existe.
 already-in-playlist = Ya está en { $list }: { $title }.
 added-to-playlist = Añadido { $title } a { $list }.
+album-added-to-playlist = Añadidas { $n } canciones de { $title } a { $list }.
 favorites-locked = Favoritos es una lista integrada y no se puede eliminar.
 playlist-locked = La lista { $id } es integrada y no se puede eliminar.
 deleted-playlist = Lista { $id } eliminada.
