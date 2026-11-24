@@ -177,6 +177,10 @@ impl AppState {
                 "delete_confirm": self.pending_playlist_delete,
                 "rename_dialog": self.pending_playlist_rename,
             },
+            "lyrics": {
+                "romaji": self.lyrics_romaji,
+                "romaji_setup": format!("{:?}", self.romaji_setup).to_ascii_lowercase(),
+            },
             "mini": {
                 "open": self.mini.is_some(),
                 "lyrics": self.mini.map_or(self.mini_lyrics_pref, |m| m.lyrics),
@@ -522,6 +526,11 @@ impl AppState {
                     iced::Task::future(tokio::time::sleep(std::time::Duration::from_millis(200)))
                         .then(|_| iced::exit()),
                 );
+            }
+            Command::LyricsRomaji(want) => {
+                vec![Message::SetLyricsRomaji(
+                    want.unwrap_or(!self.lyrics_romaji),
+                )]
             }
             Command::Mini(arg) => match arg {
                 MiniArg::Toggle => vec![Message::ToggleMiniPlayer],

@@ -816,6 +816,21 @@ impl Language {
     pub fn default_lyrics_provider(self) -> String {
         self.tr("default-lyrics-provider")
     }
+    pub fn lyrics_romaji(self) -> String {
+        self.tr("lyrics-romaji")
+    }
+    pub fn lyrics_romaji_tooltip(self) -> String {
+        self.tr("lyrics-romaji-tooltip")
+    }
+    pub fn lyrics_romaji_hint(self) -> String {
+        self.tr("lyrics-romaji-hint")
+    }
+    pub fn lyrics_romaji_preparing(self) -> String {
+        self.tr("lyrics-romaji-preparing")
+    }
+    pub fn lyrics_romaji_failed(self) -> String {
+        self.tr("lyrics-romaji-failed")
+    }
     pub fn appearance_section(self) -> String {
         self.tr("appearance-section")
     }

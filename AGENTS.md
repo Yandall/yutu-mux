@@ -180,6 +180,23 @@
   `update` calls `verse_sync` after every message (the position
   changes in many handlers); far seeks, new songs and disabled
   animations jump instead of gliding.
+- **Lyrics romaji** (`yutu_core::romaji`, `yutu-ui/src/romaji.rs`,
+  `romaji` feature, default on): one switch (`lyrics_romaji` pref,
+  `Message::SetLyricsRomaji`: Settings with an info tooltip saying it
+  is automatic, stepper quick toggle shown only for Japanese lyrics,
+  `ctl lyrics romaji`). Dictionary: UniDic (lindera 7 prebuilt zip,
+  pinned SHA-256, ~46 MB, ~190 MB unpacked into `<data>/romaji/`),
+  never embedded; bump `BUILT_DIR` when the download changes (setup
+  deletes other folders). UniDic over IPADIC on purpose: it knows the
+  archaic/poetic words lyrics use. Joining rules follow lyric sites
+  (Genius): を "wo", て-auxiliaries apart ("toozakatte yuku"), な
+  joins adjectival nouns; ー spelled from the lemma reading
+  (`spell_long_vowels`). Artist-chosen readings (運命 "sadame") are
+  out of reach by design. Romaji is computed when lyrics land, never
+  in `view`. Songs need kana to count as Japanese; lines without
+  Japanese get no romaji. Every lyrics view shows it (page, drawer,
+  mini ticker); `lyric_row_h` and the ticker fit
+  (`ticker_slot_height`) count the romaji line.
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in

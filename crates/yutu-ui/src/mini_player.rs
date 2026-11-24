@@ -36,7 +36,9 @@
 //!   - The synced ticker never cuts the current verse: a long one wraps
 //!     whole, at a smaller size and with fewer neighbor lines when
 //!     needed (`MINI_TICKER_LAYOUTS`). Neighbor lines are one ellipsized
-//!     line each. Unsynced lyrics show
+//!     line each. Romaji (when on) sits under each verse in the same
+//!     slot and counts toward the fit, so the wheel keeps fewer
+//!     neighbors rather than cutting the verse. Unsynced lyrics show
 //!     in full instead, wrapped and scrollable by hand.
 
 use super::*;
@@ -385,19 +387,40 @@ fn line_h(size: f32) -> f32 {
         .0
 }
 
-/// Measured height of drawn ticker lines (the current verse wrapped
-/// in bold, neighbors one line each) plus the gaps between them.
-pub(crate) fn ticker_content_height(lines: &[(String, f32, i32)]) -> f32 {
+/// One drawn ticker line: `(text, size, distance, romaji)`.
+pub(crate) type TickerLine = (String, f32, i32, Option<String>);
+
+/// Gap between a verse and its romaji line.
+const MINI_ROMAJI_GAP: f32 = 2.0;
+
+/// Height of one ticker slot: the verse (current wrapped in bold,
+/// neighbors one line) plus its romaji line (current wrapped,
+/// neighbors one line) when it has one.
+fn ticker_slot_height(text: &str, size: f32, current: bool, romaji: Option<&str>) -> f32 {
     let width = ticker_text_width();
+    let verse = if current {
+        wrapped_height(text, width, size, bold_font())
+    } else {
+        line_h(size)
+    };
+    let roma = romaji.map_or(0.0, |r| {
+        let rsize = romaji_size(size);
+        MINI_ROMAJI_GAP
+            + if current {
+                wrapped_height(r, width, rsize, body_font())
+            } else {
+                line_h(rsize)
+            }
+    });
+    verse + roma
+}
+
+/// Measured height of drawn ticker lines (see [`ticker_slot_height`])
+/// plus the gaps between them.
+pub(crate) fn ticker_content_height(lines: &[TickerLine]) -> f32 {
     let rows: f32 = lines
         .iter()
-        .map(|(text, size, d)| {
-            if *d == 0 {
-                wrapped_height(text, width, *size, bold_font())
-            } else {
-                line_h(*size)
-            }
-        })
+        .map(|(text, size, d, roma)| ticker_slot_height(text, *size, *d == 0, roma.as_deref()))
         .sum();
     rows + MINI_TICKER_GAP * lines.len().saturating_sub(1) as f32
 }
@@ -407,24 +430,38 @@ pub(crate) fn ticker_content_height(lines: &[(String, f32, i32)]) -> f32 {
 /// `MINI_TICKER_LAYOUTS` that fits the ticker picks its size and how
 /// many neighbor lines stay. Neighbors are one ellipsized line each.
 /// Measured with the real font, so the fit matches what is drawn.
-pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, f32, i32)> {
+///
+/// `romaji[i]` is the romaji line under visible line `i` (missing or
+/// `None`: no second line). A neighbor's romaji is one ellipsized line
+/// too; the current verse's wraps whole like the verse.
+pub(crate) fn ticker_lines(
+    visible: &[&str],
+    romaji: &[Option<&str>],
+    at: Option<usize>,
+) -> Vec<TickerLine> {
     let width = ticker_text_width();
     let window = ticker_window(visible.len(), at);
+    let roma = |i: usize| romaji.get(i).copied().flatten();
     let neighbor = |i: usize, d: i32| {
         let size = ticker_neighbor_size(d);
-        (fit_lines(visible[i], width, size, 1), size, d)
+        (
+            fit_lines(visible[i], width, size, 1),
+            size,
+            d,
+            roma(i).map(|r| fit_lines(r, width, romaji_size(size), 1)),
+        )
     };
     let Some(&(cur, _)) = window.iter().find(|(_, d)| *d == 0) else {
         // Before the first verse: upcoming lines only.
         return window.into_iter().map(|(i, d)| neighbor(i, d)).collect();
     };
-    let layout = |(size, reach): (f32, u32)| -> Vec<(String, f32, i32)> {
+    let layout = |(size, reach): (f32, u32)| -> Vec<TickerLine> {
         window
             .iter()
             .filter(|(_, d)| d.unsigned_abs() <= reach)
             .map(|&(i, d)| {
                 if d == 0 {
-                    (visible[i].to_string(), size, 0)
+                    (visible[i].to_string(), size, 0, roma(i).map(str::to_string))
                 } else {
                     neighbor(i, d)
                 }
@@ -438,7 +475,14 @@ pub(crate) fn ticker_lines(visible: &[&str], at: Option<usize>) -> Vec<(String, 
         .find(|lines| ticker_content_height(lines) <= budget)
         // Longer than the ticker even alone at the smallest size: the
         // verse still shows whole, centered (rare; the clip trims).
-        .unwrap_or_else(|| vec![(visible[cur].to_string(), 13.0, 0)])
+        .unwrap_or_else(|| {
+            vec![(
+                visible[cur].to_string(),
+                13.0,
+                0,
+                roma(cur).map(str::to_string),
+            )]
+        })
 }
 
 /// Synced lyric line look by its (continuous) distance from the
@@ -493,6 +537,8 @@ pub(crate) struct WheelLine {
     /// Index among the visible (non-empty) lyric lines.
     pub(crate) index: usize,
     pub(crate) text: String,
+    /// Romaji line drawn under the verse (sized from `size`).
+    pub(crate) romaji: Option<String>,
     pub(crate) size: f32,
     pub(crate) alpha: f32,
     pub(crate) bold: bool,
@@ -505,21 +551,20 @@ pub(crate) struct WheelLine {
 /// current verse's center sits on the ticker's center (the picker's
 /// selection band), kept inside the ticker padding when it fits. With
 /// no current line yet, the upcoming lines are centered as a block.
-pub(crate) fn wheel_layout(visible: &[&str], at: Option<usize>) -> Vec<WheelLine> {
-    let width = ticker_text_width();
-    let mut lines: Vec<WheelLine> = ticker_lines(visible, at)
+pub(crate) fn wheel_layout(
+    visible: &[&str],
+    romaji: &[Option<&str>],
+    at: Option<usize>,
+) -> Vec<WheelLine> {
+    let mut lines: Vec<WheelLine> = ticker_lines(visible, romaji, at)
         .into_iter()
-        .map(|(text, size, d)| {
+        .map(|(text, size, d, romaji)| {
             let index = match at {
                 Some(c) => (c as i64 + d as i64).max(0) as usize,
                 None => (d - 1).max(0) as usize,
             };
             let current = at.is_some() && d == 0;
-            let height = if current {
-                wrapped_height(&text, width, size, bold_font())
-            } else {
-                line_h(size)
-            };
+            let height = ticker_slot_height(&text, size, current, romaji.as_deref());
             let alpha = match (current, d.unsigned_abs()) {
                 (true, _) => 1.0,
                 (false, 1) => 0.72,
@@ -528,6 +573,7 @@ pub(crate) fn wheel_layout(visible: &[&str], at: Option<usize>) -> Vec<WheelLine
             WheelLine {
                 index,
                 text,
+                romaji,
                 size,
                 alpha,
                 bold: current,
@@ -584,6 +630,7 @@ pub(crate) fn wheel_frame(a: &[WheelLine], b: &[WheelLine], p: f32) -> Vec<Wheel
             Some(lb) => out.push(WheelLine {
                 index: lb.index,
                 text: lb.text.clone(),
+                romaji: lb.romaji.clone(),
                 size: lerp(la.size, lb.size),
                 alpha: lerp(la.alpha, lb.alpha),
                 bold: if p < 0.5 { la.bold } else { lb.bold },
@@ -1021,12 +1068,21 @@ impl AppState {
 
     /// The synced ticker as a wheel: every line pinned at its slot,
     /// mid-glide when the current line just changed.
-    fn mini_wheel(&self, visible: &[&str], at: Option<usize>) -> iced::Element<'_, Message> {
-        use iced::widget::{container, pin, text, text::Wrapping, Stack};
+    fn mini_wheel(
+        &self,
+        visible: &[&str],
+        romaji: &[Option<&str>],
+        at: Option<usize>,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::{column, container, pin, text, text::Wrapping, Stack};
         use iced::Fill;
-        let target = wheel_layout(visible, at);
+        let target = wheel_layout(visible, romaji, at);
         let lines = match self.verse_glide.filter(|g| g.running() && g.to == at) {
-            Some(g) => wheel_frame(&wheel_layout(visible, g.from), &target, g.progress()),
+            Some(g) => wheel_frame(
+                &wheel_layout(visible, romaji, g.from),
+                &target,
+                g.progress(),
+            ),
             None => target,
         };
         let width = ticker_text_width();
@@ -1034,6 +1090,7 @@ impl AppState {
             .width(Fill)
             .height(iced::Length::Fixed(MINI_LYRICS_H));
         for l in lines {
+            let alpha = l.alpha.clamp(0.0, 1.0);
             let mut line = text(l.text)
                 .size(l.size)
                 .color(iced::Color::from_rgba(
@@ -1046,13 +1103,28 @@ impl AppState {
                 .width(Fill);
             // The current verse wraps whole; neighbors are cut to one
             // line already, so a measuring hair never wraps them.
-            line = if l.bold {
-                line.font(bold_font()).wrapping(Wrapping::WordOrGlyph)
+            let wrap = if l.bold {
+                Wrapping::WordOrGlyph
             } else {
-                line.wrapping(Wrapping::None)
+                Wrapping::None
+            };
+            line = if l.bold { line.font(bold_font()) } else { line }.wrapping(wrap);
+            let slot: iced::Element<'_, Message> = match l.romaji {
+                Some(r) => column![
+                    line,
+                    text(r)
+                        .size(romaji_size(l.size))
+                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.75))
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .wrapping(wrap)
+                        .width(Fill),
+                ]
+                .spacing(MINI_ROMAJI_GAP)
+                .into(),
+                None => line.into(),
             };
             wheel = wheel.push(
-                pin(container(line).width(iced::Length::Fixed(width)))
+                pin(container(slot).width(iced::Length::Fixed(width)))
                     .x(MINI_TICKER_PAD.1)
                     .y(l.top),
             );
@@ -1589,13 +1661,17 @@ impl AppState {
                 if l.is_empty() {
                     Space::new().height(iced::Length::Fixed(6.0)).into()
                 } else {
-                    text(l.to_string())
-                        .size(13)
-                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
-                        .align_x(iced::alignment::Horizontal::Center)
-                        .wrapping(Wrapping::WordOrGlyph)
-                        .width(Fill)
-                        .into()
+                    self.verse_with_romaji(
+                        text(l.to_string())
+                            .size(13)
+                            .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .wrapping(Wrapping::WordOrGlyph)
+                            .width(Fill),
+                        l,
+                        13.0,
+                        0.72,
+                    )
                 }
             })
             .collect();
@@ -1635,8 +1711,10 @@ impl AppState {
                         .map(|l| l.text.trim())
                         .filter(|t| !t.is_empty())
                         .collect();
+                    let romaji: Vec<Option<&str>> =
+                        visible.iter().map(|l| self.romaji_line(l)).collect();
                     let at = self.lyric_cursor_at(id);
-                    return self.mini_wheel(&visible, at);
+                    return self.mini_wheel(&visible, &romaji, at);
                 }
                 // Plain lyrics carry no timing: the whole text, wrapped,
                 // static and scrollable by hand, so the ticker never

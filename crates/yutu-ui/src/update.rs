@@ -744,6 +744,9 @@ impl AppState {
                 }
                 return self.update(Message::SetLyricsProvider(next));
             }
+            Message::SetLyricsRomaji(on) => return self.set_lyrics_romaji(on),
+            #[cfg(feature = "romaji")]
+            Message::RomajiReady(result) => self.romaji_ready(result),
             Message::MiniCoverReady { url, rgba } => self.mini_cover_ready(url, rgba),
             Message::ArtBlurReady { url, rgba } => {
                 self.art_blur_loading.remove(&url);

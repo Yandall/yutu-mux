@@ -102,6 +102,11 @@ impl AppState {
             lyrics_loading: HashSet::new(),
             lyrics_provider: LyricsProvider::Lrclib,
             lyrics_manual: HashSet::new(),
+            lyrics_romaji: false,
+            romaji_setup: RomajiSetup::Idle,
+            romaji_lines: HashMap::new(),
+            #[cfg(feature = "romaji")]
+            romanizer: None,
             lyrics_follow: true,
             lyrics_follow_at: None,
             lyrics_target: 0.0,
@@ -447,6 +452,8 @@ impl AppState {
             if let Some(raw) = store.get_pref("lyrics_provider").unwrap_or(None) {
                 state.lyrics_provider = LyricsProvider::parse(&raw);
             }
+            state.lyrics_romaji =
+                store.get_pref("lyrics_romaji").unwrap_or(None).as_deref() == Some("1");
         }
         // Omitted update tag survives restarts: the auto-modal never
         // re-shows a version the user skipped (manual checks still do).
@@ -517,6 +524,9 @@ impl AppState {
             state.update_checking = true;
             init.push(Self::update_check_task(APP_VERSION.to_string()));
         }
+        // Romaji kept on: load the dictionary built on first enable (a
+        // missing one downloads again, e.g. after a data dir wipe).
+        init.push(state.romaji_setup_task());
         (state, iced::Task::batch(init))
     }
 

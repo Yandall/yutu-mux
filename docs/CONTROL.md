@@ -38,6 +38,7 @@ yutu-mux ctl screenshot shot.png         # captures the real (main) window
 yutu-mux ctl mini open                   # mini player: open|close|restore
 yutu-mux ctl mini lyrics on              # its lyrics ticker
 yutu-mux ctl mini screenshot mini.png    # captures the mini window
+yutu-mux ctl lyrics romaji on            # romaji under Japanese lyrics
 yutu-mux ctl help                        # full command list
 ```
 
