@@ -1282,3 +1282,65 @@ fn tolerant_row_reads_music_config_video_type() {
     assert_eq!(is_video("MUSIC_VIDEO_TYPE_ATV"), Some(false));
     assert_eq!(is_video("MUSIC_VIDEO_TYPE_PODCAST_EPISODE"), None);
 }
+
+/// A transient page failure is retried with the same token; a page that
+/// keeps failing errors the whole read instead of returning a shorter
+/// list (sync used to save 195 of 252 songs after one network error).
+#[tokio::test]
+async fn playlist_paging_retries_then_refuses_partial_reads() {
+    let page = |rows: usize, next: Option<&str>| {
+        let mut items: Vec<serde_json::Value> = (0..rows)
+            .map(|_| serde_json::json!({"musicResponsiveListItemRenderer": {}}))
+            .collect();
+        if let Some(t) = next {
+            items.push(
+                serde_json::json!({"continuationItemRenderer": {"continuationEndpoint":
+                {"continuationCommand": {"token": t}}}}),
+            );
+        }
+        serde_json::json!({"onResponseReceivedActions": [{"appendContinuationItemsAction":
+            {"continuationItems": items}}]})
+        .to_string()
+    };
+    // Pages: first -> T2 -> T3 (last). `fails` = failures before T3 loads.
+    let run = |fails: u32| {
+        let pages = (page(2, Some("T2")), page(2, Some("T3")), page(1, None));
+        async move {
+            let mut left = fails;
+            let mut asked: Vec<Option<String>> = Vec::new();
+            let mut seen = 0;
+            let fetch = |token: Option<String>| {
+                asked.push(token.clone());
+                let reply = match token.as_deref() {
+                    None => Ok(pages.0.clone()),
+                    Some("T2") => Ok(pages.1.clone()),
+                    Some("T3") if left > 0 => {
+                        left -= 1;
+                        Err("error decoding response body".to_string())
+                    }
+                    Some("T3") => Ok(pages.2.clone()),
+                    Some(other) => Err(format!("unknown token {other}")),
+                };
+                std::future::ready(reply)
+            };
+            let result = page_with_retries(fetch, "test", 0, |_| seen += 1).await;
+            (result, seen, asked)
+        }
+    };
+    let (result, seen, asked) = run(0).await;
+    assert_eq!(result, Ok(()));
+    assert_eq!(seen, 3);
+    assert_eq!(asked, [None, Some("T2".into()), Some("T3".into())]);
+    // Two failures, third try lands: the same token is asked again.
+    let (result, seen, asked) = run(2).await;
+    assert_eq!(result, Ok(()));
+    assert_eq!(seen, 3);
+    assert_eq!(
+        asked.iter().filter(|t| t.as_deref() == Some("T3")).count(),
+        3
+    );
+    // Still failing after every try: the read errors (no partial list).
+    let (result, seen, _) = run(PAGE_TRIES).await;
+    assert!(result.unwrap_err().contains("incomplete: page 2"));
+    assert_eq!(seen, 2);
+}

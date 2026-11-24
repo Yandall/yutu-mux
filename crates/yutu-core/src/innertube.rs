@@ -508,7 +508,9 @@ impl InnertubeBackend {
     /// bar song by song instead of jumping 0 to 100 at the end. Typed
     /// pages first (exact mapping); any typed failure restarts tolerantly
     /// over raw page JSON, keeping typed-mapped rows and appending only
-    /// new ids. Errors only when zero tracks survive.
+    /// new ids. Errors when the list is empty or a page still fails after
+    /// retries: a partial read must never pass for the whole playlist
+    /// (sync would save the shorter list over the stored one).
     pub async fn playlist_tracks_live<F>(
         &self,
         playlist_id: &str,
@@ -526,7 +528,7 @@ impl InnertubeBackend {
         // moment it arrives: buffering all pages before reporting
         // bunches every tick microseconds before completion, so the bar
         // would still teleport 0 to 100%.
-        let mut failed = match &self.inner {
+        let failed = match &self.inner {
             Inner::Anonymous(client) => {
                 stream_typed_tracks(client, &query, &mut on_page, &mut out).await
             }
@@ -544,7 +546,7 @@ impl InnertubeBackend {
             "yutu-import",
             "playlist tracks: typed parse failed, retrying tolerantly",
         );
-        failed = match &self.inner {
+        match &self.inner {
             Inner::Anonymous(client) => {
                 stream_raw_tracks(client, &query, &mut on_page, &mut out).await
             }
@@ -552,13 +554,9 @@ impl InnertubeBackend {
                 stream_raw_tracks(client, &query, &mut on_page, &mut out).await
             }
             Inner::OAuth(client) => stream_raw_tracks(client, &query, &mut on_page, &mut out).await,
-        };
+        }?;
         if out.is_empty() {
-            return Err(if failed {
-                "playlist tracks failed: no rows parsed".to_string()
-            } else {
-                "playlist tracks failed: empty playlist".to_string()
-            });
+            return Err("playlist tracks failed: empty playlist".to_string());
         }
         Ok(out)
     }
@@ -849,17 +847,13 @@ impl InnertubeBackend {
         let browse = crate::library::browse_playlist_id(playlist_id);
         let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(browse.as_str()));
         let mut out: Vec<(String, String)> = Vec::new();
-        let failed: bool = match &self.inner {
+        match &self.inner {
             Inner::Anonymous(client) => collect_set_video_pairs(client, &query, &mut out).await,
             Inner::Cookie(client) => collect_set_video_pairs(client, &query, &mut out).await,
             Inner::OAuth(client) => collect_set_video_pairs(client, &query, &mut out).await,
-        };
+        }?;
         if out.is_empty() {
-            return Err(if failed {
-                "playlist setVideoIds failed: no rows parsed".to_string()
-            } else {
-                "playlist setVideoIds failed: empty playlist".to_string()
-            });
+            return Err("playlist setVideoIds failed: empty playlist".to_string());
         }
         Ok(out)
     }
@@ -1482,19 +1476,19 @@ where
     failed
 }
 
-/// Playlist track pages as raw JSON, paged with a tolerant
-/// continuation reader.
+/// First page of a playlist read as raw JSON (see [`raw_playlist_pages`]).
 ///
 /// Upstream's `raw_json_stream` finds the next page through the typed
 /// parser, so a page it rejects (one odd row) also loses the
 /// continuation token and every raw reader stopped at the first 100
-/// rows. This query wraps the same `browse` request but reads the token
+/// rows. This query wraps the same `browse` request; the token is read
 /// straight from the page JSON ([`playlist_continuation_token`]).
 struct TolerantPlaylistQuery<'q, 'a>(&'q ytmapi_rs::query::GetPlaylistTracksQuery<'a>);
 
-/// One raw playlist page (see [`TolerantPlaylistQuery`]).
+/// Output marker for the raw playlist queries: pages are read with
+/// `raw_json_query`, so nothing is ever parsed into it.
 #[derive(Debug)]
-struct RawPlaylistPage(String);
+struct RawPlaylistPage;
 
 impl ytmapi_rs::query::PostQuery for TolerantPlaylistQuery<'_, '_> {
     fn header(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -1519,27 +1513,17 @@ impl<'q, 'a> ytmapi_rs::continuations::ParseFromContinuable<TolerantPlaylistQuer
     fn parse_from_continuable(
         p: ytmapi_rs::ProcessedResult<TolerantPlaylistQuery<'q, 'a>>,
     ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
-        Ok(raw_page_with_token(p.source))
+        let _ = p;
+        Ok((RawPlaylistPage, None))
     }
     fn parse_continuation(
         p: ytmapi_rs::ProcessedResult<
             ytmapi_rs::query::GetContinuationsQuery<'_, TolerantPlaylistQuery<'q, 'a>>,
         >,
     ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
-        Ok(raw_page_with_token(p.source))
+        let _ = p;
+        Ok((RawPlaylistPage, None))
     }
-}
-
-fn raw_page_with_token(
-    source: String,
-) -> (
-    RawPlaylistPage,
-    Option<ytmapi_rs::common::ContinuationParams<'static>>,
-) {
-    use ytmapi_rs::common::YoutubeID as _;
-    let token =
-        playlist_continuation_token(&source).map(ytmapi_rs::common::ContinuationParams::from_raw);
-    (RawPlaylistPage(source), token)
 }
 
 /// Next-page token of one raw playlist page: the trailing
@@ -1571,80 +1555,183 @@ pub(crate) fn playlist_continuation_token(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// One continuation page of a playlist read by token (see
+/// [`raw_playlist_pages`]): the same `browse` request as upstream's
+/// continuation query, but built here so a failed page can be asked
+/// for again with the same token (upstream's stream ends on an error).
+struct TolerantContinuationQuery<'q, 'a> {
+    base: &'q ytmapi_rs::query::GetPlaylistTracksQuery<'a>,
+    token: String,
+}
+
+impl ytmapi_rs::query::PostQuery for TolerantContinuationQuery<'_, '_> {
+    fn header(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.base.header()
+    }
+    fn params(&self) -> Vec<(&str, std::borrow::Cow<'_, str>)> {
+        vec![
+            ("ctoken", self.token.as_str().into()),
+            ("continuation", self.token.as_str().into()),
+        ]
+    }
+    fn path(&self) -> &str {
+        self.base.path()
+    }
+}
+
+impl<A: ytmapi_rs::auth::AuthToken> ytmapi_rs::query::Query<A>
+    for TolerantContinuationQuery<'_, '_>
+{
+    type Output = RawPlaylistPage;
+    type Method = ytmapi_rs::query::PostMethod;
+}
+
+impl<'q, 'a> ytmapi_rs::continuations::ParseFromContinuable<TolerantContinuationQuery<'q, 'a>>
+    for RawPlaylistPage
+{
+    fn parse_from_continuable(
+        p: ytmapi_rs::ProcessedResult<TolerantContinuationQuery<'q, 'a>>,
+    ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
+        let _ = p;
+        Ok((RawPlaylistPage, None))
+    }
+    fn parse_continuation(
+        p: ytmapi_rs::ProcessedResult<
+            ytmapi_rs::query::GetContinuationsQuery<'_, TolerantContinuationQuery<'q, 'a>>,
+        >,
+    ) -> ytmapi_rs::Result<(Self, Option<ytmapi_rs::common::ContinuationParams<'static>>)> {
+        let _ = p;
+        Ok((RawPlaylistPage, None))
+    }
+}
+
+/// Tries per page before a read gives up: one transient network error
+/// (observed live during sync: "error decoding response body") used to
+/// end the read, and the shorter list was saved as the whole playlist.
+pub(crate) const PAGE_TRIES: u32 = 3;
+
+/// Every raw page of a playlist in order, each handed to `on_page`
+/// (paging and retries in [`page_with_retries`]).
+async fn raw_playlist_pages<A>(
+    client: &YtMusic<A>,
+    query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
+    what: &str,
+    on_page: impl FnMut(&str),
+) -> Result<(), String>
+where
+    A: ytmapi_rs::auth::AuthToken,
+{
+    // A plain closure returning a future (not an async closure): async
+    // closures defeat the `Send` proof of the iced tasks awaiting this.
+    let fetch = |token: Option<String>| async move {
+        match token {
+            None => client
+                .raw_json_query::<TolerantPlaylistQuery>(TolerantPlaylistQuery(query))
+                .await
+                .map_err(|e| e.to_string()),
+            Some(token) => client
+                .raw_json_query::<TolerantContinuationQuery>(TolerantContinuationQuery {
+                    base: query,
+                    token,
+                })
+                .await
+                .map_err(|e| e.to_string()),
+        }
+    };
+    page_with_retries(fetch, what, 500, on_page).await
+}
+
+/// Paging loop over `fetch` (token `None` = first page): each page goes
+/// to `on_page`, then the next token comes from the page itself
+/// ([`playlist_continuation_token`]). A failed page is asked for again
+/// with the same token up to [`PAGE_TRIES`] times (backoff `backoff_ms`
+/// times the try number); if it still fails the read errors, so callers
+/// never mistake a partial read for the whole list.
+pub(crate) async fn page_with_retries<Fut>(
+    mut fetch: impl FnMut(Option<String>) -> Fut,
+    what: &str,
+    backoff_ms: u64,
+    mut on_page: impl FnMut(&str),
+) -> Result<(), String>
+where
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut token: Option<String> = None;
+    for page in 0usize.. {
+        let mut attempt = 0;
+        let json = loop {
+            attempt += 1;
+            match fetch(token.clone()).await {
+                Ok(json) => break json,
+                Err(e) if attempt < PAGE_TRIES => {
+                    crate::app_log::warn(
+                        "yutu-import",
+                        format_args!("{what} page {page} failed (try {attempt}), retrying: {e}"),
+                    );
+                    let wait = backoff_ms * u64::from(attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                }
+                Err(e) => {
+                    crate::app_log::warn(
+                        "yutu-import",
+                        format_args!("{what} page {page} failed, giving up: {e}"),
+                    );
+                    return Err(format!("{what} incomplete: page {page} failed ({e})"));
+                }
+            }
+        };
+        on_page(&json);
+        match playlist_continuation_token(&json) {
+            Some(next) => token = Some(next),
+            None => return Ok(()),
+        }
+    }
+    Ok(())
+}
+
 /// Raw pages mapped tolerantly + reported as each arrives, deduping
-/// against typed-mapped rows kept from the failed pass. Returns true on
-/// transport error (the caller errors only when nothing survived).
+/// against typed-mapped rows kept from the failed pass. Errors when a
+/// page cannot be loaded (see [`raw_playlist_pages`]).
 async fn stream_raw_tracks<A, F>(
     client: &YtMusic<A>,
     query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
     on_page: &mut F,
     out: &mut Vec<Track>,
-) -> bool
+) -> Result<(), String>
 where
     A: ytmapi_rs::auth::AuthToken,
     F: FnMut(usize) + Send,
 {
-    use futures::StreamExt as _;
-    let tolerant = TolerantPlaylistQuery(query);
-    let stream = client.stream(&tolerant);
-    futures::pin_mut!(stream);
-    let mut failed = false;
-    while let Some(page) = stream.next().await {
-        match page {
-            Ok(RawPlaylistPage(json)) => {
-                for t in tolerant_playlist_rows(&json) {
-                    if !out.iter().any(|x| x.id == t.id) {
-                        out.push(t);
-                    }
-                }
-                on_page(out.len());
-            }
-            Err(e) => {
-                failed = true;
-                crate::app_log::warn(
-                    "yutu-import",
-                    format_args!("playlist tracks raw page failed: {e}"),
-                );
-                break;
+    raw_playlist_pages(client, query, "playlist tracks", |json| {
+        for t in tolerant_playlist_rows(json) {
+            if !out.iter().any(|x| x.id == t.id) {
+                out.push(t);
             }
         }
-    }
-    failed
+        on_page(out.len());
+    })
+    .await
 }
 
 /// Raw pages scanned for `(video_id, set_video_id)` pairs (see
-/// [`InnertubeBackend::playlist_set_video_map`]). Returns true when a
-/// page failed to load (the caller errors only when nothing survived).
+/// [`InnertubeBackend::playlist_set_video_map`]). Errors when a page
+/// cannot be loaded: a missing pair would read as "not on playlist".
 async fn collect_set_video_pairs<A>(
     client: &YtMusic<A>,
     query: &ytmapi_rs::query::GetPlaylistTracksQuery<'_>,
     out: &mut Vec<(String, String)>,
-) -> bool
+) -> Result<(), String>
 where
     A: ytmapi_rs::auth::AuthToken,
 {
-    use futures::StreamExt as _;
-    let tolerant = TolerantPlaylistQuery(query);
-    let stream = client.stream(&tolerant);
-    futures::pin_mut!(stream);
-    let mut failed = false;
-    while let Some(page) = stream.next().await {
-        match page {
-            Ok(RawPlaylistPage(json)) => {
-                for pair in extract_set_video_pairs(&json) {
-                    if !out.contains(&pair) {
-                        out.push(pair);
-                    }
-                }
-            }
-            Err(e) => {
-                failed = true;
-                crate::app_log::warn("yutu-playlist", format_args!("setVideoId page failed: {e}"));
-                break;
+    raw_playlist_pages(client, query, "playlist setVideoIds", |json| {
+        for pair in extract_set_video_pairs(json) {
+            if !out.contains(&pair) {
+                out.push(pair);
             }
         }
-    }
-    failed
+    })
+    .await
 }
 
 /// Every `(video_id, set_video_id)` pair in one raw playlist page.

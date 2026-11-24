@@ -20,6 +20,8 @@
   and grey text is no longer thin and blurry.
 - Importing or syncing a YouTube Music playlist with more than 100 songs
   no longer stops at the first 100.
+- A brief network hiccup during sync no longer cuts a playlist short:
+  the page is retried, and the saved copy is kept if it still fails.
 - An imported YouTube Music playlist keeps its original name when you
   leave the name empty, instead of "Imported playlist".
 - Songs that showed no length (some search results, artist top songs
