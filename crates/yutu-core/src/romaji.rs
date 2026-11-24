@@ -195,10 +195,14 @@ pub fn join_morphemes(tokens: &[Morpheme]) -> String {
     // "matte", not "mate").
     let mut words: Vec<String> = Vec::new();
     let mut spaced = true;
+    // Set by a prefix (`ぶっ`) or an opening bracket: the next token
+    // joins it (`ブッ` + `コワレ` keeps its doubled consonant).
+    let mut glue_next = false;
     for t in tokens {
         if t.surface.trim().is_empty() {
             // Original spacing separates words (English mixed in).
             spaced = true;
+            glue_next = false;
             continue;
         }
         let source = morpheme_source(t);
@@ -207,6 +211,21 @@ pub fn join_morphemes(tokens: &[Morpheme]) -> String {
         }
         let punctuation =
             !line_needs_romaji(&t.surface) && !t.surface.chars().any(char::is_alphanumeric);
+        let opening = punctuation && source.ends_with(['(', '[']);
+        if std::mem::take(&mut glue_next) {
+            if let Some(word) = words.last_mut() {
+                word.push_str(&source);
+                glue_next = opening || t.pos == "接頭詞";
+                spaced = false;
+                continue;
+            }
+        }
+        if opening || t.pos == "接頭詞" {
+            words.push(source);
+            glue_next = true;
+            spaced = false;
+            continue;
+        }
         // Copulas (だ, です and their forms) read as their own word
         // ("yokatta deshou"); other auxiliaries inflect the verb.
         let copula = t.pos == "助動詞" && matches!(t.base.as_str(), "だ" | "です");
@@ -214,7 +233,9 @@ pub fn join_morphemes(tokens: &[Morpheme]) -> String {
             || (t.pos == "助動詞" && !copula)
             || (t.pos == "助詞" && t.pos_sub == "接続助詞")
             || (t.pos == "動詞" && (t.pos_sub == "非自立" || t.pos_sub == "接尾"))
-            || t.pos_sub == "接尾";
+            || t.pos_sub == "接尾"
+            // Contracted の (`壊れてんだ` reads "kowareten da").
+            || (t.surface == "ん" && t.pos == "名詞" && t.pos_sub == "非自立");
         match words.last_mut() {
             Some(word) if glue && !(spaced && !punctuation) => word.push_str(&source),
             _ => words.push(source),
@@ -251,6 +272,8 @@ fn morpheme_source(t: &Morpheme) -> String {
                 '。' => Some('.'),
                 '！' => Some('!'),
                 '？' => Some('?'),
+                '（' => Some('('),
+                '）' => Some(')'),
                 '「' | '」' | '『' | '』' | '・' => None,
                 '　' => Some(' '),
                 c => Some(c),
@@ -259,11 +282,110 @@ fn morpheme_source(t: &Morpheme) -> String {
             .trim()
             .to_string();
     }
+    // Unknown katakana runs keep their middle dots (`アイ・アイ`):
+    // they separate words.
     t.reading
         .as_deref()
         .filter(|r| !r.is_empty() && *r != "*")
         .unwrap_or(&t.surface)
-        .to_string()
+        .replace(['・', '　'], " ")
+}
+
+/// Most likely reading of each kanji, derived from two-kanji dictionary
+/// words (`心臓` シンゾウ, `内臓` ナイゾウ, `臓器` ゾウキ give 臓 ゾウ).
+/// Used for kanji the analyzer cannot read alone (`臓` has no entry of
+/// its own), so a rare kanji never leaks into the romaji line.
+///
+/// Every split of a word's reading votes for both halves; a few rounds
+/// then keep only each word's best split under the current votes, so
+/// readings shared across many compounds win.
+pub fn derive_kanji_readings<'a>(
+    words: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> std::collections::HashMap<char, String> {
+    use std::collections::{HashMap, HashSet};
+    let is_kanji = |c: char| matches!(c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}');
+    let is_katakana = |r: &str| {
+        r.chars()
+            .all(|c| matches!(c, '\u{30A1}'..='\u{30FA}' | 'ー'))
+    };
+    let mut pairs: HashSet<([char; 2], Vec<char>)> = HashSet::new();
+    for (surface, reading) in words {
+        let s: Vec<char> = surface.chars().collect();
+        if s.len() == 2 && s.iter().all(|c| is_kanji(*c)) && is_katakana(reading) {
+            let r: Vec<char> = reading.chars().collect();
+            if r.len() >= 2 {
+                pairs.insert(([s[0], s[1]], r));
+            }
+        }
+    }
+    // A reading half never starts on a small kana, ン, ッ or ー.
+    let splits = |r: &[char]| -> Vec<usize> {
+        (1..r.len())
+            .filter(|&i| !"ァィゥェォャュョッンー".contains(r[i]))
+            .collect()
+    };
+    type Votes = HashMap<(char, String), u32>;
+    let half = |r: &[char], a: usize, b: usize| r[a..b].iter().collect::<String>();
+    let mut votes: Votes = HashMap::new();
+    for (k, r) in &pairs {
+        for i in splits(r) {
+            *votes.entry((k[0], half(r, 0, i))).or_default() += 1;
+            *votes.entry((k[1], half(r, i, r.len()))).or_default() += 1;
+        }
+    }
+    for _ in 0..3 {
+        let mut next: Votes = HashMap::new();
+        for (k, r) in &pairs {
+            let score = |i: usize| {
+                let v = |key: (char, String)| votes.get(&key).copied().unwrap_or(0);
+                let balance = -((2 * i) as i64 - r.len() as i64).abs();
+                (
+                    v((k[0], half(r, 0, i))) + v((k[1], half(r, i, r.len()))),
+                    balance,
+                )
+            };
+            if let Some(i) = splits(r).into_iter().max_by_key(|&i| score(i)) {
+                *next.entry((k[0], half(r, 0, i))).or_default() += 1;
+                *next.entry((k[1], half(r, i, r.len()))).or_default() += 1;
+            }
+        }
+        votes = next;
+    }
+    let mut best: HashMap<char, (String, u32)> = HashMap::new();
+    for ((k, r), n) in votes {
+        let better = best
+            .get(&k)
+            .is_none_or(|(br, bn)| (n, r.chars().count(), &r) > (*bn, br.chars().count(), br));
+        if better {
+            best.insert(k, (r, n));
+        }
+    }
+    best.into_iter().map(|(k, (r, _))| (k, r)).collect()
+}
+
+/// Reading for a token the dictionary could not read: kana kept, each
+/// kanji from `kanji` (`々` repeats the one before), `None` when a
+/// kanji has no known reading either.
+pub fn fallback_reading(
+    surface: &str,
+    kanji: &std::collections::HashMap<char, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut last: Option<&str> = None;
+    for c in surface.chars() {
+        if let Some(r) = kanji.get(&c) {
+            out.push_str(r);
+            last = Some(r);
+        } else if c == '々' {
+            out.push_str(last?);
+        } else if kana::is_japanese_char(c) && !kana::is_kana(c) {
+            return None;
+        } else {
+            out.push(c);
+            last = None;
+        }
+    }
+    Some(out)
 }
 
 #[cfg(feature = "romaji")]
@@ -271,7 +393,10 @@ pub use analyzer::*;
 
 #[cfg(feature = "romaji")]
 mod analyzer {
-    use super::{join_morphemes, line_needs_romaji, Morpheme};
+    use super::{
+        derive_kanji_readings, fallback_reading, join_morphemes, line_needs_romaji, Morpheme,
+    };
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
 
     /// IPADIC source tarball (the one lindera's own build uses), UTF-8.
@@ -281,8 +406,13 @@ mod analyzer {
         "a7ba9f645ffe7094e56ae1c4a81d100df8fbb1e28bbe1792622e9728e162db3d";
     const IPADIC_SRC_DIR: &str = "mecab-ipadic-2.7.0-20250920";
     /// Built dictionary folder: keyed by the lindera version, whose
-    /// on-disk format can change between releases (a bump rebuilds).
-    const BUILT_DIR: &str = "ipadic-lindera-6.2.0";
+    /// on-disk format can change between releases, plus our own build
+    /// revision (`r2` added the kanji readings): a bump rebuilds, and
+    /// the finished build deletes older folders.
+    const BUILT_DIR: &str = "ipadic-lindera-6.2.0-r2";
+    /// Derived per-kanji readings (`kanji<TAB>reading` lines) beside
+    /// the built dictionary, see [`derive_kanji_readings`].
+    const KANJI_FILE: &str = "kanji_readings.tsv";
     const METADATA: &str = include_str!("romaji_ipadic_metadata.json");
 
     /// Built dictionary location under the romaji data dir.
@@ -301,6 +431,7 @@ mod analyzer {
     /// takes microseconds per lyric line.
     pub struct Romanizer {
         segmenter: lindera::segmenter::Segmenter,
+        kanji: HashMap<char, String>,
     }
 
     impl std::fmt::Debug for Romanizer {
@@ -318,7 +449,15 @@ mod analyzer {
                 .map_err(|e| format!("romaji dictionary load failed: {e}"))?;
             let segmenter =
                 lindera::segmenter::Segmenter::new(lindera::mode::Mode::Normal, dict, None);
-            Ok(Self { segmenter })
+            let kanji = std::fs::read_to_string(dir.join(KANJI_FILE))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| {
+                    let (k, r) = l.split_once('\t')?;
+                    Some((k.chars().next()?, r.to_string()))
+                })
+                .collect();
+            Ok(Self { segmenter, kanji })
         }
 
         /// Romaji for one lyric line, `None` when it has nothing
@@ -340,13 +479,20 @@ mod analyzer {
                 morphemes.extend(tokens.iter_mut().map(|t| {
                     let surface = t.surface.to_string();
                     let details = t.details();
-                    let field = |i: usize| details.get(i).map(|s| s.to_string());
+                    let field = |i: usize| {
+                        details
+                            .get(i)
+                            .filter(|s| !s.is_empty() && **s != "*")
+                            .map(|s| s.to_string())
+                    };
+                    // Unknown words with kanji read kanji by kanji.
+                    let reading = field(7).or_else(|| fallback_reading(&surface, &self.kanji));
                     Morpheme {
-                        surface,
                         pos: field(0).unwrap_or_default(),
                         pos_sub: field(1).unwrap_or_default(),
                         base: field(6).unwrap_or_default(),
-                        reading: field(7),
+                        reading,
+                        surface,
                     }
                 }));
             }
@@ -382,6 +528,30 @@ mod analyzer {
             .map_err(|e| format!("romaji build failed: {e}"))?
     }
 
+    /// Derive per-kanji readings from the source CSVs (surface is the
+    /// first field, reading the twelfth) into `out`.
+    fn write_kanji_readings(source: &Path, out: &Path) -> Result<(), String> {
+        let mut text = String::new();
+        let dir = std::fs::read_dir(source).map_err(|e| format!("romaji build failed: {e}"))?;
+        for e in dir.flatten() {
+            if e.path().extension().is_some_and(|x| x == "csv") {
+                text.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+                text.push('\n');
+            }
+        }
+        let words = text.lines().filter_map(|l| {
+            let mut f = l.split(',');
+            let surface = f.next()?;
+            Some((surface, f.nth(10)?))
+        });
+        let mut lines: Vec<String> = derive_kanji_readings(words)
+            .into_iter()
+            .map(|(k, r)| format!("{k}\t{r}"))
+            .collect();
+        lines.sort();
+        std::fs::write(out, lines.join("\n")).map_err(|e| format!("romaji build failed: {e}"))
+    }
+
     /// Verify `tarball` against the pinned hash, unpack and build it
     /// into `base` (temp folders, renamed into place last).
     pub fn build_from_tarball(tarball: &[u8], base: &Path) -> Result<(), String> {
@@ -401,12 +571,24 @@ mod analyzer {
                 .map_err(|e| format!("romaji unpack failed: {e}"))?;
             let metadata: lindera::dictionary::Metadata = serde_json::from_str(METADATA)
                 .map_err(|e| format!("romaji metadata invalid: {e}"))?;
+            let source = src.join(IPADIC_SRC_DIR);
             lindera::dictionary::DictionaryBuilder::new(metadata)
-                .build_dictionary(&src.join(IPADIC_SRC_DIR), &out)
+                .build_dictionary(&source, &out)
                 .map_err(|e| format!("romaji build failed: {e}"))?;
+            write_kanji_readings(&source, &out.join(KANJI_FILE))?;
             let done = dictionary_dir(base);
             let _ = std::fs::remove_dir_all(&done);
-            std::fs::rename(&out, &done).map_err(|e| format!("romaji build failed: {e}"))
+            std::fs::rename(&out, &done).map_err(|e| format!("romaji build failed: {e}"))?;
+            // Older builds (earlier lindera or revision) are dead weight.
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name.starts_with("ipadic-") && name != BUILT_DIR {
+                        let _ = std::fs::remove_dir_all(e.path());
+                    }
+                }
+            }
+            Ok(())
         })();
         let _ = std::fs::remove_dir_all(&src);
         if result.is_err() {
@@ -505,6 +687,64 @@ mod tests {
         assert_eq!(join_morphemes(&tokens), "pien");
     }
 
+    #[test]
+    fn prefixes_keep_their_doubled_consonant() {
+        // ぶっ壊れてんだ: "bukkowareten da", not "bu kowarete n da".
+        let tokens = [
+            m("ぶっ", "接頭詞", "動詞接続", "ブッ"),
+            m("壊れ", "動詞", "自立", "コワレ"),
+            m("て", "助詞", "接続助詞", "テ"),
+            m("ん", "名詞", "非自立", "ン"),
+            Morpheme {
+                base: "だ".into(),
+                ..m("だ", "助動詞", "*", "ダ")
+            },
+        ];
+        assert_eq!(join_morphemes(&tokens), "bukkowareten da");
+    }
+
+    #[test]
+    fn brackets_and_middle_dots_read_cleanly() {
+        // Unknown katakana keeps no ・, and ( opens the next word.
+        let tokens = [
+            m("アイ・アイ・ア", "名詞", "一般", ""),
+            Morpheme::blank(),
+            m("(", "名詞", "サ変接続", ""),
+            m("アイ・アイ・ア", "名詞", "一般", ""),
+            m(")", "名詞", "サ変接続", ""),
+        ];
+        assert_eq!(join_morphemes(&tokens), "ai ai a (ai ai a)");
+    }
+
+    #[test]
+    fn kanji_readings_come_from_compounds() {
+        let words = [
+            ("心臓", "シンゾウ"),
+            ("内臓", "ナイゾウ"),
+            ("臓器", "ゾウキ"),
+            ("腎臓", "ジンゾウ"),
+            ("内科", "ナイカ"),
+            ("心身", "シンシン"),
+            ("器官", "キカン"),
+            ("食器", "ショッキ"),
+            ("一つ", "ヒトツ"), // not two kanji: ignored
+        ];
+        let map = derive_kanji_readings(words);
+        assert_eq!(map.get(&'臓').map(String::as_str), Some("ゾウ"));
+        assert_eq!(map.get(&'内').map(String::as_str), Some("ナイ"));
+        assert_eq!(map.get(&'器').map(String::as_str), Some("キ"));
+        assert!(!map.contains_key(&'つ'));
+        // Unknown tokens read kanji by kanji; 々 repeats; no reading
+        // for a kanji means no fallback at all.
+        assert_eq!(fallback_reading("臓", &map).as_deref(), Some("ゾウ"));
+        assert_eq!(fallback_reading("臓々", &map).as_deref(), Some("ゾウゾウ"));
+        assert_eq!(
+            fallback_reading("内のか", &map).as_deref(),
+            Some("ナイのか")
+        );
+        assert_eq!(fallback_reading("儚", &map), None);
+    }
+
     #[cfg(feature = "romaji")]
     #[test]
     fn tampered_tarball_never_builds() {
@@ -545,6 +785,21 @@ mod tests {
         assert_eq!(
             r.romanize_line("パーティーへ行こうぜ！").as_deref(),
             Some("paatii e ikou ze!")
+        );
+        // Lines from a real song (Ado, アイ・アイ・ア).
+        assert_eq!(
+            r.romanize_line("グサグサ刺せよ心の臓まで、huh?").as_deref(),
+            Some("gusagusa saseyo kokoro no zou made, huh?")
+        );
+        assert_eq!(
+            r.romanize_line("ぶっ壊れてんだ ガラスのハートなんてさ")
+                .as_deref(),
+            Some("bukkowareten da garasu no haato nante sa")
+        );
+        assert_eq!(
+            r.romanize_line("アイ・アイ・ア (アイ・アイ・ア)")
+                .as_deref(),
+            Some("ai ai a (ai ai a)")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

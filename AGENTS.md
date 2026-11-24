@@ -178,7 +178,11 @@
   only for Japanese lyrics, `ctl lyrics romaji`). IPADIC is never
   embedded (+47 MB): first enable downloads the source tarball
   (pinned SHA-256) and builds it with lindera into `<data>/romaji/`.
-  Romaji is computed when lyrics land, never in `view`. Songs need
+  Romaji is computed when lyrics land, never in `view`. Kanji the
+  dictionary cannot read alone (`臓`) fall back to per-kanji readings
+  derived from its two-kanji words at build time
+  (`kanji_readings.tsv`); bump `BUILT_DIR` when the build output
+  changes (old folders are deleted after a rebuild). Songs need
   kana to count as Japanese (kanji-only reads as Chinese); lines
   without Japanese get no romaji. Every lyrics view shows it (page,
   drawer, mini ticker); `lyric_row_h` and the ticker fit
