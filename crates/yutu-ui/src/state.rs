@@ -960,6 +960,9 @@ pub enum Message {
     SearchFocused(bool),
     /// A click, Tab or Esc may have moved focus: re-read it.
     FocusProbe,
+    /// The `/` key: focus the top search field (query selected) and
+    /// stay on the current page.
+    FocusSearch,
     PlaylistSearchFocused(bool),
     /// History page: render the next window of older plays.
     HistoryMore,

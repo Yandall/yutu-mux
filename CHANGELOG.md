@@ -27,6 +27,8 @@
 
 ### Fixed
 
+- The `/` key focuses the search bar again and keeps you on the
+  current page instead of switching to Search.
 - macOS: text on non-Retina screens is drawn slightly heavier, so small
   and grey text is no longer thin and blurry.
 - Importing or syncing a YouTube Music playlist with more than 100 songs

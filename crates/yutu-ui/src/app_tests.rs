@@ -12727,3 +12727,13 @@ fn queue_album_appends_without_hijacking_playback() {
     let ids: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["v1", "al1", "al2", "al3"]);
 }
+
+#[test]
+fn slash_focuses_search_without_leaving_the_page() {
+    let mut s = test_state();
+    s.route = Route::History;
+    let back = s.nav_back.len();
+    let _ = s.update(Message::FocusSearch);
+    assert_eq!(s.route, Route::History);
+    assert_eq!(s.nav_back.len(), back);
+}
