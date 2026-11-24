@@ -547,34 +547,43 @@ impl AppState {
     }
 
     /// Album hero: clickable cover/title open the album; Shuffle and
-    /// Radio play the known catalog tracks (hidden when none are known).
+    /// Start mix play the album's list (live tracklist when fetched,
+    /// hidden while none is known). The `…` button and right-click
+    /// open the album menu, which fetches the tracklist when needed.
     pub(crate) fn search_album_hero(&self, a: &Album) -> iced::Element<'_, Message> {
-        use iced::widget::{column, container, row, text};
+        use iced::widget::{column, container, mouse_area, row, text};
         use iced::Fill;
         let cover = self.album_cover(a);
         let sub = match a.year {
             Some(y) => self.language.album_sub_year(&a.artist, y),
             None => self.language.album_sub(&a.artist),
         };
-        let tracks = self.album_tracks(&a.id);
-        let actions: iced::Element<'_, Message> = if tracks.is_empty() {
-            text("").size(1).into()
-        } else {
-            let seed = tracks.first().map(|t| t.id.clone()).unwrap_or_default();
-            row![
-                Self::shuffle_pill(
-                    self.language.shuffle_label(),
-                    Message::PlayAlbumShuffled(a.id.clone())
-                ),
-                Self::mix_pill(self.language.mix_pill_label(), Message::StartRadio(seed)),
-            ]
+        let tracks = self.album_display_tracks(&a.id);
+        let more: iced::Element<'_, Message> =
+            iced::widget::button(ctrl_box(btn_icon("ellipsis", 18.0, iced::Color::WHITE)))
+                .style(icon_hover)
+                .on_press(Message::OpenAlbumMenu(a.id.clone()))
+                .padding(11)
+                .into();
+        let mut pills: Vec<iced::Element<'_, Message>> = Vec::new();
+        if let Some(seed) = tracks.first().map(|t| t.id.clone()) {
+            pills.push(Self::shuffle_pill(
+                self.language.shuffle_label(),
+                Message::PlayAlbumShuffled(a.id.clone()),
+            ));
+            pills.push(Self::mix_pill(
+                self.language.mix_pill_label(),
+                Message::StartRadio(seed),
+            ));
+        }
+        pills.push(more);
+        let actions: iced::Element<'_, Message> = row(pills)
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center)
             .wrap()
             .vertical_spacing(8)
-            .into()
-        };
-        container(
+            .into();
+        let hero = container(
             self.search_card(
                 row_button(self.art_thumb(cover.as_deref(), 96.0))
                     .style(row_click)
@@ -595,8 +604,10 @@ impl AppState {
             ),
         )
         .style(card_bg)
-        .padding(14)
-        .into()
+        .padding(14);
+        mouse_area(hero)
+            .on_right_press(Message::OpenAlbumMenu(a.id.clone()))
+            .into()
     }
 
     /// Artist hero: clickable photo/name open the artist; Shuffle and

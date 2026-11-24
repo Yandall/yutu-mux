@@ -60,6 +60,33 @@ impl AppState {
         iced::Task::batch(tasks)
     }
 
+    /// Append-only bulk add (Add to queue on collections): never
+    /// hijacks playback, absorbs matching autoplay ids, and starts
+    /// playing only when the queue was empty.
+    pub(crate) fn append_tracks(&mut self, tracks: Vec<Track>, label: &str) -> iced::Task<Message> {
+        let n = tracks.len();
+        let was_empty = self.queue.is_empty();
+        let incoming: std::collections::HashSet<&str> =
+            tracks.iter().map(|t| t.id.as_str()).collect();
+        self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
+        let resolved: Vec<Track> = tracks
+            .iter()
+            .map(|t| self.resolve_for_play_mem(t))
+            .collect();
+        self.cache_tracks(&resolved);
+        for rt in resolved {
+            self.queue.push(rt);
+        }
+        self.status = self.language.queued_tracks(label, n);
+        self.publish_mpris();
+        if was_empty {
+            self.queue.jump_to(0);
+            self.apply_volume();
+            return self.play_current_task();
+        }
+        iced::Task::none()
+    }
+
     /// Play-all for the current detail view (artist/album/playlist/
     /// radio/discovery/search). With `shuffle`, the fresh queue plays in
     /// fully shuffled order (random first track, always reshuffled).
@@ -880,10 +907,9 @@ impl AppState {
                 );
                 slots
             }
-            Route::Album(id) => {
-                let rows = self.album_display_tracks(id);
-                Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)
-            }
+            // Album rows carry no art (the header owns the cover,
+            // warmed on open and on tracklist arrival).
+            Route::Album(_) => Vec::new(),
             Route::RemotePlaylist(id) => {
                 let rows = self.remote_playlist_tracks(id);
                 Self::track_row_slots(&rows, BODY_PAD + 180.0 + 12.0, ROW_PITCH)

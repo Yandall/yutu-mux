@@ -6,6 +6,10 @@
 
 - YouTube Premium accounts signed in with cookies now stream in 256 kbps
   AAC; other accounts keep the standard 128 kbps (#133).
+- Album pages get a more button with Play, Shuffle, Add to queue, Add
+  to playlist, Start mix and Go to artist.
+- Right-click any album card, or the album shown as top search result,
+  for the same album menu, including Add the whole album to a playlist.
 
 ### Changed
 
@@ -13,6 +17,8 @@
   session) and no longer creeps up the longer it runs.
 - Less CPU and network work on the Home page and library panel:
   connections and recommendations are reused instead of rebuilt.
+- Album pages list songs like YouTube Music: track number, title,
+  plays and length, without a cover or artist on every row.
 
 ### Fixed
 
@@ -30,6 +36,9 @@
   versions again, including more loosely titled uploads.
 - Songs from imported or synced YouTube Music playlists show their real
   album and duration (the album showed the song length).
+- Album songs no longer lose their play counts after playing them.
+- Album songs that also have a music video show the album cover, in the
+  queue and the player too, instead of a video frame.
 
 ## 0.2.1 - 2026-11-17
 

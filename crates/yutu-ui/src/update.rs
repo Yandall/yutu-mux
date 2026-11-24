@@ -1270,6 +1270,12 @@ impl AppState {
                     }
                 }
             },
+            Message::AddAlbumToPlaylist {
+                playlist_id,
+                album_id,
+            } => {
+                return self.add_album_to_playlist(&playlist_id, &album_id);
+            }
             Message::RemoveFromPlaylist {
                 playlist_id,
                 track_id,
@@ -1601,30 +1607,21 @@ impl AppState {
                 if tracks.is_empty() {
                     self.status = self.language.album_not_cached(&album);
                 } else {
-                    // Append-only like QueuePlaylist: never hijacks
-                    // playback, absorbs matching autoplay ids.
                     let label = self.language.album_queue_label(&album);
-                    let n = tracks.len();
-                    let was_empty = self.queue.is_empty();
-                    let incoming: std::collections::HashSet<&str> =
-                        tracks.iter().map(|t| t.id.as_str()).collect();
-                    self.autoplay.retain(|t| !incoming.contains(t.id.as_str()));
-                    let resolved: Vec<Track> = tracks
-                        .iter()
-                        .map(|t| self.resolve_for_play_mem(t))
-                        .collect();
-                    self.cache_tracks(&resolved);
-                    for rt in resolved {
-                        self.queue.push(rt);
-                    }
-                    self.status = self.language.queued_tracks(&label, n);
-                    self.publish_mpris();
-                    if was_empty {
-                        self.queue.jump_to(0);
-                        self.apply_volume();
-                        return self.play_current_task();
-                    }
+                    return self.append_tracks(tracks, &label);
                 }
+            }
+            Message::QueueAlbum(id) => {
+                self.close_menu();
+                self.show_suggest = false;
+                let title = self.resolve_album_title(&id);
+                let label = self.language.album_queue_label(&title);
+                let tracks = self.album_display_tracks(&id);
+                if tracks.is_empty() {
+                    self.status = self.language.nothing_to_queue(&label);
+                    return iced::Task::none();
+                }
+                return self.append_tracks(tracks, &label);
             }
             Message::ShuffleHomeAlbum { album, artist } => {
                 self.close_menu();
@@ -2354,7 +2351,7 @@ impl AppState {
                 // Click-toggle kept as a dismiss path (hover opens, so a
                 // click on the open trigger closes). Only the open
                 // menu's own track can own the flyout.
-                if self.context_menu.as_deref() != Some(id.as_str()) {
+                if !self.submenu_owner_open(&id) {
                     return iced::Task::none();
                 }
                 if self.submenu_playlists_for.as_deref() == Some(id.as_str()) {
@@ -2376,7 +2373,7 @@ impl AppState {
                     Some(id) => {
                         // Hover opens (no click needed); a foreign id
                         // can never steal the open menu's flyout.
-                        if self.context_menu.as_deref() == Some(id.as_str()) {
+                        if self.submenu_owner_open(&id) {
                             let fresh = self.submenu_playlists_for.as_deref() != Some(id.as_str());
                             self.submenu_playlists_for = Some(id);
                             self.submenu_trigger_hot = true;
@@ -2420,18 +2417,19 @@ impl AppState {
             }
             Message::OpenAlbumMenu(id) => {
                 self.open_coll_for(CollectionMenu::Album(id.clone()));
+                if self.coll_menu.is_none() {
+                    return iced::Task::none();
+                }
+                self.publish_mpris();
                 // Menu headers render the 544 key (rows warm the small
                 // raster now, and menus never sweep): warm it on open.
-                if let Some(url) = self
-                    .results
-                    .albums
-                    .iter()
-                    .find(|a| a.id == id)
-                    .and_then(|a| self.album_cover(a))
-                {
-                    self.publish_mpris();
-                    return iced::Task::batch(self.artwork_tasks_for_urls(&[url]));
+                // Cards never opened yet fetch their tracklist, so the
+                // menu actions cover the whole album.
+                let mut tasks = self.album_fetch_tasks(&id);
+                if let Some(url) = self.album_menu_cover(&id) {
+                    tasks.extend(self.artwork_tasks_for_urls(&[url]));
                 }
+                return iced::Task::batch(tasks);
             }
             Message::OpenArtistMenu(id) => {
                 self.open_coll_for(CollectionMenu::Artist(id.clone()));
@@ -2947,6 +2945,7 @@ impl AppState {
                                 tracks.len()
                             ),
                         );
+                        self.adopt_album_art(&tracks);
                         let ids = self.merge_live_tracks(tracks);
                         if !ids.is_empty() {
                             let showing = self.route_shows_browse(&album_id, false);

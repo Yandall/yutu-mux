@@ -760,6 +760,18 @@ impl Language {
     pub fn playlists_toggle(self, n: usize) -> String {
         self.tr_args("playlists-toggle", &[("n", &n.to_string())])
     }
+    pub fn add_to_playlist(self) -> String {
+        self.tr("add-to-playlist")
+    }
+    pub fn flyout_tap_add(self) -> String {
+        self.tr("flyout-tap-add")
+    }
+    pub fn flyout_tap_remove(self) -> String {
+        self.tr("flyout-tap-remove")
+    }
+    pub fn flyout_all_added(self) -> String {
+        self.tr("flyout-all-added")
+    }
     pub fn no_playlists_menu(self) -> String {
         self.tr("no-playlists-menu")
     }
@@ -1402,6 +1414,12 @@ impl Language {
     }
     pub fn added_to_playlist(self, title: &str, list: &str) -> String {
         self.tr_args("added-to-playlist", &[("title", title), ("list", list)])
+    }
+    pub fn album_added_to_playlist(self, title: &str, list: &str, n: usize) -> String {
+        self.tr_args(
+            "album-added-to-playlist",
+            &[("n", &n.to_string()), ("title", title), ("list", list)],
+        )
     }
     pub fn track_not_in_favorites(self, id: &str) -> String {
         self.tr_args("track-not-in-favorites", &[("id", id)])

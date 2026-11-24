@@ -40,6 +40,11 @@ pub(crate) const MIXED_SEARCH_CAP: usize = 30;
 /// and the next section below.
 pub(crate) const HOME_STRIP_GAP: f32 = 14.0;
 pub(crate) const TRACK_ROW_H: f32 = 56.0;
+/// Album page song row: one text line and no art, so slimmer than
+/// [`TRACK_ROW_H`].
+pub(crate) const ALBUM_ROW_H: f32 = 48.0;
+/// Album row number cell (doubles as the hover play target).
+pub(crate) const ALBUM_NUM_W: f32 = 28.0;
 /// Sort selector width on playlist detail: fits the longest pick
 /// ("Newest first" at button weight) so the `...` trigger never shifts
 /// when the pick changes.

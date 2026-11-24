@@ -271,6 +271,77 @@ impl AppState {
         .into()
     }
 
+    /// Album page song row: the album header already shows the cover
+    /// and artist, so rows carry neither (YouTube Music style). The
+    /// track number turns into a play button on hover and stands in
+    /// for the art press target; the title plays too. The live song
+    /// shows a speaker in place of its number and an accent title.
+    pub(crate) fn album_track_row(
+        &self,
+        t: &Track,
+        n: usize,
+        play: &RowPlay,
+    ) -> iced::Element<'_, Message> {
+        use iced::widget::text::Wrapping;
+        use iced::widget::{container, mouse_area, row, text};
+        use iced::Fill;
+        let hover_id = track_hover_key("album", &t.id);
+        let hovered = self.hovered_track.as_deref() == Some(hover_id.as_str());
+        let live = self.queue.current().is_some_and(|c| c.id == t.id);
+        let (heart, more) = self.song_actions(t, hovered);
+        let play_msg = play.message(&t.id, n);
+        let num: iced::Element<'_, Message> = if hovered {
+            icon("play", 14.0, iced::Color::WHITE)
+        } else if live {
+            icon("volume", 14.0, ACCENT)
+        } else {
+            text(format!("{n}")).size(13).color(MUTED).into()
+        };
+        let num_cell = row_button(
+            container(num)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .width(iced::Length::Fixed(ALBUM_NUM_W))
+                .height(iced::Length::Fixed(ALBUM_NUM_W)),
+        )
+        .style(row_click)
+        .on_press(play_msg.clone())
+        .padding(0);
+        let title_color = if live { ACCENT } else { iced::Color::WHITE };
+        let title = row_button(
+            text(truncate_title(&t.title, row_title_chars()))
+                .size(14)
+                .color(title_color)
+                .wrapping(Wrapping::None),
+        )
+        .style(row_click)
+        .on_press(play_msg)
+        .padding(0);
+        mouse_area(
+            container(
+                row![
+                    num_cell,
+                    container(title).width(Fill).clip(true),
+                    song_meta_text(self.row_plays(t), self.track_secs(t)),
+                    heart,
+                    more,
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding([4, 8]),
+            )
+            .style(row_bg(hovered))
+            .width(Fill)
+            .height(iced::Length::Fixed(ALBUM_ROW_H))
+            .clip(true)
+            .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_right_press(Message::OpenContext(t.id.clone()))
+        .on_enter(Message::TrackHover(Some(hover_id.clone())))
+        .on_exit(Message::TrackExit(hover_id))
+        .into()
+    }
+
     /// Album card with cover art (search grids, artist pages).
     /// Fixed standard size with single-line truncated labels: long titles
     /// crop instead of stretching the card, so every card aligns.
@@ -283,7 +354,7 @@ impl AppState {
             Some(y) => format!("{} · {}", a.artist, y),
             None => a.artist.clone(),
         };
-        row_button(
+        let card = row_button(
             column![
                 self.art_thumb(cover.as_deref(), HOME_PICK_ART),
                 column![
@@ -308,8 +379,12 @@ impl AppState {
         .padding(0)
         .width(iced::Length::Fixed(HOME_CARD_W))
         .height(iced::Length::Fixed(HOME_CARD_H))
-        .clip(true)
-        .into()
+        .clip(true);
+        // Right-click opens the album menu wherever the card sits
+        // (search grid, artist page).
+        iced::widget::mouse_area(card)
+            .on_right_press(Message::OpenAlbumMenu(a.id.clone()))
+            .into()
     }
 
     /// Artist card with photo (search grids).
