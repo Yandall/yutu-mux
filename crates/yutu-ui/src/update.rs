@@ -34,8 +34,8 @@ impl AppState {
                 unreachable!("scrobble results are dispatched in update()")
             }
             Message::Navigate(r) => {
-                // Search tab and `/` both land here: focus the top
-                // search field with its query selected for replacing.
+                // Search tab lands here: focus the top search field
+                // with its query selected for replacing.
                 let focus = if r == Route::Search {
                     Self::focus_search_select_all()
                 } else {
@@ -3134,6 +3134,7 @@ impl AppState {
                 self.pl_hover = None;
             }
             Message::FocusProbe => return Self::focus_probe(),
+            Message::FocusSearch => return Self::focus_search_select_all(),
             Message::SearchFocused(f) => {
                 self.search_focused = f;
             }

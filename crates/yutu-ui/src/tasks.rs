@@ -1151,7 +1151,7 @@ impl AppState {
     }
 
     /// Focus the top search field and select its whole query, so the
-    /// Search tab and the `/` key let typing replace it at once (an
+    /// Search tab and the `/` key (which keeps the page) let typing replace it at once (an
     /// empty field just gets the caret). Probes focus after so the
     /// pill takes its expanded width.
     pub(crate) fn focus_search_select_all() -> iced::Task<Message> {

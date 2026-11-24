@@ -600,7 +600,7 @@ impl AppState {
                     Some(Message::TogglePause)
                 }
                 iced::keyboard::Key::Character(" ") => Some(Message::TogglePause),
-                iced::keyboard::Key::Character("/") => Some(Message::Navigate(Route::Search)),
+                iced::keyboard::Key::Character("/") => Some(Message::FocusSearch),
                 iced::keyboard::Key::Character("n") => Some(Message::Next),
                 iced::keyboard::Key::Character("p") => Some(Message::Prev),
                 iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
