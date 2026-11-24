@@ -12364,7 +12364,7 @@ fn playlist_heads_follow_library_order() {
     // Lookups clone only the asked playlist.
     assert_eq!(s.find_playlist("u1").map(|p| p.tracks.len()), Some(2));
     assert!(s.find_playlist("nope").is_none());
-
+}
 
 /// Album page fixture: a searched album whose live tracklist carries
 /// the album cover, one song already known from search as a music

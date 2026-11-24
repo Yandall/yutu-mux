@@ -4755,22 +4755,22 @@ impl AppState {
                     let key = Self::album_submenu_key(album_id);
                     if self.submenu_playlists_for.as_deref() == Some(key.as_str()) {
                         let fly_rows: Vec<iced::Element<'_, Message>> = self
-                            .all_playlists()
-                            .iter()
+                            .playlist_heads()
+                            .into_iter()
                             .map(|pl| {
-                                let done = self.album_in_playlist(&pl.id, &album_menu_tracks);
+                                let done = self.album_in_playlist(pl.id, &album_menu_tracks);
                                 let sub = if done {
                                     self.language.flyout_all_added()
                                 } else {
                                     self.language.flyout_tap_add()
                                 };
                                 self.flyout_row(
-                                    &pl.id,
-                                    &pl.title,
+                                    pl.id,
+                                    pl.title,
                                     sub,
                                     done,
                                     Message::AddAlbumToPlaylist {
-                                        playlist_id: pl.id.clone(),
+                                        playlist_id: pl.id.to_string(),
                                         album_id: album_id.clone(),
                                     },
                                 )
