@@ -350,12 +350,34 @@ pub(crate) async fn resolve_stream_url(video_id: &str) -> Result<String, String>
 /// `yutu_core::resolve_audio_url` on the blocking pool: the sidecar
 /// takes seconds (two runs when the pinned client fails), which on an
 /// async worker would stall it and starve the caller's timeout.
+/// A cookie session (read from the secure store on that same thread,
+/// never kept in app state) asks for Premium 256 kbps audio first;
+/// without one, or when that fails, it is the anonymous path.
 pub(crate) async fn ytdlp_resolve(bin: &str, video_id: &str) -> Result<String, String> {
     let (bin, id) = (bin.to_string(), video_id.to_string());
-    tokio::task::spawn_blocking(move || yutu_core::resolve_audio_url(&bin, &id))
-        .await
-        .map_err(|e| format!("stream resolver stopped: {e}"))?
-        .map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || {
+        let session = playback_session();
+        yutu_core::resolve_audio_url_with_session(&bin, &id, session.as_ref())
+    })
+    .await
+    .map_err(|e| format!("stream resolver stopped: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
+/// The signed-in cookie session for Premium audio, if any.
+#[cfg(feature = "innertube")]
+fn playback_session() -> Option<yutu_core::CookieAuth> {
+    if !crate::storage::cookie_session_exists() {
+        return None;
+    }
+    let header = crate::storage::load_cookie_header().ok()?;
+    yutu_core::CookieAuth::from_header_str(&header).ok()
+}
+
+/// Offline builds have no sign-in, so playback is always anonymous.
+#[cfg(not(feature = "innertube"))]
+fn playback_session() -> Option<yutu_core::CookieAuth> {
+    None
 }
 
 /// Best-effort warm-up on the bytes path: a still-refused URL falls

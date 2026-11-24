@@ -4,11 +4,13 @@
 
 ### Added
 
+- YouTube Premium accounts signed in with cookies now stream in 256 kbps
+  AAC; other accounts keep the standard 128 kbps (#133).
 - Romaji under Japanese lyrics, so you can sing along without reading
   Japanese, also in the mini player: turn it on in Settings or with
-  the button by the lyrics.
+  the button by the lyrics (#139).
 - The first time romaji is turned on, a Japanese dictionary is
-  downloaded once (about 46 MB).
+  downloaded once (about 46 MB) (#139).
 
 ### Changed
 
@@ -23,10 +25,16 @@
   and grey text is no longer thin and blurry.
 - Importing or syncing a YouTube Music playlist with more than 100 songs
   no longer stops at the first 100.
+- A brief network hiccup during sync no longer cuts a playlist short:
+  the page is retried, and the saved copy is kept if it still fails.
 - An imported YouTube Music playlist keeps its original name when you
   leave the name empty, instead of "Imported playlist".
 - Songs that showed no length (some search results, artist top songs
   and playlist rows) now show it without having to play them first.
+- Imported YouTube Music playlists swap music videos for their song
+  versions again, including more loosely titled uploads.
+- Songs from imported or synced YouTube Music playlists show their real
+  album and duration (the album showed the song length).
 
 ## 0.2.1 - 2026-11-17
 

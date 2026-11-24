@@ -4,6 +4,7 @@ pub mod app_log;
 pub mod auth;
 pub mod backend;
 pub mod control;
+mod cookie_jar;
 pub mod discovery;
 pub mod history;
 #[cfg(feature = "innertube")]
@@ -153,7 +154,9 @@ pub use update::{
     update_scratch_name, AssetKind, DownloadedAsset, Relaunch, UpdateAsset, UpdateInfo,
     RELEASES_API_URL, RELEASES_PAGE_URL,
 };
-pub use ytdlp::{download_audio_bytes, find_yt_dlp, resolve_audio_url};
+pub use ytdlp::{
+    download_audio_bytes, find_yt_dlp, resolve_audio_url, resolve_audio_url_with_session,
+};
 #[cfg(feature = "innertube")]
 pub mod ytm_token;
 #[cfg(feature = "innertube")]
