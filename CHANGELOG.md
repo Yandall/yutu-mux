@@ -8,7 +8,7 @@
   Japanese, also in the mini player: turn it on in Settings or with
   the button by the lyrics.
 - The first time romaji is turned on, a Japanese dictionary is
-  downloaded once (about 13 MB).
+  downloaded once (about 46 MB).
 
 ### Changed
 

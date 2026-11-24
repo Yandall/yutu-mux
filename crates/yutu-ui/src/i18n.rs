@@ -819,6 +819,9 @@ impl Language {
     pub fn lyrics_romaji(self) -> String {
         self.tr("lyrics-romaji")
     }
+    pub fn lyrics_romaji_tooltip(self) -> String {
+        self.tr("lyrics-romaji-tooltip")
+    }
     pub fn lyrics_romaji_hint(self) -> String {
         self.tr("lyrics-romaji-hint")
     }

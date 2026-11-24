@@ -38,11 +38,13 @@ tar = { version = "=0.4.46", optional = true }
 # scrobbling persistence is not feature-gated, and headless machines use
 # the keychain-error paths (no compile-time system deps on Linux).
 keyring = "4"
-# Japanese lyrics romanization: morphological analysis over IPADIC
-# (MIT; the dictionary itself is downloaded and built at runtime, see
-# romaji.rs). No default features: no embedded dictionaries, no
-# build-time downloads. `mmap` keeps the built files out of the heap.
-lindera = { version = "=6.2.0", default-features = false, features = ["mmap"], optional = true }
+# Japanese lyrics romanization: morphological analysis over UniDic
+# (lindera MIT, UniDic BSD-3-Clause). No default features: no embedded
+# dictionaries, no build-time downloads (the prebuilt dictionary is
+# downloaded at runtime, see romaji.rs). `mmap` keeps it out of the heap.
+lindera = { version = "=7.0.0", default-features = false, features = ["mmap"], optional = true }
+# Unpacks the prebuilt dictionary zip (deflate only, same as lindera's).
+zip = { version = "=9.0.0", default-features = false, features = ["deflate-flate2"], optional = true }
 
 [features]
 innertube = ["dep:ytmapi-rs", "dep:tokio", "dep:reqwest", "dep:futures", "dep:sha1"]
@@ -55,7 +57,8 @@ submit = ["dep:reqwest", "dep:tokio"]
 update = ["dep:reqwest", "dep:tokio", "dep:sha2", "dep:flate2", "dep:tar"]
 # Japanese lyrics romanization (romaji under each line), dictionary
 # fetched on first use.
-romaji = ["dep:lindera", "dep:reqwest", "dep:tokio", "dep:sha2", "dep:flate2", "dep:tar"]
+# flate2 picks the zlib backend (rust_backend) zip inflates with.
+romaji = ["dep:lindera", "dep:reqwest", "dep:tokio", "dep:sha2", "dep:zip", "dep:flate2"]
 # Test-only mock backend + fixtures (never in release binaries): enabled
 # via dev-dependencies by crates whose tests use `MockBackend`.
 test-fixtures = []

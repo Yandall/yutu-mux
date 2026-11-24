@@ -208,7 +208,7 @@ impl AppState {
     pub(crate) fn romaji_settings(&self) -> iced::Element<'_, Message> {
         #[cfg(feature = "romaji")]
         {
-            use iced::widget::{column, text, toggler};
+            use iced::widget::{column, container, row, text, toggler, tooltip};
             let note = match self.romaji_setup {
                 RomajiSetup::Preparing => self.language.lyrics_romaji_preparing(),
                 RomajiSetup::Failed => self.language.lyrics_romaji_failed(),
@@ -219,11 +219,31 @@ impl AppState {
             } else {
                 MUTED
             };
+            // Romaji is machine-made: the info tooltip says so, so a
+            // wrong reading is no surprise.
+            let info = tooltip(
+                btn_icon("info", 14.0, MUTED),
+                container(
+                    text(self.language.lyrics_romaji_tooltip())
+                        .size(12)
+                        .color(iced::Color::WHITE),
+                )
+                .style(floating_panel_bg)
+                .padding([8, 10])
+                .max_width(260),
+                tooltip::Position::Top,
+            )
+            .gap(6);
             column![
-                toggler(self.lyrics_romaji)
-                    .label(self.language.lyrics_romaji())
-                    .on_toggle(Message::SetLyricsRomaji)
-                    .style(red_toggle),
+                row![
+                    toggler(self.lyrics_romaji)
+                        .label(self.language.lyrics_romaji())
+                        .on_toggle(Message::SetLyricsRomaji)
+                        .style(red_toggle),
+                    info,
+                ]
+                .spacing(8)
+                .align_y(iced::alignment::Vertical::Center),
                 text(note).size(12).color(note_color),
             ]
             .spacing(4)

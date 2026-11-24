@@ -60,13 +60,13 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 - Install: `sudo pacman -S mpv` / `sudo apt install libmpv-dev` /
   `brew install mpv`.
 
-## Runtime data: IPADIC (NAIST license, downloaded on demand)
+## Runtime data: UniDic (BSD-3-Clause, downloaded on demand)
 
-- Romaji under Japanese lyrics uses the IPADIC dictionary
-  (mecab-ipadic 2.7.0, Copyright 2000-2003 Nara Institute of Science
-  and Technology, permissive NAIST/ICOT terms). It is not bundled: the
-  app downloads it (pinned SHA-256) only when the user turns romaji on,
-  and builds it into its data dir (`romaji/`).
+- Romaji under Japanese lyrics uses UniDic 2.1.2 (Copyright (c)
+  2011-2017, The UniDic Consortium, BSD-3-Clause), as prebuilt by the
+  lindera project. It is not bundled: the app downloads it (pinned
+  SHA-256) only when the user turns romaji on, and unpacks it into its
+  data dir (`romaji/`), where the dictionary's own NOTICE.txt is kept.
 
 ## Runtime sidecar: yt-dlp (Unlicense, unlinked)
 
