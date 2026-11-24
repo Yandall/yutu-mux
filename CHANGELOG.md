@@ -6,6 +6,11 @@
 
 - YouTube Premium accounts signed in with cookies now stream in 256 kbps
   AAC; other accounts keep the standard 128 kbps (#133).
+- Romaji under Japanese lyrics, so you can sing along without reading
+  Japanese, also in the mini player: turn it on in Settings or with
+  the button by the lyrics (#139).
+- The first time romaji is turned on, a Japanese dictionary is
+  downloaded once (about 46 MB) (#139).
 - Album pages get a more button with Play, Shuffle, Add to queue, Add
   to playlist, Start mix and Go to artist.
 - Right-click any album card, or the album shown as top search result,

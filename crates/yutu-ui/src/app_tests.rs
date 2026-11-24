@@ -8826,6 +8826,7 @@ fn layout_snapshots() {
         "album",
         "settings",
         "nowplaying",
+        "romaji",
         "history",
         "library",
         "queue",
@@ -8915,6 +8916,51 @@ fn layout_snapshots() {
                                 .iter()
                                 .enumerate()
                                 .map(|(i, v)| yutu_core::LyricLine {
+                                    start_ms: i as u64 * 8_000,
+                                    text: (*v).into(),
+                                })
+                                .collect(),
+                            instrumental: false,
+                        },
+                    );
+                    s.position_secs = 25.0;
+                }
+                "romaji" => {
+                    s.drawer_open = true;
+                    let url = s.queue.current().and_then(|t| s.hero_art_for(t)).unwrap();
+                    fake_backdrop(&mut s, url);
+                    // Japanese synced lyrics with romaji under each
+                    // Japanese verse (the English one has none).
+                    let id = s.queue.current().unwrap().id.clone();
+                    let verses = [
+                        ("夜に駆ける", Some("yoru ni kakeru")),
+                        (
+                            "沈むように溶けてゆくように",
+                            Some("shizumu you ni toketeyuku you ni"),
+                        ),
+                        ("", None),
+                        (
+                            "僕はずっと君を待っていた",
+                            Some("boku wa zutto kimi o matteita"),
+                        ),
+                        ("Oh yeah", None),
+                        (
+                            "夢ならばどれほどよかったでしょう",
+                            Some("yume naraba dorehodo yokatta deshou"),
+                        ),
+                    ];
+                    for (v, r) in verses {
+                        s.romaji_lines.insert(v.into(), r.map(Into::into));
+                    }
+                    s.lyrics_romaji = true;
+                    s.lyrics_cache.insert(
+                        (id, LyricsProvider::Lrclib),
+                        yutu_core::LyricsResult {
+                            plain: String::new(),
+                            synced: verses
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (v, _))| yutu_core::LyricLine {
                                     start_ms: i as u64 * 8_000,
                                     text: (*v).into(),
                                 })
@@ -11727,7 +11773,7 @@ fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
     ];
     let center = MINI_LYRICS_H / 2.0;
     // Mid-song: the current line sits on the picker's center band.
-    let b = wheel_layout(&visible, Some(2));
+    let b = wheel_layout(&visible, &[], Some(2));
     let cur = b.iter().find(|l| l.bold).unwrap();
     assert_eq!(cur.index, 2);
     assert!((cur.top + cur.height / 2.0 - center).abs() < 0.5);
@@ -11736,10 +11782,10 @@ fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
     assert!(alpha(1) < 1.0 && alpha(0) < alpha(1));
     assert!(b.windows(2).all(|w| w[0].top < w[1].top));
     // The first line of a song stays inside the ticker padding.
-    let start = wheel_layout(&visible, Some(0));
+    let start = wheel_layout(&visible, &[], Some(0));
     assert!(start.first().unwrap().top >= 16.0 - 0.5);
     // Glide from line 1 to line 2: p = 0 is the old wheel, p = 1 the new.
-    let a = wheel_layout(&visible, Some(1));
+    let a = wheel_layout(&visible, &[], Some(1));
     let at_start = wheel_frame(&a, &b, 0.0);
     let at_end = wheel_frame(&a, &b, 1.0);
     for la in &a {
@@ -11765,7 +11811,7 @@ fn mini_wheel_centers_the_current_line_and_glides_between_slots() {
         assert!(f.alpha.abs() < 0.01);
     }
     // Before the first verse: a centered block of upcoming lines.
-    let before = wheel_layout(&visible, None);
+    let before = wheel_layout(&visible, &[], None);
     assert!(before.iter().all(|l| !l.bold));
     let top = before.first().unwrap().top;
     let bottom = before.last().map(|l| l.top + l.height).unwrap();
@@ -11968,13 +12014,13 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
     // A long current verse is never cut: whole, bold, smaller than
     // the 21px of a short verse, and the layout fits the ticker.
     let visible = vec![long, long, long, "short", long];
-    let lines = ticker_lines(&visible, Some(2));
+    let lines = ticker_lines(&visible, &[], Some(2));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
     assert_eq!(cur.0, long, "the verse stays whole");
     assert!(cur.1 < 21.0);
     assert!(ticker_content_height(&lines) <= ticker_budget());
     // Neighbors: one line each, ellipsized when too wide.
-    for (text, size, d) in lines.iter().filter(|l| l.2 != 0) {
+    for (text, size, d, _) in lines.iter().filter(|l| l.2 != 0) {
         assert_eq!(*size, ticker_neighbor_size(*d));
         assert_eq!(fit_lines(text, w, *size, 1), *text, "{d} fits one line");
         if text != "short" {
@@ -11983,19 +12029,19 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
     }
     // A much longer verse gives up neighbor lines instead of words.
     let visible = vec![long, long, longer, long, long];
-    let lines = ticker_lines(&visible, Some(2));
+    let lines = ticker_lines(&visible, &[], Some(2));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
     assert_eq!(cur.0, longer, "the verse stays whole");
     assert!(lines.len() < 5, "fewer neighbors make room");
     assert!(ticker_content_height(&lines) <= ticker_budget());
     // A short current verse keeps the full size and all five slots.
     let visible = vec![long, long, long, "short", long];
-    let lines = ticker_lines(&visible, Some(3));
+    let lines = ticker_lines(&visible, &[], Some(3));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
     assert_eq!((cur.0.as_str(), cur.1), ("short", 21.0));
     assert_eq!(lines.len(), 4, "index 3 of 5: two above, one below");
     // Before the first verse: upcoming lines only, never panics.
-    assert_eq!(ticker_lines(&visible, None).len(), 3);
+    assert_eq!(ticker_lines(&visible, &[], None).len(), 3);
     // Rendering long lines never panics (synced and plain).
     let mut s = synced_state(6.0);
     let mut entry = s.lyrics_cache[&("m1".to_string(), LyricsProvider::Lrclib)].clone();
@@ -12140,6 +12186,8 @@ fn mini_player_snapshots() {
         ("mini-windows-lyrics", true, true, MiniPlatform::Windows),
         // A third of the way through a wheel glide to the next line.
         ("mini-wheel-glide", false, true, MiniPlatform::Hyprland),
+        // Japanese verses with romaji under each (the option on).
+        ("mini-romaji", false, true, MiniPlatform::Hyprland),
     ] {
         let mut s = synced_state(6.0);
         let mut t = mk_track("pip1", "Paper Lanterns", "Mara Vell");
@@ -12158,6 +12206,15 @@ fn mini_player_snapshots() {
                 "carry everything we could not say before the river took the words away",
                 "Hold the river, hold it steady, hold it till the morning pulls us in",
                 "till the morning pulls us in",
+            ]
+        } else if name == "mini-romaji" {
+            [
+                "夜に駆ける",
+                "沈むように溶けてゆくように",
+                "二人だけの空が広がる夜に",
+                "Oh yeah",
+                "僕はずっと君を待っていた",
+                "夢ならばどれほどよかったでしょう",
             ]
         } else if name == "mini-long-lyrics" || name == "mini-plain-lyrics" {
             [
@@ -12204,6 +12261,19 @@ fn mini_player_snapshots() {
                     instrumental: false,
                 },
             );
+        }
+        if name == "mini-romaji" {
+            for (v, r) in verses.iter().zip([
+                Some("yoru ni kakeru"),
+                Some("shizumu you ni toketeyuku you ni"),
+                Some("futari dake no sora ga hirogaru yoru ni"),
+                None,
+                Some("boku wa zutto kimi o matteita"),
+                Some("yume naraba dorehodo yokatta deshou"),
+            ]) {
+                s.romaji_lines.insert((*v).into(), r.map(Into::into));
+            }
+            s.lyrics_romaji = true;
         }
         // A third of the way in, on the third verse.
         s.position_secs = 67.0;
@@ -12364,6 +12434,170 @@ fn playlist_heads_follow_library_order() {
     // Lookups clone only the asked playlist.
     assert_eq!(s.find_playlist("u1").map(|p| p.tracks.len()), Some(2));
     assert!(s.find_playlist("nope").is_none());
+}
+
+/// Japanese synced fixture: one Japanese verse, one English verse.
+fn japanese_lyrics_state() -> AppState {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    s.queue.push(mk_track("m1", "T", "A"));
+    s.lyrics_cache.insert(
+        ("m1".into(), LyricsProvider::Lrclib),
+        yutu_core::LyricsResult {
+            plain: String::new(),
+            synced: vec![
+                yutu_core::LyricLine {
+                    start_ms: 0,
+                    text: "君の名は".into(),
+                },
+                yutu_core::LyricLine {
+                    start_ms: 5000,
+                    text: "Oh yeah".into(),
+                },
+            ],
+            instrumental: false,
+        },
+    );
+    // What the analyzer computes when lyrics land (no dictionary in
+    // unit tests): English lines map to no romaji.
+    s.romaji_lines
+        .insert("君の名は".into(), Some("kimi no na wa".into()));
+    s.romaji_lines.insert("Oh yeah".into(), None);
+    s
+}
+
+#[test]
+fn romaji_shows_only_while_the_option_is_on() {
+    let mut s = japanese_lyrics_state();
+    assert!(s.lyrics_shown_japanese("m1"));
+    assert_eq!(s.romaji_line("君の名は"), None, "off by default");
+    let _ = s.update(Message::SetLyricsRomaji(true));
+    assert_eq!(s.romaji_line("君の名は"), Some("kimi no na wa"));
+    assert_eq!(s.romaji_line(" 君の名は "), Some("kimi no na wa"));
+    assert_eq!(s.romaji_line("Oh yeah"), None, "English lines get none");
+    let _ = s.update(Message::SetLyricsRomaji(false));
+    assert_eq!(s.romaji_line("君の名は"), None);
+}
+
+#[test]
+fn romaji_line_renders_under_the_verse() {
+    let mut s = japanese_lyrics_state();
+    let _ = s.update(Message::Navigate(Route::Lyrics("m1".into())));
+    let size = iced::Size::new(1280.0, 800.0);
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    assert!(sim.find("君の名は").is_ok());
+    assert!(sim.find("kimi no na wa").is_err(), "hidden while off");
+    drop(sim);
+    let _ = s.update(Message::SetLyricsRomaji(true));
+    let mut sim = iced_test::Simulator::with_size(iced::Settings::default(), size, s.view());
+    assert!(sim.find("君の名は").is_ok(), "the original stays");
+    assert!(sim.find("kimi no na wa").is_ok());
+}
+
+#[test]
+fn romaji_switch_survives_restart() {
+    let s = test_state();
+    let path = s.library_path.clone();
+    let mut s = s;
+    let _ = s.update(Message::SetLyricsRomaji(true));
+    let (s2, _) = AppState::with_library_path(path.clone());
+    assert!(s2.lyrics_romaji);
+    let mut s2 = s2;
+    let _ = s2.update(Message::SetLyricsRomaji(false));
+    let (s3, _) = AppState::with_library_path(path);
+    assert!(!s3.lyrics_romaji);
+}
+
+#[test]
+fn non_japanese_lyrics_have_no_romaji_toggle() {
+    let mut s = japanese_lyrics_state();
+    s.lyrics_cache.insert(
+        ("m1".into(), LyricsProvider::Lrclib),
+        yutu_core::LyricsResult {
+            plain: "我爱你\nhello".into(),
+            synced: vec![],
+            instrumental: false,
+        },
+    );
+    assert!(
+        !s.lyrics_shown_japanese("m1"),
+        "kanji alone reads as Chinese"
+    );
+}
+
+#[test]
+fn romaji_rows_estimate_taller() {
+    let plain = AppState::lyric_row_h(10, None, 0, 600.0);
+    let with = AppState::lyric_row_h(10, Some(12), 0, 600.0);
+    assert!(with > plain + 10.0, "{with} vs {plain}");
+    // The follow math reads romaji only while the option is on.
+    let mut s = japanese_lyrics_state();
+    let off = s.lyric_center_y("m1", 1).unwrap();
+    let _ = s.update(Message::SetLyricsRomaji(true));
+    let on = s.lyric_center_y("m1", 1).unwrap();
+    assert!(on > off, "romaji under verse 0 pushes verse 1 down");
+}
+
+#[cfg(feature = "romaji")]
+#[test]
+fn enabling_romaji_starts_setup_once() {
+    let mut s = test_state();
+    let _ = s.update(Message::SetLyricsRomaji(true));
+    assert_eq!(s.romaji_setup, RomajiSetup::Preparing);
+    // A failure keeps the switch on and shows the retry note.
+    let _ = s.update(Message::RomajiReady(Err("offline".into())));
+    assert!(s.lyrics_romaji);
+    assert_eq!(s.romaji_setup, RomajiSetup::Failed);
+    // Flipping it back on retries.
+    let _ = s.update(Message::SetLyricsRomaji(false));
+    let _ = s.update(Message::SetLyricsRomaji(true));
+    assert_eq!(s.romaji_setup, RomajiSetup::Preparing);
+}
+
+#[test]
+fn mini_ticker_fits_romaji_under_each_verse() {
+    use crate::mini_player::{
+        ticker_budget, ticker_content_height, ticker_lines, wheel_frame, wheel_layout,
+        MINI_LYRICS_H,
+    };
+    let visible = [
+        "夜に駆ける",
+        "沈むように",
+        "溶けてゆくように",
+        "Oh yeah",
+        "僕は君を",
+    ];
+    let romaji = [
+        Some("yoru ni kakeru"),
+        Some("shizumu you ni"),
+        Some("toketeyuku you ni"),
+        None,
+        Some("boku wa kimi o"),
+    ];
+    let plain = ticker_lines(&visible, &[], Some(2));
+    let lines = ticker_lines(&visible, &romaji, Some(2));
+    let cur = lines.iter().find(|l| l.2 == 0).unwrap();
+    assert_eq!(cur.0, "溶けてゆくように", "the verse stays whole");
+    assert_eq!(cur.3.as_deref(), Some("toketeyuku you ni"));
+    assert!(ticker_content_height(&lines) <= ticker_budget());
+    assert!(lines.len() <= plain.len(), "romaji takes neighbor room");
+    // English neighbors get no second line.
+    assert!(lines
+        .iter()
+        .filter(|l| l.0 == "Oh yeah")
+        .all(|l| l.3.is_none()));
+    // The wheel slot grows with the romaji and stays centered.
+    let with = wheel_layout(&visible, &romaji, Some(2));
+    let without = wheel_layout(&visible, &[], Some(2));
+    let h = |w: &[crate::mini_player::WheelLine]| w.iter().find(|l| l.bold).unwrap().height;
+    assert!(h(&with) > h(&without));
+    let c = with.iter().find(|l| l.bold).unwrap();
+    assert!((c.top + c.height / 2.0 - MINI_LYRICS_H / 2.0).abs() < 0.5);
+    // A glide carries the romaji with its line.
+    let a = wheel_layout(&visible, &romaji, Some(1));
+    let mid = wheel_frame(&a, &with, 0.5);
+    let l1 = mid.iter().find(|l| l.index == 1).unwrap();
+    assert_eq!(l1.romaji.as_deref(), Some("shizumu you ni"));
 }
 
 /// Album page fixture: a searched album whose live tracklist carries

@@ -497,6 +497,12 @@ pub enum Message {
     /// and lyrics page `< >` stepper. Pins the viewed track to strict
     /// display (no automatic fallback) and tops up missing fetches.
     CycleLyricsProvider(i8),
+    /// Romaji under Japanese lyrics on/off (Settings toggle, lyrics
+    /// stepper quick toggle, `ctl lyrics romaji`).
+    SetLyricsRomaji(bool),
+    /// Romaji dictionary setup finished (analyzer or failure text).
+    #[cfg(feature = "romaji")]
+    RomajiReady(Result<RomanizerHandle, String>),
     StartRadio(String),
     PlayAll,
     CreatePlaylist(String),

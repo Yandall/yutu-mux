@@ -88,6 +88,8 @@ pub enum Command {
     Float(Option<bool>),
     /// Mini player window (picture-in-picture).
     Mini(MiniArg),
+    /// Romaji under Japanese lyrics (`None` toggles).
+    LyricsRomaji(Option<bool>),
     /// Save the session and close the app.
     Quit,
 }
@@ -158,6 +160,7 @@ UI:
   mini [open|close|restore]          mini player (bare: toggle)
   mini lyrics [on|off]               mini player lyrics ticker
   mini screenshot [path.png]         capture the mini player window
+  lyrics romaji [on|off]             romaji under Japanese lyrics
   quit                     save the session and close the app
 
 Client flags:
@@ -275,6 +278,11 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
                 }
             },
         ),
+        "lyrics" => match args.get(1).map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("romaji") => Command::LyricsRomaji(on_off(args.get(2))?),
+            Some(other) => return Err(format!("unknown lyrics action `{other}` (romaji)")),
+            None => return Err("missing lyrics action (romaji)".into()),
+        },
         "quit" | "exit" => Command::Quit,
         other => return Err(format!("unknown command `{other}` (try `help`)")),
     };
@@ -485,6 +493,16 @@ mod tests {
             ))))
         );
         assert!(parse_command(&words("mini fly")).is_err());
+        assert_eq!(
+            parse_command(&words("lyrics romaji on")),
+            Ok(Command::LyricsRomaji(Some(true)))
+        );
+        assert_eq!(
+            parse_command(&words("lyrics romaji")),
+            Ok(Command::LyricsRomaji(None))
+        );
+        assert!(parse_command(&words("lyrics")).is_err());
+        assert!(parse_command(&words("lyrics karaoke")).is_err());
     }
 
     #[test]
@@ -557,6 +575,7 @@ mod tests {
             "screenshot",
             "float",
             "mini",
+            "lyrics romaji",
             "quit",
         ] {
             assert!(HELP.contains(w), "help misses {w}");

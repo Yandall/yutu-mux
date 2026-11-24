@@ -122,6 +122,16 @@ pub struct AppState {
     /// never falls back. Fresh song loads are automatic until the user
     /// pins them (capped; a dropped pin falls back to automatic).
     pub(crate) lyrics_manual: HashSet<String>,
+    /// Romaji under Japanese lyrics (persisted `lyrics_romaji` pref).
+    pub(crate) lyrics_romaji: bool,
+    /// Dictionary setup progress for the romaji option.
+    pub(crate) romaji_setup: RomajiSetup,
+    /// Romanized lyric lines keyed by line text (`None`: nothing to
+    /// romanize), filled when lyrics land, read by every lyrics view.
+    pub(crate) romaji_lines: HashMap<String, Option<String>>,
+    /// Loaded analyzer (set up on first enable, see `romaji.rs`).
+    #[cfg(feature = "romaji")]
+    pub(crate) romanizer: Option<RomanizerHandle>,
     /// Lyrics follow: auto-scroll the drawer so the current verse stays
     /// centered. Manual scrolling disengages (proximity, seek, or track
     /// change re-engages); never persisted.

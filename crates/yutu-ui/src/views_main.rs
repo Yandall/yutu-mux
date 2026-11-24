@@ -1415,14 +1415,24 @@ impl AppState {
     /// treat the result as a centering hint, never truth.
     /// `distance` = lines away from the current one (sizes follow
     /// [`crate::mini_player::verse_style`], default 1.3 line height).
-    pub(crate) fn lyric_row_h(text_len: usize, distance: usize, col_w: f32) -> f32 {
+    /// `romaji_len` = chars of the romaji line under the verse (2px
+    /// gap plus its own wrapped lines at the smaller size).
+    pub(crate) fn lyric_row_h(
+        text_len: usize,
+        romaji_len: Option<usize>,
+        distance: usize,
+        col_w: f32,
+    ) -> f32 {
         let (size, _, _) = crate::mini_player::verse_style(distance as f32);
         let size = size * LYRICS_VIEW_SCALE;
         let lh = 1.3;
         let avail = (col_w - LYRIC_ROW_CHROME).max(120.0);
-        let per_line = (avail / (size * 0.47)).max(8.0) as usize;
-        let lines = text_len.max(1).div_ceil(per_line);
-        lines as f32 * size * lh + LYRIC_BTN_PAD
+        let wrapped = |len: usize, size: f32| {
+            let per_line = (avail / (size * 0.47)).max(8.0) as usize;
+            len.max(1).div_ceil(per_line) as f32 * size * lh
+        };
+        let romaji = romaji_len.map_or(0.0, |len| 2.0 + wrapped(len, romaji_size(size)));
+        wrapped(text_len, size) + romaji + LYRIC_BTN_PAD
     }
 
     /// Absolute drawer-scroll y that centers verse `at` (index into
@@ -1466,7 +1476,8 @@ impl AppState {
                 continue;
             }
             let current = vi == at;
-            let h = Self::lyric_row_h(l.text.chars().count(), vi.abs_diff(at), col_w);
+            let romaji = self.romaji_line(&l.text).map(|r| r.chars().count());
+            let h = Self::lyric_row_h(l.text.chars().count(), romaji, vi.abs_diff(at), col_w);
             if current {
                 target = Some(y + h / 2.0 - viewport / 2.0);
             }
@@ -1749,12 +1760,16 @@ impl AppState {
                                 .width(Fill)
                                 .into()
                         } else {
-                            text(line.to_string())
-                                .size(13)
-                                .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
-                                .align_x(iced::alignment::Horizontal::Center)
-                                .width(Fill)
-                                .into()
+                            self.verse_with_romaji(
+                                text(line.to_string())
+                                    .size(13)
+                                    .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                                    .align_x(iced::alignment::Horizontal::Center)
+                                    .width(Fill),
+                                line,
+                                13.0,
+                                0.72,
+                            )
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -1791,10 +1806,11 @@ impl AppState {
                     if bold {
                         line = line.font(bold_font());
                     }
+                    let verse = self.verse_with_romaji(line, &l.text, size, alpha);
                     // Id'd wrapper: the drawer follow measures the live
                     // row through it (exact wrap, no estimate).
                     let row_el: iced::Element<'_, Message> = container(
-                        row_button(line)
+                        row_button(verse)
                             .style(glass_row)
                             .on_press(Message::SeekToMs(ms))
                             .padding(4)
@@ -1816,12 +1832,16 @@ impl AppState {
                     .map(str::trim)
                     .filter(|l| !l.is_empty())
                     .map(|l| {
-                        text(l.to_string())
-                            .size(13)
-                            .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
-                            .align_x(iced::alignment::Horizontal::Center)
-                            .width(Fill)
-                            .into()
+                        self.verse_with_romaji(
+                            text(l.to_string())
+                                .size(13)
+                                .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .width(Fill),
+                            l,
+                            13.0,
+                            0.72,
+                        )
                     })
                     .collect::<Vec<_>>(),
             )
@@ -1844,7 +1864,18 @@ impl AppState {
     pub(crate) fn lyrics_provider_stepper(&self, track_id: &str) -> iced::Element<'_, Message> {
         use iced::widget::{button, row, text};
         let label = self.lyrics_shown_provider(track_id).label();
-        let items: Vec<iced::Element<'_, Message>> = vec![
+        // Japanese lyrics add the romaji quick toggle on the right,
+        // mirrored by a spacer so the provider label stays centered.
+        let romaji = cfg!(feature = "romaji") && self.lyrics_shown_japanese(track_id);
+        let mut items: Vec<iced::Element<'_, Message>> = Vec::new();
+        if romaji {
+            items.push(
+                iced::widget::Space::new()
+                    .width(iced::Length::Fixed(ROMAJI_TOGGLE_W))
+                    .into(),
+            );
+        }
+        items.extend::<[iced::Element<'_, Message>; 3]>([
             button(btn_icon("chevron-left", 14.0, MUTED))
                 .style(icon_hover)
                 .on_press(Message::CycleLyricsProvider(-1))
@@ -1861,7 +1892,10 @@ impl AppState {
                 .on_press(Message::CycleLyricsProvider(1))
                 .padding(4)
                 .into(),
-        ];
+        ]);
+        if romaji {
+            items.push(self.romaji_quick_toggle());
+        }
         row(items)
             .spacing(4)
             .align_y(iced::alignment::Vertical::Center)
@@ -3015,6 +3049,7 @@ impl AppState {
                             .then(|| self.select_menu_card(&SelectMenu::LyricsProvider, 240.0));
                         dropdown(face, menu).into()
                     }),
+                    self.romaji_settings(),
                     text(self.language.appearance_section()).size(17),
                     text(self.language.display_font()).size(13),
                     settings_input({

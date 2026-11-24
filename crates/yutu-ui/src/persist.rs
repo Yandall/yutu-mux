@@ -286,7 +286,8 @@ impl AppState {
                 self.lyrics_cache.remove(key);
             }
         }
-        self.lyrics_cache.insert((id, provider), lyrics);
+        self.lyrics_cache.insert((id.clone(), provider), lyrics);
+        self.romanize_cached(&id, provider);
     }
 
     /// Any lyrics fetch in flight for `id` (either provider).
