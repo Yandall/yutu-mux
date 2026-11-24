@@ -3798,6 +3798,16 @@ impl AppState {
                     self.lazy_init_done = true;
                     tasks.push(self.ensure_visible_tasks());
                 }
+                // Lengths for rows whose source sent none (search All,
+                // artist top songs, some playlists): batched probes,
+                // throttled since the scan walks whole lists.
+                if self
+                    .duration_scan_at
+                    .is_none_or(|at| now.duration_since(at).as_secs() >= DURATION_SCAN_SECS)
+                {
+                    self.duration_scan_at = Some(now);
+                    tasks.push(self.duration_tasks());
+                }
                 // Home/Discovery shelves rank the whole catalog on every
                 // view build otherwise; the tick re-ranks the memo only
                 // when its inputs changed (or it aged out), so frames and
@@ -4140,6 +4150,10 @@ impl AppState {
                         }
                     }
                 }
+            }
+            Message::DurationsFetched { requested, found } => {
+                self.apply_durations(requested, found);
+                return iced::Task::none();
             }
             Message::TracksHydrated { requested, tracks } => {
                 // Probes landed (or failed): clear the in-flight marks so a

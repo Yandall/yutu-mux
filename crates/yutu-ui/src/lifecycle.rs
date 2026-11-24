@@ -255,6 +255,9 @@ impl AppState {
             // Ids with a metadata probe in flight (dedups lazy batches
             // across navigations and ticks: no repeat fetch while pending).
             hydrating: HashSet::new(),
+            duration_probing: HashSet::new(),
+            duration_cooldown: HashMap::new(),
+            duration_scan_at: None,
             // First Tick after launch runs the Home lazy batch (startup
             // itself does zero network so the window appears instantly).
             lazy_init_done: false,

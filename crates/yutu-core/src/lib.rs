@@ -24,6 +24,8 @@ pub mod raw_browse;
 #[cfg(feature = "innertube")]
 pub mod raw_lyrics;
 #[cfg(feature = "innertube")]
+pub mod raw_queue;
+#[cfg(feature = "innertube")]
 pub mod raw_search;
 #[cfg(all(test, feature = "innertube"))]
 mod raw_search_tests;
@@ -41,6 +43,19 @@ mod update_install_tests;
 mod update_tests;
 pub mod ytdlp;
 
+/// Builder for the process-wide HTTP clients. The app runs every
+/// request on one tokio runtime, so pooled connections stay valid; each
+/// `#[tokio::test]` has its own runtime, and a connection pooled by a
+/// finished test fails the next one ("error sending request"), so test
+/// builds keep no idle connections.
+#[cfg(any(feature = "innertube", feature = "lyrics"))]
+pub(crate) fn static_client_builder() -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder();
+    #[cfg(test)]
+    let builder = builder.pool_max_idle_per_host(0);
+    builder
+}
+
 /// Shared HTTP client for Innertube POSTs (search, player): one pool per
 /// process instead of one per request (a search fans out to five POSTs,
 /// and a fresh client per POST burns handshakes plus pool memory).
@@ -50,12 +65,27 @@ pub mod ytdlp;
 pub(crate) fn shared_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+        static_client_builder()
             .timeout(std::time::Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
+}
+
+/// Shared `ytmapi-rs` HTTP client: every Innertube connect used to build
+/// its own (`YtMusic::from_auth_token`), re-parsing the system root
+/// certificates and opening fresh connections each time. Same settings
+/// as ytmapi's own default client; clones share one pool.
+#[cfg(feature = "innertube")]
+pub(crate) fn ytm_client() -> ytmapi_rs::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let inner = CLIENT.get_or_init(|| {
+        static_client_builder()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    });
+    ytmapi_rs::Client::new_from_reqwest_client(inner.clone())
 }
 
 #[cfg(feature = "innertube")]

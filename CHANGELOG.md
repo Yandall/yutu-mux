@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- Uses noticeably less memory (about a fifth less in a typical
+  session) and no longer creeps up the longer it runs.
+- Less CPU and network work on the Home page and library panel:
+  connections and recommendations are reused instead of rebuilt.
+
 ### Fixed
 
 - macOS: text on non-Retina screens is drawn slightly heavier, so small
@@ -10,6 +17,8 @@
   no longer stops at the first 100.
 - An imported YouTube Music playlist keeps its original name when you
   leave the name empty, instead of "Imported playlist".
+- Songs that showed no length (some search results, artist top songs
+  and playlist rows) now show it without having to play them first.
 - Imported YouTube Music playlists swap music videos for their song
   versions again, including more loosely titled uploads.
 - Songs from imported or synced YouTube Music playlists show their real

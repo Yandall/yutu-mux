@@ -264,6 +264,131 @@ impl AppState {
         self.cache_tracks_background(vec![learned]);
     }
 
+    /// Rows the current page (plus the queue panel) shows that have no
+    /// known length, deduped in display order and capped: flat search
+    /// items, artist top songs and some playlist rows arrive without a
+    /// duration. Skips ids already probing or cooling down.
+    #[cfg_attr(not(feature = "innertube"), allow(dead_code))]
+    pub(crate) fn duration_candidates(&self) -> Vec<String> {
+        const CAP: usize = 200;
+        let mut rows: Vec<Track> = match &self.route {
+            Route::Search => {
+                let mut v = self.all_results.tracks.clone();
+                v.extend(self.results.tracks.iter().cloned());
+                v
+            }
+            Route::PlaylistDetail(id) => {
+                self.find_playlist(id).map(|p| p.tracks).unwrap_or_default()
+            }
+            Route::Artist(id) => self.artist_display_tracks(id),
+            Route::Album(id) => self.album_display_tracks(id),
+            Route::RemotePlaylist(id) => self
+                .remote_playlist_live
+                .get(id)
+                .map(|ids| ids.iter().filter_map(|i| self.find_track(i)).collect())
+                .unwrap_or_default(),
+            Route::History => self
+                .history_full
+                .iter()
+                .take(CAP)
+                .filter_map(|e| self.find_track(&e.track_id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        rows.extend(self.queue.items().iter().cloned());
+        rows.extend(self.autoplay.iter().cloned());
+        let mut seen = HashSet::new();
+        rows.into_iter()
+            .filter(|t| {
+                self.track_secs(t) == 0
+                    && !self.duration_probing.contains(&t.id)
+                    && !Self::cooled(&self.duration_cooldown, &t.id)
+                    && seen.insert(t.id.clone())
+            })
+            .map(|t| t.id)
+            .take(CAP)
+            .collect()
+    }
+
+    /// Fetch lengths for [`Self::duration_candidates`] in batched
+    /// requests (one per [`yutu_core::raw_queue::QUEUE_BATCH_MAX`] ids),
+    /// so every row shows its length without being played first.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn duration_tasks(&mut self) -> iced::Task<Message> {
+        let ids = self.duration_candidates();
+        if ids.is_empty() {
+            return iced::Task::none();
+        }
+        let mut tasks = Vec::new();
+        for chunk in ids.chunks(yutu_core::raw_queue::QUEUE_BATCH_MAX) {
+            let requested = chunk.to_vec();
+            self.duration_probing.extend(requested.iter().cloned());
+            tasks.push(iced::Task::perform(
+                async move {
+                    let found = match yutu_core::raw_queue::raw_queue_durations(&requested).await {
+                        Ok(found) => found,
+                        Err(e) => {
+                            yutu_core::app_log::warn("yutu-duration", format_args!("{e}"));
+                            Vec::new()
+                        }
+                    };
+                    (requested, found)
+                },
+                |(requested, found)| Message::DurationsFetched { requested, found },
+            ));
+        }
+        iced::Task::batch(tasks)
+    }
+
+    /// Offline builds have no length source but playback itself.
+    #[cfg(not(feature = "innertube"))]
+    pub(crate) fn duration_tasks(&mut self) -> iced::Task<Message> {
+        iced::Task::none()
+    }
+
+    /// Apply a length probe: learn every answered length, cool down the
+    /// ids that came back without one.
+    pub(crate) fn apply_durations(&mut self, requested: Vec<String>, found: Vec<(String, u32)>) {
+        for id in &requested {
+            self.duration_probing.remove(id);
+        }
+        let mut learned = Vec::new();
+        for (id, secs) in &found {
+            if *secs == 0 || self.catalog.get(id).is_some_and(|c| c.duration_secs > 0) {
+                continue;
+            }
+            let Some(mut t) = self.find_track(id).or_else(|| self.stored_row(id)) else {
+                continue;
+            };
+            t.duration_secs = *secs;
+            self.catalog.insert(t.id.clone(), t.clone());
+            learned.push(t);
+        }
+        for id in requested {
+            if !found.iter().any(|(f, _)| *f == id) {
+                Self::note_failed(&mut self.duration_cooldown, id);
+            }
+        }
+        self.cache_tracks_background(learned);
+    }
+
+    /// A row the catalog lacks but a visible list holds (search
+    /// results, playlist rows, the queue): the base for a learned length.
+    fn stored_row(&self, id: &str) -> Option<Track> {
+        self.all_results
+            .tracks
+            .iter()
+            .chain(self.results.tracks.iter())
+            .chain(self.queue.items().iter())
+            .chain(self.autoplay.iter())
+            // Favorites rows come from the catalog itself, so only user
+            // playlists can hold a stored row it lacks (borrowed scan,
+            // only the match is cloned).
+            .chain(self.user_playlists.iter().flat_map(|p| p.tracks.iter()))
+            .find(|t| t.id == id)
+            .cloned()
+    }
+
     /// Stale search completion (the user typed on): keep the rows in
     /// the catalog and the DB cache, but fetch no artwork for results
     /// nobody sees. A later cache hit paints and warms them.
@@ -395,11 +520,11 @@ impl AppState {
     /// disk-cached art shows instantly via [`Self::art_handle`]; this
     /// warms only covers missing from both memory and disk.
     pub(crate) fn sidebar_cover_tracks(&self) -> Vec<Track> {
-        self.all_playlists()
+        self.playlist_heads()
             .into_iter()
             .take(8)
             .filter_map(|p| {
-                let first = p.tracks.first()?;
+                let first = p.first?;
                 // Catalog row wins (fresh art); stored row is the fallback.
                 Some(self.find_track(&first.id).unwrap_or_else(|| first.clone()))
             })
@@ -748,13 +873,6 @@ impl AppState {
                 .filter(|e| e.count.is_some())
                 .map(|e| e.arrived)
                 .sum::<usize>()
-    }
-
-    /// Everything the app has really seen (discovery candidate pool).
-    pub(crate) fn catalog_tracks(&self) -> Vec<Track> {
-        let mut v: Vec<Track> = self.catalog.values().cloned().collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
     }
 
     /// Move the captured fresh-import source into the cleanup modal once

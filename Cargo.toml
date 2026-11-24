@@ -28,8 +28,14 @@ tokio = { version = "1", features = ["rt", "macros", "signal"] }
 # which inflates the macOS footprint long after the churn that made
 # them; only Rust allocations route here, libmpv/ffmpeg keep theirs).
 mimalloc = "0.1"
+# Option tuning for that allocator (`tune_mimalloc`, same C build).
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 # `ctl` client output (pretty JSON).
 serde_json = "1"
+
+# `mallopt` arena cap at startup (glibc only, see `cap_malloc_arenas`).
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"
 
 # Build script input, used only when TARGET contains `windows` (the gate
 # lives in build.rs via the TARGET env var, because a build script

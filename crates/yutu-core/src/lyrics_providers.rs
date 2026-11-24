@@ -717,15 +717,24 @@ pub async fn fetch_lrclib(
     album: Option<&str>,
     duration_secs: u32,
 ) -> Result<LyricsResult, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent(LYRICS_USER_AGENT)
-        .build()
-        .map_err(|e| format!("lrclib client build failed: {e}"))?;
+    // One client per process (was one per lookup: root-cert parse and
+    // a fresh TLS handshake on every song change).
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = match CLIENT.get() {
+        Some(c) => c,
+        None => {
+            let built = crate::static_client_builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .user_agent(LYRICS_USER_AGENT)
+                .build()
+                .map_err(|e| format!("lrclib client build failed: {e}"))?;
+            CLIENT.get_or_init(|| built)
+        }
+    };
 
     // Exact match first: correct spellings resolve in one round trip.
     let url = lrclib_url(artist, title, album, duration_secs);
-    let response = lrclib_get(&client, url).await?;
+    let response = lrclib_get(client, url).await?;
     let status = response.status();
     if status.is_success() {
         let body: LrclibResponse = response
@@ -746,7 +755,7 @@ pub async fn fetch_lrclib(
     // Fuzzy fallback: alternate titles, featured artists, and remaster
     // suffixes miss the exact endpoint but match `/api/search`.
     let search_url = lrclib_search_url(artist, title, album);
-    let search_resp = lrclib_get(&client, search_url).await?;
+    let search_resp = lrclib_get(client, search_url).await?;
     if !search_resp.status().is_success() {
         return Err(format!(
             "lrclib request failed: http {}",
@@ -768,7 +777,7 @@ pub async fn fetch_lrclib(
             return direct;
         }
     }
-    let by_id = lrclib_get(&client, format!("{LRCLIB_API_URL}/{best_id}")).await?;
+    let by_id = lrclib_get(client, format!("{LRCLIB_API_URL}/{best_id}")).await?;
     if !by_id.status().is_success() {
         return Err(format!(
             "lrclib request failed: http {}",
