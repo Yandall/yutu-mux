@@ -338,6 +338,11 @@ pub struct AppState {
     /// Scroll y offset per scrollable key: drives lazy art visibility
     /// (the component fetches only what the viewport covers).
     pub(crate) scroll_offsets: HashMap<&'static str, f32>,
+    /// The expanded queue list was on screen after the last update.
+    /// The collapsed rail is a different widget tree, so the list's
+    /// scrollable is rebuilt (at the top) each time the panel expands:
+    /// the rising edge restores the saved "queue" offset.
+    pub(crate) queue_list_shown: bool,
     /// Last fetched scroll bucket per key (scroll storms collapse).
     pub(crate) art_buckets: HashMap<&'static str, i64>,
     /// Last art sweep per key (minimum gap between sweeps, per list).

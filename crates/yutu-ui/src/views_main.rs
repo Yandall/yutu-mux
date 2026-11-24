@@ -899,6 +899,7 @@ impl AppState {
                 .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
                 .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("queue")))
                 .on_scroll(|v| Message::Scrolled("queue", v.absolute_offset().y))
+                .id(iced::widget::Id::new(QUEUE_SCROLL_ID))
                 .height(Fill)
                 .into(),
             );
@@ -923,7 +924,7 @@ impl AppState {
             .padding(6)
             .into(),
         };
-        if w < 140.0 && self.layout() != LayoutMode::Narrow {
+        if w < QUEUE_RAIL_CUTOFF_W && self.layout() != LayoutMode::Narrow {
             // Collapsed rail fills the available height: a queue window
             // anchored on the live song plus autoplay with what is left.
             // Same jump targets as the expanded rows.
@@ -1664,6 +1665,27 @@ impl AppState {
                 y: Some(y),
             },
         ))
+    }
+
+    /// On the frame the expanded queue list reappears (hover expand,
+    /// pin, drawer open), scroll its fresh scrollable back to the last
+    /// offset the user left it at instead of the top.
+    pub(crate) fn queue_scroll_restore(&mut self) -> Option<iced::Task<Message>> {
+        let shown = self.queue_list_visible();
+        let appeared = shown && !self.queue_list_shown;
+        self.queue_list_shown = shown;
+        let y = self.scroll_offsets.get("queue").copied().unwrap_or(0.0);
+        (appeared && y > 0.0).then(|| {
+            iced::advanced::widget::operate(
+                iced::advanced::widget::operation::scrollable::scroll_to::<Message>(
+                    iced::widget::Id::new(QUEUE_SCROLL_ID),
+                    iced::advanced::widget::operation::scrollable::AbsoluteOffset {
+                        x: None,
+                        y: Some(y),
+                    },
+                ),
+            )
+        })
     }
 
     /// One follow-glide step: ease the drawer toward the verse target

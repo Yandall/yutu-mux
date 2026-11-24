@@ -143,6 +143,11 @@ pub(crate) const DIVIDER_PX: f32 = 5.0;
 /// line height + like row + spacings.
 /// Scrollable id for the drawer lyrics pane (follow snap target).
 pub(crate) const LYRICS_SCROLL_ID: &str = "drawer-lyrics";
+/// Scrollable id for the expanded queue list (scroll kept across
+/// rail collapse / hover expand).
+/// Below this panel width the queue draws the thumbnail rail.
+pub(crate) const QUEUE_RAIL_CUTOFF_W: f32 = 140.0;
+pub(crate) const QUEUE_SCROLL_ID: &str = "queue-list";
 /// Provider stepper label box: fits "YouTube Music" at 12px with
 /// headroom for wider display fonts, so the `< >` arrows never drift
 /// when the provider changes. Text centers inside.
@@ -448,6 +453,18 @@ impl AppState {
     pub(crate) fn sidebar_overlay_w(&self) -> Option<f32> {
         (self.layout().panels_overlay() && self.sidebar_w > self.sidebar_slot_w() + 0.5)
             .then_some(self.sidebar_w)
+    }
+
+    /// The expanded queue list (not the thumbnail rail) is drawn:
+    /// mirrors `right_panel_inner`'s 140px rail cutoff; the Narrow
+    /// drawer always draws the full panel while it is visible.
+    pub(crate) fn queue_list_visible(&self) -> bool {
+        let w = self.right_overlay_w().unwrap_or(self.right_slot_w());
+        if self.layout() == LayoutMode::Narrow {
+            w > 0.0
+        } else {
+            w >= QUEUE_RAIL_CUTOFF_W
+        }
     }
 
     /// Same for the queue panel.
