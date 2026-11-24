@@ -125,6 +125,207 @@ pub fn resolve_audio_url(bin: &str, video_id: &str) -> Result<String, StreamErro
     }
 }
 
+/// Player client for the signed-in path. `web_music` is the only client
+/// that serves YouTube Music's 256 kbps AAC (itag 141), and only to
+/// Premium accounts: yt-dlp detects Premium from the session and then
+/// needs no PO token for it. Free accounts get no usable formats from it
+/// (PO-gated), which is what makes the attempt fail fast for them.
+pub const PREMIUM_PLAYER_CLIENT: &str = "web_music";
+
+/// Format order on the signed-in path: Premium 256 kbps AAC first (by
+/// prefix: YouTube may suffix ids, e.g. `140-11`), then
+/// the same AAC-first preference as the anonymous path.
+const PREMIUM_FORMAT: &str =
+    "bestaudio[format_id^=141]/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio";
+
+/// After a failed signed-in attempt, skip it for this long (free
+/// accounts, missing JS runtime, expired cookies): one wasted sidecar run
+/// per window instead of one per song. Re-checked after, so an upgrade
+/// to Premium is picked up without a restart.
+const PREMIUM_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Per-process memory of failed signed-in attempts, keyed by a keyed
+/// hash of the cookie header (a new sign-in retries at once). Holds no
+/// cookie material.
+type Backoff = std::collections::HashMap<u64, std::time::Instant>;
+static PREMIUM_BACKOFF: std::sync::Mutex<Option<Backoff>> = std::sync::Mutex::new(None);
+
+fn session_fingerprint(auth: &crate::auth::CookieAuth) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let mut h = KEYS.get_or_init(Default::default).build_hasher();
+    h.write(auth.header_value().as_bytes());
+    h.finish()
+}
+
+fn premium_backed_off(fp: u64) -> bool {
+    let guard = PREMIUM_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .and_then(|m| m.get(&fp))
+        .is_some_and(|at| at.elapsed() < PREMIUM_RETRY_AFTER)
+}
+
+/// Record (`failed`) or clear the backoff for one session.
+fn set_premium_backoff(fp: u64, failed: bool) {
+    let mut guard = PREMIUM_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(Default::default);
+    map.retain(|_, at| at.elapsed() < PREMIUM_RETRY_AFTER);
+    if failed {
+        map.insert(fp, std::time::Instant::now());
+    } else {
+        map.remove(&fp);
+    }
+}
+
+/// [`resolve_audio_url`] with an optional signed-in session. With
+/// cookies it first asks [`PREMIUM_PLAYER_CLIENT`] as that account
+/// (Premium accounts get 256 kbps AAC); any failure there falls back to
+/// the anonymous path unchanged, so a session can never make playback
+/// worse. The cookies reach the sidecar only through a private,
+/// short-lived jar file (see [`crate::cookie_jar`]), never argv or env.
+pub fn resolve_audio_url_with_session(
+    bin: &str,
+    video_id: &str,
+    session: Option<&crate::auth::CookieAuth>,
+) -> Result<String, StreamError> {
+    if !crate::security::is_valid_video_id(video_id) {
+        return Err(StreamError::NotFound {
+            video_id: crate::security::truncate_for_log(video_id, 64),
+        });
+    }
+    if let Some(auth) = session {
+        let fp = session_fingerprint(auth);
+        if !premium_backed_off(fp) {
+            match signed_in_any_variant(bin, video_id, auth) {
+                Ok((url, format)) => {
+                    set_premium_backoff(fp, false);
+                    crate::app_log::info(
+                        "yutu-stream",
+                        format_args!("signed-in audio for {video_id}: format {format}"),
+                    );
+                    return Ok(url);
+                }
+                // This video only (removed, region-locked): the session
+                // is fine, so no backoff; the anonymous path decides.
+                Err(e @ StreamError::NotFound { .. }) => {
+                    crate::app_log::info(
+                        "yutu-stream",
+                        format_args!("signed-in audio for {video_id}: {e}"),
+                    );
+                }
+                Err(e) => {
+                    set_premium_backoff(fp, true);
+                    crate::app_log::info(
+                        "yutu-stream",
+                        format_args!(
+                            "signed-in audio unavailable ({e}); standard quality for {} min",
+                            PREMIUM_RETRY_AFTER.as_secs() / 60
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    resolve_audio_url(bin, video_id)
+}
+
+/// YouTube player JS variants for the signed-in run, in order; `None`
+/// is yt-dlp's own default. `web_music` needs yt-dlp to solve the
+/// player's signature and `n` challenges, and the solver can lag behind
+/// one variant while handling others (Nov 2026: the default `main`
+/// crashed it, `tv`/`es6`/`phone` solved), so a known-good one is pinned
+/// first and the default stays as the fallback (pins must never be the
+/// only path). The variant that last worked is tried first.
+pub const PREMIUM_JS_VARIANTS: [Option<&str>; 2] = [Some("tv"), None];
+
+/// Index into [`PREMIUM_JS_VARIANTS`] that last produced a stream.
+static PREMIUM_VARIANT_OK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Signed-in resolve over [`PREMIUM_JS_VARIANTS`], last-good first. A
+/// video-specific error ([`StreamError::NotFound`]) stops at once (other
+/// variants would only repeat it); otherwise the last error is returned.
+fn signed_in_any_variant(
+    bin: &str,
+    video_id: &str,
+    auth: &crate::auth::CookieAuth,
+) -> Result<(String, String), StreamError> {
+    use std::sync::atomic::Ordering;
+    let n = PREMIUM_JS_VARIANTS.len();
+    let first = PREMIUM_VARIANT_OK.load(Ordering::Relaxed) % n;
+    let mut last = StreamError::Network("no player variant tried".into());
+    for i in (0..n).map(|k| (first + k) % n) {
+        match get_url_signed_in(bin, video_id, auth, PREMIUM_JS_VARIANTS[i]) {
+            Ok(found) => {
+                PREMIUM_VARIANT_OK.store(i, Ordering::Relaxed);
+                return Ok(found);
+            }
+            Err(e @ StreamError::NotFound { .. }) => return Err(e),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// One signed-in sidecar run: returns the stream URL and its format id.
+fn get_url_signed_in(
+    bin: &str,
+    video_id: &str,
+    auth: &crate::auth::CookieAuth,
+    js_variant: Option<&str>,
+) -> Result<(String, String), StreamError> {
+    let jar = crate::cookie_jar::CookieJarFile::create(auth).map_err(StreamError::Network)?;
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let output = sidecar_command(bin)
+        .arg("--cookies")
+        .arg(jar.path())
+        .args([
+            "--extractor-args",
+            &premium_extractor_args(js_variant),
+            "--print",
+            "format_id",
+            "--print",
+            "urls",
+            "--quiet",
+            "--no-warnings",
+            "-f",
+            PREMIUM_FORMAT,
+            "--no-playlist",
+            "--no-progress",
+            &url,
+        ])
+        .output()
+        .map_err(|e| StreamError::Network(format!("run {bin}: {e}")))?;
+    // The jar goes as soon as the run ends (the sidecar rewrote it).
+    drop(jar);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    let format = lines.next().unwrap_or_default().to_string();
+    let found = lines.find(|l| l.starts_with("https://"));
+    match found {
+        Some(line) if crate::security::is_allowed_stream_url(line) => Ok((
+            line.to_string(),
+            crate::security::truncate_for_log(&format, 16),
+        )),
+        Some(_) => Err(StreamError::Network(
+            "sidecar returned untrusted URL".to_string(),
+        )),
+        None => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(classify_ytdlp_error(&stderr, video_id))
+        }
+    }
+}
+
+/// `--extractor-args` value for the signed-in run.
+fn premium_extractor_args(js_variant: Option<&str>) -> String {
+    match js_variant {
+        Some(v) => format!("youtube:player_client={PREMIUM_PLAYER_CLIENT};player_js_variant={v}"),
+        None => format!("youtube:player_client={PREMIUM_PLAYER_CLIENT}"),
+    }
+}
+
 /// One `yt-dlp --get-url` run, optionally pinned to a player client.
 fn get_url(bin: &str, video_id: &str, client: Option<&str>) -> Result<String, StreamError> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
@@ -291,6 +492,167 @@ mod tests {
         );
         let err = resolve_audio_url(&bin.to_string_lossy(), "dQw4w9WgXcQ").unwrap_err();
         assert!(matches!(err, StreamError::NotFound { .. }), "{err:?}");
+    }
+
+    /// Session whose cookie value marks the test (unique backoff key).
+    fn session(tag: &str) -> crate::auth::CookieAuth {
+        crate::auth::CookieAuth::from_header_str(&format!("SID=s; SAPISID=secret-{tag}")).unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signed_in_path_uses_a_private_jar_never_argv() {
+        // Answers only for the premium client with a readable jar that
+        // holds the session, and refuses if the secret is on argv.
+        let seen = std::env::temp_dir().join(format!("yutu-jar-seen-{}", std::process::id()));
+        let bin = write_fake_script(
+            "premium",
+            &format!(
+                r#"case "$*" in *secret-*) exit 9 ;; esac
+jar=""; prev=""
+for a in "$@"; do [ "$prev" = "--cookies" ] && jar="$a"; prev="$a"; done
+echo "$jar" > '{seen}'
+case "$*" in *player_client={PREMIUM_PLAYER_CLIENT}*) ;; *) exit 1 ;; esac
+grep -q "	SAPISID	secret-argv" "$jar" || exit 1
+echo 141; echo https://r1.googlevideo.com/premium"#,
+                seen = seen.display()
+            ),
+        );
+        let auth = session("argv");
+        let url =
+            resolve_audio_url_with_session(&bin.to_string_lossy(), "dQw4w9WgXcQ", Some(&auth))
+                .unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/premium");
+        let jar = std::fs::read_to_string(&seen).unwrap();
+        let jar = std::path::Path::new(jar.trim());
+        assert!(jar.is_absolute(), "{jar:?}");
+        assert!(!jar.exists(), "jar must be removed after the run");
+        let _ = std::fs::remove_file(&seen);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signed_in_failure_falls_back_and_backs_off() {
+        // Free account: the premium client yields nothing, the anonymous
+        // pinned client plays; the next song skips the signed-in attempt.
+        let count = std::env::temp_dir().join(format!("yutu-premium-n-{}", std::process::id()));
+        let _ = std::fs::remove_file(&count);
+        let bin = write_fake_script(
+            "free",
+            &format!(
+                r#"case "$*" in
+*player_client={PREMIUM_PLAYER_CLIENT}*) echo x >> '{n}'; echo 'ERROR: Requested format is not available' >&2; exit 1 ;;
+*player_client={PREFERRED_PLAYER_CLIENT}*) echo https://r1.googlevideo.com/standard ;;
+*) exit 1 ;;
+esac"#,
+                n = count.display()
+            ),
+        );
+        let bin = bin.to_string_lossy();
+        let auth = session("free");
+        for _ in 0..2 {
+            let url = resolve_audio_url_with_session(&bin, "dQw4w9WgXcQ", Some(&auth)).unwrap();
+            assert_eq!(url, "https://r1.googlevideo.com/standard");
+        }
+        let attempts = std::fs::read_to_string(&count).unwrap_or_default();
+        // Every variant once on the first song, nothing on the second.
+        assert_eq!(
+            attempts.lines().count(),
+            PREMIUM_JS_VARIANTS.len(),
+            "signed-in attempt must back off"
+        );
+        let _ = std::fs::remove_file(&count);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signed_in_falls_back_to_the_default_player_variant() {
+        // The pinned variant's solver breaks; yt-dlp's default works.
+        let bin = write_fake_script(
+            "variant",
+            &format!(
+                r#"case "$*" in
+*player_js_variant=*) echo 'ERROR: [youtube] x: Requested format is not available' >&2; exit 1 ;;
+*player_client={PREMIUM_PLAYER_CLIENT}*) echo 141; echo https://r1.googlevideo.com/default-variant ;;
+*) echo https://r1.googlevideo.com/standard ;;
+esac"#
+            ),
+        );
+        let auth = session("variant");
+        let url =
+            resolve_audio_url_with_session(&bin.to_string_lossy(), "dQw4w9WgXcQ", Some(&auth))
+                .unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/default-variant");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unavailable_video_does_not_back_off_premium() {
+        // One region-locked song must not cost the next songs Premium.
+        let count = std::env::temp_dir().join(format!("yutu-premium-u-{}", std::process::id()));
+        let _ = std::fs::remove_file(&count);
+        let bin = write_fake_script(
+            "unavail",
+            &format!(
+                r#"case "$*" in
+*player_client={PREMIUM_PLAYER_CLIENT}*) echo x >> '{n}'; echo 'ERROR: [youtube] x: Video unavailable' >&2; exit 1 ;;
+*) echo https://r1.googlevideo.com/standard ;;
+esac"#,
+                n = count.display()
+            ),
+        );
+        let bin = bin.to_string_lossy();
+        let auth = session("unavail");
+        for _ in 0..2 {
+            let url = resolve_audio_url_with_session(&bin, "dQw4w9WgXcQ", Some(&auth)).unwrap();
+            assert_eq!(url, "https://r1.googlevideo.com/standard");
+        }
+        let attempts = std::fs::read_to_string(&count).unwrap_or_default();
+        // One run per song (no variant retry), and no backoff between.
+        assert_eq!(attempts.lines().count(), 2);
+        let _ = std::fs::remove_file(&count);
+    }
+
+    /// Live: a Premium session resolves 256 kbps AAC. Needs network,
+    /// yt-dlp with a JS runtime, and `YUTU_TEST_COOKIE_FILE` pointing at
+    /// a Premium account's cookies (never commit or paste it).
+    #[test]
+    #[ignore]
+    fn premium_session_resolves_itag_141_live() {
+        let path = std::env::var("YUTU_TEST_COOKIE_FILE").expect("YUTU_TEST_COOKIE_FILE");
+        let auth = crate::auth::CookieAuth::from_file(std::path::Path::new(&path)).unwrap();
+        let bin = find_yt_dlp().expect("yt-dlp");
+        let id = std::env::var("YUTU_TEST_VIDEO_ID").unwrap_or_else(|_| "JWW8KK8kd1I".into());
+        let url = resolve_audio_url_with_session(&bin, &id, Some(&auth)).unwrap();
+        assert!(url.contains("itag=141"), "not Premium quality");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signed_in_off_domain_url_is_not_played() {
+        let bin = write_fake_script(
+            "premium-evil",
+            &format!(
+                r#"case "$*" in *player_client={PREMIUM_PLAYER_CLIENT}*) echo 141; echo https://evil.invalid/a ;; *) echo https://r1.googlevideo.com/standard ;; esac"#
+            ),
+        );
+        let auth = session("evil");
+        let url =
+            resolve_audio_url_with_session(&bin.to_string_lossy(), "dQw4w9WgXcQ", Some(&auth))
+                .unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/standard");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn no_session_is_the_anonymous_path() {
+        let bin = write_fake_script(
+            "anon",
+            r#"case "$*" in *--cookies*) exit 1 ;; *) echo https://r1.googlevideo.com/anon ;; esac"#,
+        );
+        let url =
+            resolve_audio_url_with_session(&bin.to_string_lossy(), "dQw4w9WgXcQ", None).unwrap();
+        assert_eq!(url, "https://r1.googlevideo.com/anon");
     }
 
     #[test]
