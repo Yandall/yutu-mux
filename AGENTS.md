@@ -41,7 +41,11 @@
 - Resolver: **yt-dlp sidecar primary** (`--get-url --quiet --no-warnings`,
   AAC preferred). Raw rustypipe path removed.
   Signed-in cookie sessions try `web_music` first for Premium 256 kbps
-  AAC (itag 141), falling back to the anonymous path (30 min backoff).
+  AAC (itag 141), player JS variant `tv` pinned first then yt-dlp's
+  default (`PREMIUM_JS_VARIANTS`: the challenge solver can break on one
+  variant), falling back to the anonymous path (30 min backoff, never
+  for a per-video `NotFound`). Live check: `premium_session_resolves_
+  itag_141_live` (ignored, `YUTU_TEST_COOKIE_FILE` of a Premium account).
   Cookies reach yt-dlp only via `cookie_jar.rs` (private 0700 dir,
   0600 file, `.youtube.com` rows, removed after the run): never argv/env.
 - Lyrics: **LRCLIB** (free, no credentials). No Genius/Musixmatch for MVP.

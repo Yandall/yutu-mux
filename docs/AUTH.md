@@ -29,9 +29,12 @@ Some streams/playlists will 403 or be unavailable — expected.
 Signed in with a YouTube Premium account, each song is first resolved
 as that account through yt-dlp's `web_music` client, which serves the
 256 kbps AAC stream (itag 141). yt-dlp needs a JavaScript runtime for
-this client (`deno` is enabled by default). Free accounts, a missing
-runtime or an expired session simply fall back to the standard 128 kbps
-path; the signed-in attempt then pauses for 30 minutes so songs do not
+this client (`deno` is enabled by default) to solve the player's
+challenges; the `tv` player variant is pinned first (the solver can lag
+behind yt-dlp's default `main` variant), then yt-dlp's default. A song
+that is unavailable for the account does not pause Premium for others.
+Free accounts, a missing runtime or an expired session simply fall back
+to the standard 128 kbps path; the signed-in attempt then pauses for 30 minutes so songs do not
 pay for a failing lookup each time. The log line `signed-in audio for
 <id>: format 141` confirms Premium quality.
 
