@@ -2209,10 +2209,12 @@ pub(crate) fn watch_track_to_track(track: &WatchPlaylistTrack) -> Track {
 /// duration sitting in a fourth flex column). This maps what it can per
 /// row and skips the rest, so one odd row cannot sink a 300-song import:
 /// - title = flex column 0 run 0; artist = flex column 1 artist runs
-///   (every other run, joined like [`join_names`]); album = flex column
-///   2 run 0 when present.
-/// - duration = `fixedColumns` text when present, else flex column 3 when
-///   it parses as a duration; unparseable becomes 0.
+///   (every other run, joined like [`join_names`]).
+/// - album and duration share flex columns 2 and 3 in either order
+///   (current pages put the duration in 2, older ones the album): a
+///   column reading as a time (`looks_like_duration`) is the duration,
+///   the other non-empty one the album. `fixedColumns` text wins for the
+///   duration when present; unparseable becomes 0.
 /// - video id = overlay play-button endpoint, else menu item 0.
 /// - deleted songs, greyed-out unavailable rows, podcast episodes and
 ///   continuation markers are skipped (not music or not rows).
@@ -2245,8 +2247,15 @@ pub(crate) fn tolerant_row_to_track(item: &serde_json::Value) -> Option<Track> {
     {
         return None;
     }
+    // The type sits in the music config today (`musicVideoType`); older
+    // pages carried it on the endpoint itself (`videoType`). Reading only
+    // the old spot made every row a song, so imports never swapped videos.
+    let watch = "/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint";
     let video_type = r
-        .pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoType")
+        .pointer(&format!(
+            "{watch}/watchEndpointMusicSupportedConfigs/watchEndpointMusicConfig/musicVideoType"
+        ))
+        .or_else(|| r.pointer(&format!("{watch}/videoType")))
         .and_then(|t| t.as_str());
     if video_type == Some("MUSIC_VIDEO_TYPE_PODCAST_EPISODE") {
         return None;
@@ -2270,9 +2279,16 @@ pub(crate) fn tolerant_row_to_track(item: &serde_json::Value) -> Option<Track> {
     if artist.is_empty() {
         return None;
     }
-    let album = flex_run_text(r, 2, 0).filter(|a| !a.is_empty());
+    let (col2, col3) = (flex_run_text(r, 2, 0), flex_run_text(r, 3, 0));
+    let is_time = |c: &Option<String>| c.as_deref().is_some_and(looks_like_duration);
+    let (album, flex_duration) = if is_time(&col2) && !is_time(&col3) {
+        (col3, col2)
+    } else {
+        (col2, col3.filter(|d| looks_like_duration(d)))
+    };
+    let album = album.filter(|a| !a.is_empty() && !looks_like_duration(a));
     let duration = fixed_text(r)
-        .or_else(|| flex_run_text(r, 3, 0))
+        .or(flex_duration)
         .map(|d| parse_duration_secs(&d))
         .unwrap_or(0);
     let (small, large) =
@@ -2360,6 +2376,17 @@ pub(crate) fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
 
 /// Parse `"m:ss"` / `"h:mm:ss"` (also bare seconds) to seconds.
 /// Empty or malformed input → `0` (never fails: it feeds `duration_secs`).
+/// A `m:ss` / `h:mm:ss` time text (digit groups joined by colons, at
+/// least one colon): how playlist rows tell the duration column from the
+/// album one.
+pub(crate) fn looks_like_duration(raw: &str) -> bool {
+    let raw = raw.trim();
+    raw.contains(':')
+        && raw
+            .split(':')
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
 pub(crate) fn parse_duration_secs(raw: &str) -> u32 {
     let raw = raw.trim();
     if raw.is_empty() {

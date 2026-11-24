@@ -19,6 +19,10 @@
   leave the name empty, instead of "Imported playlist".
 - Songs that showed no length (some search results, artist top songs
   and playlist rows) now show it without having to play them first.
+- Imported YouTube Music playlists swap music videos for their song
+  versions again, including more loosely titled uploads.
+- Songs from imported or synced YouTube Music playlists show their real
+  album and duration (the album showed the song length).
 
 ## 0.2.1 - 2026-11-17
 
