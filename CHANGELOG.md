@@ -29,6 +29,8 @@
 
 - The `/` key focuses the search bar again and keeps you on the
   current page instead of switching to Search.
+- The queue panel keeps its scroll position when it collapses and
+  expands again, instead of jumping back to the top.
 - macOS: text on non-Retina screens is drawn slightly heavier, so small
   and grey text is no longer thin and blurry.
 - Importing or syncing a YouTube Music playlist with more than 100 songs

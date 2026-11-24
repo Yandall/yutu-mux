@@ -12737,3 +12737,31 @@ fn slash_focuses_search_without_leaving_the_page() {
     assert_eq!(s.route, Route::History);
     assert_eq!(s.nav_back.len(), back);
 }
+
+#[test]
+fn queue_scroll_restores_when_the_panel_expands_again() {
+    let mut s = test_state();
+    let _ = s.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
+    assert!(s.queue_list_visible() && s.queue_list_shown);
+    // The user scrolled the expanded list.
+    let _ = s.update(Message::Scrolled("queue", 420.0));
+    // Unpin + cursor away: the panel collapses to the rail.
+    let _ = s.update(Message::ToggleRightPin);
+    let _ = s.update(Message::CursorMoved(iced::Point::new(640.0, 400.0)));
+    s.right_w = s.right_target();
+    assert!(s.queue_scroll_restore().is_none());
+    assert!(!s.queue_list_shown);
+    // Hover expand: the list comes back on the rising edge only, with
+    // the saved offset intact.
+    let _ = s.update(Message::CursorMoved(iced::Point::new(1270.0, 400.0)));
+    s.right_w = s.right_target();
+    assert!(s.queue_scroll_restore().is_some());
+    assert!(s.queue_scroll_restore().is_none());
+    assert_eq!(s.scroll_offsets.get("queue").copied(), Some(420.0));
+    // Still-rail widths (mid-glide below the cutoff) never restore.
+    let _ = s.update(Message::CursorMoved(iced::Point::new(640.0, 400.0)));
+    s.right_w = QUEUE_RAIL_CUTOFF_W - 1.0;
+    assert!(s.queue_scroll_restore().is_none());
+    s.right_w = QUEUE_RAIL_CUTOFF_W;
+    assert!(s.queue_scroll_restore().is_some());
+}

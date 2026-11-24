@@ -1586,7 +1586,10 @@ impl AppState {
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         let task = self.dispatch(message);
         self.verse_sync();
-        task
+        match self.queue_scroll_restore() {
+            Some(restore) => iced::Task::batch([task, restore]),
+            None => task,
+        }
     }
 
     /// Dispatcher: actions with async follow-ups (scrobble submits) return

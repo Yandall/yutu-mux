@@ -183,6 +183,7 @@ impl AppState {
             lyrics_target_for: None,
             scroll_hint: HashMap::new(),
             scroll_offsets: HashMap::new(),
+            queue_list_shown: false,
             art_buckets: HashMap::new(),
             art_sweep_at: HashMap::new(),
             art_pruned_at: None,
