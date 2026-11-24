@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-11-24
+
 ### Added
 
 - YouTube Premium accounts signed in with cookies now stream in 256 kbps
