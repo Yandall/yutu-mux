@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Playing a song from a playlist now queues the whole playlist and
+  starts at that song, so the earlier songs stay a Prev away.
+
 ### Fixed
 
 - Now Playing lyrics no longer bounce when following the first verses

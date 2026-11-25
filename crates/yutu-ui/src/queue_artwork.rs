@@ -26,6 +26,18 @@ impl AppState {
         tracks: Vec<Track>,
         label: impl Into<String>,
     ) -> iced::Task<Message> {
+        self.queue_many_at(tracks, label, 0)
+    }
+
+    /// [`Self::queue_many`] that starts playback at `start` (an index
+    /// into `tracks`, clamped): the whole list is queued, the songs
+    /// before `start` sit behind the current one as history.
+    pub(crate) fn queue_many_at(
+        &mut self,
+        tracks: Vec<Track>,
+        label: impl Into<String>,
+        start: usize,
+    ) -> iced::Task<Message> {
         let label = label.into();
         let n = tracks.len();
         if n == 0 {
@@ -41,7 +53,8 @@ impl AppState {
         // Warm art for the incoming head (thumbs, 12 tracks under the
         // task cap); the rest paints as the ahead-window reaches them
         // on advance. Deduped, so repeats cost nothing.
-        let art_tasks = self.artwork_tasks(&tracks);
+        let start = start.min(n - 1);
+        let art_tasks = self.artwork_tasks(&tracks[start..]);
         // Resolve in memory first, persist once: per-track SQLite traffic
         // (open + fsync each) freezes the GUI on long playlists.
         let resolved: Vec<Track> = tracks
@@ -52,7 +65,7 @@ impl AppState {
         for rt in resolved {
             self.queue.push(rt);
         }
-        self.queue.jump_to(first_new);
+        self.queue.jump_to(first_new + start);
         self.status = self.language.queued_tracks(&label, n);
         self.apply_volume();
         let mut tasks = art_tasks;

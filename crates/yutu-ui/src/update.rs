@@ -937,18 +937,18 @@ impl AppState {
                     .position(|t| t.id == track_id)
                     .unwrap_or(index.min(display.len()));
                 let label = self.language.playlist_queue_label(&p.title);
-                let tracks: Vec<Track> = display.into_iter().skip(start).collect();
-                if tracks.is_empty() {
+                if start >= display.len() {
                     self.status = self.language.nothing_to_play(&label);
                     return iced::Task::none();
                 }
                 // Fresh context like PlayNow: the old queue and tail go
-                // away, then the playlist plays from the clicked song on.
+                // away, the whole playlist is queued and plays from the
+                // clicked song (earlier songs stay reachable with Prev).
                 self.clear_queue();
                 self.autoplay.clear();
                 self.autoplay_for = None;
                 self.drag = None;
-                return self.queue_many(tracks, &label);
+                return self.queue_many_at(display, &label, start);
             }
             Message::PlayArtistAt {
                 artist_id,
@@ -1089,18 +1089,18 @@ impl AppState {
                     .iter()
                     .position(|t| t.id == track_id)
                     .unwrap_or(index.min(display.len()));
-                let tracks: Vec<Track> = display.into_iter().skip(start).collect();
                 let label = self
                     .language
                     .playlist_queue_label(&self.search_playlist_label(&playlist_id));
-                if tracks.is_empty() {
+                if start >= display.len() {
                     self.status = self.language.nothing_to_play(&label);
                     return iced::Task::none();
                 }
+                // Whole playlist queued, playback starts at the click.
                 self.clear_queue();
                 self.autoplay.clear();
                 self.autoplay_for = None;
-                return self.queue_many(tracks, &label);
+                return self.queue_many_at(display, &label, start);
             }
             Message::PlaySearchPlaylist(id) => {
                 return self.play_search_playlist(id, false);
