@@ -922,7 +922,7 @@ impl AppState {
             return true;
         }
         #[cfg(feature = "innertube")]
-        if self.pending_signout {
+        if self.pending_signout || self.pending_import_choice.is_some() {
             return true;
         }
         if self.pending_playlist_delete.is_some() {
@@ -993,6 +993,7 @@ impl AppState {
             .filter(|h| {
                 !self.playlist_has_pending(&h.id)
                     && !self.has_pending_op("delete", Some(&h.id), None)
+                    && !self.unsynced_playlists.contains(&h.id)
             })
             .cloned()
             .collect();
@@ -1051,6 +1052,8 @@ impl AppState {
         staged: &StagedImport,
         headers: &[yutu_core::ServerPlaylist],
     ) -> Vec<iced::Task<Message>> {
+        // "Keep my playlists" belongs to this run only.
+        let keep_local = std::mem::take(&mut self.import_keep_local);
         let tracks = self.register_tracks_mem(staged.tracks.clone());
         if staged.library_ok {
             self.liked = staged.liked_ids.iter().cloned().collect();
@@ -1081,7 +1084,12 @@ impl AppState {
                 })
                 .map(|p| p.id.clone())
                 .collect();
-            if !pruned.is_empty() {
+            if !pruned.is_empty() && keep_local {
+                // Kept lists the account lacks stay as device-only copies.
+                for id in &pruned {
+                    self.detach_to_local(id);
+                }
+            } else if !pruned.is_empty() {
                 if let Ok(store) = LibraryStore::open(&self.library_path) {
                     for id in &pruned {
                         let _ = store.delete_playlist(id);

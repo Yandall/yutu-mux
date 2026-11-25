@@ -201,6 +201,20 @@
   Japanese get no romaji. Every lyrics view shows it (page, drawer,
   mini ticker); `lyric_row_h` and the ticker fit
   (`ticker_slot_height`) count the romaji line.
+- **Sign-in library choice + playlist sync state**
+  (`playlist_sync.rs`): a fresh cookie import over a non-empty local
+  library opens the `ImportChoice` dialog (Keep my playlists / Start
+  fresh / Cancel). Both drop favorites, dislikes and every pending
+  push (`reset_library`); Keep turns synced lists missing from the
+  account into device-only copies instead of pruning them. An empty
+  library still drops pending pushes, silently. Playlist headers show
+  Synced / Uploading / Only on this device; the playlist menu uploads
+  a local list or stops syncing a server one (`detach_to_local` +
+  `unsynced_playlists` skip list, so it never returns as a twin).
+  Pending replay runs over one connection, sequentially (one login
+  per row once overran the network), and a transient connect failure
+  (`connect_error_is_transient`) never deletes the saved session.
+  Server removes are idempotent (already gone = success).
 - **Control socket** (`docs/CONTROL.md`): opt-in only (`--control` /
   `YUTU_CONTROL=1`), Unix socket `0600` in a `0700` dir, no TCP.
   Commands parse in `yutu_core::control` and execute in

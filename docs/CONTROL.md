@@ -39,6 +39,9 @@ yutu-mux ctl mini open                   # mini player: open|close|restore
 yutu-mux ctl mini lyrics on              # its lyrics ticker
 yutu-mux ctl mini screenshot mini.png    # captures the mini window
 yutu-mux ctl lyrics romaji on            # romaji under Japanese lyrics
+yutu-mux ctl playlists                   # ids, titles, sync state
+yutu-mux ctl playlist-sync u3 upload     # device-only list to YouTube Music
+yutu-mux ctl playlist-sync PLabc stop    # stop syncing (keeps a local copy)
 yutu-mux ctl help                        # full command list
 ```
 

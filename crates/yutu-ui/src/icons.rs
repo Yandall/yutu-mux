@@ -74,6 +74,9 @@ pub(crate) fn icon_bytes(name: &str) -> &'static [u8] {
         "info" => include_bytes!("../assets/icons/info.svg"),
         "file-up" => include_bytes!("../assets/icons/file-up.svg"),
         "file-down" => include_bytes!("../assets/icons/file-down.svg"),
+        "cloud" => include_bytes!("../assets/icons/cloud.svg"),
+        "cloud-off" => include_bytes!("../assets/icons/cloud-off.svg"),
+        "cloud-upload" => include_bytes!("../assets/icons/cloud-upload.svg"),
         _ => include_bytes!("../assets/icons/music.svg"),
     }
 }

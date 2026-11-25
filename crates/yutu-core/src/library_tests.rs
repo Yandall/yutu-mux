@@ -615,3 +615,68 @@ fn non_playlist_links_are_rejected() {
         assert_eq!(parse_playlist_link(bad), None, "{bad:?}");
     }
 }
+
+#[test]
+fn reset_library_clears_account_state_and_optionally_playlists() {
+    for keep in [true, false] {
+        let s = LibraryStore::in_memory().unwrap();
+        s.like("m1").unwrap();
+        s.dislike("m2").unwrap();
+        s.record_pending("remove", Some("PLx"), Some("m3"), None)
+            .unwrap();
+        s.set_pref("favorites_manual_order", "m1").unwrap();
+        s.set_pref("auto_sync", "1").unwrap();
+        s.create_playlist("u1", "Gym").unwrap();
+        s.add_to_playlist("u1", &cached_fixture("m4")).unwrap();
+        s.record_play("m5", 10).unwrap();
+        s.reset_library(keep).unwrap();
+        assert!(s.liked_ids().unwrap().is_empty());
+        assert!(s.disliked_ids().unwrap().is_empty());
+        assert!(s.pending_ops().unwrap().is_empty());
+        assert_eq!(s.get_pref("favorites_manual_order").unwrap(), None);
+        // Unrelated settings and history survive.
+        assert_eq!(s.get_pref("auto_sync").unwrap().as_deref(), Some("1"));
+        assert_eq!(s.history(10).unwrap().len(), 1);
+        let lists = s.user_playlists().unwrap();
+        if keep {
+            assert_eq!(lists.len(), 1);
+            assert_eq!(lists[0].tracks.len(), 1);
+        } else {
+            assert!(lists.is_empty());
+        }
+    }
+}
+
+#[test]
+fn detach_playlist_moves_rows_and_drops_its_pending_pushes() {
+    let s = LibraryStore::in_memory().unwrap();
+    s.sync_server_playlist(
+        "PLsrv",
+        "Road",
+        &[cached_fixture("m1"), cached_fixture("m2")],
+    )
+    .unwrap();
+    s.record_pending("remove", Some("PLsrv"), Some("m9"), None)
+        .unwrap();
+    s.record_pending("like", None, Some("m1"), None).unwrap();
+    s.detach_playlist("PLsrv", "u7").unwrap();
+    let lists = s.user_playlists().unwrap();
+    assert_eq!(lists.len(), 1);
+    assert_eq!(lists[0].id, "u7");
+    assert_eq!(lists[0].title, "Road");
+    assert_eq!(lists[0].tracks.len(), 2);
+    // Only the list's own pushes go; the unrelated like stays queued.
+    let ops = s.pending_ops().unwrap();
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].op, "like");
+}
+
+#[test]
+fn unsynced_playlists_round_trip_without_duplicates() {
+    let s = LibraryStore::in_memory().unwrap();
+    assert!(s.unsynced_playlists().unwrap().is_empty());
+    s.mark_playlist_unsynced("PLa").unwrap();
+    s.mark_playlist_unsynced("PLb").unwrap();
+    s.mark_playlist_unsynced("PLa").unwrap();
+    assert_eq!(s.unsynced_playlists().unwrap(), vec!["PLa", "PLb"]);
+}

@@ -251,6 +251,14 @@ impl AppState {
             update_skipped_tag: None,
             #[cfg(feature = "innertube")]
             pending_signout: false,
+            #[cfg(feature = "innertube")]
+            pending_import_choice: None,
+            #[cfg(feature = "innertube")]
+            import_keep_local: false,
+            #[cfg(feature = "innertube")]
+            uploading_playlists: HashSet::new(),
+            #[cfg(feature = "innertube")]
+            unsynced_playlists: HashSet::new(),
             scrobble_modal_open: false,
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
@@ -328,6 +336,13 @@ impl AppState {
         #[cfg(feature = "innertube")]
         {
             let (auto_sync, last_sync_unix) = load_sync_prefs(&state.library_path);
+            if let Ok(store) = LibraryStore::open(&state.library_path) {
+                state.unsynced_playlists = store
+                    .unsynced_playlists()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+            }
             state.auto_sync = auto_sync;
             state.last_sync_unix = last_sync_unix;
         }

@@ -102,6 +102,8 @@ pub use history::{
     history_ymd, month_name, HistorySection,
 };
 #[cfg(feature = "innertube")]
+pub use innertube::connect_error_is_transient;
+#[cfg(feature = "innertube")]
 pub use innertube::split_library_status;
 #[cfg(feature = "innertube")]
 pub use innertube::InnertubeBackend;

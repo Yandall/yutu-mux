@@ -460,6 +460,22 @@ pub struct AppState {
     /// Sign-out confirm dialog open (Settings row arms it).
     #[cfg(feature = "innertube")]
     pub(crate) pending_signout: bool,
+    /// Library-choice dialog (fresh cookie import over a local library).
+    #[cfg(feature = "innertube")]
+    pub(crate) pending_import_choice: Option<ImportChoicePrompt>,
+    /// The running import was started with "Keep my playlists": its
+    /// base reconcile turns synced lists missing from the account into
+    /// device-only copies instead of pruning them. Consumed there.
+    #[cfg(feature = "innertube")]
+    pub(crate) import_keep_local: bool,
+    /// Device-only playlists whose upload to YouTube Music is in flight
+    /// (the header reads "Uploading", the menu hides Upload).
+    #[cfg(feature = "innertube")]
+    pub(crate) uploading_playlists: HashSet<String>,
+    /// Server playlists the user stopped syncing (persisted, see
+    /// `LibraryStore::unsynced_playlists`): imports and syncs skip them.
+    #[cfg(feature = "innertube")]
+    pub(crate) unsynced_playlists: HashSet<String>,
     /// Scrobbling credentials dialog open (Settings button).
     pub(crate) scrobble_modal_open: bool,
     /// Artwork by thumbnail URL (iced image handles) + in-flight set.

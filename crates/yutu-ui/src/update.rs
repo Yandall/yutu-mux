@@ -2671,6 +2671,12 @@ impl AppState {
                 }
                 // No update-modal arm here by design: Esc never
                 // dismisses it (an explicit action does).
+                // Library choice: Esc cancels the import (nothing cleared).
+                #[cfg(feature = "innertube")]
+                if self.pending_import_choice.is_some() {
+                    self.pending_import_choice = None;
+                    return iced::Task::none();
+                }
                 #[cfg(feature = "innertube")]
                 if self.pending_signout {
                     self.pending_signout = false;
@@ -3178,18 +3184,23 @@ impl AppState {
                     if path.is_empty() {
                         self.status =
                             "Choose your exported cookies file first (see the note below).".into();
+                    } else if self.import_active || self.login_busy {
+                        // One pipeline at a time (a sync may be running).
+                    } else if let Some(prompt) = self.import_choice_prompt(&path) {
+                        // A library is already here: ask what happens to
+                        // it before anything is cleared or imported.
+                        if self.modal_target() == 0.0 {
+                            self.modal_anim = 0.0;
+                        }
+                        self.pending_import_choice = Some(prompt);
+                        self.clear_hovers();
+                        return Self::unfocus_task();
                     } else {
-                        self.login_busy = true;
-                        self.import_active = true;
-                        self.sync_active = false;
-                        self.status = self.language.reading_cookies();
-                        // Capture the source now: the modal decision later
-                        // must name the file actually imported, not
-                        // whatever the field holds when stages finish.
-                        self.pending_cookie_source = Some(path.clone());
-                        self.pending_cookie_cleanup = None;
-                        self.publish_mpris();
-                        return Self::cookie_import_task(path, self.library_path.clone());
+                        // Nothing to keep, but stale pushes from an older
+                        // session (unlikes, list deletes) must not replay
+                        // against the new import.
+                        self.reset_library_for_import(ImportChoice::StartFresh);
+                        return self.start_cookie_import(path);
                     }
                 }
                 #[cfg(not(feature = "innertube"))]
@@ -3216,6 +3227,8 @@ impl AppState {
                     self.login_busy = false;
                     self.import_active = false;
                     self.sync_active = false;
+                    // The keep-playlists pick belongs to this run only.
+                    self.import_keep_local = false;
                     // A failed fresh import owns no session: drop its
                     // source so no modal can name it later.
                     if kind == ImportKind::Cookie {
@@ -3223,8 +3236,12 @@ impl AppState {
                     }
                     // A dead saved session must not keep posing as signed
                     // in: drop it so the panel goes back to the file picker.
+                    // Network trouble proves nothing about the cookies, so
+                    // the session stays (a dropped connection once signed
+                    // the user out mid-sync).
                     if matches!(kind, ImportKind::Cookie | ImportKind::Sync)
                         && e.contains("saved cookie session")
+                        && !yutu_core::connect_error_is_transient(&e)
                     {
                         let _ = delete_cookie_session_secure();
                         self.cookie_logged_in = false;
@@ -3376,6 +3393,28 @@ impl AppState {
                 }
             }
             #[cfg(feature = "innertube")]
+            Message::ImportChoice(choice) => {
+                let Some(prompt) = self.pending_import_choice.take() else {
+                    return iced::Task::none();
+                };
+                self.reset_library_for_import(choice);
+                return self.start_cookie_import(prompt.path);
+            }
+            #[cfg(feature = "innertube")]
+            Message::CancelImportChoice => {
+                self.pending_import_choice = None;
+            }
+            #[cfg(feature = "innertube")]
+            Message::UploadPlaylist(id) => {
+                self.close_menu();
+                return self.upload_playlist(&id);
+            }
+            #[cfg(feature = "innertube")]
+            Message::StopPlaylistSync(id) => {
+                self.close_menu();
+                self.stop_playlist_sync(&id);
+            }
+            #[cfg(feature = "innertube")]
             Message::RequestSignOut => {
                 // Restart the entrance only when nothing is open: the
                 // ticker is shared, so resetting under a settled dialog
@@ -3506,6 +3545,7 @@ impl AppState {
                 result,
             } => match result {
                 Ok(server_id) => {
+                    self.uploading_playlists.remove(&local_id);
                     let seeded: HashSet<&str> = seeded.iter().map(String::as_str).collect();
                     // The create row clears first (by shell id), then any
                     // add/remove rows recorded mid-flight move shell id to
@@ -3589,6 +3629,7 @@ impl AppState {
                     );
                 }
                 Err(e) => {
+                    self.uploading_playlists.remove(&local_id);
                     yutu_core::app_log::warn("yutu-sync", format!("create {title}: {e}"));
                     self.status =
                         Self::failure_status(self.language.fail_created_local(&title), &e);

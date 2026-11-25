@@ -268,6 +268,65 @@ impl AppState {
         Some(self.modal_frame(card, Message::CancelSignOut))
     }
 
+    /// Library choice before a fresh cookie import over an existing
+    /// local library: keep the playlists (CTA) or start fresh. Both
+    /// replace favorites with the account's and drop pending pushes.
+    /// Scrim/Esc/Cancel imports nothing and clears nothing.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn import_choice_dialog(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, column, container, text};
+        let prompt = self.pending_import_choice.as_ref()?;
+        let card: iced::Element<'_, Message> = container(
+            column![
+                text(self.language.import_choice_title()).size(16),
+                text(
+                    self.language
+                        .import_choice_body(prompt.favorites, prompt.playlists)
+                )
+                .size(12)
+                .color(MUTED),
+                text(self.language.import_choice_keep_hint())
+                    .size(12)
+                    .color(MUTED),
+                text(self.language.import_choice_fresh_hint())
+                    .size(12)
+                    .color(MUTED),
+                // Wraps on narrow windows instead of clipping a button.
+                iced::widget::Row::with_children(vec![
+                    button(btn_text(self.language.import_choice_keep(), 12))
+                        .style(accent_button)
+                        .on_press(Message::ImportChoice(ImportChoice::KeepPlaylists))
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H))
+                        .into(),
+                    button(btn_text(self.language.import_choice_fresh(), 12))
+                        .style(ghost_button)
+                        .on_press(Message::ImportChoice(ImportChoice::StartFresh))
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H))
+                        .into(),
+                    button(btn_text(self.language.import_choice_cancel(), 12))
+                        .style(ghost_button)
+                        .on_press(Message::CancelImportChoice)
+                        .padding([12, 16])
+                        .height(iced::Length::Fixed(PILL_H))
+                        .into(),
+                ])
+                .spacing(8)
+                .wrap()
+                .vertical_spacing(8),
+            ]
+            .spacing(8),
+        )
+        .style(card_bg)
+        .padding(16)
+        .width(iced::Length::Fixed(
+            440.0_f32.min((self.center_width() - 32.0).max(280.0)),
+        ))
+        .into();
+        Some(self.modal_frame(card, Message::CancelImportChoice))
+    }
+
     /// Playlist-delete confirm: the menu row is one tap from wiping a
     /// whole list (mirrored to YouTube Music while signed in), so the
     /// destructive step gets an explicit dialog. Delete is the CTA;

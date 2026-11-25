@@ -797,6 +797,60 @@ impl Language {
             &[("title", title), ("n", &n.to_string())],
         )
     }
+    pub fn import_choice_title(self) -> String {
+        self.tr("import-choice-title")
+    }
+    pub fn import_choice_body(self, favorites: usize, playlists: usize) -> String {
+        self.tr_args(
+            "import-choice-body",
+            &[
+                ("favorites", &favorites.to_string()),
+                ("playlists", &playlists.to_string()),
+            ],
+        )
+    }
+    pub fn import_choice_keep(self) -> String {
+        self.tr("import-choice-keep")
+    }
+    pub fn import_choice_keep_hint(self) -> String {
+        self.tr("import-choice-keep-hint")
+    }
+    pub fn import_choice_fresh(self) -> String {
+        self.tr("import-choice-fresh")
+    }
+    pub fn import_choice_fresh_hint(self) -> String {
+        self.tr("import-choice-fresh-hint")
+    }
+    pub fn import_choice_cancel(self) -> String {
+        self.tr("import-choice-cancel")
+    }
+    pub fn playlist_synced(self) -> String {
+        self.tr("playlist-synced")
+    }
+    pub fn playlist_synced_offline(self) -> String {
+        self.tr("playlist-synced-offline")
+    }
+    pub fn playlist_uploading(self) -> String {
+        self.tr("playlist-uploading")
+    }
+    pub fn playlist_local(self) -> String {
+        self.tr("playlist-local")
+    }
+    pub fn upload_playlist(self) -> String {
+        self.tr("upload-playlist")
+    }
+    pub fn stop_playlist_sync(self) -> String {
+        self.tr("stop-playlist-sync")
+    }
+    pub fn playlist_sync_stopped(self, title: &str) -> String {
+        self.tr_args("playlist-sync-stopped", &[("title", title)])
+    }
+    pub fn upload_needs_signin(self) -> String {
+        self.tr("upload-needs-signin")
+    }
+    pub fn uploading_playlist(self, title: &str) -> String {
+        self.tr_args("uploading-playlist", &[("title", title)])
+    }
     pub fn keep_playlist(self) -> String {
         self.tr("keep-playlist")
     }
