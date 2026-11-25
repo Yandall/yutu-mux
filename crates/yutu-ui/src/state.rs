@@ -123,8 +123,9 @@ pub(crate) struct PlaylistHead<'a> {
 }
 
 /// Click behavior for a numbered song row: plain `PlayNow`, or play
-/// from here (clicked song plus the suffix behind it, like
-/// playlists) anchored at a list position. The route id re-resolves
+/// from here (artists/albums: the clicked song plus the suffix
+/// behind it; playlists: the whole list, starting at the click)
+/// anchored at a list position. The route id re-resolves
 /// the displayed list at click time, so live arrivals between render
 /// and click still queue what the row showed.
 #[derive(Debug, Clone)]
@@ -669,11 +670,11 @@ pub enum Message {
     PlayAutoplay(usize),
     /// Play-all with shuffle turned on first (hero shuffle buttons).
     PlayAllShuffled,
-    /// Play one playlist from the clicked row on: the song plus the
-    /// rest of the playlist from that point replace the queue. The
-    /// clicked id anchors the suffix (ordered-view inserts between
-    /// render and click must not shift the head); the index is the
-    /// fallback when the id left the list.
+    /// Play one playlist from the clicked row: the whole playlist
+    /// replaces the queue and playback starts at the clicked song
+    /// (earlier songs sit behind it). The clicked id anchors the start
+    /// (ordered-view inserts between render and click must not shift
+    /// it); the index is the fallback when the id left the list.
     PlayPlaylistAt {
         playlist_id: String,
         index: usize,
@@ -691,8 +692,8 @@ pub enum Message {
         id: String,
         result: Result<Vec<Track>, String>,
     },
-    /// Play a search-result playlist page from the clicked row on
-    /// (same suffix rule as `PlayPlaylistAt`).
+    /// Play a search-result playlist page from the clicked row (same
+    /// whole-playlist rule as `PlayPlaylistAt`).
     PlayRemotePlaylistAt {
         playlist_id: String,
         index: usize,

@@ -1680,16 +1680,19 @@ fn playlist_click_plays_from_clicked_row() {
         index: 2,
         track_id: "t2".into(),
     });
-    // Clicked song plus the rest from that point replace the queue.
+    // The whole playlist replaces the queue; playback starts at the
+    // clicked song with the earlier songs behind it.
     assert_eq!(
         s.queue
             .items()
             .iter()
             .map(|t| t.id.clone())
             .collect::<Vec<_>>(),
-        vec!["t2".to_string(), "t3".to_string()]
+        vec!["t0", "t1", "t2", "t3"]
     );
+    assert_eq!(s.queue.position(), Some(2));
     assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("t2"));
+    assert_eq!(s.loading_track.as_deref(), Some("t2"));
     // Detail page renders the new rows with no panic.
     s.route = Route::PlaylistDetail("u1".into());
     let _ = s.view();
@@ -1699,7 +1702,7 @@ fn playlist_click_plays_from_clicked_row() {
         index: 9,
         track_id: "missing".into(),
     });
-    assert_eq!(s.queue.len(), 2);
+    assert_eq!(s.queue.len(), 4);
     assert!(s.status.contains("nothing to play"));
     // Unknown playlist reports honestly too.
     let _ = s.update(Message::PlayPlaylistAt {
@@ -1728,7 +1731,7 @@ fn playlist_search_click_queues_the_full_playlist() {
     // Filtered page renders (match and no-match) with no panic.
     let _ = s.view();
     // A click in the filtered view queues as if there were no search:
-    // the clicked song plus the rest of the full list after it.
+    // the full list, starting at the clicked song.
     let _ = s.update(Message::PlayPlaylistAt {
         playlist_id: "u1".into(),
         index: 2,
@@ -1740,8 +1743,9 @@ fn playlist_search_click_queues_the_full_playlist() {
             .iter()
             .map(|t| t.id.clone())
             .collect::<Vec<_>>(),
-        vec!["t2".to_string(), "t3".to_string()]
+        vec!["t0", "t1", "t2", "t3"]
     );
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("t2"));
     let _ = s.update(Message::PlaylistFilterChanged("zzz".into()));
     let _ = s.view();
     // Leaving the page drops the search text.
@@ -2176,10 +2180,11 @@ fn search_playlist_opens_its_page_instead_of_playing() {
     assert_eq!(ids, ["q1", "q2", "q3"]);
     assert!(s.queue.is_empty());
     let _ = s.view();
-    // Row click plays from that song on.
+    // Row click queues the whole playlist and starts at that song.
     let _ = s.update(RowPlay::RemotePlaylistAt("PL7".into()).message("q2", 2));
     let queued: Vec<&str> = s.queue.items().iter().map(|t| t.id.as_str()).collect();
-    assert_eq!(queued, ["q2", "q3"]);
+    assert_eq!(queued, ["q1", "q2", "q3"]);
+    assert_eq!(s.queue.current().map(|t| t.id.as_str()), Some("q2"));
     // Play pill reuses the fetched list (whole playlist, no refetch).
     let _ = s.update(Message::PlaySearchPlaylist("PL7".into()));
     assert_eq!(s.queue.len(), 3);
