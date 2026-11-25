@@ -279,7 +279,10 @@
   the lyrics page and the Now Playing drawer: don't fork it. Every
   lyrics view uses one look, `mini_player::verse_style` (size, opacity,
   bold by distance from the current line), and one line-change glide
-  (`verse_sync` after every update, `verse_focus`).
+  (`verse_sync` after every update, `verse_focus`). Synced verses are
+  broken once at the current-line style (`verse_breaks`) and drawn
+  from that text at every size: never re-wrap a lyric at a glide's
+  in-between size (words hop between lines mid-scroll).
 - Drawer follow (`lyric_follow_task`): a verse change steps from the
   settled measured target by the modeled distance between the verses
   (`lyric_center_y`) and scrolls on the verse glide's clock; probes are

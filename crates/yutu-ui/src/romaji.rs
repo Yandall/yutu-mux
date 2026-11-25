@@ -282,15 +282,43 @@ impl AppState {
         size: f32,
         alpha: f32,
     ) -> iced::Element<'a, Message> {
+        self.verse_with_romaji_in(main, raw, size, alpha, None)
+    }
+
+    /// [`Self::verse_with_romaji`] for a synced verse in a lyrics
+    /// column `col_w` wide: the romaji is pre-broken like the verse
+    /// (`AppState::lyric_romaji_lines`), so it never reflows mid-glide.
+    pub(crate) fn verse_with_romaji_broken<'a>(
+        &self,
+        main: iced::widget::Text<'a>,
+        raw: &str,
+        size: f32,
+        alpha: f32,
+        col_w: f32,
+    ) -> iced::Element<'a, Message> {
+        self.verse_with_romaji_in(main, raw, size, alpha, Some(col_w))
+    }
+
+    fn verse_with_romaji_in<'a>(
+        &self,
+        main: iced::widget::Text<'a>,
+        raw: &str,
+        size: f32,
+        alpha: f32,
+        col_w: Option<f32>,
+    ) -> iced::Element<'a, Message> {
         use iced::widget::{column, text};
         match self.romaji_line(raw) {
             Some(roma) => column![
                 main,
-                text(roma.to_string())
-                    .size(romaji_size(size))
-                    .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.75))
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .width(iced::Fill),
+                text(match col_w {
+                    Some(w) => Self::lyric_romaji_lines(roma, w),
+                    None => roma.to_string(),
+                })
+                .size(romaji_size(size))
+                .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.75))
+                .align_x(iced::alignment::Horizontal::Center)
+                .width(iced::Fill),
             ]
             .spacing(2)
             .width(iced::Fill)

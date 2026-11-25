@@ -426,7 +426,8 @@ pub(crate) fn ticker_content_height(lines: &[TickerLine]) -> f32 {
 }
 
 /// Synced ticker lines ready to draw: `(text, size, distance)`. The
-/// current verse is always whole (wrapped, bold); the first layout of
+/// current verse is always whole (pre-broken at its size, bold, see
+/// [`verse_breaks`]); the first layout of
 /// `MINI_TICKER_LAYOUTS` that fits the ticker picks its size and how
 /// many neighbor lines stay. Neighbors are one ellipsized line each.
 /// Measured with the real font, so the fit matches what is drawn.
@@ -451,6 +452,17 @@ pub(crate) fn ticker_lines(
             roma(i).map(|r| fit_lines(r, width, romaji_size(size), 1)),
         )
     };
+    // The current verse (and its romaji) broken once at its own
+    // size and weight: every glide frame draws these same lines.
+    let current = |i: usize, size: f32| -> TickerLine {
+        let w = width - VERSE_BREAK_SLACK;
+        (
+            verse_breaks(visible[i], w, size, bold_font()),
+            size,
+            0,
+            roma(i).map(|r| verse_breaks(r, w, romaji_size(size), body_font())),
+        )
+    };
     let Some(&(cur, _)) = window.iter().find(|(_, d)| *d == 0) else {
         // Before the first verse: upcoming lines only.
         return window.into_iter().map(|(i, d)| neighbor(i, d)).collect();
@@ -461,7 +473,7 @@ pub(crate) fn ticker_lines(
             .filter(|(_, d)| d.unsigned_abs() <= reach)
             .map(|&(i, d)| {
                 if d == 0 {
-                    (visible[i].to_string(), size, 0, roma(i).map(str::to_string))
+                    current(i, size)
                 } else {
                     neighbor(i, d)
                 }
@@ -475,14 +487,7 @@ pub(crate) fn ticker_lines(
         .find(|lines| ticker_content_height(lines) <= budget)
         // Longer than the ticker even alone at the smallest size: the
         // verse still shows whole, centered (rare; the clip trims).
-        .unwrap_or_else(|| {
-            vec![(
-                visible[cur].to_string(),
-                13.0,
-                0,
-                roma(cur).map(str::to_string),
-            )]
-        })
+        .unwrap_or_else(|| vec![current(cur, 13.0)])
 }
 
 /// Synced lyric line look by its (continuous) distance from the
@@ -1091,6 +1096,7 @@ impl AppState {
             .height(iced::Length::Fixed(MINI_LYRICS_H));
         for l in lines {
             let alpha = l.alpha.clamp(0.0, 1.0);
+            let broken = l.text.contains('\n');
             let mut line = text(l.text)
                 .size(l.size)
                 .color(iced::Color::from_rgba(
@@ -1101,9 +1107,11 @@ impl AppState {
                 ))
                 .align_x(iced::alignment::Horizontal::Center)
                 .width(Fill);
-            // The current verse wraps whole; neighbors are cut to one
+            // The current verse comes pre-broken (its lines never
+            // change mid-glide; wrapping is only a safety net) and
+            // keeps it while it grows in; neighbors are cut to one
             // line already, so a measuring hair never wraps them.
-            let wrap = if l.bold {
+            let wrap = if l.bold || broken {
                 Wrapping::WordOrGlyph
             } else {
                 Wrapping::None

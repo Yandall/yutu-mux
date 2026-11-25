@@ -312,3 +312,69 @@ pub(crate) fn fit_lines_font(
     });
     out
 }
+
+/// Room kept free when lyric lines are pre-broken, so the drawn text
+/// never needs one more wrap at the real width (scrollbars, rounding).
+pub(crate) const VERSE_BREAK_SLACK: f32 = 6.0;
+
+/// `s` with a newline at every wrap point it gets `width` px wide at
+/// `size` px in `font` (word-or-glyph wrapping, measured with the
+/// renderer's own font system). Lyric verses are broken once at their
+/// largest (highlighted) style and drawn from this text at every
+/// size: glyph advances scale with the size, so the breaks still fit
+/// smaller or lighter, and words never hop between lines while a verse
+/// grows or shrinks. Memoized (a lyrics view draws every verse on
+/// every animation frame).
+pub(crate) fn verse_breaks(s: &str, width: f32, size: f32, font: iced::Font) -> String {
+    use iced::advanced::text::Paragraph as _;
+    use std::cell::RefCell;
+    type Key = (String, u32, u32, iced::Font);
+    const KEEP: usize = 2048;
+    thread_local! {
+        static CACHE: RefCell<HashMap<Key, String>> = RefCell::new(HashMap::new());
+    }
+    let s = s.trim();
+    if !width.is_finite() || width <= 0.0 || s.is_empty() {
+        return s.to_owned();
+    }
+    let key: Key = (s.to_owned(), width.to_bits(), size.to_bits(), font);
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let p = iced::advanced::graphics::text::Paragraph::with_text(iced::advanced::Text {
+        content: s,
+        bounds: iced::Size::new(width, f32::INFINITY),
+        size: iced::Pixels(size),
+        line_height: iced::widget::text::LineHeight::default(),
+        font,
+        align_x: iced::advanced::text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: iced::widget::text::Shaping::default(),
+        wrapping: iced::widget::text::Wrapping::WordOrGlyph,
+    });
+    let rows: Vec<&str> = p
+        .buffer()
+        .layout_runs()
+        .filter_map(|run| {
+            let (a, b) = run
+                .glyphs
+                .iter()
+                .fold((usize::MAX, 0), |(a, b), g| (a.min(g.start), b.max(g.end)));
+            let row = run.text.get(a..b)?.trim();
+            (!row.is_empty()).then_some(row)
+        })
+        .collect();
+    let out = if rows.len() <= 1 {
+        s.to_owned()
+    } else {
+        rows.join("\n")
+    };
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= KEEP {
+            c.clear();
+        }
+        c.insert(key, out.clone());
+    });
+    out
+}
