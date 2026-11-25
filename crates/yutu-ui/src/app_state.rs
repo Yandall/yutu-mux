@@ -141,6 +141,8 @@ pub struct AppState {
     pub(crate) lyrics_follow_at: Option<(String, usize)>,
     /// Last issued follow target (drawer y): tells manual scrolls apart
     /// from our own snaps (snaps land exactly, so they never trip it).
+    /// Unclamped (negative for verses near the top): readers clamp it
+    /// with `clamp_follow`, steps to the next verse add to it as is.
     pub(crate) lyrics_target: f32,
     /// Last commanded scroll offsets, newest first (NaN = none yet):
     /// glide echoes match one of these exactly, so only real user

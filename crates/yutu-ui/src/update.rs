@@ -2793,8 +2793,10 @@ impl AppState {
                     if let Some(t) = self.queue.current() {
                         let id = t.id.clone();
                         if let Some(at) = self.lyric_cursor_at(&id) {
-                            if let Some(y) = self.lyric_follow_y(&id, at) {
-                                self.lyrics_target = y;
+                            if let Some(raw) = self.lyric_center_y(&id, at) {
+                                self.lyrics_target = raw;
+                                self.lyrics_target_for = Some((id.clone(), at));
+                                let y = self.clamp_follow(raw);
                                 self.lyrics_follow_at = Some((id, at));
                                 self.lyrics_cmds = [y, f32::NAN, f32::NAN];
                                 self.publish_mpris();

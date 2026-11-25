@@ -715,9 +715,18 @@ pub struct LyricRowGeom {
 }
 
 impl LyricRowGeom {
-    /// Scroll offset that centers the row, clamped to the content.
+    /// Scroll offset that centers the row, clamped to the content
+    /// (where the drawer settles; the follow itself keeps the raw one).
+    #[cfg(test)]
     pub(crate) fn center_y(&self) -> f32 {
-        (self.top + self.h / 2.0 - self.view_h / 2.0).clamp(0.0, self.max_y.max(0.0))
+        self.raw_center_y().clamp(0.0, self.max_y.max(0.0))
+    }
+
+    /// [`Self::center_y`] before the clamp: early verses center above
+    /// the top (negative). The follow keeps this value so the next
+    /// verse's step starts from the true center, not the clamped one.
+    pub(crate) fn raw_center_y(&self) -> f32 {
+        self.top + self.h / 2.0 - self.view_h / 2.0
     }
 }
 
