@@ -8834,6 +8834,7 @@ fn layout_snapshots() {
         "importplaylist",
         "importsummary",
         "favorites",
+        "importchoice",
     ];
     for (w, h) in sizes {
         for name in names {
@@ -8988,6 +8989,15 @@ fn layout_snapshots() {
                         s.like_id(&t.id);
                     }
                     let _ = s.update(Message::OpenPlaylist(AppState::FAVORITES_ID.into()));
+                }
+                #[cfg(feature = "innertube")]
+                "importchoice" => {
+                    s.navigate(Route::Settings);
+                    for t in &tracks[..5] {
+                        s.like_id(&t.id);
+                    }
+                    s.cookie_path = "/tmp/cookies.txt".into();
+                    let _ = s.update(Message::CookieImport);
                 }
                 "newplaylist" => {
                     s.navigate(Route::Home);
@@ -12841,4 +12851,270 @@ fn mini_wheel_keeps_the_incoming_verse_lines_through_the_glide() {
         let l = f.iter().find(|l| l.index == 1).unwrap();
         assert_eq!(l.text, target, "frame {step}");
     }
+}
+
+/// A server list mirrored in memory and on disk (sync-state tests).
+#[cfg(feature = "innertube")]
+fn seed_server_list(s: &mut AppState, id: &str, title: &str) {
+    let tracks = vec![mk_track("m1", "Song", "Someone")];
+    LibraryStore::open(&s.library_path)
+        .unwrap()
+        .sync_server_playlist(id, title, &tracks)
+        .unwrap();
+    s.user_playlists.push(yutu_core::Playlist {
+        id: id.into(),
+        title: title.into(),
+        tracks,
+    });
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn cookie_import_over_a_local_library_asks_first() {
+    let mut s = test_state();
+    s.like_id("m1");
+    let _ = s.update(Message::CreatePlaylist("Gym".into()));
+    s.cookie_path = "/tmp/cookies.txt".into();
+    let _ = s.update(Message::CookieImport);
+    // Nothing starts or clears until the user picks.
+    let prompt = s.pending_import_choice.clone().unwrap();
+    assert_eq!((prompt.favorites, prompt.playlists), (1, 1));
+    assert_eq!(prompt.path, "/tmp/cookies.txt");
+    assert!(!s.import_active);
+    assert!(s.modal_open());
+    // Esc cancels: the library stays exactly as it was.
+    let _ = s.update(Message::CloseContext);
+    assert!(s.pending_import_choice.is_none());
+    assert!(s.liked.contains("m1"));
+    assert_eq!(s.user_playlists.len(), 1);
+    assert!(!s.import_active);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn start_fresh_clears_library_and_stale_pushes_then_imports() {
+    let mut s = test_state();
+    s.like_id("m1");
+    s.persist_like("m1", true);
+    seed_server_list(&mut s, "PLold", "Old");
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    // The live failure: queued unlikes and real list deletes replayed
+    // against the new sign-in.
+    store
+        .record_pending("unlike", None, Some("m9"), None)
+        .unwrap();
+    store
+        .record_pending("delete", Some("PLold"), None, None)
+        .unwrap();
+    s.cookie_path = "/tmp/cookies.txt".into();
+    let _ = s.update(Message::CookieImport);
+    let _ = s.update(Message::ImportChoice(ImportChoice::StartFresh));
+    assert!(s.pending_import_choice.is_none());
+    assert!(s.liked.is_empty() && s.liked_order.is_empty());
+    assert!(s.user_playlists.is_empty());
+    assert!(!s.import_keep_local);
+    assert!(s.import_active, "the import starts right after the reset");
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    assert!(store.pending_ops().unwrap().is_empty());
+    assert!(store.liked_ids().unwrap().is_empty());
+    assert!(store.user_playlists().unwrap().is_empty());
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn keep_playlists_turns_lists_missing_from_the_account_into_local_copies() {
+    let mut s = test_state();
+    s.like_id("m1");
+    seed_server_list(&mut s, "PLgone", "Gone");
+    seed_server_list(&mut s, "PLkept", "Kept");
+    let _ = s.update(Message::CreatePlaylist("Mine".into()));
+    LibraryStore::open(&s.library_path)
+        .unwrap()
+        .record_pending("remove", Some("PLkept"), Some("m1"), None)
+        .unwrap();
+    s.cookie_path = "/tmp/cookies.txt".into();
+    let _ = s.update(Message::CookieImport);
+    let _ = s.update(Message::ImportChoice(ImportChoice::KeepPlaylists));
+    assert!(s.import_keep_local);
+    assert!(s.liked.is_empty(), "favorites come from the account");
+    assert_eq!(s.user_playlists.len(), 3);
+    assert!(LibraryStore::open(&s.library_path)
+        .unwrap()
+        .pending_ops()
+        .unwrap()
+        .is_empty());
+    let _ = s.update(Message::ImportStageReady {
+        kind: ImportKind::Cookie,
+        result: Ok(staged(vec![], vec![], vec![("PLkept", "Kept")])),
+    });
+    assert!(!s.import_keep_local, "the pick is consumed by this run");
+    // Still on the account: stays synced. Gone from it: kept locally.
+    assert_eq!(
+        s.playlist_sync_state("PLkept"),
+        Some(PlaylistSyncState::Synced)
+    );
+    let gone = s.user_playlists.iter().find(|p| p.title == "Gone").unwrap();
+    assert_eq!(
+        s.playlist_sync_state(&gone.id),
+        Some(PlaylistSyncState::Local)
+    );
+    assert_eq!(gone.tracks.len(), 1);
+    let mine = s.user_playlists.iter().find(|p| p.title == "Mine").unwrap();
+    assert_eq!(
+        s.playlist_sync_state(&mine.id),
+        Some(PlaylistSyncState::Local)
+    );
+    // Disk agrees (restarts keep the copy).
+    let stored = LibraryStore::open(&s.library_path)
+        .unwrap()
+        .user_playlists()
+        .unwrap();
+    assert!(stored.iter().any(|p| p.title == "Gone" && p.id == gone.id));
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn fresh_import_with_nothing_local_still_drops_stale_pushes() {
+    let mut s = test_state();
+    LibraryStore::open(&s.library_path)
+        .unwrap()
+        .record_pending("delete", Some("PLreal"), None, None)
+        .unwrap();
+    s.cookie_path = "/tmp/cookies.txt".into();
+    let _ = s.update(Message::CookieImport);
+    assert!(s.pending_import_choice.is_none(), "nothing to ask about");
+    assert!(s.import_active);
+    assert!(LibraryStore::open(&s.library_path)
+        .unwrap()
+        .pending_ops()
+        .unwrap()
+        .is_empty());
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn stop_syncing_keeps_a_local_copy_and_syncs_skip_the_server_list() {
+    let mut s = test_state();
+    seed_server_list(&mut s, "PLserver1", "Road");
+    s.go(Route::PlaylistDetail("PLserver1".into()));
+    let _ = s.update(Message::StopPlaylistSync("PLserver1".into()));
+    let copy = s.user_playlists.iter().find(|p| p.title == "Road").unwrap();
+    let local = copy.id.clone();
+    assert_ne!(local, "PLserver1");
+    assert_eq!(copy.tracks.len(), 1);
+    assert_eq!(
+        s.playlist_sync_state(&local),
+        Some(PlaylistSyncState::Local)
+    );
+    // The open page follows the list (no dead route).
+    assert_eq!(s.route, Route::PlaylistDetail(local.clone()));
+    assert!(s.unsynced_playlists.contains("PLserver1"));
+    let store = LibraryStore::open(&s.library_path).unwrap();
+    assert_eq!(store.unsynced_playlists().unwrap(), vec!["PLserver1"]);
+    // A later sync never pulls the server list back as a twin.
+    let _ = s.update(Message::ImportStageReady {
+        kind: ImportKind::Sync,
+        result: Ok(staged(
+            vec![],
+            vec![],
+            vec![("PLserver1", "Road"), ("PLother1", "A")],
+        )),
+    });
+    assert_eq!(s.import_total, 1);
+    assert!(s.user_playlists.iter().all(|p| p.id != "PLserver1"));
+    assert!(s.user_playlists.iter().any(|p| p.id == local));
+    // Restarts remember the skip list.
+    let (again, _) = AppState::with_library_path(s.library_path.clone());
+    assert!(again.unsynced_playlists.contains("PLserver1"));
+    // Stopping a local list is a no-op.
+    let before = s.user_playlists.clone();
+    let _ = s.update(Message::StopPlaylistSync(local));
+    assert_eq!(s.user_playlists, before);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn upload_state_clears_when_the_create_replies() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Mine".into()));
+    let id = s.user_playlists[0].id.clone();
+    s.uploading_playlists.insert(id.clone());
+    assert_eq!(
+        s.playlist_sync_state(&id),
+        Some(PlaylistSyncState::Uploading)
+    );
+    // Uploading lists never upload twice.
+    let _ = s.update(Message::UploadPlaylist(id.clone()));
+    assert_eq!(s.uploading_playlists.len(), 1);
+    let _ = s.update(Message::ServerPlaylistCreated {
+        local_id: id.clone(),
+        title: "Mine".into(),
+        seeded: vec![],
+        result: Err("offline".into()),
+    });
+    assert!(s.uploading_playlists.is_empty());
+    assert_eq!(s.playlist_sync_state(&id), Some(PlaylistSyncState::Local));
+    let _ = s.update(Message::ServerPlaylistCreated {
+        local_id: id.clone(),
+        title: "Mine".into(),
+        seeded: vec![],
+        result: Ok("PLcreated1".into()),
+    });
+    assert_eq!(
+        s.playlist_sync_state("PLcreated1"),
+        Some(PlaylistSyncState::Synced)
+    );
+    // Favorites syncs as likes, never as a list.
+    assert_eq!(s.playlist_sync_state(AppState::FAVORITES_ID), None);
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn replay_skips_rows_that_would_push_nothing() {
+    let mut s = test_state();
+    let _ = s.update(Message::CreatePlaylist("Mine".into()));
+    let shell = s.user_playlists[0].id.clone();
+    let op = |op: &str, pid: Option<&str>, tid: Option<&str>, title: Option<&str>| {
+        yutu_core::PendingOp {
+            op: op.into(),
+            playlist_id: pid.map(String::from),
+            track_id: tid.map(String::from),
+            title: title.map(String::from),
+        }
+    };
+    assert!(s.replayable(&op("unlike", None, Some("m1"), None)));
+    assert!(s.replayable(&op("remove", Some("PLremote1"), Some("m1"), None)));
+    assert!(s.replayable(&op("create", Some(&shell), None, Some("Mine"))));
+    // Local shells never take list edits; gone shells never create.
+    assert!(!s.replayable(&op("add", Some(&shell), Some("m1"), None)));
+    assert!(!s.replayable(&op("create", Some("u999"), None, Some("Gone"))));
+    assert!(!s.replayable(&op("rename", Some("PLremote1"), None, Some("T"))));
+    assert!(!s.replayable(&op("bogus", None, None, None)));
+}
+
+#[cfg(feature = "innertube")]
+#[test]
+fn control_playlist_sync_reports_state_and_refuses_honestly() {
+    let mut s = test_state();
+    seed_server_list(&mut s, "PLserver1", "Road");
+    let _ = s.update(Message::CreatePlaylist("Mine".into()));
+    let local = s.user_playlists[1].id.clone();
+    let lists = control_call(&mut s, "playlists").unwrap();
+    let sync_of = |lists: &serde_json::Value, id: &str| {
+        lists
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .map(|p| p["sync"].clone())
+    };
+    assert_eq!(sync_of(&lists, "PLserver1").unwrap(), "synced");
+    assert_eq!(sync_of(&lists, &local).unwrap(), "local");
+    s.cookie_logged_in = false;
+    s.logged_in = false;
+    assert!(control_call(&mut s, &format!("playlist-sync {local} upload")).is_err());
+    assert!(control_call(&mut s, &format!("playlist-sync {local} stop")).is_err());
+    assert!(control_call(&mut s, "playlist-sync nope stop").is_err());
+    control_call(&mut s, "playlist-sync PLserver1 stop").unwrap();
+    assert!(s.unsynced_playlists.contains("PLserver1"));
 }

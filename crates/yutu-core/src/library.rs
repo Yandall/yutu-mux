@@ -95,6 +95,9 @@ pub struct LibraryStore {
     pub(crate) conn: Connection,
 }
 
+/// Pref key behind [`LibraryStore::unsynced_playlists`].
+const UNSYNCED_PLAYLISTS_PREF: &str = "unsynced_playlists";
+
 impl LibraryStore {
     pub fn in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
@@ -1003,6 +1006,82 @@ impl LibraryStore {
             out.entry(pid).or_default().insert(tid, added);
         }
         Ok(out)
+    }
+
+    /// Clear the account-shaped state before a fresh sign-in import
+    /// (single transaction): favorites, dislikes, the local favorites
+    /// order and every pending push go (stale intent from an older
+    /// session must never replay against the new import). Playlists go
+    /// too unless `keep_playlists`. History, the track cache and the
+    /// saved queue always stay.
+    pub fn reset_library(&self, keep_playlists: bool) -> Result<(), String> {
+        self.with_tx(|| {
+            for sql in [
+                "DELETE FROM likes",
+                "DELETE FROM dislikes",
+                "DELETE FROM pending_ops",
+                "DELETE FROM prefs WHERE key = 'favorites_manual_order'",
+            ] {
+                self.conn.execute(sql, []).map_err(|e| e.to_string())?;
+            }
+            if !keep_playlists {
+                for sql in ["DELETE FROM playlist_tracks", "DELETE FROM playlists"] {
+                    self.conn.execute(sql, []).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Turn a synced playlist into a device-only copy under `local_id`
+    /// (single transaction): its rows move to the new id unchanged and
+    /// its pending pushes are dropped (nothing syncs for it anymore).
+    /// The server list itself is untouched.
+    pub fn detach_playlist(&self, server_id: &str, local_id: &str) -> Result<(), String> {
+        self.with_tx(|| {
+            self.conn
+                .execute(
+                    "UPDATE playlists SET id = ?2 WHERE id = ?1",
+                    params![server_id, local_id],
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn
+                .execute(
+                    "UPDATE playlist_tracks SET playlist_id = ?2 WHERE playlist_id = ?1",
+                    params![server_id, local_id],
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn
+                .execute(
+                    "DELETE FROM pending_ops WHERE IFNULL(playlist_id,'') = ?1",
+                    params![server_id],
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// Server playlists the user stopped syncing: imports and syncs
+    /// skip them so they never come back as duplicates of the local
+    /// copy. Stored one id per line in the `unsynced_playlists` pref.
+    pub fn unsynced_playlists(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .get_pref(UNSYNCED_PLAYLISTS_PREF)?
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Add one id to [`Self::unsynced_playlists`] (idempotent).
+    pub fn mark_playlist_unsynced(&self, server_id: &str) -> Result<(), String> {
+        let mut ids = self.unsynced_playlists()?;
+        if !ids.iter().any(|x| x == server_id) {
+            ids.push(server_id.to_string());
+        }
+        self.set_pref(UNSYNCED_PLAYLISTS_PREF, &ids.join("\n"))
     }
 
     pub fn delete_playlist(&self, id: &str) -> Result<(), String> {

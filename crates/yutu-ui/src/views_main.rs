@@ -3680,6 +3680,11 @@ impl AppState {
                             self.art_thumb(cover.as_deref(), size)
                         }
                     };
+                    // Sync state with YouTube Music (own lists only).
+                    #[cfg(feature = "innertube")]
+                    let sync_line = self.playlist_sync_line(&p.id);
+                    #[cfg(not(feature = "innertube"))]
+                    let sync_line: Option<iced::Element<'_, Message>> = None;
                     let info: iced::Element<'_, Message> = column![
                         text(self.language.playlist_label()).size(12).color(MUTED),
                         text(p.title.clone()).size(34).font(bold_font()),
@@ -3689,15 +3694,18 @@ impl AppState {
                         )
                         .size(12)
                         .color(MUTED),
-                        iced::widget::Space::new().height(iced::Length::Fixed(6.0)),
-                        // Wraps onto a second line on narrow windows
-                        // instead of pushing the menu button off-screen.
+                    ]
+                    .push(sync_line)
+                    .push(iced::widget::Space::new().height(iced::Length::Fixed(6.0)))
+                    // Wraps onto a second line on narrow windows instead
+                    // of pushing the menu button off-screen.
+                    .push(
                         iced::widget::Row::with_children(actions)
                             .spacing(8)
                             .align_y(iced::alignment::Vertical::Center)
                             .wrap()
                             .vertical_spacing(8),
-                    ]
+                    )
                     .push(menu_line.map(|m| {
                         // Same 8px as the row gaps, under the play button.
                         column![
@@ -4509,6 +4517,44 @@ impl AppState {
                     .width(Fill)
                     .into(),
                 );
+                // Sync with YouTube Music: upload a device-only list
+                // (signed in only), or stop syncing a synced one.
+                #[cfg(feature = "innertube")]
+                match self.playlist_sync_state(&pid3) {
+                    Some(PlaylistSyncState::Local) if self.signed_in() => pl_items.push(
+                        row_button(
+                            row![
+                                btn_icon("cloud-upload", 14.0, iced::Color::WHITE),
+                                btn_text(self.language.upload_playlist(), 14),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::UploadPlaylist(pid3.clone()))
+                        .padding(8)
+                        .width(Fill)
+                        .into(),
+                    ),
+                    Some(PlaylistSyncState::Synced) => pl_items.push(
+                        row_button(
+                            row![
+                                btn_icon("cloud-off", 14.0, iced::Color::WHITE),
+                                btn_text(self.language.stop_playlist_sync(), 14),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .width(Fill),
+                        )
+                        .style(hover_row)
+                        .on_press(Message::StopPlaylistSync(pid3.clone()))
+                        .padding(8)
+                        .width(Fill)
+                        .into(),
+                    ),
+                    _ => {}
+                }
                 if pid3 != Self::FAVORITES_ID {
                     let pid_rename = pid3.clone();
                     pl_items.push(
@@ -4914,6 +4960,12 @@ impl AppState {
         // scrim/Esc stays signed in (safe default).
         #[cfg(feature = "innertube")]
         if let Some(dialog) = self.signout_dialog() {
+            layers.push(dialog);
+        }
+        // Library choice above everything else (Esc closes it first):
+        // scrim/Esc cancels the import, nothing is cleared.
+        #[cfg(feature = "innertube")]
+        if let Some(dialog) = self.import_choice_dialog() {
             layers.push(dialog);
         }
         // Always a Stack (even with one layer): flipping between bare

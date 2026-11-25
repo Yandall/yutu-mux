@@ -692,14 +692,7 @@ impl AppState {
                 };
                 (playlist_id, track_id, result)
             },
-            |(playlist_id, track_id, result)| Message::ServerPlaylistSynced {
-                detail: format!("YouTube add of {track_id} to {playlist_id} failed"),
-                op: PlaylistSyncOp::Add {
-                    playlist_id: playlist_id.clone(),
-                    track_id: track_id.clone(),
-                },
-                result,
-            },
+            |(playlist_id, track_id, result)| Self::added_msg(playlist_id, track_id, result),
         )
     }
 
@@ -718,13 +711,7 @@ impl AppState {
                 };
                 (playlist_id, result)
             },
-            |(playlist_id, result)| Message::ServerPlaylistSynced {
-                detail: format!("YouTube delete of {playlist_id} failed"),
-                op: PlaylistSyncOp::Delete {
-                    playlist_id: playlist_id.clone(),
-                },
-                result,
-            },
+            |(playlist_id, result)| Self::deleted_msg(playlist_id, result),
         )
     }
 
@@ -747,14 +734,7 @@ impl AppState {
                 };
                 (playlist_id, track_id, result)
             },
-            |(playlist_id, track_id, result)| Message::ServerPlaylistSynced {
-                detail: format!("YouTube remove of {track_id} from {playlist_id} failed"),
-                op: PlaylistSyncOp::Remove {
-                    playlist_id: playlist_id.clone(),
-                    track_id: track_id.clone(),
-                },
-                result,
-            },
+            |(playlist_id, track_id, result)| Self::removed_msg(playlist_id, track_id, result),
         )
     }
 
@@ -776,14 +756,7 @@ impl AppState {
                 };
                 (playlist_id, title, result)
             },
-            |(playlist_id, title, result)| Message::ServerPlaylistSynced {
-                detail: format!("YouTube rename of {playlist_id} failed"),
-                op: PlaylistSyncOp::Rename {
-                    playlist_id: playlist_id.clone(),
-                    title: title.clone(),
-                },
-                result,
-            },
+            |(playlist_id, title, result)| Self::renamed_msg(playlist_id, title, result),
         )
     }
 
@@ -962,74 +935,202 @@ impl AppState {
 
     /// Re-fire every pending push (sync replays leftovers before the
     /// pull reads; successes clear their rows, failures stay queued).
-    /// Each task no-ops without a session on its own.
+    /// One task over one connection, pushes applied in record order:
+    /// firing one login per row (hundreds after a long offline stretch)
+    /// overran the connection and every push failed at once. A failed
+    /// connect pushes nothing (the rows stay queued for the next sync).
+    /// Rows a push would ignore anyway (local lists, gone shells) are
+    /// skipped up front. Results arrive as the usual per-push messages.
     #[cfg(feature = "innertube")]
     pub(crate) fn replay_pending_tasks(&self) -> iced::Task<Message> {
+        if !Self::has_session() {
+            return iced::Task::none();
+        }
         let Ok(store) = LibraryStore::open(&self.library_path) else {
             return iced::Task::none();
         };
-        let ops = store.pending_ops().unwrap_or_default();
-        let mut tasks = Vec::with_capacity(ops.len());
-        for op in ops {
-            match op.op.as_str() {
-                "like" => {
-                    if let Some(id) = op.track_id {
-                        tasks.push(Self::like_sync_task(id, true));
-                    }
-                }
-                "unlike" => {
-                    if let Some(id) = op.track_id {
-                        tasks.push(Self::like_sync_task(id, false));
-                    }
-                }
-                "dislike" => {
-                    if let Some(id) = op.track_id {
-                        tasks.push(Self::dislike_sync_task(id, true));
-                    }
-                }
-                "undislike" => {
-                    if let Some(id) = op.track_id {
-                        tasks.push(Self::dislike_sync_task(id, false));
-                    }
-                }
-                "add" => {
-                    if let (Some(pid), Some(tid)) = (op.playlist_id, op.track_id) {
-                        tasks.push(Self::playlist_add_sync_task(pid, tid));
-                    }
-                }
-                "remove" => {
-                    if let (Some(pid), Some(tid)) = (op.playlist_id, op.track_id) {
-                        tasks.push(Self::playlist_remove_sync_task(pid, tid));
-                    }
-                }
-                "create" => {
-                    // Only while the shell still exists locally.
-                    if let (Some(local), Some(title)) = (op.playlist_id, op.title) {
-                        if self.user_playlists.iter().any(|p| p.id == local) {
-                            tasks.push(Self::playlist_create_sync_task(
-                                local,
-                                NewPlaylistSpec::titled(title),
-                            ));
-                        }
-                    }
-                }
-                "rename" => {
-                    // Only while the list still exists locally.
-                    if let (Some(pid), Some(title)) = (op.playlist_id, op.title) {
-                        if self.user_playlists.iter().any(|p| p.id == pid) {
-                            tasks.push(Self::playlist_rename_sync_task(pid, title));
-                        }
-                    }
-                }
-                "delete" => {
-                    if let Some(pid) = op.playlist_id {
-                        tasks.push(Self::playlist_delete_sync_task(pid));
-                    }
-                }
-                _ => {}
-            }
+        let ops: Vec<yutu_core::PendingOp> = store
+            .pending_ops()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|op| self.replayable(op))
+            .collect();
+        if ops.is_empty() {
+            return iced::Task::none();
         }
-        iced::Task::batch(tasks)
+        iced::Task::perform(
+            async move {
+                let backend = match Self::session_backend().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        yutu_core::app_log::warn(
+                            "yutu-sync",
+                            format!("replay of {} pending changes skipped: {e}", ops.len()),
+                        );
+                        return Vec::new();
+                    }
+                };
+                let mut out = Vec::with_capacity(ops.len());
+                for op in ops {
+                    if let Some(msg) = Self::run_pending_op(&backend, op).await {
+                        out.push(msg);
+                    }
+                }
+                out
+            },
+            std::convert::identity,
+        )
+        .then(|msgs: Vec<Message>| iced::Task::batch(msgs.into_iter().map(iced::Task::done)))
+    }
+
+    /// Whether a pending row would push anything: rates always, list
+    /// edits only for server lists, create/rename only while the list
+    /// still exists locally (same gates the single-push tasks apply).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn replayable(&self, op: &yutu_core::PendingOp) -> bool {
+        let pid = op.playlist_id.as_deref();
+        let exists = |id: &str| self.user_playlists.iter().any(|p| p.id == id);
+        match op.op.as_str() {
+            "like" | "unlike" | "dislike" | "undislike" => op.track_id.is_some(),
+            "add" | "remove" => op.track_id.is_some() && pid.is_some_and(Self::is_server_playlist),
+            "delete" => pid.is_some_and(Self::is_server_playlist),
+            "rename" => {
+                op.title.is_some()
+                    && pid.is_some_and(|id| Self::is_server_playlist(id) && exists(id))
+            }
+            "create" => op.title.is_some() && pid.is_some_and(exists),
+            _ => false,
+        }
+    }
+
+    /// Push one pending row over a shared backend and build the same
+    /// result message its single-push task would.
+    #[cfg(feature = "innertube")]
+    pub(crate) async fn run_pending_op(
+        backend: &yutu_core::InnertubeBackend,
+        op: yutu_core::PendingOp,
+    ) -> Option<Message> {
+        let yutu_core::PendingOp {
+            op,
+            playlist_id,
+            track_id,
+            title,
+        } = op;
+        Some(match op.as_str() {
+            "like" | "unlike" => {
+                let track_id = track_id?;
+                let liked = op == "like";
+                let result = backend.rate_like(&track_id, liked).await;
+                Message::LikeSynced {
+                    track_id,
+                    liked,
+                    result,
+                }
+            }
+            "dislike" | "undislike" => {
+                let track_id = track_id?;
+                let disliked = op == "dislike";
+                let result = backend.rate_dislike(&track_id, disliked).await;
+                Message::DislikeSynced {
+                    track_id,
+                    disliked,
+                    result,
+                }
+            }
+            "add" => {
+                let (pid, tid) = (playlist_id?, track_id?);
+                let result = backend.add_to_server_playlist(&pid, &tid).await;
+                Self::added_msg(pid, tid, result)
+            }
+            "remove" => {
+                let (pid, tid) = (playlist_id?, track_id?);
+                let result = backend.remove_from_server_playlist(&pid, &tid).await;
+                Self::removed_msg(pid, tid, result)
+            }
+            "delete" => {
+                let pid = playlist_id?;
+                let result = backend.delete_server_playlist(&pid).await;
+                Self::deleted_msg(pid, result)
+            }
+            "rename" => {
+                let (pid, title) = (playlist_id?, title?);
+                let result = backend.rename_server_playlist(&pid, &title).await;
+                Self::renamed_msg(pid, title, result)
+            }
+            "create" => {
+                let (local_id, title) = (playlist_id?, title?);
+                let spec = NewPlaylistSpec::titled(title.clone());
+                let (result, seeded) = match backend.create_server_playlist(&spec).await {
+                    Ok((id, landed)) => (Ok(id), landed),
+                    Err(e) => (Err(e), Vec::new()),
+                };
+                Message::ServerPlaylistCreated {
+                    local_id,
+                    title,
+                    seeded,
+                    result,
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// Result message for one server playlist add.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn added_msg(
+        playlist_id: String,
+        track_id: String,
+        result: Result<(), String>,
+    ) -> Message {
+        Message::ServerPlaylistSynced {
+            detail: format!("YouTube add of {track_id} to {playlist_id} failed"),
+            op: PlaylistSyncOp::Add {
+                playlist_id,
+                track_id,
+            },
+            result,
+        }
+    }
+
+    /// Result message for one server playlist remove.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn removed_msg(
+        playlist_id: String,
+        track_id: String,
+        result: Result<(), String>,
+    ) -> Message {
+        Message::ServerPlaylistSynced {
+            detail: format!("YouTube remove of {track_id} from {playlist_id} failed"),
+            op: PlaylistSyncOp::Remove {
+                playlist_id,
+                track_id,
+            },
+            result,
+        }
+    }
+
+    /// Result message for one server playlist delete.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn deleted_msg(playlist_id: String, result: Result<(), String>) -> Message {
+        Message::ServerPlaylistSynced {
+            detail: format!("YouTube delete of {playlist_id} failed"),
+            op: PlaylistSyncOp::Delete { playlist_id },
+            result,
+        }
+    }
+
+    /// Result message for one server playlist rename.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn renamed_msg(
+        playlist_id: String,
+        title: String,
+        result: Result<(), String>,
+    ) -> Message {
+        Message::ServerPlaylistSynced {
+            detail: format!("YouTube rename of {playlist_id} failed"),
+            op: PlaylistSyncOp::Rename { playlist_id, title },
+            result,
+        }
     }
 
     /// Record a completed pull (any kind) for the scheduler + label.

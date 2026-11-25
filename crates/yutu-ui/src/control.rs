@@ -13,7 +13,7 @@
 use super::*;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use yutu_core::control::{Command, MiniArg, RepeatArg};
+use yutu_core::control::{Command, MiniArg, PlaylistSyncArg, RepeatArg};
 use yutu_core::Track;
 
 /// What the handler sends back to the socket task.
@@ -236,12 +236,62 @@ impl AppState {
             "title": "Favorites",
             "tracks": self.favorite_tracks().len(),
         })];
-        out.extend(
-            self.user_playlists
-                .iter()
-                .map(|p| json!({ "id": p.id, "title": p.title, "tracks": p.tracks.len() })),
-        );
+        out.extend(self.user_playlists.iter().map(|p| {
+            json!({
+                "id": p.id,
+                "title": p.title,
+                "tracks": p.tracks.len(),
+                "sync": self.control_sync_word(&p.id),
+            })
+        }));
         Value::Array(out)
+    }
+
+    /// `synced` / `uploading` / `local` (offline builds: always local).
+    fn control_sync_word(&self, id: &str) -> &'static str {
+        #[cfg(feature = "innertube")]
+        {
+            self.playlist_sync_state(id).map_or("local", |s| s.word())
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            let _ = id;
+            "local"
+        }
+    }
+
+    /// `playlist-sync <id> upload|stop`: validated here so the caller
+    /// gets an honest error instead of a silent no-op, then dispatched
+    /// as the playlist menu's own messages.
+    fn control_playlist_sync(
+        &self,
+        id: &str,
+        action: PlaylistSyncArg,
+    ) -> Result<Vec<Message>, String> {
+        #[cfg(feature = "innertube")]
+        {
+            let id = yutu_core::canonical_playlist_id(id);
+            let Some(state) = self.playlist_sync_state(&id) else {
+                return Err(format!("no playlist `{id}` (see `playlists`)"));
+            };
+            match (action, state) {
+                (PlaylistSyncArg::Upload, PlaylistSyncState::Local) => {
+                    if !self.signed_in() {
+                        return Err("sign in first (cookies) to upload playlists".into());
+                    }
+                    Ok(vec![Message::UploadPlaylist(id)])
+                }
+                (PlaylistSyncArg::Stop, PlaylistSyncState::Synced) => {
+                    Ok(vec![Message::StopPlaylistSync(id)])
+                }
+                (_, state) => Err(format!("playlist `{id}` is {}", state.word())),
+            }
+        }
+        #[cfg(not(feature = "innertube"))]
+        {
+            let _ = (id, action);
+            Err("playlist sync needs the online build".into())
+        }
     }
 
     fn control_queue(&self) -> Value {
@@ -527,6 +577,13 @@ impl AppState {
                         .then(|_| iced::exit()),
                 );
             }
+            Command::PlaylistSync(id, action) => match self.control_playlist_sync(&id, action) {
+                Ok(m) => m,
+                Err(e) => {
+                    reply.err(e);
+                    return iced::Task::none();
+                }
+            },
             Command::LyricsRomaji(want) => {
                 vec![Message::SetLyricsRomaji(
                     want.unwrap_or(!self.lyrics_romaji),

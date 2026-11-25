@@ -124,6 +124,35 @@ pub(crate) fn thumbs_down_icon(
         .into()
 }
 
+/// Cloud with hollow/filled states (same fill-flip as [`heart_icon`]):
+/// solid while a playlist is synced with YouTube Music (active),
+/// outline otherwise.
+#[cfg(feature = "innertube")]
+pub(crate) fn cloud_icon(
+    synced: bool,
+    size: f32,
+    color: iced::Color,
+) -> iced::Element<'static, Message> {
+    use iced::widget::svg;
+    if !synced {
+        return btn_icon("cloud", size, color);
+    }
+    pub(crate) const CLOUD: &str = include_str!("../assets/icons/cloud.svg");
+    pub(crate) static FILLED_CLOUD: std::sync::LazyLock<svg::Handle> =
+        std::sync::LazyLock::new(|| {
+            let filled: Vec<u8> = CLOUD
+                .replace("fill=\"none\"", "fill=\"currentColor\"")
+                .replace("stroke-width=\"2\"", "stroke-width=\"2.5\"")
+                .into_bytes();
+            svg::Handle::from_memory(filled)
+        });
+    svg(FILLED_CLOUD.clone())
+        .width(size)
+        .height(size)
+        .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
+        .into()
+}
+
 /// Rounded text input (search bar pill, filter fields): dark fill, soft
 /// border, comfortable radius. One style for every input in the app.
 pub(crate) fn rounded_input(

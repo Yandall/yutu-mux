@@ -1344,3 +1344,29 @@ async fn playlist_paging_retries_then_refuses_partial_reads() {
     assert!(result.unwrap_err().contains("incomplete: page 2"));
     assert_eq!(seen, 2);
 }
+
+#[test]
+fn connect_errors_split_network_from_rejected_cookies() {
+    use crate::innertube::connect_error_is_transient;
+    // Seen live: a burst of parallel logins failing on the network.
+    let wrap = |inner: &str| {
+        format!(
+            "saved cookie session failed (innertube cookie login failed ({inner}; bad/expired cookie?)): import your cookies file again"
+        )
+    };
+    for inner in [
+        "login page request failed: error sending request for url (https://music.youtube.com/)",
+        "login page read failed: error decoding response body",
+        "login page returned HTTP 503 Service Unavailable",
+        "login page returned HTTP 429 Too Many Requests",
+    ] {
+        assert!(connect_error_is_transient(&wrap(inner)), "{inner}");
+    }
+    for inner in [
+        "no SAPISID cookie (export again while signed in)",
+        "login page returned HTTP 401 Unauthorized",
+        "login page says the browser is not supported (user agent changed?)",
+    ] {
+        assert!(!connect_error_is_transient(&wrap(inner)), "{inner}");
+    }
+}

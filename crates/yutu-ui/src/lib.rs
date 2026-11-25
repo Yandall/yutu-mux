@@ -50,6 +50,10 @@ mod lifecycle;
 mod mini_player;
 mod persist;
 mod playback;
+#[cfg(feature = "innertube")]
+mod playlist_sync;
+#[cfg(feature = "innertube")]
+pub(crate) use playlist_sync::PlaylistSyncState;
 mod player_cards;
 mod queue_artwork;
 mod seek_status;

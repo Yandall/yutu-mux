@@ -90,6 +90,9 @@ pub enum Command {
     Mini(MiniArg),
     /// Romaji under Japanese lyrics (`None` toggles).
     LyricsRomaji(Option<bool>),
+    /// Upload a device-only playlist to YouTube Music, or stop syncing
+    /// a YouTube Music one (it stays as a device-only copy).
+    PlaylistSync(String, PlaylistSyncArg),
     /// Save the session and close the app.
     Quit,
 }
@@ -107,6 +110,13 @@ pub enum MiniArg {
     Lyrics(Option<bool>),
     /// Capture the mini window to a PNG.
     Screenshot(Option<PathBuf>),
+}
+
+/// `playlist-sync` actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistSyncArg {
+    Upload,
+    Stop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +156,8 @@ Playback:
   remove <track-id>        remove from the queue
   clear-queue              clear the manual queue
   like [track-id]          toggle like (current track by default)
+  playlist-sync <id> upload|stop     upload a device-only playlist, or
+                                     stop syncing one (keeps a local copy)
 
 UI:
   nav <page>               home|search|history|discovery|settings|back|forward
@@ -283,6 +295,22 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             Some(other) => return Err(format!("unknown lyrics action `{other}` (romaji)")),
             None => return Err("missing lyrics action (romaji)".into()),
         },
+        "playlist-sync" => {
+            let id = need(args, 1, "playlist id")?.to_string();
+            let action = match need(args, 2, "action (upload|stop)")?
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "upload" => PlaylistSyncArg::Upload,
+                "stop" | "unsync" => PlaylistSyncArg::Stop,
+                other => {
+                    return Err(format!(
+                        "unknown playlist-sync action `{other}` (upload|stop)"
+                    ))
+                }
+            };
+            Command::PlaylistSync(id, action)
+        }
         "quit" | "exit" => Command::Quit,
         other => return Err(format!("unknown command `{other}` (try `help`)")),
     };
@@ -436,6 +464,20 @@ mod tests {
 
     fn words(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn parses_playlist_sync() {
+        assert_eq!(
+            parse_command(&words("playlist-sync u3 upload")).unwrap(),
+            Command::PlaylistSync("u3".into(), PlaylistSyncArg::Upload)
+        );
+        assert_eq!(
+            parse_command(&words("playlist-sync PLabc STOP")).unwrap(),
+            Command::PlaylistSync("PLabc".into(), PlaylistSyncArg::Stop)
+        );
+        assert!(parse_command(&words("playlist-sync PLabc")).is_err());
+        assert!(parse_command(&words("playlist-sync PLabc delete")).is_err());
     }
 
     #[test]

@@ -863,7 +863,7 @@ impl InnertubeBackend {
             Inner::OAuth(client) => collect_set_video_pairs(client, &query, &mut out).await,
         }?;
         if out.is_empty() {
-            return Err("playlist setVideoIds failed: empty playlist".to_string());
+            return Err(format!("playlist setVideoIds failed: {EMPTY_PLAYLIST_ERR}"));
         }
         Ok(out)
     }
@@ -873,7 +873,8 @@ impl InnertubeBackend {
     ///
     /// Resolves the per-membership `setVideoId` first via
     /// [`Self::playlist_set_video_map`], then removes all matching
-    /// memberships. Auth: cookie OR Google OAuth.
+    /// memberships. Auth: cookie OR Google OAuth. Idempotent: a video
+    /// that is no longer on the list (or an emptied list) succeeds.
     pub async fn remove_from_server_playlist(
         &self,
         playlist_id: &str,
@@ -881,14 +882,22 @@ impl InnertubeBackend {
     ) -> Result<(), String> {
         use ytmapi_rs::common::SetVideoID;
         use ytmapi_rs::common::YoutubeID as _;
-        let map = self.playlist_set_video_map(playlist_id).await?;
+        let map = match self.playlist_set_video_map(playlist_id).await {
+            Ok(map) => map,
+            Err(e) if e.ends_with(EMPTY_PLAYLIST_ERR) => return Ok(()),
+            Err(e) => return Err(e),
+        };
         let targets: Vec<SetVideoID<'_>> = map
             .iter()
             .filter(|(vid, _)| vid == video_id)
             .map(|(_, set)| SetVideoID::from_raw(set.as_str()))
             .collect();
+        // Already gone (removed on the web, or an earlier push landed
+        // before its reply): the wanted state holds, so this succeeds.
+        // An error here kept the pending row alive and failed again on
+        // every sync, forever.
         if targets.is_empty() {
-            return Err(format!("video {video_id} is not on playlist {playlist_id}"));
+            return Ok(());
         }
         // Removal posts to `browse/edit_playlist`: edit (raw) form.
         let edit = crate::library::edit_playlist_id(playlist_id);
@@ -1619,6 +1628,28 @@ impl<'q, 'a> ytmapi_rs::continuations::ParseFromContinuable<TolerantContinuation
 /// (observed live during sync: "error decoding response body") used to
 /// end the read, and the shorter list was saved as the whole playlist.
 pub(crate) const PAGE_TRIES: u32 = 3;
+
+/// True when a cookie connect failed on the way to YouTube Music (no
+/// connection, dropped or garbled reply, server busy) rather than on
+/// the cookies themselves. Such a failure says nothing about the saved
+/// session, so callers must keep it and retry later: a burst of
+/// parallel logins once failed this way and signed the user out.
+pub fn connect_error_is_transient(e: &str) -> bool {
+    const TRANSPORT: [&str; 3] = [
+        "login page request failed",
+        "login page read failed",
+        "login http client failed",
+    ];
+    if TRANSPORT.iter().any(|m| e.contains(m)) {
+        return true;
+    }
+    // Server-side trouble, not a rejected cookie.
+    e.contains("login page returned HTTP 429") || e.contains("login page returned HTTP 5")
+}
+
+/// Tail of the set-video map error for a list with no songs (a remove
+/// against it has nothing left to do, so it succeeds).
+const EMPTY_PLAYLIST_ERR: &str = "empty playlist";
 
 /// Every raw page of a playlist in order, each handed to `on_page`
 /// (paging and retries in [`page_with_retries`]).

@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- Signing in with cookies over an existing library now asks first:
+  keep your playlists on this device, or start fresh.
+- Playlist pages show whether the list is synced with YouTube Music
+  or only on this device.
+- Upload a device-only playlist to YouTube Music, or stop syncing one
+  and keep a local copy, from the playlist menu.
+
 ### Fixed
+
+- Sync no longer signs you out when YouTube Music can't be reached.
+- Changes waiting to sync no longer fail all at once, and a fresh
+  sign-in drops old ones instead of replaying them.
+- Removing a song that's already gone from a YouTube Music playlist no
+  longer fails on every sync.
 
 - Now Playing lyrics no longer bounce when following the first verses
   at the top of the list (#144).

@@ -297,6 +297,31 @@ pub enum ImportKind {
     Sync,
 }
 
+/// Library-choice dialog armed by a fresh cookie import over an
+/// existing local library: the import waits for the user's pick.
+/// Counts are captured when it arms (the dialog body names them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "innertube")]
+pub(crate) struct ImportChoicePrompt {
+    /// The cookies file the import will read once a choice lands.
+    pub(crate) path: String,
+    pub(crate) favorites: usize,
+    pub(crate) playlists: usize,
+}
+
+/// What a fresh cookie import does with the existing local library.
+/// Both drop favorites, dislikes and stale pending pushes (YouTube
+/// Music's favorites replace them); they differ on playlists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "innertube")]
+pub enum ImportChoice {
+    /// Delete every local playlist, then import.
+    StartFresh,
+    /// Keep every playlist: lists still on the account stay synced,
+    /// the rest become device-only copies (never pushed, never pruned).
+    KeepPlaylists,
+}
+
 /// One in-flight playlist fetch for the banner bar: cumulative arrived
 /// songs plus the best-effort total (unknown when details disagrees).
 #[derive(Debug, Clone, Default)]
@@ -1075,6 +1100,22 @@ pub enum Message {
     /// Dismiss the sign-out confirm (scrim/Esc/stay: safe default).
     #[cfg(feature = "innertube")]
     CancelSignOut,
+    /// Pick for the library-choice dialog (fresh cookie import over an
+    /// existing local library): reset as chosen, then import.
+    #[cfg(feature = "innertube")]
+    ImportChoice(ImportChoice),
+    /// Dismiss the library-choice dialog (scrim/Esc/Cancel): nothing is
+    /// cleared and nothing is imported (safe default).
+    #[cfg(feature = "innertube")]
+    CancelImportChoice,
+    /// Create a device-only playlist on YouTube Music with its songs
+    /// (playlist menu); the local list moves to the new server id.
+    #[cfg(feature = "innertube")]
+    UploadPlaylist(String),
+    /// Stop syncing a YouTube Music playlist (playlist menu): it stays
+    /// as a device-only copy and syncs skip the server list from then on.
+    #[cfg(feature = "innertube")]
+    StopPlaylistSync(String),
     /// Delete the just-imported `cookies.txt` export (secure session kept).
     #[cfg(feature = "innertube")]
     CookieCleanupDelete,
