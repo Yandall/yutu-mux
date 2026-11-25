@@ -1,6 +1,6 @@
 [package]
 name = "yutu-mux"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Native Rust YouTube Music desktop app (Iced, Linux + macOS)"
 license = "MIT"

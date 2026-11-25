@@ -291,7 +291,7 @@ published `.sha256` files are integrity checks, not signatures.
 ## 7. Version-bump checklist (next release)
 
 There are FIVE `Cargo.toml` version fields (the binary crate counts
-too); today all read `0.2.1`:
+too); today all read `0.2.2`:
 
 1. `Cargo.toml` (binary `yutu-mux`)
 2. `crates/yutu-core/Cargo.toml`

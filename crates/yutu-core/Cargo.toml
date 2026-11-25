@@ -1,6 +1,6 @@
 [package]
 name = "yutu-core"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Models, backend trait, auth + cache (yutu-mux)"
 license = "MIT"
