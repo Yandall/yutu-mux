@@ -11894,7 +11894,7 @@ fn now_playing_lyrics_share_the_mini_player_look_and_glide() {
     assert_eq!(s.verse_focus("other", Some(1)), 1.0);
     // Rendering every state still works.
     let _ = s.view();
-    let _ = s.lyrics_content("m1");
+    let _ = s.lyrics_content("m1", 600.0);
     s.verse_glide = None;
     assert_eq!(s.verse_focus("m1", Some(1)), 1.0);
     // Before the first verse the opening lines read as upcoming.
@@ -12022,7 +12022,10 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
     let visible = vec![long, long, long, "short", long];
     let lines = ticker_lines(&visible, &[], Some(2));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
-    assert_eq!(cur.0, long, "the verse stays whole");
+    assert!(
+        cur.0.split_whitespace().eq(long.split_whitespace()),
+        "the verse stays whole"
+    );
     assert!(cur.1 < 21.0);
     assert!(ticker_content_height(&lines) <= ticker_budget());
     // Neighbors: one line each, ellipsized when too wide.
@@ -12037,7 +12040,10 @@ fn mini_ticker_long_lines_stay_inside_their_slots() {
     let visible = vec![long, long, longer, long, long];
     let lines = ticker_lines(&visible, &[], Some(2));
     let cur = lines.iter().find(|l| l.2 == 0).unwrap();
-    assert_eq!(cur.0, longer, "the verse stays whole");
+    assert!(
+        cur.0.split_whitespace().eq(longer.split_whitespace()),
+        "the verse stays whole"
+    );
     assert!(lines.len() < 5, "fewer neighbors make room");
     assert!(ticker_content_height(&lines) <= ticker_budget());
     // A short current verse keeps the full size and all five slots.
@@ -12533,8 +12539,8 @@ fn non_japanese_lyrics_have_no_romaji_toggle() {
 
 #[test]
 fn romaji_rows_estimate_taller() {
-    let plain = AppState::lyric_row_h(10, None, 0, 600.0);
-    let with = AppState::lyric_row_h(10, Some(12), 0, 600.0);
+    let plain = AppState::lyric_row_h("abcdefghij", None, 0, 600.0);
+    let with = AppState::lyric_row_h("abcdefghij", Some("abcdefghijkl"), 0, 600.0);
     assert!(with > plain + 10.0, "{with} vs {plain}");
     // The follow math reads romaji only while the option is on.
     let mut s = japanese_lyrics_state();
@@ -12770,4 +12776,69 @@ fn queue_scroll_restores_when_the_panel_expands_again() {
     assert!(s.queue_scroll_restore().is_none());
     s.right_w = QUEUE_RAIL_CUTOFF_W;
     assert!(s.queue_scroll_restore().is_some());
+}
+
+#[test]
+fn verse_breaks_fit_every_size_and_keep_the_words() {
+    let long = "and every word we never said is drifting down the river \
+                past the porch light and the lanterns and the morning";
+    let w = 300.0;
+    let broken = verse_breaks(long, w, 21.0, bold_font());
+    assert!(broken.contains('\n'), "a long verse breaks: {broken}");
+    assert!(
+        broken.split_whitespace().eq(long.split_whitespace()),
+        "breaks only add newlines"
+    );
+    // Each row still fits one line at the break style and every
+    // smaller or lighter one, so no row ever wraps again mid-glide.
+    for row in broken.lines() {
+        for size in [12.0, 14.0, 16.5, 18.0, 21.0] {
+            for font in [body_font(), bold_font()] {
+                let one = iced::widget::text::LineHeight::default()
+                    .to_absolute(iced::Pixels(size))
+                    .0;
+                let h = wrapped_height(row, w, size, font);
+                assert!(h <= one + 0.5, "{row:?} wraps at {size}px");
+            }
+        }
+    }
+    // A verse that fits comes back as is.
+    assert_eq!(verse_breaks(" short ", w, 21.0, bold_font()), "short");
+}
+
+#[test]
+fn lyric_rows_keep_their_line_breaks_at_every_distance() {
+    let long = "and every word we never said is drifting down the river \
+                past the porch light and the lanterns and the morning";
+    let col_w = 360.0;
+    let broken = AppState::lyric_verse_lines(long, col_w);
+    let rows = broken.lines().count();
+    assert!(rows > 1);
+    // Row height counts the same rows at every distance: only the
+    // line height scales, so heights shrink monotonically.
+    let h: Vec<f32> = (0..4)
+        .map(|d| AppState::lyric_row_h(long, None, d, col_w))
+        .collect();
+    assert!(h.windows(2).all(|w| w[0] >= w[1]), "{h:?}");
+    let pad = LYRIC_BTN_PAD;
+    let ratio = (h[0] - pad) / (h[2] - pad);
+    assert!((ratio - 21.0 / 12.0).abs() < 0.01, "{ratio}");
+}
+
+#[test]
+fn mini_wheel_keeps_the_incoming_verse_lines_through_the_glide() {
+    use crate::mini_player::{wheel_frame, wheel_layout};
+    let long = "and every word we never said is drifting down the river";
+    let visible = ["first light", long, "third bell", "fourth gate"];
+    let a = wheel_layout(&visible, &[], Some(0));
+    let b = wheel_layout(&visible, &[], Some(1));
+    let target = b.iter().find(|l| l.bold).unwrap().text.clone();
+    assert!(target.contains('\n'), "pre-broken: {target}");
+    // Every frame draws the incoming verse with the same rows, from
+    // the first frame on (no one-line phase, no reflow while it grows).
+    for step in 0..=10 {
+        let f = wheel_frame(&a, &b, step as f32 / 10.0);
+        let l = f.iter().find(|l| l.index == 1).unwrap();
+        assert_eq!(l.text, target, "frame {step}");
+    }
 }

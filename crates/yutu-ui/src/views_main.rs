@@ -1410,30 +1410,65 @@ impl AppState {
         self.queue.current().is_some_and(|t| t.id == id)
     }
 
-    /// Estimated height of one lyric row: wrapped visual lines at the
-    /// lyrics column width times the sized line height, plus button
-    /// padding. Wrapping is approximate (average advance), so callers
-    /// treat the result as a centering hint, never truth.
+    /// Height of one lyric row: its pre-broken lines (see
+    /// [`Self::lyric_verse_lines`], the same for every distance) times
+    /// the sized line height, plus button padding.
     /// `distance` = lines away from the current one (sizes follow
     /// [`crate::mini_player::verse_style`], default 1.3 line height).
-    /// `romaji_len` = chars of the romaji line under the verse (2px
-    /// gap plus its own wrapped lines at the smaller size).
+    /// `romaji` = the romaji line under the verse (2px gap plus its own
+    /// pre-broken lines at the smaller size).
     pub(crate) fn lyric_row_h(
-        text_len: usize,
-        romaji_len: Option<usize>,
+        text: &str,
+        romaji: Option<&str>,
         distance: usize,
         col_w: f32,
     ) -> f32 {
         let (size, _, _) = crate::mini_player::verse_style(distance as f32);
         let size = size * LYRICS_VIEW_SCALE;
-        let lh = 1.3;
-        let avail = (col_w - LYRIC_ROW_CHROME).max(120.0);
-        let wrapped = |len: usize, size: f32| {
-            let per_line = (avail / (size * 0.47)).max(8.0) as usize;
-            len.max(1).div_ceil(per_line) as f32 * size * lh
+        let line_h = |size: f32| {
+            iced::widget::text::LineHeight::default()
+                .to_absolute(iced::Pixels(size))
+                .0
         };
-        let romaji = romaji_len.map_or(0.0, |len| 2.0 + wrapped(len, romaji_size(size)));
-        wrapped(text_len, size) + romaji + LYRIC_BTN_PAD
+        let rows = |s: String| s.lines().count().max(1) as f32;
+        let verse = rows(Self::lyric_verse_lines(text, col_w)) * line_h(size);
+        let roma = romaji.map_or(0.0, |r| {
+            2.0 + rows(Self::lyric_romaji_lines(r, col_w)) * line_h(romaji_size(size))
+        });
+        verse + roma + LYRIC_BTN_PAD
+    }
+
+    /// Text width of a lyric row in a column `col_w` wide, less the
+    /// break slack.
+    fn lyric_text_w(col_w: f32) -> f32 {
+        (col_w - LYRIC_ROW_CHROME - VERSE_BREAK_SLACK).max(120.0)
+    }
+
+    /// Size of the current (largest) synced verse in the lyrics views.
+    fn lyric_top_size() -> f32 {
+        crate::mini_player::verse_style(0.0).0 * LYRICS_VIEW_SCALE
+    }
+
+    /// A synced verse broken once at the current line's style (bold,
+    /// largest size): drawn this way at every distance, so its words
+    /// never hop between lines while it grows or shrinks.
+    pub(crate) fn lyric_verse_lines(text: &str, col_w: f32) -> String {
+        verse_breaks(
+            text,
+            Self::lyric_text_w(col_w),
+            Self::lyric_top_size(),
+            bold_font(),
+        )
+    }
+
+    /// Romaji counterpart of [`Self::lyric_verse_lines`].
+    pub(crate) fn lyric_romaji_lines(romaji: &str, col_w: f32) -> String {
+        verse_breaks(
+            romaji,
+            Self::lyric_text_w(col_w),
+            romaji_size(Self::lyric_top_size()),
+            body_font(),
+        )
     }
 
     /// Absolute drawer-scroll y that centers verse `at` (index into
@@ -1477,8 +1512,8 @@ impl AppState {
                 continue;
             }
             let current = vi == at;
-            let romaji = self.romaji_line(&l.text).map(|r| r.chars().count());
-            let h = Self::lyric_row_h(l.text.chars().count(), romaji, vi.abs_diff(at), col_w);
+            let romaji = self.romaji_line(&l.text);
+            let h = Self::lyric_row_h(&l.text, romaji, vi.abs_diff(at), col_w);
             if current {
                 target = Some(y + h / 2.0 - viewport / 2.0);
             }
@@ -1755,7 +1790,8 @@ impl AppState {
     /// Drawer follow geometry (see [`lyric_follow_y`]) mirrors the row
     /// construction below exactly (gaps, pitches, current-row size):
     /// keep the two in sync when this layout changes.
-    pub(crate) fn lyrics_content(&self, id: &str) -> iced::Element<'_, Message> {
+    /// `col_w` = the lyrics column width (synced verses break to it).
+    pub(crate) fn lyrics_content(&self, id: &str, col_w: f32) -> iced::Element<'_, Message> {
         use iced::widget::{column, container, text};
         use iced::Fill;
         // The mini player's look (centered lines, white text fading
@@ -1824,7 +1860,9 @@ impl AppState {
                     let row_id = lyric_row_id(vi);
                     vi += 1;
                     let ms = l.start_ms;
-                    let mut line = text(l.text.trim().to_string())
+                    // Broken once at the highlighted style: the line
+                    // keeps its words per row while it grows or shrinks.
+                    let mut line = text(Self::lyric_verse_lines(&l.text, col_w))
                         .size(size)
                         .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha))
                         .align_x(iced::alignment::Horizontal::Center)
@@ -1832,7 +1870,7 @@ impl AppState {
                     if bold {
                         line = line.font(bold_font());
                     }
-                    let verse = self.verse_with_romaji(line, &l.text, size, alpha);
+                    let verse = self.verse_with_romaji_broken(line, &l.text, size, alpha, col_w);
                     // Id'd wrapper: the drawer follow measures the live
                     // row through it (exact wrap, no estimate).
                     let row_el: iced::Element<'_, Message> = container(
@@ -1997,7 +2035,7 @@ impl AppState {
                     container(stepper)
                         .width(Fill)
                         .align_x(iced::alignment::Horizontal::Center),
-                    container(self.lyrics_content(&t.id))
+                    container(self.lyrics_content(&t.id, self.lyrics_col_w()))
                         .width(iced::Length::Fixed(self.lyrics_col_w())),
                 ]
                 .spacing(LYRIC_LIST_GAP)
@@ -2051,7 +2089,7 @@ impl AppState {
                         .align_x(iced::alignment::Horizontal::Center),
                     // Narrow centered lyrics column that never overflows
                     // the available center space (window minus sidebars).
-                    container(self.lyrics_content(&t.id))
+                    container(self.lyrics_content(&t.id, self.lyrics_col_w()))
                         .width(iced::Length::Fixed(self.lyrics_col_w())),
                 ]
                 .spacing(16)
@@ -3694,7 +3732,7 @@ impl AppState {
                     .map(|t| format!("{} · {}", t.title, t.artist))
                     .unwrap_or_else(|| id.clone());
                 let stepper = self.lyrics_provider_stepper(id);
-                let content = self.lyrics_content(id);
+                let content = self.lyrics_content(id, self.content_width());
                 column![
                     text(title).size(22),
                     row![
