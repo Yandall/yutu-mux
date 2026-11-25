@@ -10720,7 +10720,7 @@ fn lyric_probe_measures_live_layout_in_short_window() {
         g.h
     );
     let _ = s.update(Message::LyricRowMeasured(g.clone()));
-    assert!((s.lyrics_target - g.center_y()).abs() < 0.01);
+    assert!((s.lyrics_target - g.raw_center_y()).abs() < 0.01);
     // At the measured target the row sits fully inside the viewport.
     let row_top_on_screen = g.top - s.lyrics_target;
     assert!(row_top_on_screen >= 0.0 && row_top_on_screen + g.h <= g.view_h);
@@ -10728,24 +10728,30 @@ fn lyric_probe_measures_live_layout_in_short_window() {
 
 /// Verse change in the drawer, frame by frame on the real layout: the
 /// follow scroll moves one way only (no overshoot then settle back as
-/// lines resize) and lands on the new verse's settled center. Run with
-/// `--ignored` (needs the renderer).
+/// lines resize) and lands on the new verse's settled center, mid-list
+/// and for the first verses, whose centers sit above the top (stepping
+/// from the clamped target overshot there). Run with `--ignored` (needs
+/// the renderer).
 #[test]
 #[ignore]
 fn lyric_follow_never_bounces_on_verse_change() {
     for (w, h, text) in [
         (1280.0, 800.0, "Paper lanterns drifting over the harbor"),
+        // Two-column Now Playing: the first verses center above the top.
+        (1920.0, 1000.0, "Paper lanterns drifting over the harbor"),
         (
             420.0,
             700.0,
             "Paper lanterns drifting over the harbor while the tide keeps every promise",
         ),
     ] {
-        never_bounces_at(w, h, text);
+        for from in [0, 1, 2, 3, 8, 16] {
+            never_bounces_at(w, h, text, from);
+        }
     }
 }
 
-fn never_bounces_at(w: f32, h: f32, text: &str) {
+fn never_bounces_at(w: f32, h: f32, text: &str, from: u64) {
     let mut s = synced_state(0.0);
     let _ = s.update(Message::WindowResized(iced::Size::new(w, h)));
     let synced: Vec<yutu_core::LyricLine> = (0..30)
@@ -10811,8 +10817,8 @@ fn never_bounces_at(w: f32, h: f32, text: &str) {
     for _ in 0..80 {
         let _ = s.update(Message::Animate);
     }
-    // Settle on verse 8 first.
-    s.position_secs = 24.5;
+    // Settle on verse `from` first.
+    s.position_secs = from as f64 * 3.0 + 0.5;
     let _ = s.update(Message::NoOp);
     s.verse_glide = None;
     let _ = s.lyric_follow_task();
@@ -10821,8 +10827,8 @@ fn never_bounces_at(w: f32, h: f32, text: &str) {
     }
     assert!(s.lyrics_follow);
     let start = s.drawer_scroll;
-    // Verse 9 starts: the Tick path (target + probe), then frames.
-    s.position_secs = 27.5;
+    // The next verse starts: the Tick path (target + probe), then frames.
+    s.position_secs = (from + 1) as f64 * 3.0 + 0.5;
     let _ = s.update(Message::NoOp);
     assert!(s.verse_gliding());
     let _ = s.lyric_follow_task();
@@ -10834,7 +10840,7 @@ fn never_bounces_at(w: f32, h: f32, text: &str) {
         ys.push(s.drawer_scroll);
     }
     let settled = measure(&s).expect("row on screen").center_y();
-    eprintln!("{w}x{h} start {start:.1} settled {settled:.1} path {ys:.1?}");
+    eprintln!("{w}x{h} verse {from} start {start:.1} settled {settled:.1} path {ys:.1?}");
     assert!(s.lyrics_follow, "follow disengaged");
     for pair in ys.windows(2) {
         assert!(pair[1] >= pair[0] - 0.5, "scroll moved back: {ys:.1?}");

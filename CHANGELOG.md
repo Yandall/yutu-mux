@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Now Playing lyrics no longer bounce when following the first verses
+  at the top of the list (#144).
+
 ## 0.2.2 - 2026-11-24
 
 ### Added

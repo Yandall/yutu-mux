@@ -1542,15 +1542,17 @@ impl AppState {
         // modeled distance between the two verses at their final sizes.
         // Lines are still resizing, so a measurement now would land
         // short and then creep (a bounce); the model's wrap error
-        // cancels in the difference.
+        // cancels in the difference. Both ends stay unclamped: near the
+        // top the settled target sits above zero's floor, and stepping
+        // from the floored value overshot, then crept back (a bounce).
         let stepped = match (&prev, &self.lyrics_target_for) {
             (Some(p), Some(t)) if !changed_track && p == t && p.1.abs_diff(at) <= 3 => self
                 .lyric_center_y(&id, p.1)
                 .zip(self.lyric_center_y(&id, at))
-                .map(|(a, b)| (self.lyrics_target + b - a).max(0.0)),
+                .map(|(a, b)| self.lyrics_target + b - a),
             _ => None,
         };
-        let jump = match stepped.or_else(|| self.lyric_follow_y(&id, at)) {
+        let jump = match stepped.or_else(|| self.lyric_center_y(&id, at)) {
             Some(y) => {
                 self.lyrics_target = y;
                 self.lyrics_target_for = Some((id.clone(), at));
@@ -1558,6 +1560,7 @@ impl AppState {
                     // The ticker glides there (smooth follow).
                     iced::Task::none()
                 } else {
+                    let y = self.clamp_follow(y);
                     self.lyrics_cmds = [y, f32::NAN, f32::NAN];
                     Self::lyrics_scroll_task(y)
                 }
@@ -1614,7 +1617,7 @@ impl AppState {
             return iced::Task::none();
         }
         self.lyrics_target_for = Some((g.track.clone(), g.at));
-        let y = g.center_y();
+        let y = g.raw_center_y();
         if (y - self.lyrics_target).abs() <= 1.0 {
             return iced::Task::none();
         }
@@ -1622,6 +1625,7 @@ impl AppState {
         if self.animations_enabled {
             iced::Task::none()
         } else {
+            let y = self.clamp_follow(y);
             self.lyrics_cmds = [y, f32::NAN, f32::NAN];
             Self::lyrics_scroll_task(y)
         }
