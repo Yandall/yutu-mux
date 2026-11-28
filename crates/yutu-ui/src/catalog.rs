@@ -157,6 +157,9 @@ impl AppState {
         let n = bundle.filtered.tracks.len();
         let m = bundle.filtered.playlists.len();
         let (bundle, tasks) = self.stage_search(bundle);
+        // Unfiltered payload: open pages pick up newer data about their
+        // own artist/album, and keep everything a search left out.
+        self.absorb_bundle_entities(&bundle);
         self.search_base = bundle.filtered.clone();
         self.search_all_base = bundle.all.clone();
         self.results = filter_results(&bundle.filtered, &self.search_query);
@@ -393,9 +396,30 @@ impl AppState {
     /// the catalog and the DB cache, but fetch no artwork for results
     /// nobody sees. A later cache hit paints and warms them.
     pub(crate) fn stage_stale_search(&mut self, bundle: SearchBundle) {
+        self.absorb_bundle_entities(&bundle);
         let mut tracks = self.register_tracks_mem(bundle.all.tracks);
         tracks.extend(self.register_tracks_mem(bundle.filtered.tracks));
         self.cache_tracks_background(tracks);
+    }
+
+    /// Feed a search payload's artists and albums to the page sets.
+    pub(crate) fn absorb_bundle_entities(&mut self, bundle: &SearchBundle) {
+        self.absorb_page_entities(
+            bundle
+                .all
+                .artists
+                .iter()
+                .chain(&bundle.filtered.artists)
+                .cloned()
+                .collect::<Vec<_>>(),
+            bundle
+                .all
+                .albums
+                .iter()
+                .chain(&bundle.filtered.albums)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
     }
 
     /// Memory-only catalog seed (startup path): inserts without touching

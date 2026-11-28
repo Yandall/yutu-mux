@@ -1674,7 +1674,12 @@ impl AppState {
                     || self.album_browse_id(id).is_some()
                     || !self.album_display_tracks(id).is_empty()
             }
-            CollectionMenu::Artist(id) => self.artist_hit(id).is_some(),
+            // Search-card menus close once their hit leaves the results
+            // (page entities never drop, so they cannot tell).
+            CollectionMenu::Artist(id) => {
+                self.results.artists.iter().any(|a| &a.id == id)
+                    || self.artist_meta.contains_key(id)
+            }
             CollectionMenu::Playlist(id) => self.remote_playlist_hit(id).is_some(),
             CollectionMenu::HomeAlbum { album, artist } => self
                 .catalog

@@ -20,6 +20,8 @@
   at the top of the list (#144).
 - Highlighted lyrics no longer reflow word by word while they scroll in;
   each verse keeps its line breaks (Now Playing and mini player) (#145).
+- Artist and album pages no longer lose their photo or albums when you
+  search for something else, and show the newest data a search finds (#148).
 
 ## 0.2.2 - 2026-11-24
 

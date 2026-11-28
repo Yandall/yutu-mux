@@ -58,6 +58,8 @@ impl AppState {
             search_query: String::new(),
             results: SearchResults::default(),
             all_results: SearchAll::default(),
+            page_artists: Vec::new(),
+            page_albums: Vec::new(),
             queue: Queue::default(),
             liked,
             liked_order,
@@ -544,6 +546,8 @@ impl AppState {
     }
 
     pub(crate) fn go(&mut self, route: Route) {
+        // Pages opened from the current results must resolve them.
+        self.sync_page_entities();
         // Navigation always drops the drawer (it glides shut) and the
         // search popup (results take the page). Playlist manual drags
         // are scoped to one detail list, so any navigation drops them

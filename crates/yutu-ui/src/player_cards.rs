@@ -481,12 +481,12 @@ impl AppState {
             .map(|u| Self::row_art_url(&u))
     }
 
-    /// Photo source for an artist: last search payload first, else
+    /// Photo source for an artist: page entities first, else
     /// catalog. Shared by the card-size and row-size keys below.
     pub(crate) fn artist_photo_source(&self, name: &str) -> Option<String> {
-        self.results
-            .artists
+        self.page_artists
             .iter()
+            .rev()
             .find(|a| a.name == name)
             .and_then(|a| a.thumbnail_url.clone())
             .or_else(|| {
@@ -503,7 +503,7 @@ impl AppState {
             })
     }
 
-    /// Photo for an artist: last search payload first, else catalog.
+    /// Photo for an artist: page entities first, else catalog.
     /// Hi-res for 140px+ cards and the detail header.
     pub(crate) fn artist_photo(&self, name: &str) -> Option<String> {
         self.artist_photo_source(name)

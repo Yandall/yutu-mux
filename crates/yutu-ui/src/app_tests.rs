@@ -2264,7 +2264,7 @@ fn play_artist_at_queues_clicked_plus_suffix() {
         t.album = Some("Jazz".into());
         s.catalog.insert(t.id.clone(), t);
     }
-    s.results.artists.push(Artist {
+    s.page_artists.push(Artist {
         id: "UCq".into(),
         name: "Queen".into(),
         thumbnail_url: None,
@@ -2458,7 +2458,7 @@ fn open_track_entries_funnel_to_detail_routes() {
 #[test]
 fn artist_full_arrival_replaces_head_and_marks_full() {
     let mut s = test_state();
-    s.results.artists.push(Artist {
+    s.page_artists.push(Artist {
         id: "UCq".into(),
         name: "Queen".into(),
         thumbnail_url: None,
@@ -2543,7 +2543,7 @@ fn detail_pending_only_while_fetch_in_flight() {
     // row (offline and failed fetches never set the markers).
     assert!(!s.artist_list_pending("UCx"));
     assert!(!s.album_list_pending("MPREx"));
-    s.results.artists.push(Artist {
+    s.page_artists.push(Artist {
         id: "UCx".into(),
         name: "X".into(),
         thumbnail_url: None,
@@ -2560,7 +2560,7 @@ fn detail_pending_only_while_fetch_in_flight() {
     s.artist_resolving = Some("X".into());
     assert!(s.artist_list_pending("X"));
     // Album mirror.
-    s.results.albums.push(Album {
+    s.page_albums.push(Album {
         id: "MPREx".into(),
         title: "A".into(),
         artist: "X".into(),
@@ -2690,6 +2690,8 @@ fn search_rows_hover_and_collection_menus() {
         detail: "25 songs".into(),
         thumbnail_url: None,
     });
+    // A landed search feeds the page entities (apply_search_hit).
+    s.sync_page_entities();
     // Every row shape builds plain and hovered with no panic.
     let album = s.results.albums[0].clone();
     let artist = s.results.artists[0].clone();
@@ -2854,7 +2856,7 @@ fn album_cover_prefers_api_art_then_track() {
     let row = s.album_row_cover(&ytm).expect("row");
     assert!(row.contains("=w120-h120"), "{row}");
     // Artist photos rewrite the same way.
-    s.results.artists.push(yutu_core::Artist {
+    s.page_artists.push(yutu_core::Artist {
         id: "r1".into(),
         name: "Queen".into(),
         thumbnail_url: Some("https://y=w60-h60-l90-rj".into()),
@@ -3839,7 +3841,7 @@ fn artist_live_top_merges_order_and_counts() {
     cached.thumbnail_url = Some("http://art".into());
     cached.duration_secs = 0;
     s.catalog.insert("v1".into(), cached);
-    s.results.artists.push(Artist {
+    s.page_artists.push(Artist {
         id: "UCqueen".into(),
         name: "Queen".into(),
         thumbnail_url: None,
@@ -3876,7 +3878,7 @@ fn artist_live_top_merges_order_and_counts() {
     // Failures name the failure only for the page still showing
     // it (release builds show failures only); arrivals for pages
     // already left (wrong marker or wrong route) stay quiet.
-    s.results.artists.push(Artist {
+    s.page_artists.push(Artist {
         id: "UCzz".into(),
         name: "Zed".into(),
         thumbnail_url: None,
@@ -3906,7 +3908,7 @@ fn artist_live_top_merges_order_and_counts() {
     // Cache + aliases survive later searches replacing `results`
     // (aliases record at open; direct routes self-resolve anyway).
     let _ = s.update(Message::OpenArtist("UCqueen".into()));
-    s.results.artists.clear();
+    s.page_artists.clear();
     assert_eq!(s.artist_display_tracks("UCqueen").len(), 2);
     assert_eq!(s.artist_display_tracks("Queen").len(), 2);
 }
@@ -3917,7 +3919,7 @@ fn album_live_tracklist_merges_track_order_and_counts() {
     let mut cached = mk_track("v1", "First", "Queen");
     cached.album = Some("Test Album".into());
     s.catalog.insert("v1".into(), cached);
-    s.results.albums.push(Album {
+    s.page_albums.push(Album {
         id: "MPREalbum".into(),
         title: "Test Album".into(),
         artist: "Queen".into(),
@@ -3961,7 +3963,7 @@ fn album_live_tracklist_merges_track_order_and_counts() {
     // Cache + aliases survive later searches replacing `results`
     // (recorded at open; direct routes self-resolve anyway).
     let _ = s.update(Message::OpenAlbum("MPREalbum".into()));
-    s.results.albums.clear();
+    s.page_albums.clear();
     assert_eq!(s.album_display_tracks("MPREalbum").len(), 2);
     assert_eq!(s.album_display_tracks("Test Album").len(), 2);
 }
@@ -3970,7 +3972,7 @@ fn album_live_tracklist_merges_track_order_and_counts() {
 fn album_browse_id_disambiguates_duplicate_titles() {
     let mut s = test_state();
     for (id, artist) in [("MPREa", "Queen"), ("MPREb", "ABBA")] {
-        s.results.albums.push(Album {
+        s.page_albums.push(Album {
             id: id.into(),
             title: "Greatest Hits".into(),
             artist: artist.into(),
@@ -5198,7 +5200,7 @@ fn album_menu_open_warms_the_header_key() {
     // (rows stage the small raster only).
     redirect_art_cache();
     let mut s = test_state();
-    s.results.albums.push(Album {
+    s.page_albums.push(Album {
         id: "ma1".into(),
         title: "Menu Album".into(),
         artist: "Someone".into(),
@@ -7956,7 +7958,7 @@ fn same_titled_albums_by_different_artists_stay_apart() {
     assert_eq!(ids(&s, &cure), ["c1"]);
     assert_eq!(s.resolve_album_title(&police), "Greatest Hits");
     // Lookup: searched albums match on artist, never the first title hit.
-    s.results.albums = vec![
+    s.page_albums = vec![
         Album {
             id: "MPRE_cure".into(),
             title: "Greatest Hits".into(),
@@ -7976,7 +7978,7 @@ fn same_titled_albums_by_different_artists_stay_apart() {
     assert_eq!(s.album_browse_id(&cure).as_deref(), Some("MPRE_cure"));
     // Cache: opening one artist's album never answers for the other's.
     let _ = s.update(Message::OpenAlbum(cure.clone()));
-    s.results.albums.clear();
+    s.page_albums.clear();
     assert_eq!(s.album_browse_id(&cure).as_deref(), Some("MPRE_cure"));
     assert_eq!(s.album_browse_id(&police), None);
     let _ = s.update(Message::OpenAlbum(police.clone()));
@@ -8009,14 +8011,14 @@ fn album_page_cover_matches_the_card_not_a_video_frame() {
         Some("https://example.invalid/song.jpg")
     );
     // The searched album's own art (what the card shows) wins.
-    s.results.albums = vec![Album {
+    s.page_albums = vec![Album {
         id: "MPRE_police".into(),
         title: "Greatest Hits".into(),
         artist: "The Police".into(),
         year: Some(1992),
         thumbnail_url: Some("https://example.invalid/cover.jpg".into()),
     }];
-    let card = s.album_cover(&s.results.albums[0].clone());
+    let card = s.album_cover(&s.page_albums[0].clone());
     assert_eq!(s.album_header_cover(&route), card);
     assert_eq!(s.album_header_cover("MPRE_police"), card);
     // A same-titled album by someone else never lends its art.
@@ -12710,7 +12712,7 @@ fn mini_ticker_fits_romaji_under_each_verse() {
 /// video (video-frame art, no count).
 fn album_page_state() -> AppState {
     let mut s = test_state();
-    s.results.albums.push(Album {
+    s.page_albums.push(Album {
         id: "MPREporf".into(),
         title: "Porfiado".into(),
         artist: "El Cuarteto de Nos".into(),
@@ -12774,7 +12776,7 @@ fn album_menu_opens_from_page_and_adds_whole_album_to_playlist() {
     let mut s = album_page_state();
     // Not a search hit any more (results moved on): the album page
     // and artist cards still open the menu.
-    s.results.albums.clear();
+    s.page_albums.clear();
     let _ = s.update(Message::OpenAlbumMenu("MPREporf".into()));
     assert_eq!(s.coll_menu, Some(CollectionMenu::Album("MPREporf".into())));
     let (title, artist, _) = s.album_menu_info("MPREporf");
@@ -12934,4 +12936,53 @@ fn mini_wheel_keeps_the_incoming_verse_lines_through_the_glide() {
         let l = f.iter().find(|l| l.index == 1).unwrap();
         assert_eq!(l.text, target, "frame {step}");
     }
+}
+
+#[test]
+fn artist_page_keeps_its_data_and_takes_newer_search_data() {
+    let mut s = test_state();
+    let queen = |photo: &str, year| SearchResults {
+        tracks: vec![],
+        albums: vec![Album {
+            id: "MPREgh".into(),
+            title: "Greatest Hits".into(),
+            artist: "Queen".into(),
+            year,
+            thumbnail_url: None,
+        }],
+        artists: vec![Artist {
+            id: "UCqueen".into(),
+            name: "Queen".into(),
+            thumbnail_url: Some(photo.into()),
+        }],
+        playlists: vec![],
+    };
+    s.search_query = "queen".into();
+    let _ = s.update(Message::SearchCompleted {
+        query: "queen".into(),
+        result: Ok(Box::new(bundle_of(queen("https://a=w60-h60", None)))),
+    });
+    let _ = s.open_artist("UCqueen".into());
+    let photo = s.artist_photo("Queen");
+    assert!(photo.is_some());
+    // Typing another query (popup open, page stays) lands results for
+    // someone else: nothing about the page is lost.
+    s.search_query = "ultraspank".into();
+    let _ = s.update(Message::SearchCompleted {
+        query: "ultraspank".into(),
+        result: Ok(Box::new(bundle_of(SearchResults::default()))),
+    });
+    assert_eq!(s.resolve_artist_name("UCqueen"), "Queen");
+    assert_eq!(s.artist_channel_id("UCqueen").as_deref(), Some("UCqueen"));
+    assert_eq!(s.artist_albums("Queen").len(), 1);
+    s.search_query = "queen".into();
+    let _ = s.update(Message::SearchCompleted {
+        query: "queen".into(),
+        result: Ok(Box::new(bundle_of(queen("https://b=w60-h60", Some(1981))))),
+    });
+    // Newer data about the open artist shows right away.
+    assert_ne!(s.artist_photo("Queen"), photo);
+    assert!(s.artist_photo("Queen").is_some_and(|p| p.contains("//b")));
+    assert_eq!(s.artist_albums("Queen").len(), 1);
+    assert_eq!(s.artist_albums("Queen")[0].year, Some(1981));
 }
