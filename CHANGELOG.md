@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Opening a link from Settings no longer freezes the app until the
+  browser closes (when the browser was not already running).
 - Now Playing lyrics no longer bounce when following the first verses
   at the top of the list (#144).
 - Highlighted lyrics no longer reflow word by word while they scroll in;

@@ -13205,3 +13205,26 @@ fn blur_decode_records_cover_tones() {
     let (light, _) = s.art_blur_tone[&url];
     assert_eq!(light, yutu_core::theme::Rgba::rgb(250, 250, 250));
 }
+
+/// Opener guard: `open::that` blocks until the launched opener exits
+/// (a file manager can hold it until its window closes), and update
+/// runs on the UI thread, so every launch must be `that_detached`.
+#[test]
+fn openers_never_block_the_ui_thread() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name == "app_tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            assert!(
+                !line.contains("open::that("),
+                "{name}:{}: use open::that_detached",
+                i + 1
+            );
+        }
+    }
+}

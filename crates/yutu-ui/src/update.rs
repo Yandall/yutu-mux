@@ -48,7 +48,7 @@ impl AppState {
             Message::OpenUrl(url) => {
                 // Best effort: a missing opener only logs (stderr
                 // keeps the detail, the status line stays quiet).
-                if let Err(e) = open::that(&url) {
+                if let Err(e) = open::that_detached(&url) {
                     yutu_core::app_log::warn("yutu-ui", format!("open {url} failed: {e}"));
                 }
             }
@@ -2864,7 +2864,12 @@ impl AppState {
             Message::ReloadThemes => self.reload_themes(),
             Message::OpenThemesFolder => {
                 let dir = themes_dir(&self.library_path);
-                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| open::that(&dir)) {
+                // Detached: `open::that` waits for the opener, and some
+                // file managers keep it alive until their window closes,
+                // which froze the whole UI.
+                if let Err(e) =
+                    std::fs::create_dir_all(&dir).and_then(|_| open::that_detached(&dir))
+                {
                     yutu_core::app_log::warn("theme", format_args!("open folder: {e}"));
                     self.status = self.language.theme_folder_failed();
                 }
