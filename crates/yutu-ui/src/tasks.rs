@@ -75,13 +75,15 @@ impl AppState {
         )
     }
 
-    /// Every shelf of an artist page (raw browse, anonymous, in the UI
-    /// language).
+    /// Every shelf of an artist page (raw browse as the session, in the
+    /// UI language).
     #[cfg(feature = "innertube")]
     pub(crate) fn artist_page_task(channel_id: String, hl: &'static str) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = yutu_core::raw_artist::raw_artist_page(&channel_id, hl).await;
+                // Signed-in sessions get the personalized shelves.
+                let auth = Self::session_search_auth();
+                let result = yutu_core::raw_artist::raw_artist_page(&channel_id, hl, &auth).await;
                 (channel_id, result)
             },
             |(channel_id, result)| Message::ArtistPageLoaded { channel_id, result },
@@ -98,7 +100,9 @@ impl AppState {
     ) -> iced::Task<Message> {
         iced::Task::perform(
             async move {
-                let result = yutu_core::raw_artist::raw_artist_grid(&browse_id, &params, hl).await;
+                let auth = Self::session_search_auth();
+                let result =
+                    yutu_core::raw_artist::raw_artist_grid(&browse_id, &params, hl, &auth).await;
                 (key, result)
             },
             |(key, result)| Message::ArtistGridLoaded { key, result },

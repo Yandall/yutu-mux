@@ -111,7 +111,8 @@ fn year_reads_last_plausible_four_digits() {
 #[tokio::test]
 #[ignore = "network"]
 async fn live_queen_page_and_discography() {
-    let page = crate::raw_artist::raw_artist_page("UCiMhD4jzUqG-IgPzUmmytRQ", "en")
+    let anon = crate::raw_search::SearchAuth::anonymous();
+    let page = crate::raw_artist::raw_artist_page("UCiMhD4jzUqG-IgPzUmmytRQ", "en", &anon)
         .await
         .expect("page");
     assert!(page.shelves.len() >= 4, "{:?}", page.shelves.len());
@@ -120,7 +121,7 @@ async fn live_queen_page_and_discography() {
         _ => None,
     });
     let (browse, params) = albums.expect("discography more");
-    let grid = crate::raw_artist::raw_artist_grid(&browse, &params, "en")
+    let grid = crate::raw_artist::raw_artist_grid(&browse, &params, "en", &anon)
         .await
         .expect("grid");
     assert!(grid.len() > 10, "{}", grid.len());

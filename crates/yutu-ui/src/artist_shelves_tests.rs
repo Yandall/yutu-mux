@@ -268,3 +268,41 @@ fn ctl_nav_reaches_a_shelf_more() {
         "artist-more:UCq:2"
     );
 }
+
+#[test]
+fn art_sweeps_skip_done_art_so_late_strips_load() {
+    // 60 cards on one strip: more than a sweep's cap in view at once.
+    let mut s = test_state();
+    s.artist_alias.insert("Queen".into(), "UCq".into());
+    s.route = Route::Artist("Queen".into());
+    let items: Vec<ShelfItem> = (0..60)
+        .map(|i| ShelfItem {
+            thumbnail_url: Some(format!("https://i.ytimg.com/vi/c{i}/hq.jpg")),
+            ..item(ShelfItemKind::Album, &format!("MPRE{i}"), "Album", "2020")
+        })
+        .collect();
+    let _ = s.update(Message::ArtistPageLoaded {
+        channel_id: "UCq".into(),
+        result: Ok(ArtistPage {
+            name: "Queen".into(),
+            thumbnail_url: None,
+            shelves: vec![ArtistShelf {
+                title: "Albums".into(),
+                items,
+                more: None,
+            }],
+        }),
+    });
+    // The first 50 are already on their way: the sweep must hand out
+    // the rest instead of refilling its cap with them.
+    for i in 0..50 {
+        s.artwork_loading
+            .insert(format!("https://i.ytimg.com/vi/c{i}/hq.jpg"));
+    }
+    let urls = s.visible_art_urls("body");
+    assert!(
+        urls.contains(&"https://i.ytimg.com/vi/c55/hq.jpg".to_string()),
+        "{urls:?}"
+    );
+    assert!(!urls.contains(&"https://i.ytimg.com/vi/c0/hq.jpg".to_string()));
+}

@@ -364,6 +364,12 @@ impl AppState {
             if urls.len() >= ART_SWEEP_CAP {
                 break;
             }
+            // Loaded or in-flight art never takes a sweep slot: pages
+            // with many cards in view (artist shelves) would otherwise
+            // fill the cap with done art and starve the cards below.
+            if self.art_mem(&url).is_some() || self.artwork_loading.contains(&url) {
+                continue;
+            }
             if yy >= top && yy <= bottom && seen.insert(url.clone()) {
                 urls.push(url);
             }

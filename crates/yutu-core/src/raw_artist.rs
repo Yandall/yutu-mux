@@ -6,13 +6,16 @@
 //! POSTs `youtubei/v1/browse` itself (same endpoint and tolerant
 //! philosophy as [`crate::raw_browse`]). Cards the app cannot open
 //! (podcasts, episodes, user channels) are skipped, shelves left empty
-//! drop out, and nothing unknown is ever fatal. Anonymous on purpose:
-//! the page is public and the same for everyone.
+//! drop out, and nothing unknown is ever fatal. Requests carry the
+//! signed-in session when there is one: shelves like "Fans might also
+//! like" are personalized (anonymous ones rotate between requests),
+//! and a rejected session retries anonymously.
 
 use serde_json::Value;
 
 use crate::models::{ArtistPage, ArtistShelf, ShelfItem, ShelfItemKind, ShelfMore};
-use crate::raw_browse::post_browse;
+use crate::raw_browse::post_browse_session;
+use crate::raw_search::SearchAuth;
 
 const ARTIST_TIMEOUT_SECS: u64 = 25;
 
@@ -30,12 +33,16 @@ fn context(hl: &str) -> Value {
 }
 
 /// Every shelf of an artist channel page (`hl` = UI language code).
-pub async fn raw_artist_page(channel_id: &str, hl: &str) -> Result<ArtistPage, String> {
+pub async fn raw_artist_page(
+    channel_id: &str,
+    hl: &str,
+    auth: &SearchAuth,
+) -> Result<ArtistPage, String> {
     let body = serde_json::json!({
         "context": context(hl),
         "browseId": channel_id,
     });
-    let text = post_browse(&body, ARTIST_TIMEOUT_SECS).await?;
+    let text = post_browse_session(&body, auth, ARTIST_TIMEOUT_SECS).await?;
     let root: Value = serde_json::from_str(&text).map_err(|e| format!("artist page json: {e}"))?;
     Ok(parse_artist_page(&root))
 }
@@ -46,13 +53,14 @@ pub async fn raw_artist_grid(
     browse_id: &str,
     params: &str,
     hl: &str,
+    auth: &SearchAuth,
 ) -> Result<Vec<ShelfItem>, String> {
     let body = serde_json::json!({
         "context": context(hl),
         "browseId": browse_id,
         "params": params,
     });
-    let text = post_browse(&body, ARTIST_TIMEOUT_SECS).await?;
+    let text = post_browse_session(&body, auth, ARTIST_TIMEOUT_SECS).await?;
     let root: Value = serde_json::from_str(&text).map_err(|e| format!("artist grid json: {e}"))?;
     Ok(parse_artist_grid(&root))
 }
