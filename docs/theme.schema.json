@@ -1,0 +1,175 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "yutu-mux theme",
+  "description": "A yutu-mux theme (docs/THEMES.md). Every key is optional.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Name shown in the picker (default: the file name)."
+    },
+    "base": {
+      "enum": [
+        "dark",
+        "light"
+      ],
+      "description": "Built-in palette that fills every key you omit.",
+      "default": "dark"
+    },
+    "accent_from_art": {
+      "type": "boolean",
+      "description": "Take the accent from the playing song's cover.",
+      "default": false
+    },
+    "colors": {
+      "type": "object",
+      "description": "Semantic colors: #RGB, #RRGGBB or #RRGGBBAA.",
+      "properties": {
+        "window": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "App background"
+        },
+        "panel": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Sidebars, drawers, player bar"
+        },
+        "surface": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Cards, Now Playing sheet"
+        },
+        "surface_hover": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Card and row hover"
+        },
+        "surface_active": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Active nav row, focused field"
+        },
+        "inset": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Segmented pickers"
+        },
+        "field": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Text inputs, secondary buttons"
+        },
+        "field_hover": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Secondary buttons hovered"
+        },
+        "menu": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Text field context menu"
+        },
+        "outline": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Borders, slider rails, seek track"
+        },
+        "outline_strong": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Focused borders"
+        },
+        "text": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Titles and icons"
+        },
+        "text_body": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Plain labels"
+        },
+        "text_muted": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Secondary text, idle icons"
+        },
+        "text_disabled": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Disabled entries"
+        },
+        "placeholder": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Input placeholders"
+        },
+        "accent": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Active controls, the live song"
+        },
+        "accent_hover": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Accent under the pointer"
+        },
+        "on_accent": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Glyphs on the accent (kept readable)"
+        },
+        "handle": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Slider, toggle and seek knobs"
+        },
+        "scrim": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Dim behind dialogs and drawers"
+        },
+        "shadow": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Drop shadows"
+        },
+        "secondary": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Spotifast alias of text_muted"
+        },
+        "dim": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Spotifast alias of text_disabled"
+        },
+        "overlay": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Spotifast alias of scrim"
+        },
+        "danger": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Accepted and ignored"
+        },
+        "warning": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Accepted and ignored"
+        },
+        "tint": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Accepted and ignored"
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"
+      }
+    }
+  }
+}

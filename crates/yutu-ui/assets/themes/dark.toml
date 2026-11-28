@@ -1,0 +1,4 @@
+# yutu-mux built-in theme. Copy it into your themes folder under a new
+# file name to make your own (see docs/THEMES.md).
+name = "Dark"
+base = "dark"

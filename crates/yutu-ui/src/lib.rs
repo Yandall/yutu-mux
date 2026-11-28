@@ -27,6 +27,7 @@ mod search;
 mod state;
 mod storage;
 mod theme;
+mod themes;
 mod widgets;
 pub use app::*;
 pub use app_state::*;
@@ -41,6 +42,7 @@ pub use search::*;
 pub use state::*;
 pub use storage::*;
 pub(crate) use theme::*;
+pub(crate) use themes::*;
 pub(crate) use widgets::*;
 #[cfg(test)]
 mod app_tests;

@@ -254,6 +254,26 @@ pub struct AppState {
     /// Display font pick (persisted pref `font_family`; relaunch to
     /// apply, since the renderer font is fixed at startup).
     pub(crate) font_family: FontFamily,
+    /// Theme catalog: built-ins then user files (`themes.rs`).
+    pub(crate) themes: Vec<yutu_core::theme::Theme>,
+    /// User theme files that could not be read (Settings note).
+    pub(crate) theme_failures: Vec<yutu_core::theme::LoadFailure>,
+    /// Theme pick (persisted pref `theme`): a theme id or `system`.
+    pub(crate) theme_pick: String,
+    /// Follow-system pair (prefs `theme_light` / `theme_dark`).
+    pub(crate) theme_light: String,
+    pub(crate) theme_dark: String,
+    /// The OS asks for light mode (from iced's system theme events).
+    pub(crate) system_light: bool,
+    /// Accent from album art: `None` follows the theme's default
+    /// (pref `accent_from_art`).
+    pub(crate) accent_from_art: Option<bool>,
+    /// Accent picked from the playing song's cover, when one was found.
+    pub(crate) art_accent: Option<yutu_core::theme::Rgba>,
+    /// Cover URL `art_accent` was read from (stale results are dropped).
+    pub(crate) art_accent_url: Option<String>,
+    /// Accent glide on song change: the accent it started from and when.
+    pub(crate) accent_glide: Option<(yutu_core::theme::Rgba, std::time::Instant)>,
     /// UI language (persisted pref `language`; system locale on first
     /// launch; applies instantly, views read it every frame).
     pub(crate) language: Language,

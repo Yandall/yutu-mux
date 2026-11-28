@@ -39,6 +39,10 @@ yutu-mux ctl mini open                   # mini player: open|close|restore
 yutu-mux ctl mini lyrics on              # its lyrics ticker
 yutu-mux ctl mini screenshot mini.png    # captures the mini window
 yutu-mux ctl lyrics romaji on            # romaji under Japanese lyrics
+yutu-mux ctl theme                       # themes, picks, failures
+yutu-mux ctl theme set nord              # a theme id, or `system`
+yutu-mux ctl theme reload                # re-read the themes folder
+yutu-mux ctl theme art on                # accent color from album art
 yutu-mux ctl help                        # full command list
 ```
 

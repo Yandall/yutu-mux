@@ -1,0 +1,11 @@
+# Tokyo Night (MIT, https://github.com/enkia/tokyo-night-vscode-theme).
+name = "Tokyo Night"
+base = "dark"
+
+[colors]
+window = "#16161E"
+panel = "#1A1B26"
+surface = "#24283B"
+text = "#C0CAF5"
+text_muted = "#A9B1D6"
+accent = "#7AA2F7"

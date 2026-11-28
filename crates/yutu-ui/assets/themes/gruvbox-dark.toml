@@ -1,0 +1,13 @@
+# Gruvbox Dark (MIT, https://github.com/morhetz/gruvbox).
+name = "Gruvbox Dark"
+base = "dark"
+
+[colors]
+window = "#1D2021"
+panel = "#282828"
+surface = "#32302F"
+surface_hover = "#3C3836"
+outline = "#504945"
+text = "#EBDBB2"
+text_muted = "#A89984"
+accent = "#FE8019"

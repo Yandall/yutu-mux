@@ -154,6 +154,16 @@ impl AppState {
             animations_enabled: true,
             anim_ms: ANIM_DEFAULT_MS,
             font_family: FontFamily::Adwaita,
+            themes: builtin_themes(),
+            theme_failures: Vec::new(),
+            theme_pick: THEME_DEFAULT.to_string(),
+            theme_light: THEME_DEFAULT_LIGHT.to_string(),
+            theme_dark: THEME_DEFAULT.to_string(),
+            system_light: false,
+            accent_from_art: None,
+            art_accent: None,
+            art_accent_url: None,
+            accent_glide: None,
             language: Language::system_default(),
             ui_scale: UI_SCALE_DEFAULT,
             system_font_rows: Vec::new(),
@@ -411,6 +421,7 @@ impl AppState {
                 state.language = Language::parse(&raw);
             }
         }
+        state.load_theme_prefs();
         // EQ curve survives restarts (garbage falls back to Flat): the
         // name re-derives from the gains, so nothing stored can lie;
         // the backend push stays silent (startup status belongs to
@@ -513,7 +524,10 @@ impl AppState {
         // instant (resolving takes ~1s) and the bar never flashes
         // 00:00. Stays silent until the user presses play; skipped
         // with no audio backend (first play loads as before).
-        let mut init = vec![system_font_task()];
+        let mut init = vec![
+            system_font_task(),
+            iced::system::theme().map(Message::SystemThemeChanged),
+        ];
         if state.audio.is_some() && state.queue.current().is_some() {
             init.push(state.autoload_current_task());
         }
@@ -677,6 +691,9 @@ impl AppState {
         .with(self.main_window)
         .filter_map(|(main, (window, msg))| main.is_none_or(|m| m == window).then_some(msg));
         let closed = iced::window::close_events().map(Message::WindowClosed);
+        // OS light/dark switches (only matters while following system,
+        // but cheap enough to always track).
+        let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
         // Mini window moves (X11, macOS and Windows report them, Wayland
         // never does), remembered so it reopens where the user left it.
         let mini_moved = match self.mini {
@@ -704,6 +721,7 @@ impl AppState {
             closed,
             mini_moved,
             control,
+            system_theme,
         ])
     }
 
@@ -723,6 +741,8 @@ impl AppState {
                     position: Some(at), ..
                 },
             ) => Some(Message::MainMoved(at)),
+            // Back from editing a theme file: pick up the changes.
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::ReloadThemes),
             // Mouse side buttons navigate like a browser (press, not
             // release, for browser feel and no drag-commit collision).
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {

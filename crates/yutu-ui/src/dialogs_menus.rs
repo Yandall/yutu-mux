@@ -1388,6 +1388,7 @@ impl AppState {
             || self.modal_animating()
             || self.update_checking
             || self.update_phase != UpdatePhase::Idle
+            || self.accent_glide.is_some()
     }
 
     /// Scrollbar opacity for a scrollable key (0 when never scrolled).
@@ -1612,17 +1613,57 @@ impl AppState {
                     )
                 })
                 .collect(),
+            SelectMenu::Theme => std::iter::once((
+                self.language.theme_system(),
+                self.theme_pick == THEME_SYSTEM,
+                Message::ThemeSelected(THEME_SYSTEM.to_string()),
+            ))
+            .chain(self.themes.iter().map(|t| {
+                (
+                    t.name.clone(),
+                    t.id == self.theme_pick,
+                    Message::ThemeSelected(t.id.clone()),
+                )
+            }))
+            .collect(),
+            SelectMenu::ThemeLight | SelectMenu::ThemeDark => self
+                .themes_for_mode(*kind == SelectMenu::ThemeLight)
+                .map(|t| {
+                    let (current, msg) = if *kind == SelectMenu::ThemeLight {
+                        (&self.theme_light, Message::ThemeLightSelected(t.id.clone()))
+                    } else {
+                        (&self.theme_dark, Message::ThemeDarkSelected(t.id.clone()))
+                    };
+                    (t.name.clone(), t.id == *current, msg)
+                })
+                .collect(),
+        };
+        // Theme rows lead with a swatch strip (window, surface, accent,
+        // text), in the same order as `rows` ("Follow system" has none).
+        let swatches: Vec<Option<[iced::Color; 4]>> = match kind {
+            SelectMenu::Theme => std::iter::once(None)
+                .chain(self.themes.iter().map(|t| Some(theme_swatches(t))))
+                .collect(),
+            SelectMenu::ThemeLight | SelectMenu::ThemeDark => self
+                .themes_for_mode(*kind == SelectMenu::ThemeLight)
+                .map(|t| Some(theme_swatches(t)))
+                .collect(),
+            _ => Vec::new(),
         };
         let mut menu_rows: Vec<iced::Element<'_, Message>> = Vec::with_capacity(rows.len());
-        for (label, active, msg) in rows {
+        for (i, (label, active, msg)) in rows.into_iter().enumerate() {
             let text = if active {
                 btn_text(label, 14).color(tk().accent)
             } else {
                 btn_text(label, 14).color(tk().text)
             };
+            let content = match swatches.get(i).copied().flatten() {
+                Some(colors) => row![swatch_strip(colors), text],
+                None => row![text],
+            };
             menu_rows.push(
                 row_button(
-                    row![text]
+                    content
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center)
                         .width(Fill),

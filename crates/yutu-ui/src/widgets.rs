@@ -160,10 +160,10 @@ pub(crate) fn round_button<'a>(
 /// look as `pill_button`.
 /// Icon pill geometry (see [`icon_pill_button`]): horizontal padding,
 /// icon edge, icon-to-label gap and label text size.
-const ICON_PILL_PAD_X: f32 = 16.0;
+pub(crate) const ICON_PILL_PAD_X: f32 = 16.0;
 const ICON_PILL_ICON: f32 = 14.0;
 const ICON_PILL_GAP: f32 = 8.0;
-const ICON_PILL_TEXT: f32 = 13.0;
+pub(crate) const ICON_PILL_TEXT: f32 = 13.0;
 
 /// Rendered width of an [`icon_pill_button`] with `label`: what row
 /// budgets must reserve so neighbours never wrap. `text_line_width`
@@ -347,7 +347,11 @@ pub(crate) fn repeat_button<'a>(
     use iced::widget::button;
     let style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style =
         if active { accent_button } else { icon_hover };
-    let color = if active { tk().text } else { tk().text_muted };
+    let color = if active {
+        tk().on_accent
+    } else {
+        tk().text_muted
+    };
     button(ctrl_box(btn_icon(repeat_icon, 14.0, color)))
         .style(style)
         .on_press(Message::CycleRepeat)

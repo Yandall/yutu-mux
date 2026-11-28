@@ -70,10 +70,13 @@
   use a hyphen, comma, colon, or the `·` separator instead.
 - Search-only UX: no video-ID paste field. The one paste field is the
   New playlist dialog's playlist-link import (playlists only).
-- Theme: vivid red accent `ACCENT = #FF0033` (user override of the
-  former soft `#E62117`; pure-red family allowed from Round 11),
-  hover `#FF3366`. Dark Spotify-style surfaces,
-  rounded inputs/surfaces. Glyphs on red are always white for contrast.
+- Theme: the default (built-in Dark) keeps the vivid red accent
+  `#FF0033` (hover `#FF3366`), dark Spotify-style surfaces and rounded
+  inputs/surfaces. Themes (`docs/THEMES.md`) change colors only: views
+  read semantic tokens via `tk()` (`theme.rs`), never literal colors
+  (`views_use_theme_tokens_not_raw_colors` enforces it). Glyphs on
+  the accent use `on_accent` (kept readable, never assume white);
+  content over cover art uses `ART_FG` (always white).
 - Auth: cookies-only UI (the Google sign-in section was removed; the
   OAuth device-flow backend stays for legacy saved sessions only).
   Cookie-file import is the login path. Never paste cookie contents;
@@ -210,6 +213,17 @@
   `yutu-mux ctl`) unless the user explicitly asks for it (see the
   workflow rules); when asked, drive it with `ctl` (state, play,
   search, nav, screenshot) rather than synthetic input.
+- **Themes** (`yutu_core::theme`, `yutu-ui/src/themes.rs`): a theme
+  is data (TOML or Spotifast JSON): `base` + optional semantic colors,
+  omitted keys derived from the set ones, an unchanged base stays
+  byte-identical. Built-ins are bundled `.toml` files; user files in
+  `<data>/themes/` (beside the library db) replace a built-in of the
+  same id. Picks persist (`theme`, `theme_light`, `theme_dark`,
+  `accent_from_art`); `system` follows iced's system theme events.
+  Every change goes through `apply_theme` (live tokens are
+  thread-local). Reload on button, `ctl theme reload` and main
+  window focus. Art accent: read from the cover on disk (Tick),
+  keyed by cover URL + window color, glides `ACCENT_GLIDE_MS`.
 - **MPRIS**: `PlayerCommand` inbox drained on Tick (≤0.5s lag) +
   1Hz `PropertiesChanged` watch loop with `Rate`. Must support
   play/pause/next/prev/seek/volume/shuffle/loop and track the timeline.
@@ -230,7 +244,7 @@
 - Animations: `ease_toward` converging on a 33ms `Animate` subscription
   that only runs while `animating()` is true. Sidebars/drawer animate;
   keep steps small or motion feels clunky.
-- Sliders: custom `themed_slider` style (red rail, white round handle).
+- Sliders: custom `themed_slider` style (accent rail, `handle` knob).
   Apply `.style(themed_slider)` explicitly at every slider site.
   Stock sliders hardcode Grab/Grabbing cursors (no style knob), so all
   slider sites use `pointing_slider` (maps grab votes to Pointer).
@@ -293,7 +307,8 @@
 
 ## 6. Features & build matrix
 
-- `yutu-ui` default = `["submit", "innertube", "mpv", "lyrics"]`
+- `yutu-ui` default = `["submit", "innertube", "mpv", "lyrics",
+  "update", "romaji", "file-picker"]` (`file-picker`: theme import)
   (the real app). Opt-in `debug-panel` shows the debug UI (error panel,
   cache census, FPS meter, full status text with failure detail) in any
   build, including dev runs: `cargo run` without it behaves like
@@ -399,6 +414,11 @@ cargo test -p yutu-ui --lib layout_snapshots -- --ignored
 - `crates/yutu-core/src/ytdlp.rs`: yt-dlp resolver flags.
 - `crates/yutu-core/src/lyrics_providers.rs`: `parse_lrc`, `line_at`,
   LRCLIB fetch.
+- `crates/yutu-core/src/theme.rs`: theme file model (palette keys,
+  derivation, contrast, folder scan, art accent picking).
+- `crates/yutu-ui/src/theme.rs` / `themes.rs`: live tokens and style
+  fns / theme catalog, picks, Settings block, art accent.
+- `crates/yutu-ui/assets/themes/`: built-in themes (user format).
 - `crates/yutu-ui/src/mini_player.rs`: mini player window (settings,
   pill view, progress ring, lyrics ticker, per-window dispatch).
 - `crates/yutu-ui/src/i18n.rs`: app `Language`, Fluent lookup with

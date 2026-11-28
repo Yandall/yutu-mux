@@ -1,0 +1,13 @@
+# Catppuccin Latte (MIT, https://catppuccin.com).
+name = "Catppuccin Latte"
+base = "light"
+
+[colors]
+window = "#DCE0E8"
+panel = "#E6E9EF"
+surface = "#EFF1F5"
+surface_hover = "#CCD0DA"
+outline = "#BCC0CC"
+text = "#4C4F69"
+text_muted = "#6C6F85"
+accent = "#8839EF"

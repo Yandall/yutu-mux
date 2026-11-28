@@ -43,8 +43,11 @@ unic-langid = { version = "0.9", features = ["macros"] }
 # Default is the real app: live search/radio + scrobble submission + mpv
 # playback (seek/position/EQ). `--no-default-features` is the offline
 # compile check (empty states, rodio-only).
-default = ["submit", "innertube", "mpv", "lyrics", "update", "romaji"]
+default = ["submit", "innertube", "mpv", "lyrics", "update", "romaji", "file-picker"]
 innertube = ["yutu-core/innertube", "dep:rfd"]
+# System file picker for Settings > Import theme (off in the offline
+# check, where the button is hidden).
+file-picker = ["dep:rfd"]
 submit = ["yutu-core/submit"]
 mpv = ["yutu-player/mpv"]
 lyrics = ["yutu-core/lyrics"]

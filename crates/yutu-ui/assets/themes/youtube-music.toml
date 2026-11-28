@@ -1,0 +1,11 @@
+# Near-black surfaces and the classic YouTube red.
+name = "YouTube Music"
+base = "dark"
+
+[colors]
+window = "#030303"
+panel = "#0F0F0F"
+surface = "#1D1D1D"
+text = "#FFFFFF"
+text_muted = "#AAAAAA"
+accent = "#FF0000"

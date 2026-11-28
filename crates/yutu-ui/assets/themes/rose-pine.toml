@@ -1,0 +1,11 @@
+# Rose Pine (MIT, https://rosepinetheme.com).
+name = "Rose Pine"
+base = "dark"
+
+[colors]
+window = "#191724"
+panel = "#1F1D2E"
+surface = "#26233A"
+text = "#E0DEF4"
+text_muted = "#908CAA"
+accent = "#EBBCBA"

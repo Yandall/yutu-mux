@@ -6,10 +6,16 @@ stretch, classic Winamp `.wsz` skins. One theme file works the same
 on Linux, macOS and Windows: iced draws every pixel itself, so a theme
 is pure data and only its folder location differs per OS.
 
-Each phase below is one PR (`feat/theme-*`), lands green on the full
-verification matrix (AGENTS.md section 7) and carries its own
-`CHANGELOG.md` line when users can see it. Phases are ordered so every
-merge is useful on its own and later phases never rework earlier ones.
+Each phase lands green on the full verification matrix (AGENTS.md
+section 7) and carries its own `CHANGELOG.md` line when users can see
+it. Phases are ordered so each is useful on its own and later phases
+never rework earlier ones.
+
+## Status
+
+- Phases 1 to 5: done (branch `feat/theming`).
+  User docs: `docs/THEMES.md`, schema `docs/theme.schema.json`.
+- Phases 6 and 7 (Winamp skins): not started.
 
 ## Prior art (what we borrow)
 
@@ -27,8 +33,9 @@ merge is useful on its own and later phases never rework earlier ones.
   `yutu_core::theme` (file model). Winamp files stay "skins".
 - **Tokens, not widgets**: a theme sets ~20 semantic colors plus a
   few radii. Views never name a raw color again.
-- **Token access**: a process-wide `tokens()` handle (copy of a small
-  `Copy` struct behind a `RwLock`), swapped when the theme changes.
+- **Token access**: `tk()` returns a copy of a small `Copy` struct
+  held in a thread-local cell (iced builds and draws on the one UI
+  thread; parallel tests stay isolated), swapped by `set_tokens`.
   All our style fns are `fn(&iced::Theme)` and `iced::Theme`'s palette
   has too few slots for our surfaces. Rejected: a custom `Theme` type
   implementing every widget `Catalog` (large churn, no user benefit).
@@ -60,6 +67,7 @@ merge is useful on its own and later phases never rework earlier ones.
 | `outline` | `#3A3A3A` | borders, slider rails, seek track |
 | `outline_strong` | `#6E6E6E` | focused borders |
 | `text` | `#FFFFFF` | primary text, icons |
+| `text_body` | `#E6E6E6` | text with no explicit color (iced default) |
 | `text_muted` | `#B3B3B3` | secondary text (today `MUTED`) |
 | `placeholder` | `#DDDDDD` | input placeholders |
 | `accent` | `#FF0033` | active controls, highlights |

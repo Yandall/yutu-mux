@@ -855,6 +855,42 @@ impl Language {
     pub fn relaunch_to_apply(self) -> String {
         self.tr("relaunch-to-apply")
     }
+    pub fn theme_label(self) -> String {
+        self.tr("theme-label")
+    }
+    pub fn theme_system(self) -> String {
+        self.tr("theme-system")
+    }
+    pub fn theme_light_pick(self) -> String {
+        self.tr("theme-light-pick")
+    }
+    pub fn theme_dark_pick(self) -> String {
+        self.tr("theme-dark-pick")
+    }
+    pub fn theme_import(self) -> String {
+        self.tr("theme-import")
+    }
+    pub fn theme_open_folder(self) -> String {
+        self.tr("theme-open-folder")
+    }
+    pub fn theme_reload(self) -> String {
+        self.tr("theme-reload")
+    }
+    pub fn theme_hint(self) -> String {
+        self.tr("theme-hint")
+    }
+    pub fn theme_failures(self) -> String {
+        self.tr("theme-failures")
+    }
+    pub fn theme_folder_failed(self) -> String {
+        self.tr("theme-folder-failed")
+    }
+    pub fn accent_from_art(self) -> String {
+        self.tr("accent-from-art")
+    }
+    pub fn theme_import_failed(self, reason: &str) -> String {
+        self.tr_args("theme-import-failed", &[("reason", reason)])
+    }
     pub fn interface_scale(self, pct: f32) -> String {
         self.tr_args("interface-scale", &[("pct", &format!("{pct:.0}"))])
     }

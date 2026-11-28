@@ -26,6 +26,8 @@ Native Rust YouTube Music desktop app. Iced UI (no webview). Linux, macOS, and W
 - 10-band graphic EQ (mpv-only, honest fallback message on rodio)
 - Local file scan, scrobble (Last.fm + ListenBrainz), live MPRIS
 - Cookie import sign-in with two-way library sync
+- Themes: built-in light/dark and popular palettes, your own theme
+  files, accent from album art ([docs/THEMES.md](docs/THEMES.md))
 
 Honest limits: free-tier bitrate ceiling (128 kbps AAC is YouTube's,
 not ours; a signed-in Premium account streams 256 kbps AAC), no offline keep (streaming only), PO-token 403s

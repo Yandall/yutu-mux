@@ -248,7 +248,7 @@ impl AppState {
                 // opens the playlist menu.
                 let show_play = self.hovered_playlist.as_deref() == Some(pl.id) && pl.len > 0;
                 let trailing: iced::Element<'_, Message> = if show_play {
-                    button(btn_icon("play", 14.0, tk().text))
+                    button(btn_icon("play", 14.0, tk().on_accent))
                         .style(accent_button)
                         .on_press(Message::PlayPlaylist(pl.id.to_string()))
                         .padding(8)
@@ -1127,7 +1127,7 @@ impl AppState {
             None => text("").size(1).into(),
         };
         let shuffle_button: iced::Element<'_, Message> = if self.queue.shuffle {
-            button(ctrl_box(btn_icon("shuffle", 14.0, tk().text)))
+            button(ctrl_box(btn_icon("shuffle", 14.0, tk().on_accent)))
                 .style(accent_button)
                 .on_press(Message::ToggleShuffle)
                 .padding(pad_side)
@@ -1175,7 +1175,7 @@ impl AppState {
                 None => text("").size(1).into(),
             };
             let drawer_btn: iced::Element<'_, Message> = if self.drawer_open {
-                button(ctrl_box(btn_icon("mic-vocal", 14.0, tk().text)))
+                button(ctrl_box(btn_icon("mic-vocal", 14.0, tk().on_accent)))
                     .style(accent_button)
                     .on_press(Message::ToggleDrawer)
                     .padding(7)
@@ -1213,7 +1213,7 @@ impl AppState {
             let transport = row![
                 {
                     let shuffle_btn: iced::Element<'_, Message> = if self.queue.shuffle {
-                        button(ctrl_box(btn_icon("shuffle", 14.0, tk().text)))
+                        button(ctrl_box(btn_icon("shuffle", 14.0, tk().on_accent)))
                             .style(accent_button)
                             .on_press(Message::ToggleShuffle)
                             .padding(6)
@@ -1231,7 +1231,7 @@ impl AppState {
                     .style(icon_hover)
                     .on_press(Message::Prev)
                     .padding(6),
-                button(ctrl_box(btn_icon(play_icon, 18.0, tk().text)))
+                button(ctrl_box(btn_icon(play_icon, 18.0, tk().on_accent)))
                     .style(accent_button)
                     .on_press(Message::TogglePause)
                     .padding(8),
@@ -1332,7 +1332,7 @@ impl AppState {
                                 .style(icon_hover)
                                 .on_press(Message::Prev)
                                 .padding(pad_side),
-                            button(ctrl_box(btn_icon(play_icon, 18.0, tk().text)))
+                            button(ctrl_box(btn_icon(play_icon, 18.0, tk().on_accent)))
                                 .style(accent_button)
                                 .on_press(Message::TogglePause)
                                 .padding(pad_play),
@@ -1364,7 +1364,7 @@ impl AppState {
                             self.mini_player_button(),
                             {
                                 if self.drawer_open {
-                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, tk().text)))
+                                    button(ctrl_box(btn_icon("mic-vocal", 14.0, tk().on_accent)))
                                         .style(accent_button)
                                         .on_press(Message::ToggleDrawer)
                                         .padding(7)
@@ -3138,6 +3138,7 @@ impl AppState {
                     }),
                     self.romaji_settings(),
                     text(self.language.appearance_section()).size(17),
+                    self.theme_settings(),
                     text(self.language.display_font()).size(13),
                     settings_input({
                         let face: iced::Element<'_, Message> = button(
@@ -3677,7 +3678,7 @@ impl AppState {
                     // and the menu, matching pills for the rest.
                     let mut actions: Vec<iced::Element<'_, Message>> = vec![
                         round_button(
-                            btn_icon("play", 18.0, tk().text),
+                            btn_icon("play", 18.0, tk().on_accent),
                             accent_button,
                             Message::PlayAll,
                         ),

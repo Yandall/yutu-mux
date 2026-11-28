@@ -261,7 +261,7 @@ impl AppState {
         let glyph = btn_icon(
             "languages",
             14.0,
-            if on { tk().text } else { tk().text_muted },
+            if on { tk().on_accent } else { tk().text_muted },
         );
         let b = button(ctrl_box(glyph))
             .on_press(Message::SetLyricsRomaji(!on))

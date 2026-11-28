@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Themes: pick Dark, Light, YouTube Music, Catppuccin, Nord, Rose Pine,
+  Tokyo Night or Gruvbox in Settings > Appearance.
+- Follow system: switch between a light and a dark theme with your OS.
+- Your own themes: import a .toml or .json file, or drop it in the
+  themes folder (see docs/THEMES.md). Spotifast themes work too.
+- Optional accent color taken from the playing song's album art.
+- `ctl theme` commands to list, pick and reload themes.
+
 ### Fixed
 
 - Now Playing lyrics no longer bounce when following the first verses

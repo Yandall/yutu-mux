@@ -38,6 +38,7 @@ pub mod song_match;
 pub mod stream;
 #[cfg(all(test, unix))]
 mod test_exec;
+pub mod theme;
 pub mod update;
 #[cfg(all(test, feature = "update"))]
 mod update_install_tests;

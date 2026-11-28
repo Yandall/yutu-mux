@@ -2189,6 +2189,9 @@ impl AppState {
                 return self.pl_release_task();
             }
             Message::Animate => {
+                if self.accent_glide.is_some() {
+                    self.step_accent_glide();
+                }
                 if !self.animations_enabled {
                     self.sidebar_w = self.sidebar_target();
                     self.right_w = self.right_target();
@@ -2825,6 +2828,73 @@ impl AppState {
                 // so a no-op must never erase a visible failure).
                 if let Some(note) = font_pick_status(family, effective_font()) {
                     self.status = note;
+                }
+            }
+            Message::ThemeSelected(id) => {
+                self.sort_menu = None;
+                self.theme_pick = id;
+                self.save_theme_pref("theme", &self.theme_pick);
+                self.apply_theme();
+            }
+            Message::ThemeLightSelected(id) => {
+                self.sort_menu = None;
+                self.theme_light = id;
+                self.save_theme_pref("theme_light", &self.theme_light);
+                self.apply_theme();
+            }
+            Message::ThemeDarkSelected(id) => {
+                self.sort_menu = None;
+                self.theme_dark = id;
+                self.save_theme_pref("theme_dark", &self.theme_dark);
+                self.apply_theme();
+            }
+            Message::SystemThemeChanged(mode) => {
+                // `None` (no preference reported) keeps the last mode.
+                match mode {
+                    iced::theme::Mode::Light => self.system_light = true,
+                    iced::theme::Mode::Dark => self.system_light = false,
+                    iced::theme::Mode::None => {}
+                }
+                self.apply_theme();
+            }
+            Message::ReloadThemes => self.reload_themes(),
+            Message::OpenThemesFolder => {
+                let dir = themes_dir(&self.library_path);
+                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| open::that(&dir)) {
+                    yutu_core::app_log::warn("theme", format_args!("open folder: {e}"));
+                    self.status = self.language.theme_folder_failed();
+                }
+            }
+            Message::ImportThemeBrowse => {
+                #[cfg(feature = "file-picker")]
+                return Self::theme_browse_task();
+            }
+            Message::ThemeImportPicked(path) => {
+                if let Some(path) = path {
+                    match self.import_theme_file(&path) {
+                        Ok(id) => return self.update(Message::ThemeSelected(id)),
+                        Err(e) => {
+                            yutu_core::app_log::warn("theme", format_args!("import: {e}"));
+                            self.status = self.language.theme_import_failed(&e);
+                        }
+                    }
+                }
+            }
+            Message::AccentFromArtToggled(on) => {
+                self.accent_from_art = Some(on);
+                self.save_theme_pref("accent_from_art", if on { "1" } else { "0" });
+                self.apply_theme();
+                return self.art_accent_task();
+            }
+            Message::ArtAccentReady { url, accent } => {
+                if self.art_accent_url.as_deref() == Some(url.as_str()) {
+                    // Glide from what is on screen now (mid-glide too).
+                    let from = self.glide_accent().unwrap_or_else(|| self.target_accent());
+                    self.art_accent = accent;
+                    if self.animations_enabled && from != self.target_accent() {
+                        self.accent_glide = Some((from, std::time::Instant::now()));
+                    }
+                    self.apply_theme();
                 }
             }
             Message::UiScaleChanged(scale) => {
@@ -3787,6 +3857,7 @@ impl AppState {
                     self.drain_player_commands(),
                     self.art_blur_task(),
                     self.mini_cover_task(),
+                    self.art_accent_task(),
                 ];
                 // Playlist page cover: keep asking for the large art (the
                 // fetch itself skips cached, in-flight and cooled URLs),

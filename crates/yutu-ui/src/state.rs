@@ -285,6 +285,10 @@ pub enum SelectMenu {
     LyricsProvider,
     /// Settings display-font pick.
     FontFamily,
+    /// Settings theme pick, and the Follow system light/dark pair.
+    Theme,
+    ThemeLight,
+    ThemeDark,
 }
 
 /// Which sign-in started an import (status wording only). `Sync` is a
@@ -906,6 +910,30 @@ pub enum Message {
     /// Display font pick (Settings Appearance): persisted, takes
     /// effect on relaunch (the renderer font is fixed at startup).
     FontFamilyChanged(FontFamily),
+    /// Theme pick (Settings Appearance, `ctl theme set`): a theme id
+    /// or `system`; persisted, applies instantly.
+    ThemeSelected(String),
+    /// Follow-system pair picks (shown while the pick is `system`).
+    ThemeLightSelected(String),
+    ThemeDarkSelected(String),
+    /// The OS light/dark mode (startup query + change events).
+    SystemThemeChanged(iced::theme::Mode),
+    /// Re-read the user themes folder (button, `ctl theme reload`,
+    /// main window focus).
+    ReloadThemes,
+    /// Open the user themes folder in the file manager.
+    OpenThemesFolder,
+    /// Pick a theme file to import (system file picker).
+    ImportThemeBrowse,
+    /// The picked theme file (`None` when cancelled).
+    ThemeImportPicked(Option<std::path::PathBuf>),
+    /// Accent from album art toggle (Settings Appearance).
+    AccentFromArtToggled(bool),
+    /// Accent read from a cover (`None`: art too gray or unreadable).
+    ArtAccentReady {
+        url: String,
+        accent: Option<yutu_core::theme::Rgba>,
+    },
     /// UI scale 0.8..=1.5 (Settings Appearance slider): persisted,
     /// applies instantly through the application scale factor.
     UiScaleChanged(f32),

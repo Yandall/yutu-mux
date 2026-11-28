@@ -22,95 +22,108 @@ use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GA
 
 /// Semantic theme colors: every view reads its colors from here (via
 /// `tk()`), never from a literal, so a theme is just another `Tokens`
-/// value. Names describe the role ("panel", "text_muted"), not the
-/// widget. See `docs/THEMING_PLAN.md`.
+/// value. Field meanings live on `yutu_core::theme::Palette` (same
+/// names); see `docs/THEMES.md`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Tokens {
-    /// App background, page veil end.
     pub window: iced::Color,
-    /// Sidebars, drawers, player bar.
     pub panel: iced::Color,
-    /// Cards, Now Playing sheet.
     pub surface: iced::Color,
-    /// Card and row hover.
     pub surface_hover: iced::Color,
-    /// Active nav row, focused field.
     pub surface_active: iced::Color,
-    /// Recessed shell (segmented pickers).
     pub inset: iced::Color,
-    /// Text inputs, secondary buttons at rest.
     pub field: iced::Color,
-    /// Secondary buttons hovered.
     pub field_hover: iced::Color,
-    /// Popup menus.
     pub menu: iced::Color,
-    /// Borders, slider rails, seek and EQ tracks.
     pub outline: iced::Color,
-    /// Focused or hovered borders.
     pub outline_strong: iced::Color,
-    /// Primary text and icons on theme surfaces.
     pub text: iced::Color,
-    /// Secondary text and idle icons.
+    pub text_body: iced::Color,
     pub text_muted: iced::Color,
-    /// Disabled menu entries.
     pub text_disabled: iced::Color,
-    /// Input placeholders.
     pub placeholder: iced::Color,
-    /// Active controls, highlights, the live song.
     pub accent: iced::Color,
-    /// Accent under the pointer.
     pub accent_hover: iced::Color,
-    /// Glyphs and text drawn on the accent.
     pub on_accent: iced::Color,
-    /// Slider, toggle and seek knobs.
     pub handle: iced::Color,
-    /// Modal and drawer dim.
     pub scrim: iced::Color,
-    /// Drop shadows (alpha set per site).
     pub shadow: iced::Color,
+    /// Light base (stock widget palette, art veils).
+    pub light: bool,
+}
+
+/// Theme color to iced color (const so the default tokens stay a const).
+pub(crate) const fn to_color(c: yutu_core::theme::Rgba) -> iced::Color {
+    iced::Color::from_rgba8(c.r, c.g, c.b, c.a as f32 / 255.0)
 }
 
 impl Tokens {
     /// The default look (dark surfaces, vivid red accent).
-    pub(crate) const DARK: Tokens = Tokens {
-        window: iced::Color::from_rgb8(0x0A, 0x0A, 0x0A),
-        panel: iced::Color::from_rgb8(0x12, 0x12, 0x12),
-        surface: iced::Color::from_rgb8(0x18, 0x18, 0x18),
-        surface_hover: iced::Color::from_rgb8(0x28, 0x28, 0x28),
-        surface_active: iced::Color::from_rgb8(0x2A, 0x2A, 0x2A),
-        inset: iced::Color::from_rgb8(0x16, 0x16, 0x16),
-        field: iced::Color::from_rgb8(0x22, 0x22, 0x22),
-        field_hover: iced::Color::from_rgb8(0x33, 0x33, 0x33),
-        menu: iced::Color::from_rgb8(0x24, 0x24, 0x24),
-        outline: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
-        outline_strong: iced::Color::from_rgb8(0x6E, 0x6E, 0x6E),
-        text: iced::Color::WHITE,
-        text_muted: iced::Color::from_rgb8(0xB3, 0xB3, 0xB3),
-        text_disabled: iced::Color::from_rgb8(0x6E, 0x6E, 0x6E),
-        placeholder: iced::Color::from_rgb8(0xDD, 0xDD, 0xDD),
-        accent: iced::Color::from_rgb8(0xFF, 0x00, 0x33),
-        accent_hover: iced::Color::from_rgb8(0xFF, 0x33, 0x66),
-        on_accent: iced::Color::WHITE,
-        handle: iced::Color::WHITE,
-        scrim: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55),
-        shadow: iced::Color::BLACK,
-    };
+    pub(crate) const DARK: Tokens = Tokens::from_palette(&yutu_core::theme::Palette::DARK, false);
+
+    pub(crate) const fn from_palette(p: &yutu_core::theme::Palette, light: bool) -> Tokens {
+        Tokens {
+            window: to_color(p.window),
+            panel: to_color(p.panel),
+            surface: to_color(p.surface),
+            surface_hover: to_color(p.surface_hover),
+            surface_active: to_color(p.surface_active),
+            inset: to_color(p.inset),
+            field: to_color(p.field),
+            field_hover: to_color(p.field_hover),
+            menu: to_color(p.menu),
+            outline: to_color(p.outline),
+            outline_strong: to_color(p.outline_strong),
+            text: to_color(p.text),
+            text_body: to_color(p.text_body),
+            text_muted: to_color(p.text_muted),
+            text_disabled: to_color(p.text_disabled),
+            placeholder: to_color(p.placeholder),
+            accent: to_color(p.accent),
+            accent_hover: to_color(p.accent_hover),
+            on_accent: to_color(p.on_accent),
+            handle: to_color(p.handle),
+            scrim: to_color(p.scrim),
+            shadow: to_color(p.shadow),
+            light,
+        }
+    }
+
+    /// Stock iced widgets (tooltips, un-colored text, defaults) follow
+    /// the same colors through a custom iced theme.
+    pub(crate) fn iced_theme(&self) -> iced::Theme {
+        let base = if self.light {
+            iced::theme::Palette::LIGHT
+        } else {
+            iced::theme::Palette::DARK
+        };
+        let palette = iced::theme::Palette {
+            background: self.window,
+            text: self.text_body,
+            primary: self.accent,
+            ..base
+        };
+        iced::Theme::custom("yutu-mux", palette)
+    }
 }
 
-/// The live theme. A `Copy` struct behind a lock (not inside
-/// `iced::Theme`, whose palette has too few slots): style fns read it
-/// with `tk()`, a theme switch swaps it with `set_tokens`.
-static TOKENS: std::sync::RwLock<Tokens> = std::sync::RwLock::new(Tokens::DARK);
+// The live theme. A `Copy` struct per UI thread (not inside
+// `iced::Theme`, whose palette has too few slots): style fns read it
+// with `tk()`, a theme switch swaps it with `set_tokens`. Thread-local
+// because iced builds and draws views on the one UI thread, and so
+// parallel tests never see each other's theme.
+std::thread_local! {
+    static TOKENS: std::cell::Cell<Tokens> = const { std::cell::Cell::new(Tokens::DARK) };
+}
 
 /// Current theme colors.
 pub(crate) fn tk() -> Tokens {
-    *TOKENS.read().unwrap_or_else(|e| e.into_inner())
+    TOKENS.with(std::cell::Cell::get)
 }
 
 /// Swap the live theme (takes effect on the next frame).
-#[allow(dead_code)]
 pub(crate) fn set_tokens(tokens: Tokens) {
-    *TOKENS.write().unwrap_or_else(|e| e.into_inner()) = tokens;
+    TOKENS.with(|t| t.set(tokens));
 }
 
 /// Content drawn over cover art or video (play overlays, the mini

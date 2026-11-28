@@ -8850,6 +8850,10 @@ fn layout_snapshots() {
                 continue;
             }
             let mut s = test_state();
+            // Theme under test (`YUTU_SNAPSHOT_THEME=light`, any id).
+            if let Ok(theme) = std::env::var("YUTU_SNAPSHOT_THEME") {
+                let _ = s.update(Message::ThemeSelected(theme));
+            }
             let tracks: Vec<Track> = (0..14)
                 .map(|i| {
                     let mut t = mk_track(
@@ -12853,9 +12857,9 @@ fn mini_wheel_keeps_the_incoming_verse_lines_through_the_glide() {
 }
 
 /// Theme guard: views name colors through `tk()` tokens, never raw
-/// literals, so every theme reaches every pixel. Allowed: the token
-/// definitions (`Tokens::DARK`) and named `const` colors in `theme.rs`
-/// (art overlays) and `mini_player.rs` (the pill's fixed art palette).
+/// literals, so every theme reaches every pixel. Allowed: the palette
+/// conversion (`to_color`) and named `const` colors in `theme.rs` (art
+/// overlays) and `mini_player.rs` (the pill's fixed art palette).
 #[test]
 fn views_use_theme_tokens_not_raw_colors() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -12881,7 +12885,9 @@ fn views_use_theme_tokens_not_raw_colors() {
             }
             let named_const = (name == "theme.rs" || name == "mini_player.rs")
                 && (t.starts_with("const ") || t.starts_with("pub(crate) const "));
-            if !in_tokens && !named_const && raw.iter().any(|r| line.contains(r)) {
+            // The one palette-to-iced conversion (`to_color`).
+            let converter = name == "theme.rs" && t.starts_with("iced::Color::from_rgba8(c.r");
+            if !in_tokens && !named_const && !converter && raw.iter().any(|r| line.contains(r)) {
                 bad.push(format!("{name}:{}: {}", i + 1, t));
             }
             if in_tokens && t == "};" {
@@ -12894,4 +12900,218 @@ fn views_use_theme_tokens_not_raw_colors() {
         "raw colors outside the theme:\n{}",
         bad.join("\n")
     );
+}
+
+/// Test state with its own data folder, so a themes folder written by a
+/// theme test never leaks into other tests.
+fn theme_test_state() -> (AppState, std::path::PathBuf) {
+    let n = TEST_DB_SEQ.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("yutu-theme-test-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut s, _) =
+        AppState::with_library_path(dir.join("library.db").to_string_lossy().into_owned());
+    s.language = Language::English;
+    s.update_checking = false;
+    (s, dir)
+}
+
+fn tok(c: yutu_core::theme::Rgba) -> iced::Color {
+    to_color(c)
+}
+
+#[test]
+fn theme_pick_applies_instantly_and_persists() {
+    let (mut s, dir) = theme_test_state();
+    assert_eq!(tk(), Tokens::DARK);
+    let _ = s.update(Message::ThemeSelected("nord".into()));
+    let nord = s.themes.iter().find(|t| t.id == "nord").unwrap().clone();
+    assert_eq!(tk().window, tok(nord.palette.window));
+    assert_eq!(s.theme().palette().background, tok(nord.palette.window));
+    // A fresh launch on the same data folder comes back in Nord.
+    set_tokens(Tokens::DARK);
+    let (s2, _) =
+        AppState::with_library_path(dir.join("library.db").to_string_lossy().into_owned());
+    assert_eq!(s2.theme_pick, "nord");
+    assert_eq!(tk().window, tok(nord.palette.window));
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unknown_saved_theme_falls_back_to_dark() {
+    let (mut s, dir) = theme_test_state();
+    s.theme_pick = "deleted-theme".into();
+    s.apply_theme();
+    assert_eq!(s.active_theme().id, THEME_DEFAULT);
+    assert_eq!(tk(), Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn follow_system_tracks_the_os_mode() {
+    let (mut s, dir) = theme_test_state();
+    let _ = s.update(Message::ThemeSelected(THEME_SYSTEM.into()));
+    let _ = s.update(Message::SystemThemeChanged(iced::theme::Mode::Light));
+    assert_eq!(s.active_theme().id, "light");
+    assert!(tk().light);
+    // A mode with no preference keeps the last one.
+    let _ = s.update(Message::SystemThemeChanged(iced::theme::Mode::None));
+    assert!(tk().light);
+    let _ = s.update(Message::ThemeDarkSelected("tokyo-night".into()));
+    let _ = s.update(Message::SystemThemeChanged(iced::theme::Mode::Dark));
+    assert_eq!(s.active_theme().id, "tokyo-night");
+    assert!(!tk().light);
+    // The pair pickers only list matching bases.
+    assert!(s
+        .themes_for_mode(true)
+        .all(|t| t.base == yutu_core::theme::Base::Light));
+    assert!(s.themes_for_mode(false).any(|t| t.id == "nord"));
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn user_themes_folder_loads_reloads_and_lists_failures() {
+    let (mut s, dir) = theme_test_state();
+    let themes = themes_dir(&s.library_path);
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(
+        themes.join("mint.toml"),
+        "name = \"Mint\"\n[colors]\naccent = \"#3EB489\"",
+    )
+    .unwrap();
+    std::fs::write(themes.join("broken.toml"), "[colors]\naccent = \"green\"").unwrap();
+    let _ = s.update(Message::ReloadThemes);
+    let mint = s
+        .themes
+        .iter()
+        .find(|t| t.id == "mint")
+        .expect("user theme");
+    assert_eq!(mint.name, "Mint");
+    assert_eq!(s.theme_failures.len(), 1);
+    assert_eq!(s.theme_failures[0].file, "broken.toml");
+    let _ = s.update(Message::ThemeSelected("mint".into()));
+    assert_eq!(tk().accent, iced::Color::from_rgb8(0x3E, 0xB4, 0x89));
+    // Editing the file shows on the next reload (window focus).
+    std::fs::write(
+        themes.join("mint.toml"),
+        "name = \"Mint\"\n[colors]\naccent = \"#00AA77\"",
+    )
+    .unwrap();
+    let _ = s.update(Message::ReloadThemes);
+    assert_eq!(tk().accent, iced::Color::from_rgb8(0x00, 0xAA, 0x77));
+    // Deleting the active theme falls back to Dark without a crash.
+    std::fs::remove_file(themes.join("mint.toml")).unwrap();
+    let _ = s.update(Message::ReloadThemes);
+    assert_eq!(tk(), Tokens::DARK);
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn theme_import_copies_validated_files_and_selects_them() {
+    let (mut s, dir) = theme_test_state();
+    let src = dir.join("My Ocean Theme.json");
+    std::fs::write(&src, r##"{"base":"dark","colors":{"accent":"#0077FF"}}"##).unwrap();
+    let _ = s.update(Message::ThemeImportPicked(Some(src)));
+    assert_eq!(s.theme_pick, "my-ocean-theme");
+    assert!(themes_dir(&s.library_path)
+        .join("my-ocean-theme.json")
+        .exists());
+    assert_eq!(tk().accent, iced::Color::from_rgb8(0x00, 0x77, 0xFF));
+    // A broken file is refused (never copied) with a failure status.
+    let bad = dir.join("bad.toml");
+    std::fs::write(&bad, "base = \"sepia\"").unwrap();
+    let _ = s.update(Message::ThemeImportPicked(Some(bad)));
+    assert!(!themes_dir(&s.library_path).join("bad.toml").exists());
+    assert!(s.language.is_failure_line(&s.status), "{}", s.status);
+    assert_eq!(s.theme_pick, "my-ocean-theme");
+    // Cancelling the picker changes nothing.
+    let _ = s.update(Message::ThemeImportPicked(None));
+    assert_eq!(s.theme_pick, "my-ocean-theme");
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn art_accent_applies_only_for_the_current_cover() {
+    let (mut s, dir) = theme_test_state();
+    s.animations_enabled = false;
+    let blue = yutu_core::theme::Rgba::rgb(0x30, 0x60, 0xFF);
+    let _ = s.update(Message::AccentFromArtToggled(true));
+    assert!(s.accent_from_art_on());
+    s.art_accent_url = Some("cover-a|#0A0A0A".into());
+    // A stale result (other cover) is dropped.
+    let _ = s.update(Message::ArtAccentReady {
+        url: "cover-b|#0A0A0A".into(),
+        accent: Some(blue),
+    });
+    assert_eq!(tk().accent, Tokens::DARK.accent);
+    let _ = s.update(Message::ArtAccentReady {
+        url: "cover-a|#0A0A0A".into(),
+        accent: Some(blue),
+    });
+    assert_eq!(tk().accent, tok(blue));
+    assert_eq!(tk().on_accent, tok(blue.readable_glyph()));
+    assert!(s.accent_glide.is_none(), "no glide with animations off");
+    // Turning the feature off restores the theme accent.
+    let _ = s.update(Message::AccentFromArtToggled(false));
+    assert_eq!(tk().accent, Tokens::DARK.accent);
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn art_accent_glides_then_settles() {
+    let (mut s, dir) = theme_test_state();
+    s.animations_enabled = true;
+    s.accent_from_art = Some(true);
+    s.art_accent_url = Some("cover|#0A0A0A".into());
+    let green = yutu_core::theme::Rgba::rgb(0x20, 0xD0, 0x60);
+    let _ = s.update(Message::ArtAccentReady {
+        url: "cover|#0A0A0A".into(),
+        accent: Some(green),
+    });
+    assert!(s.accent_glide.is_some());
+    assert!(s.animating());
+    // Halfway through: neither the old red nor the new green.
+    let half = std::time::Duration::from_millis((ACCENT_GLIDE_MS / 2.0) as u64);
+    s.accent_glide = Some((
+        yutu_core::theme::Palette::DARK.accent,
+        std::time::Instant::now() - half,
+    ));
+    let _ = s.update(Message::Animate);
+    assert_ne!(tk().accent, Tokens::DARK.accent);
+    assert_ne!(tk().accent, tok(green));
+    // Past the end: settled on green, glide over.
+    let past = std::time::Duration::from_millis(ACCENT_GLIDE_MS as u64 + 50);
+    s.accent_glide = Some((
+        yutu_core::theme::Palette::DARK.accent,
+        std::time::Instant::now() - past,
+    ));
+    let _ = s.update(Message::Animate);
+    assert!(s.accent_glide.is_none());
+    assert_eq!(tk().accent, tok(green));
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn theme_menus_list_every_theme_with_system_first() {
+    let (mut s, dir) = theme_test_state();
+    s.sort_menu = Some(SelectMenu::Theme);
+    // Builds without panicking for every picker kind.
+    for kind in [
+        SelectMenu::Theme,
+        SelectMenu::ThemeLight,
+        SelectMenu::ThemeDark,
+    ] {
+        let _ = s.select_menu_card(&kind, 280.0);
+    }
+    let _ = s.theme_settings();
+    let _ = s.update(Message::ThemeSelected(THEME_SYSTEM.into()));
+    let _ = s.theme_settings();
+    set_tokens(Tokens::DARK);
+    let _ = std::fs::remove_dir_all(&dir);
 }

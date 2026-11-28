@@ -21,8 +21,10 @@ use yutu_player::MpvBackend;
 use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
 impl AppState {
+    /// Main window theme: the live tokens as an iced theme, so stock
+    /// widgets and un-colored text follow the picked theme.
     pub fn theme(&self) -> iced::Theme {
-        iced::Theme::Dark
+        tk().iced_theme()
     }
 
     /// Window title: the live song as "title · artist" (house
@@ -81,7 +83,7 @@ impl AppState {
             container(
                 row![
                     self.thumb(t),
-                    button(btn_icon("play", 13.0, tk().text))
+                    button(btn_icon("play", 13.0, tk().on_accent))
                         .style(accent_button)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),

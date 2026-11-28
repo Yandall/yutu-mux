@@ -13,7 +13,7 @@
 use super::*;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use yutu_core::control::{Command, MiniArg, RepeatArg};
+use yutu_core::control::{Command, MiniArg, RepeatArg, ThemeArg};
 use yutu_core::Track;
 
 /// What the handler sends back to the socket task.
@@ -181,6 +181,7 @@ impl AppState {
                 "romaji": self.lyrics_romaji,
                 "romaji_setup": format!("{:?}", self.romaji_setup).to_ascii_lowercase(),
             },
+            "theme": self.control_theme(),
             "mini": {
                 "open": self.mini.is_some(),
                 "lyrics": self.mini.map_or(self.mini_lyrics_pref, |m| m.lyrics),
@@ -304,6 +305,34 @@ impl AppState {
             ("remote-playlist", Some(id)) => vec![Message::OpenSearchPlaylist(id)],
             ("lyrics", Some(id)) => vec![Message::OpenLyrics(id)],
             _ => return Err(format!("unknown page `{page}`")),
+        })
+    }
+
+    /// Theme picks, the active theme and the catalog (`theme list`,
+    /// and the `theme` block of `state`).
+    pub(crate) fn control_theme(&self) -> Value {
+        let active = self.active_theme();
+        json!({
+            "pick": self.theme_pick,
+            "active": active.id,
+            "light": self.theme_light,
+            "dark": self.theme_dark,
+            "system_light": self.system_light,
+            "accent_from_art": self.accent_from_art_on(),
+            "art_accent": self.art_accent.map(|c| c.to_hex()),
+            "folder": themes_dir(&self.library_path).to_string_lossy(),
+            "themes": self.themes.iter().map(|t| json!({
+                "id": t.id,
+                "name": t.name,
+                "base": t.base.key(),
+                "builtin": is_builtin(&t.id),
+                "accent": t.palette.accent.to_hex(),
+                "warnings": t.warnings,
+            })).collect::<Vec<_>>(),
+            "failures": self.theme_failures.iter().map(|f| json!({
+                "file": f.file,
+                "reason": f.reason,
+            })).collect::<Vec<_>>(),
         })
     }
 
@@ -532,6 +561,27 @@ impl AppState {
                     want.unwrap_or(!self.lyrics_romaji),
                 )]
             }
+            Command::Theme(arg) => match arg {
+                ThemeArg::List => {
+                    reply.ok(self.control_theme());
+                    return iced::Task::none();
+                }
+                ThemeArg::Set(id) => {
+                    let id = if id.eq_ignore_ascii_case(THEME_SYSTEM) {
+                        THEME_SYSTEM.to_string()
+                    } else if self.themes.iter().any(|t| t.id == id) {
+                        id
+                    } else {
+                        reply.err(format!("unknown theme `{id}` (see `theme list`)"));
+                        return iced::Task::none();
+                    };
+                    vec![Message::ThemeSelected(id)]
+                }
+                ThemeArg::Reload => vec![Message::ReloadThemes],
+                ThemeArg::AccentFromArt(want) => vec![Message::AccentFromArtToggled(
+                    want.unwrap_or(!self.accent_from_art_on()),
+                )],
+            },
             Command::Mini(arg) => match arg {
                 MiniArg::Toggle => vec![Message::ToggleMiniPlayer],
                 MiniArg::Open => vec![Message::OpenMiniPlayer],

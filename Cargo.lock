@@ -7499,6 +7499,7 @@ dependencies = [
  "tar",
  "thiserror 1.0.69",
  "tokio",
+ "toml",
  "ytmapi-rs",
  "zip",
 ]

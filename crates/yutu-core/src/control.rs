@@ -90,6 +90,8 @@ pub enum Command {
     Mini(MiniArg),
     /// Romaji under Japanese lyrics (`None` toggles).
     LyricsRomaji(Option<bool>),
+    /// Themes: list, pick, reload, art accent.
+    Theme(ThemeArg),
     /// Save the session and close the app.
     Quit,
 }
@@ -107,6 +109,19 @@ pub enum MiniArg {
     Lyrics(Option<bool>),
     /// Capture the mini window to a PNG.
     Screenshot(Option<PathBuf>),
+}
+
+/// `theme` subcommands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThemeArg {
+    /// Every theme (id, name, base, active) plus the picks (bare `theme`).
+    List,
+    /// Pick a theme id, or `system` to follow the OS light/dark mode.
+    Set(String),
+    /// Re-read the user themes folder.
+    Reload,
+    /// Accent from album art; `None` toggles.
+    AccentFromArt(Option<bool>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +176,10 @@ UI:
   mini lyrics [on|off]               mini player lyrics ticker
   mini screenshot [path.png]         capture the mini player window
   lyrics romaji [on|off]             romaji under Japanese lyrics
+  theme [list]                       themes and the current pick
+  theme set <id|system>              pick a theme (system: follow the OS)
+  theme reload                       re-read the user themes folder
+  theme art [on|off]                 accent color from album art
   quit                     save the session and close the app
 
 Client flags:
@@ -283,6 +302,24 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             Some(other) => return Err(format!("unknown lyrics action `{other}` (romaji)")),
             None => return Err("missing lyrics action (romaji)".into()),
         },
+        "theme" => Command::Theme(
+            match args.get(1).map(|s| s.to_ascii_lowercase()).as_deref() {
+                None | Some("list") => ThemeArg::List,
+                Some("set") => ThemeArg::Set(
+                    args.get(2)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .ok_or("missing theme id (see `theme list`)")?,
+                ),
+                Some("reload") => ThemeArg::Reload,
+                Some("art") => ThemeArg::AccentFromArt(on_off(args.get(2))?),
+                Some(other) => {
+                    return Err(format!(
+                        "unknown theme action `{other}` (list|set|reload|art)"
+                    ))
+                }
+            },
+        ),
         "quit" | "exit" => Command::Quit,
         other => return Err(format!("unknown command `{other}` (try `help`)")),
     };
@@ -502,6 +539,24 @@ mod tests {
             Ok(Command::LyricsRomaji(None))
         );
         assert!(parse_command(&words("lyrics")).is_err());
+        assert_eq!(
+            parse_command(&words("theme")),
+            Ok(Command::Theme(ThemeArg::List))
+        );
+        assert_eq!(
+            parse_command(&words("theme set nord")),
+            Ok(Command::Theme(ThemeArg::Set("nord".into())))
+        );
+        assert_eq!(
+            parse_command(&words("theme reload")),
+            Ok(Command::Theme(ThemeArg::Reload))
+        );
+        assert_eq!(
+            parse_command(&words("theme art off")),
+            Ok(Command::Theme(ThemeArg::AccentFromArt(Some(false))))
+        );
+        assert!(parse_command(&words("theme set")).is_err());
+        assert!(parse_command(&words("theme paint")).is_err());
         assert!(parse_command(&words("lyrics karaoke")).is_err());
     }
 
