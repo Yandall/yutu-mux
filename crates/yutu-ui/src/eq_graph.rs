@@ -380,7 +380,7 @@ impl Program<Message> for EqGraph {
             frame.fill(&Path::circle(*handle, handle_r), tk().accent);
             frame.stroke(
                 &Path::circle(*handle, handle_r),
-                Stroke::default().with_color(tk().text).with_width(1.5),
+                Stroke::default().with_color(tk().handle).with_width(1.5),
             );
         }
 

@@ -8786,18 +8786,30 @@ fn fake_backdrop(s: &mut AppState, url: String) {
         for x in 0..px {
             let fx = x as f32 / (px - 1) as f32;
             let fy = y as f32 / (px - 1) as f32;
-            rgba.extend_from_slice(&[
-                (230.0 * (1.0 - fx)) as u8,
-                (60.0 + 120.0 * fy) as u8,
-                (200.0 * fx) as u8,
-                255,
-            ]);
+            // `YUTU_SNAPSHOT_BRIGHT_ART=1`: a pale, near-white cover
+            // (the hard case for light text on the veils).
+            if std::env::var_os("YUTU_SNAPSHOT_BRIGHT_ART").is_some() {
+                rgba.extend_from_slice(&[
+                    (215.0 + 30.0 * fx) as u8,
+                    (205.0 + 35.0 * fy) as u8,
+                    (225.0 + 20.0 * (1.0 - fx)) as u8,
+                    255,
+                ]);
+            } else {
+                rgba.extend_from_slice(&[
+                    (230.0 * (1.0 - fx)) as u8,
+                    (60.0 + 120.0 * fy) as u8,
+                    (200.0 * fx) as u8,
+                    255,
+                ]);
+            }
         }
     }
-    s.art_blur.insert(
+    // Through the real decode path, so the veil sees the cover tones.
+    let _ = s.update(Message::ArtBlurReady {
         url,
-        iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba),
-    );
+        rgba: Some(rgba),
+    });
 }
 
 /// Headless layout screenshots (no display, no network): renders the
@@ -13114,4 +13126,82 @@ fn theme_menus_list_every_theme_with_system_first() {
     let _ = s.theme_settings();
     set_tokens(Tokens::DARK);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn logo_follows_the_theme_colors() {
+    // Dark keeps the bundled look byte for byte.
+    assert_eq!(
+        logo_svg(Tokens::DARK.accent, Tokens::DARK.text),
+        include_str!("../assets/logo.svg")
+    );
+    let light = Tokens::from_palette(&yutu_core::theme::Palette::LIGHT, true);
+    let svg = logo_svg(light.accent, light.text);
+    assert!(svg.contains("#E0002D") && svg.contains("#121214"), "{svg}");
+    assert!(!svg.contains("#FFFFFF"), "no white M on light themes");
+}
+
+#[test]
+fn knobs_get_an_edge_only_on_light_themes() {
+    set_tokens(Tokens::DARK);
+    assert_eq!(knob_edge_width(), 0.0);
+    let s = themed_slider(&iced::Theme::Dark, iced::widget::slider::Status::Active);
+    assert_eq!(s.handle.border_width, 0.0);
+    set_tokens(Tokens::from_palette(
+        &yutu_core::theme::Palette::LIGHT,
+        true,
+    ));
+    assert_eq!(knob_edge_width(), 1.0);
+    let s = themed_slider(&iced::Theme::Dark, iced::widget::slider::Status::Active);
+    assert_eq!(s.handle.border_width, 1.0);
+    assert_eq!(
+        s.handle.background,
+        iced::Background::Color(iced::Color::WHITE)
+    );
+    let t = red_toggle(
+        &iced::Theme::Dark,
+        iced::widget::toggler::Status::Active { is_toggled: true },
+    );
+    assert_eq!(t.foreground_border_width, 1.0);
+    set_tokens(Tokens::DARK);
+}
+
+#[test]
+fn backdrop_veil_thickens_over_bright_art_only() {
+    use yutu_core::theme::{Palette, Rgba};
+    let mocha = builtin_themes()
+        .into_iter()
+        .find(|t| t.id == "catppuccin-mocha")
+        .unwrap()
+        .palette;
+    let pale = Some((Rgba::rgb(0xEE, 0xEA, 0xF2), Rgba::rgb(0xD0, 0xCC, 0xD8)));
+    let floor = backdrop_veil_floor(pale, mocha.text, mocha.surface, NP_BACKDROP_OPACITY);
+    assert!(
+        floor > 0.25,
+        "pale cover needs more veil than the design's top: {floor}"
+    );
+    let dim = Some((Rgba::rgb(0x40, 0x20, 0x30), Rgba::rgb(0x10, 0x08, 0x10)));
+    assert_eq!(
+        backdrop_veil_floor(dim, mocha.text, mocha.surface, NP_BACKDROP_OPACITY),
+        0.0
+    );
+    // Light themes guard against the dark areas instead.
+    let p = Palette::LIGHT;
+    let dark_art = Some((Rgba::rgb(0x60, 0x50, 0x50), Rgba::rgb(0x10, 0x10, 0x10)));
+    assert!(backdrop_veil_floor(dark_art, p.text, p.surface, NP_BACKDROP_OPACITY) > 0.25);
+    assert_eq!(backdrop_veil_floor(None, p.text, p.surface, 0.7), 0.0);
+}
+
+#[test]
+fn blur_decode_records_cover_tones() {
+    let mut s = test_state();
+    let url = "https://example.invalid/tone.jpg".to_string();
+    let px = (ART_BLUR_PX * ART_BLUR_PX) as usize;
+    let _ = s.update(Message::ArtBlurReady {
+        url: url.clone(),
+        rgba: Some([250u8, 250, 250, 255].repeat(px)),
+    });
+    assert!(s.art_blur.contains_key(&url));
+    let (light, _) = s.art_blur_tone[&url];
+    assert_eq!(light, yutu_core::theme::Rgba::rgb(250, 250, 250));
 }

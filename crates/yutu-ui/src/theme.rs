@@ -46,6 +46,7 @@ pub(crate) struct Tokens {
     pub accent_hover: iced::Color,
     pub on_accent: iced::Color,
     pub handle: iced::Color,
+    pub handle_edge: iced::Color,
     pub scrim: iced::Color,
     pub shadow: iced::Color,
     /// Light base (stock widget palette, art veils).
@@ -83,6 +84,7 @@ impl Tokens {
             accent_hover: to_color(p.accent_hover),
             on_accent: to_color(p.on_accent),
             handle: to_color(p.handle),
+            handle_edge: to_color(p.handle_edge),
             scrim: to_color(p.scrim),
             shadow: to_color(p.shadow),
             light,
@@ -163,62 +165,81 @@ pub(crate) fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
+/// Text contrast the backdrop veils keep over cover art (WCAG AAA).
+pub(crate) const BACKDROP_TEXT_CONTRAST: f32 = 7.0;
+
+/// Weakest veil that keeps the theme's text readable over art with the
+/// given tones (light, dark) painted at `art_opacity` on `bg`. Light
+/// text guards against the art's bright areas, dark text against its
+/// dark ones. 0 (the design's own veil) when the tones are unknown.
+pub(crate) fn backdrop_veil_floor(
+    tones: Option<(yutu_core::theme::Rgba, yutu_core::theme::Rgba)>,
+    text: yutu_core::theme::Rgba,
+    bg: yutu_core::theme::Rgba,
+    art_opacity: f32,
+) -> f32 {
+    let Some((light, dark)) = tones else {
+        return 0.0;
+    };
+    let tone = if text.luminance() > bg.luminance() {
+        light
+    } else {
+        dark
+    };
+    yutu_core::theme::veil_floor(text, bg, tone, art_opacity, BACKDROP_TEXT_CONTRAST)
+}
+
 /// Now Playing backdrop veil: the card surface fading in from light
 /// at the top (cover colors show) to heavy at the bottom (lyrics read
-/// on a near-plain surface).
-pub(crate) fn np_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
-    let top = iced::Color {
-        a: 0.25,
-        ..tk().surface
-    };
-    let bottom = iced::Color {
-        a: 0.85,
-        ..tk().surface
-    };
-    iced::widget::container::Style {
-        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-                .add_stop(0.0, top)
-                .add_stop(1.0, bottom),
-        ))),
-        border: iced::Border::default().rounded(8),
-        ..Default::default()
+/// on a near-plain surface). `floor` (from `backdrop_veil_floor`)
+/// thickens it where the cover would wash out the text.
+pub(crate) fn np_backdrop_veil(
+    floor: f32,
+) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
+    move |_| {
+        let top = iced::Color {
+            a: floor.max(0.25),
+            ..tk().surface
+        };
+        let bottom = iced::Color {
+            a: floor.max(0.85),
+            ..tk().surface
+        };
+        iced::widget::container::Style {
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                    .add_stop(0.0, top)
+                    .add_stop(1.0, bottom),
+            ))),
+            border: iced::Border::default().rounded(8),
+            ..Default::default()
+        }
     }
 }
 
 /// Collection page backdrop veil: light at the top so the cover's
 /// colors show, ending in exactly the app background so the band melts
-/// into the page with no visible edge.
-pub(crate) fn page_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-                .add_stop(
-                    0.0,
-                    iced::Color {
-                        a: 0.30,
-                        ..tk().window
-                    },
-                )
-                .add_stop(
-                    0.4,
-                    iced::Color {
-                        a: 0.60,
-                        ..tk().window
-                    },
-                )
-                .add_stop(
-                    0.7,
-                    iced::Color {
-                        a: 0.90,
-                        ..tk().window
-                    },
-                )
-                .add_stop(0.88, tk().window)
-                .add_stop(1.0, tk().window),
-        ))),
-        // Window-level band: square edges, the panels cover the sides.
-        ..Default::default()
+/// into the page with no visible edge. `floor` as for Now Playing.
+pub(crate) fn page_backdrop_veil(
+    floor: f32,
+) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
+    move |_| {
+        let at = |a: f32| iced::Color {
+            a: floor.max(a),
+            ..tk().window
+        };
+        iced::widget::container::Style {
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                    .add_stop(0.0, at(0.30))
+                    .add_stop(0.4, at(0.60))
+                    .add_stop(0.7, at(0.90))
+                    .add_stop(0.88, tk().window)
+                    .add_stop(1.0, tk().window),
+            ))),
+            // Window-level band: square edges, the panels cover the sides.
+            ..Default::default()
+        }
     }
 }
 

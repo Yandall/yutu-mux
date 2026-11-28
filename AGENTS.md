@@ -220,6 +220,10 @@
   `<data>/themes/` (beside the library db) replace a built-in of the
   same id. Picks persist (`theme`, `theme_light`, `theme_dark`,
   `accent_from_art`); `system` follows iced's system theme events.
+  Resolve enforces WCAG floors (`CONTRAST_RULES`, `ensure_contrast`):
+  never hand-check a color, and built-ins must parse warning-free.
+  Backdrop veils thicken over bright/dark covers (`art_tones`,
+  `backdrop_veil_floor`); the logo takes accent + text colors.
   Every change goes through `apply_theme` (live tokens are
   thread-local). Reload on button, `ctl theme reload` and main
   window focus. Art accent: read from the cover on disk (Tick),

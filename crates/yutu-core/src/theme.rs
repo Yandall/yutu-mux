@@ -119,6 +119,50 @@ impl Rgba {
         }
     }
 
+    /// This color nudged toward white or black (whichever direction
+    /// the backgrounds leave more room in) until it reaches `min`
+    /// contrast against every background, keeping its hue as long as
+    /// possible. Already-readable colors come back unchanged.
+    pub fn ensure_contrast(self, backgrounds: &[Rgba], min: f32) -> Rgba {
+        let worst = |c: Rgba| {
+            backgrounds
+                .iter()
+                .map(|b| c.contrast(*b))
+                .fold(f32::INFINITY, f32::min)
+        };
+        if backgrounds.is_empty() || worst(self) >= min {
+            return self;
+        }
+        // Toward the extreme that can reach the target: light text on
+        // dark backgrounds, dark text on light ones.
+        let darkest = backgrounds
+            .iter()
+            .map(|b| b.luminance())
+            .fold(f32::INFINITY, f32::min);
+        let brightest = backgrounds
+            .iter()
+            .map(|b| b.luminance())
+            .fold(0.0, f32::max);
+        let room_up = (1.05) / (brightest + 0.05);
+        let room_down = (darkest + 0.05) / 0.05;
+        let target = if room_up >= room_down {
+            Rgba::WHITE
+        } else {
+            Rgba::BLACK
+        };
+        // Smallest blend that reaches `min` (binary search on 0..1).
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..16 {
+            let mid = (lo + hi) / 2.0;
+            if worst(self.mix(target, mid)) >= min {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        self.mix(target, hi)
+    }
+
     /// HSV saturation 0..1 and value 0..1 (for art accent picking).
     pub fn saturation_value(self) -> (f32, f32) {
         let max = self.r.max(self.g).max(self.b) as f32 / 255.0;
@@ -201,6 +245,8 @@ palette! {
     on_accent,
     /// Slider, toggle and seek knobs.
     handle,
+    /// Knob outline (transparent when the knob already stands out).
+    handle_edge,
     /// Modal and drawer dim.
     scrim,
     /// Drop shadows (alpha set per use).
@@ -230,6 +276,7 @@ impl Palette {
         accent_hover: Rgba::rgb(0xFF, 0x33, 0x66),
         on_accent: Rgba::WHITE,
         handle: Rgba::WHITE,
+        handle_edge: Rgba::new(0x00, 0x00, 0x00, 0x00),
         scrim: Rgba::new(0x00, 0x00, 0x00, 0x8C),
         shadow: Rgba::BLACK,
     };
@@ -256,7 +303,8 @@ impl Palette {
         accent: Rgba::rgb(0xE0, 0x00, 0x2D),
         accent_hover: Rgba::rgb(0xFF, 0x00, 0x33),
         on_accent: Rgba::WHITE,
-        handle: Rgba::rgb(0x30, 0x30, 0x34),
+        handle: Rgba::WHITE,
+        handle_edge: Rgba::rgb(0x9A, 0x9A, 0xA0),
         scrim: Rgba::new(0x00, 0x00, 0x00, 0x59),
         shadow: Rgba::new(0x00, 0x00, 0x00, 0x80),
     };
@@ -418,6 +466,38 @@ const RULES: &[Rule] = &[
         Base::Light => p.accent.mix(Rgba::BLACK, 0.15),
     }),
     ("on_accent", &["accent"], |p, _| p.accent.readable_glyph()),
+    (
+        "handle_edge",
+        &["handle", "panel", "outline_strong"],
+        |p, _| knob_edge(p.handle, p.panel, p.outline_strong),
+    ),
+];
+
+/// Knob outline: none when the knob reads on the panel by itself
+/// (3:1, the WCAG bar for controls), else the strong outline.
+fn knob_edge(handle: Rgba, panel: Rgba, outline_strong: Rgba) -> Rgba {
+    if handle.contrast(panel) >= 3.0 {
+        Rgba::new(0, 0, 0, 0)
+    } else {
+        outline_strong
+    }
+}
+
+/// Minimum contrast per text role: `(key, ratio, backgrounds)`, a key
+/// may have several rows. WCAG levels: 7:1 (AAA) for primary text on
+/// the reading surfaces (cards, panels), 4.5:1 (AA) for it elsewhere
+/// and for secondary text and placeholders, 3:1 for the accent
+/// (controls, large text), a floor for disabled text (meant to look
+/// faint, not vanish).
+const CONTRAST_RULES: &[(&str, f32, &[&str])] = &[
+    ("text", 7.0, &["panel", "surface"]),
+    ("text", 4.5, &["window", "surface_hover", "field"]),
+    ("text_body", 7.0, &["panel", "surface"]),
+    ("text_body", 4.5, &["window", "surface_hover", "field"]),
+    ("text_muted", 4.5, &["window", "panel", "surface"]),
+    ("placeholder", 4.5, &["field"]),
+    ("text_disabled", 2.0, &["menu"]),
+    ("accent", 3.0, &["window", "panel", "surface"]),
 ];
 
 /// Parse and resolve a theme file's text.
@@ -471,6 +551,38 @@ pub fn parse(id: &str, text: &str, format: Format) -> Result<Theme, ThemeError> 
         }
         changed.push(key);
     }
+    // Readability floor: text roles move toward white or black until
+    // they read on every surface they sit on (a hand-set color that
+    // needed it gets a warning, derived ones are fixed quietly).
+    for (key, min, against) in CONTRAST_RULES {
+        let backgrounds: Vec<Rgba> = against.iter().filter_map(|b| palette.get(b)).collect();
+        let Some(color) = palette.get(key) else {
+            continue;
+        };
+        let fixed = color.ensure_contrast(&backgrounds, *min);
+        if fixed != color {
+            if set.contains(key) {
+                warnings.push(format!(
+                    "{key} {} is hard to read, using {}",
+                    color.to_hex(),
+                    fixed.to_hex()
+                ));
+            }
+            if let Some(slot) = palette.slot(key) {
+                *slot = fixed;
+            }
+        }
+    }
+    // The accent may have moved: hover follows it unless hand-set.
+    if !set.contains(&"accent_hover") && palette.accent != base.palette().accent {
+        palette.accent_hover = match base {
+            Base::Dark => palette.accent.mix(Rgba::WHITE, 0.2),
+            Base::Light => palette.accent.mix(Rgba::BLACK, 0.15),
+        };
+    }
+    if !set.contains(&"handle_edge") {
+        palette.handle_edge = knob_edge(palette.handle, palette.panel, palette.outline_strong);
+    }
     if palette.on_accent.contrast(palette.accent) < MIN_ON_ACCENT_CONTRAST {
         let fixed = palette.accent.readable_glyph();
         if fixed != palette.on_accent {
@@ -484,13 +596,6 @@ pub fn parse(id: &str, text: &str, format: Format) -> Result<Theme, ThemeError> 
             }
             palette.on_accent = fixed;
         }
-    }
-    if palette.text.contrast(palette.surface) < 4.5 {
-        warnings.push(format!(
-            "text {} has low contrast on surface {}",
-            palette.text.to_hex(),
-            palette.surface.to_hex()
-        ));
     }
     let name = file
         .name
@@ -586,6 +691,47 @@ pub fn sanitize_id(raw: &str) -> String {
     } else {
         out
     }
+}
+
+/// The light and dark tones of blurred cover art (RGBA pixels): the
+/// 80th and 20th luminance percentiles, i.e. the brightest and darkest
+/// areas text may land on, ignoring a few outliers. `None` when empty.
+pub fn art_tones(rgba: &[u8]) -> Option<(Rgba, Rgba)> {
+    let mut px: Vec<Rgba> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| Rgba::rgb(p[0], p[1], p[2]))
+        .collect();
+    if px.is_empty() {
+        return None;
+    }
+    px.sort_by(|a, b| a.luminance().total_cmp(&b.luminance()));
+    let at = |q: f32| px[((px.len() - 1) as f32 * q).round() as usize];
+    Some((at(0.8), at(0.2)))
+}
+
+/// Weakest veil (0..1: how much of `surface` is painted over the art)
+/// that keeps `text` at `min` contrast over art of color `tone` drawn
+/// at `art_opacity` on `surface`. 0 when the art never threatens it.
+pub fn veil_floor(text: Rgba, surface: Rgba, tone: Rgba, art_opacity: f32, min: f32) -> f32 {
+    let bg = |veil: f32| surface.mix(tone, art_opacity * (1.0 - veil));
+    if text.contrast(bg(0.0)) >= min {
+        return 0.0;
+    }
+    if text.contrast(bg(1.0)) < min {
+        return 1.0;
+    }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..16 {
+        let mid = (lo + hi) / 2.0;
+        if text.contrast(bg(mid)) >= min {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
 }
 
 /// Pick an accent from cover art pixels (RGBA, any size): the most
@@ -791,11 +937,17 @@ mod tests {
             "dim":"#999999","overlay":"#00000066","danger":"#FF0000","tint":"#11223344"}}"##;
         let t = parse("green", json, Format::Json).unwrap();
         assert_eq!(t.base, Base::Light);
-        assert_eq!(t.palette.accent, Rgba::rgb(0x1D, 0xB9, 0x54));
+        // Spotify green is too light for a light window: darkened to
+        // 3:1, same hue family, with a warning.
+        let green = Rgba::rgb(0x1D, 0xB9, 0x54);
+        assert_ne!(t.palette.accent, green);
+        assert!(t.palette.accent.g > t.palette.accent.r);
+        assert!(t.palette.accent.contrast(t.palette.window) >= 3.0);
         assert_eq!(t.palette.text_muted, Rgba::rgb(0x55, 0x55, 0x55));
         assert_eq!(t.palette.text_disabled, Rgba::rgb(0x99, 0x99, 0x99));
         assert_eq!(t.palette.scrim, Rgba::new(0, 0, 0, 0x66));
-        assert!(t.warnings.is_empty(), "{:?}", t.warnings);
+        assert_eq!(t.warnings.len(), 1, "{:?}", t.warnings);
+        assert!(t.warnings[0].starts_with("accent"));
         assert_eq!(t.name, "green");
     }
 
@@ -850,6 +1002,77 @@ mod tests {
         let gray: Vec<u8> = [0x77u8, 0x77, 0x77, 0xFF].repeat(64);
         assert_eq!(accent_from_pixels(&gray, Palette::DARK.window), None);
         assert_eq!(accent_from_pixels(&[], Palette::DARK.window), None);
+    }
+
+    #[test]
+    fn ensure_contrast_moves_only_what_needs_it() {
+        let dark = [Rgba::rgb(0x1E, 0x1E, 0x2E)];
+        // Already readable: untouched.
+        assert_eq!(Rgba::WHITE.ensure_contrast(&dark, 7.0), Rgba::WHITE);
+        // Too dim: lifted just enough, toward white.
+        let dim = Rgba::rgb(0x58, 0x5B, 0x70);
+        let fixed = dim.ensure_contrast(&dark, 4.5);
+        assert!(fixed.contrast(dark[0]) >= 4.5);
+        assert!(fixed.contrast(dark[0]) < 5.0, "minimal move");
+        assert!(fixed.luminance() > dim.luminance());
+        // On light backgrounds it darkens instead.
+        let light = [Rgba::WHITE, Rgba::rgb(0xEC, 0xEC, 0xEE)];
+        let pale = Rgba::rgb(0x99, 0x99, 0x99);
+        let fixed = pale.ensure_contrast(&light, 4.5);
+        assert!(light.iter().all(|b| fixed.contrast(*b) >= 4.5));
+        assert!(fixed.luminance() < pale.luminance());
+    }
+
+    #[test]
+    fn low_contrast_text_is_fixed_and_warned() {
+        let t = parse(
+            "t",
+            "[colors]\nsurface = \"#1E1E2E\"\ntext_muted = \"#45475A\"",
+            Format::Toml,
+        )
+        .unwrap();
+        assert!(t.palette.text_muted.contrast(t.palette.surface) >= 4.5);
+        assert!(t.warnings.iter().any(|w| w.contains("text_muted")));
+        // Derived roles are fixed without a warning.
+        let t = parse("t", "[colors]\ntext = \"#9090A0\"", Format::Toml).unwrap();
+        for key in ["text", "text_body"] {
+            let c = t.palette.get(key).unwrap();
+            for bg in ["panel", "surface"] {
+                assert!(
+                    c.contrast(t.palette.get(bg).unwrap()) >= 7.0,
+                    "{key} on {bg}"
+                );
+            }
+            for bg in ["window", "surface_hover", "field"] {
+                assert!(
+                    c.contrast(t.palette.get(bg).unwrap()) >= 4.5,
+                    "{key} on {bg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn knob_gets_an_edge_only_when_it_blends_in() {
+        assert_eq!(Palette::DARK.handle_edge.a, 0);
+        assert_eq!(Palette::LIGHT.handle_edge, Palette::LIGHT.outline_strong);
+        let t = parse("t", "[colors]\nhandle = \"#111111\"", Format::Toml).unwrap();
+        assert_eq!(t.palette.handle_edge, Palette::DARK.outline_strong);
+    }
+
+    #[test]
+    fn veil_floor_rises_with_bright_art() {
+        let (text, surface) = (Rgba::WHITE, Palette::DARK.surface);
+        let dark_art = Rgba::rgb(0x20, 0x10, 0x30);
+        assert_eq!(veil_floor(text, surface, dark_art, 0.7, 7.0), 0.0);
+        let bright_art = Rgba::rgb(0xE8, 0xE8, 0xE8);
+        let v = veil_floor(text, surface, bright_art, 0.7, 7.0);
+        assert!(v > 0.3 && v < 1.0, "{v}");
+        let bg = surface.mix(bright_art, 0.7 * (1.0 - v));
+        assert!(text.contrast(bg) >= 7.0);
+        let tones = art_tones(&[[0u8, 0, 0, 255], [255, 255, 255, 255]].concat()).unwrap();
+        assert_eq!(tones, (Rgba::WHITE, Rgba::BLACK));
+        assert_eq!(art_tones(&[]), None);
     }
 
     #[test]

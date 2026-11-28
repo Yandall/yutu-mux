@@ -396,6 +396,16 @@ pub(crate) fn local_hour() -> u8 {
     chrono::Local::now().hour().clamp(0, 23) as u8
 }
 
+/// Knob outline width: 1px only when the theme's knob needs an edge
+/// to stand out from the panel (light themes), 0 otherwise.
+pub(crate) fn knob_edge_width() -> f32 {
+    if tk().handle_edge.a > 0.0 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Slider in theme red: red filled rail, pale track, white round handle.
 pub(crate) fn themed_slider(
     _: &iced::Theme,
@@ -413,8 +423,8 @@ pub(crate) fn themed_slider(
         handle: iced::widget::slider::Handle {
             shape: iced::widget::slider::HandleShape::Circle { radius: 8.0 },
             background: iced::Background::Color(tk().handle),
-            border_width: 0.0,
-            border_color: iced::Color::TRANSPARENT,
+            border_width: knob_edge_width(),
+            border_color: tk().handle_edge,
         },
     }
 }
@@ -436,8 +446,8 @@ pub(crate) fn red_toggle(
         background_border_width: 0.0,
         background_border_color: iced::Color::TRANSPARENT,
         foreground: iced::Background::Color(tk().handle),
-        foreground_border_width: 0.0,
-        foreground_border_color: iced::Color::TRANSPARENT,
+        foreground_border_width: knob_edge_width(),
+        foreground_border_color: tk().handle_edge,
         text_color: None,
         border_radius: None,
         padding_ratio: 0.1,

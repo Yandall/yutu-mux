@@ -10,6 +10,8 @@
 - Your own themes: import a .toml or .json file, or drop it in the
   themes folder (see docs/THEMES.md). Spotifast themes work too.
 - Optional accent color taken from the playing song's album art.
+- Every theme keeps text, knobs and the logo readable: colors that are
+  too faint are adjusted, and backdrops dim more behind bright covers.
 - `ctl theme` commands to list, pick and reload themes.
 
 ### Fixed

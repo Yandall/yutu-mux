@@ -95,20 +95,55 @@ pub(crate) fn icon(name: &str, size: f32, color: iced::Color) -> iced::Element<'
 /// tiny-skia backends.
 pub(crate) const EMPTY_SLOT_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\"></svg>";
 
-/// App logo mark (rings + M, own colors): shown beside the sidebar
-/// wordmark. Unlike `icon`/`btn_icon`, no tint is applied: the style
-/// color would repaint the red rings and white M.
+/// App logo mark (rings + M): shown beside the sidebar wordmark. The
+/// rings take the theme accent and the M the theme text color, so the
+/// mark reads on light themes too (the bundled file is the Dark look:
+/// red rings, white M). No style tint: that would flatten both colors
+/// into one. The recolored handle is cached per color pair, so the
+/// renderer rasterizes it once per theme, not per frame.
 pub(crate) fn logo_mark(size: f32) -> iced::Element<'static, Message> {
     use iced::widget::svg;
-    pub(crate) static LOGO_HANDLE: std::sync::LazyLock<svg::Handle> =
-        std::sync::LazyLock::new(|| {
-            svg::Handle::from_memory(include_bytes!("../assets/logo.svg").as_slice())
-        });
-    svg(LOGO_HANDLE.clone())
+    std::thread_local! {
+        static LOGO: std::cell::RefCell<Option<((u32, u32), svg::Handle)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let t = tk();
+    let key = (color_key(t.accent), color_key(t.text));
+    let handle = LOGO.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match slot.as_ref() {
+            Some((k, h)) if *k == key => h.clone(),
+            _ => {
+                let h = svg::Handle::from_memory(logo_svg(t.accent, t.text).into_bytes());
+                *slot = Some((key, h.clone()));
+                h
+            }
+        }
+    });
+    svg(handle)
         .width(size)
         .height(size)
         .style(|_: &iced::Theme, _| svg::Style { color: None })
         .into()
+}
+
+/// Packed RGBA8 (cache key).
+fn color_key(c: iced::Color) -> u32 {
+    u32::from_be_bytes(c.into_rgba8())
+}
+
+/// `#RRGGBB` of an iced color (alpha dropped: the logo is opaque).
+fn hex6(c: iced::Color) -> String {
+    let [r, g, b, _] = c.into_rgba8();
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+/// The bundled logo with its ring red and M white swapped for the
+/// given colors. Pure helper so a test pins the substitution.
+pub(crate) fn logo_svg(rings: iced::Color, mark: iced::Color) -> String {
+    include_str!("../assets/logo.svg")
+        .replace("#FF0033", &hex6(rings))
+        .replace("#FFFFFF", &hex6(mark))
 }
 
 /// Button-weight stroke (2 to 2.5) applied to verbatim Lucide bytes.

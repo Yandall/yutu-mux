@@ -754,6 +754,10 @@ impl AppState {
                     // Tiny entries, but a long session plays many songs.
                     if self.art_blur.len() >= ART_BLUR_CAP {
                         self.art_blur.clear();
+                        self.art_blur_tone.clear();
+                    }
+                    if let Some(tones) = yutu_core::theme::art_tones(&rgba) {
+                        self.art_blur_tone.insert(url.clone(), tones);
                     }
                     let handle =
                         iced::widget::image::Handle::from_rgba(ART_BLUR_PX, ART_BLUR_PX, rgba);

@@ -8,7 +8,7 @@
 //! on release when it was playing. Pure math is unit-tested; the
 //! [`Program`] only wires pointer events to preview/commit messages.
 
-use crate::{tk, Message};
+use crate::{knob_edge_width, tk, Message};
 use iced::widget::canvas::{self, Action, Event, Frame, Geometry, LineCap, Path, Program, Stroke};
 use iced::{Length, Point, Rectangle};
 
@@ -163,6 +163,14 @@ impl Program<Message> for SeekBar {
                     .with_line_cap(LineCap::Round),
             );
             frame.fill(&Path::circle(knob, KNOB_R), tk().handle);
+            if knob_edge_width() > 0.0 {
+                frame.stroke(
+                    &Path::circle(knob, KNOB_R - 0.5),
+                    Stroke::default()
+                        .with_color(tk().handle_edge)
+                        .with_width(knob_edge_width()),
+                );
+            }
         }
         vec![frame.into_geometry()]
     }

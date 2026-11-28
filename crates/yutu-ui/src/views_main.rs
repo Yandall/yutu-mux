@@ -4993,7 +4993,15 @@ impl AppState {
                 .height(Fill)
                 .into(),
             container(Space::new())
-                .style(page_backdrop_veil)
+                .style(page_backdrop_veil({
+                    let p = &self.active_theme().palette;
+                    backdrop_veil_floor(
+                        self.page_backdrop_tone(),
+                        p.text,
+                        p.window,
+                        PAGE_BACKDROP_OPACITY,
+                    )
+                }))
                 .width(Fill)
                 .height(Fill)
                 .into(),
@@ -5046,7 +5054,11 @@ impl AppState {
                     .height(Fill)
                     .into(),
                 container(Space::new())
-                    .style(np_backdrop_veil)
+                    .style(np_backdrop_veil({
+                        let p = &self.active_theme().palette;
+                        let tones = self.queue.current().and_then(|t| self.track_blur_tone(t));
+                        backdrop_veil_floor(tones, p.text, p.surface, NP_BACKDROP_OPACITY)
+                    }))
                     .width(Fill)
                     .height(Fill)
                     .into(),

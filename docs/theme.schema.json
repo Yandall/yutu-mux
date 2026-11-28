@@ -125,6 +125,11 @@
           "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
           "description": "Slider, toggle and seek knobs"
         },
+        "handle_edge": {
+          "type": "string",
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "description": "Knob outline (derived: only when the knob blends into the panel)"
+        },
         "scrim": {
           "type": "string",
           "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",

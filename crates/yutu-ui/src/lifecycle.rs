@@ -265,6 +265,7 @@ impl AppState {
             artwork: HashMap::new(),
             artwork_loading: HashSet::new(),
             art_blur: HashMap::new(),
+            art_blur_tone: HashMap::new(),
             art_blur_loading: HashSet::new(),
             artwork_failed: HashMap::new(),
             hydrate_cooldown: HashMap::new(),

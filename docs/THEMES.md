@@ -90,7 +90,8 @@ instead and the file gets a warning.
 | `accent` | active controls, the live song | `#FF0033` | `#E0002D` |
 | `accent_hover` | accent under the pointer | `#FF3366` | `#FF0033` |
 | `on_accent` | glyphs on the accent | `#FFFFFF` | `#FFFFFF` |
-| `handle` | slider, toggle and seek knobs | `#FFFFFF` | `#303034` |
+| `handle` | slider, toggle and seek knobs | `#FFFFFF` | `#FFFFFF` |
+| `handle_edge` | knob outline | transparent | `#9A9AA0` |
 | `scrim` | dim behind dialogs and drawers | `#0000008C` | `#00000059` |
 | `shadow` | drop shadows | `#000000` | `#00000080` |
 
@@ -99,7 +100,28 @@ text), `panel` and `inset` (window, surface), `surface_hover`,
 `surface_active`, `field`, `field_hover`, `menu`, `outline`,
 `outline_strong` (surface, text), `text_body`, `text_muted`,
 `text_disabled`, `placeholder` (text, surface), `accent_hover` and
-`on_accent` (accent).
+`on_accent` (accent), `handle_edge` (an outline only when the knob
+has less than 3:1 contrast with `panel`).
+
+### Readability
+
+Every theme is checked for contrast (WCAG ratios), and colors that
+fall short are moved toward white or black just enough to pass, so a
+theme can never make text unreadable:
+
+| Role | Minimum |
+|---|---|
+| `text`, `text_body` | 7:1 on `panel` and `surface`, 4.5:1 on `window`, `surface_hover`, `field` |
+| `text_muted` | 4.5:1 on `window`, `panel`, `surface` |
+| `placeholder` | 4.5:1 on `field` |
+| `text_disabled` | 2:1 on `menu` (faint on purpose) |
+| `accent` | 3:1 on `window`, `panel`, `surface` |
+| `on_accent` | 3:1 on `accent` (black or white) |
+
+A color you set yourself that had to move gets a warning in the log
+(and `ctl theme`), so you can pick a better one. Over cover art (Now
+Playing, album and playlist headers) the backdrop veil also thickens
+for bright or dark covers, keeping text at 7:1 on the art.
 
 Content drawn over cover art (the hover play icon, the mini player's
 glow) stays white in every theme: it sits on the art, not on a theme

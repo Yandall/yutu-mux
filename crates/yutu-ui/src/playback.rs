@@ -57,6 +57,34 @@ impl AppState {
         }
     }
 
+    /// Tones of the glow `track_blur` returns (same URL pick).
+    pub(crate) fn track_blur_tone(
+        &self,
+        t: &Track,
+    ) -> Option<(yutu_core::theme::Rgba, yutu_core::theme::Rgba)> {
+        [self.hero_art_for(t), self.art_url_for(t, 40.0)]
+            .into_iter()
+            .flatten()
+            .find(|u| self.art_blur.contains_key(u))
+            .and_then(|u| self.art_blur_tone.get(&u).copied())
+    }
+
+    /// Tones of the glow `page_backdrop_handle` returns (none for the
+    /// generated Favorites cover, whose gradient is theme-safe enough).
+    pub(crate) fn page_backdrop_tone(
+        &self,
+    ) -> Option<(yutu_core::theme::Rgba, yutu_core::theme::Rgba)> {
+        match &self.route {
+            Route::PlaylistDetail(id) if id == Self::FAVORITES_ID => None,
+            Route::PlaylistDetail(id) => self
+                .playlist_cover_track(id)
+                .and_then(|t| self.track_blur_tone(&t)),
+            _ => self
+                .page_backdrop_url()
+                .and_then(|u| self.art_blur_tone.get(&u).copied()),
+        }
+    }
+
     /// Decoded glow for a song: its hero cover's, else its row art's.
     pub(crate) fn track_blur(&self, t: &Track) -> Option<iced::widget::image::Handle> {
         [self.hero_art_for(t), self.art_url_for(t, 40.0)]

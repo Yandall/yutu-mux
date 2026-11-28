@@ -491,6 +491,9 @@ pub struct AppState {
     /// Now Playing backdrops: cover URL to a tiny (8x8) downscale that
     /// the drawer stretches with linear filtering into soft color blobs.
     pub(crate) art_blur: HashMap<String, iced::widget::image::Handle>,
+    /// Light and dark tones of each decoded glow (`art_tones`), so the
+    /// backdrop veils can keep text readable over bright or dark art.
+    pub(crate) art_blur_tone: HashMap<String, (yutu_core::theme::Rgba, yutu_core::theme::Rgba)>,
     pub(crate) art_blur_loading: HashSet<String>,
     /// Failed artwork URLs with the failure instant: sketchy or removed
     /// covers are not refetched for a cooldown (stops retry loops when
