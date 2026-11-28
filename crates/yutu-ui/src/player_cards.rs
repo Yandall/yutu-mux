@@ -126,11 +126,7 @@ impl AppState {
 
     /// Hero play control: the app-wide round red play button.
     pub(crate) fn play_pill(msg: Message) -> iced::Element<'static, Message> {
-        round_button(
-            btn_icon("play", 18.0, iced::Color::WHITE),
-            accent_button,
-            msg,
-        )
+        round_button(btn_icon("play", 18.0, tk().on_accent), accent_button, msg)
     }
 
     /// Hero shuffle control: grey pill with the shuffle glyph.
@@ -157,7 +153,7 @@ impl AppState {
             stack![
                 self.thumb(t),
                 container(
-                    container(icon("play", 14.0, iced::Color::WHITE))
+                    container(icon("play", 14.0, ART_FG))
                         .align_x(iced::alignment::Horizontal::Center)
                         .align_y(iced::alignment::Vertical::Center)
                         .width(iced::Length::Fixed(ROW_ART))
@@ -195,7 +191,7 @@ impl AppState {
     ) -> (iced::Element<'_, Message>, iced::Element<'_, Message>) {
         use iced::widget::button;
         let liked = self.liked.contains(&t.id);
-        let heart_color = if liked { ACCENT } else { MUTED };
+        let heart_color = if liked { tk().accent } else { tk().text_muted };
         let heart: iced::Element<'_, Message> = if hovered || liked {
             button(heart_icon(liked, 15.0, heart_color))
                 .style(icon_hover)
@@ -206,7 +202,7 @@ impl AppState {
             Self::action_spacer()
         };
         let more: iced::Element<'_, Message> = if hovered {
-            button(btn_icon("ellipsis", 15.0, MUTED))
+            button(btn_icon("ellipsis", 15.0, tk().text_muted))
                 .style(icon_hover)
                 .on_press(Message::OpenContext(t.id.clone()))
                 .padding(6)
@@ -222,7 +218,7 @@ impl AppState {
     pub(crate) fn coll_more(hovered: bool, open: Message) -> iced::Element<'static, Message> {
         use iced::widget::button;
         if hovered {
-            button(btn_icon("ellipsis", 15.0, MUTED))
+            button(btn_icon("ellipsis", 15.0, tk().text_muted))
                 .style(icon_hover)
                 .on_press(open)
                 .padding(6)
@@ -248,9 +244,12 @@ impl AppState {
         mouse_area(
             container(
                 row![
-                    text(format!("{n}")).size(13).color(MUTED).width(28),
+                    text(format!("{n}"))
+                        .size(13)
+                        .color(tk().text_muted)
+                        .width(28),
                     self.art_play_button(t, hovered, play_msg),
-                    Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
+                    Self::track_text_single(&t.title, &t.artist, 14, tk().text),
                     song_meta_text(self.row_plays(t), self.track_secs(t)),
                     heart,
                     more,
@@ -291,11 +290,11 @@ impl AppState {
         let (heart, more) = self.song_actions(t, hovered);
         let play_msg = play.message(&t.id, n);
         let num: iced::Element<'_, Message> = if hovered {
-            icon("play", 14.0, iced::Color::WHITE)
+            icon("play", 14.0, tk().text)
         } else if live {
-            icon("volume", 14.0, ACCENT)
+            icon("volume", 14.0, tk().accent)
         } else {
-            text(format!("{n}")).size(13).color(MUTED).into()
+            text(format!("{n}")).size(13).color(tk().text_muted).into()
         };
         let num_cell = row_button(
             container(num)
@@ -307,7 +306,7 @@ impl AppState {
         .style(row_click)
         .on_press(play_msg.clone())
         .padding(0);
-        let title_color = if live { ACCENT } else { iced::Color::WHITE };
+        let title_color = if live { tk().accent } else { tk().text };
         let title = row_button(
             text(truncate_title(&t.title, row_title_chars()))
                 .size(14)
@@ -362,7 +361,7 @@ impl AppState {
                         .width(Fill)
                         .wrapping(Wrapping::None),
                     btn_text(truncate_title(&sub, 22), 11)
-                        .color(MUTED)
+                        .color(tk().text_muted)
                         .width(Fill)
                         .wrapping(Wrapping::None),
                 ]
@@ -407,7 +406,7 @@ impl AppState {
                         .width(Fill)
                         .wrapping(Wrapping::None),
                     btn_text(self.language.artist_label(), 11)
-                        .color(MUTED)
+                        .color(tk().text_muted)
                         .width(Fill),
                 ]
                 .spacing(2)

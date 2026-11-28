@@ -479,7 +479,7 @@ impl AppState {
                 self.view_build_ms.get()
             ))
             .size(11)
-            .color(MUTED)
+            .color(tk().text_muted)
             .into()
         }
     }
@@ -539,9 +539,12 @@ impl AppState {
             }
         }
         Some(
-            row![text(status).size(12).color(MUTED), self.fps_text(),]
-                .spacing(6)
-                .into(),
+            row![
+                text(status).size(12).color(tk().text_muted),
+                self.fps_text(),
+            ]
+            .spacing(6)
+            .into(),
         )
     }
 

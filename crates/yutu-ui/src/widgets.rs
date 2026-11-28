@@ -49,12 +49,12 @@ pub(crate) fn link_row(label: String, size: f32, url: String) -> iced::Element<'
     // The rule fills the shrink-wrapped column, so it lands exactly
     // under the label (link underline, not a full-width divider).
     column![
-        row_button(btn_text(label, size).color(ACCENT))
+        row_button(btn_text(label, size).color(tk().accent))
             .style(plain)
             .on_press(Message::OpenUrl(url))
             .padding(2),
         rule::horizontal(1).style(|_: &iced::Theme| rule::Style {
-            color: ACCENT,
+            color: tk().accent,
             radius: 0.0.into(),
             fill_mode: rule::FillMode::Full,
             snap: true,
@@ -183,7 +183,7 @@ pub(crate) fn icon_pill_button<'a>(
     iced::widget::button(
         iced::widget::container(
             iced::widget::row![
-                btn_icon(icon, ICON_PILL_ICON, iced::Color::WHITE),
+                btn_icon(icon, ICON_PILL_ICON, tk().text),
                 btn_text(label, ICON_PILL_TEXT)
             ]
             .spacing(ICON_PILL_GAP)
@@ -210,8 +210,8 @@ pub(crate) fn icon_hover(
         iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
     );
     iced::widget::button::Style {
-        background: hovered.then_some(iced::Background::Color(CARD_BG_HOVER)),
-        text_color: iced::Color::WHITE,
+        background: hovered.then_some(iced::Background::Color(tk().surface_hover)),
+        text_color: tk().text,
         border: iced::Border::default().rounded(999),
         ..Default::default()
     }
@@ -256,10 +256,10 @@ pub(crate) fn pill_input(
     iced::widget::text_input::Style {
         background,
         border,
-        icon: MUTED,
-        placeholder: FIELD_PLACEHOLDER,
-        value: iced::Color::WHITE,
-        selection: ACCENT,
+        icon: tk().text_muted,
+        placeholder: tk().placeholder,
+        value: tk().text,
+        selection: tk().accent,
     }
 }
 
@@ -278,7 +278,7 @@ pub(crate) fn file_pick(
     let (background, border) = field_look(active);
     iced::widget::button::Style {
         background: Some(background),
-        text_color: iced::Color::WHITE,
+        text_color: tk().text,
         border,
         ..Default::default()
     }
@@ -299,7 +299,7 @@ pub(crate) fn select_face(
     let (background, border) = field_look(active);
     iced::widget::button::Style {
         background: Some(background),
-        text_color: iced::Color::WHITE,
+        text_color: tk().text,
         border,
         ..Default::default()
     }
@@ -347,7 +347,7 @@ pub(crate) fn repeat_button<'a>(
     use iced::widget::button;
     let style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style =
         if active { accent_button } else { icon_hover };
-    let color = if active { iced::Color::WHITE } else { MUTED };
+    let color = if active { tk().text } else { tk().text_muted };
     button(ctrl_box(btn_icon(repeat_icon, 14.0, color)))
         .style(style)
         .on_press(Message::CycleRepeat)
@@ -400,15 +400,15 @@ pub(crate) fn themed_slider(
     iced::widget::slider::Style {
         rail: iced::widget::slider::Rail {
             backgrounds: (
-                iced::Background::Color(ACCENT),
-                iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
+                iced::Background::Color(tk().accent),
+                iced::Background::Color(tk().outline),
             ),
             width: 4.0,
             border: iced::Border::default().rounded(2),
         },
         handle: iced::widget::slider::Handle {
             shape: iced::widget::slider::HandleShape::Circle { radius: 8.0 },
-            background: iced::Background::Color(iced::Color::WHITE),
+            background: iced::Background::Color(tk().handle),
             border_width: 0.0,
             border_color: iced::Color::TRANSPARENT,
         },
@@ -428,14 +428,10 @@ pub(crate) fn red_toggle(
         | Status::Disabled { is_toggled } => is_toggled,
     };
     iced::widget::toggler::Style {
-        background: iced::Background::Color(if on {
-            ACCENT
-        } else {
-            iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
-        }),
+        background: iced::Background::Color(if on { tk().accent } else { tk().outline }),
         background_border_width: 0.0,
         background_border_color: iced::Color::TRANSPARENT,
-        foreground: iced::Background::Color(iced::Color::WHITE),
+        foreground: iced::Background::Color(tk().handle),
         foreground_border_width: 0.0,
         foreground_border_color: iced::Color::TRANSPARENT,
         text_color: None,
@@ -449,8 +445,8 @@ pub(crate) fn red_toggle(
 /// pure style with no backend behind it).
 pub(crate) fn import_bar(_: &iced::Theme) -> iced::widget::progress_bar::Style {
     iced::widget::progress_bar::Style {
-        background: iced::Background::Color(iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)),
-        bar: iced::Background::Color(ACCENT),
+        background: iced::Background::Color(tk().outline),
+        bar: iced::Background::Color(tk().accent),
         border: iced::Border::default().rounded(4),
     }
 }
@@ -465,7 +461,7 @@ pub(crate) fn nav_arrow(
 ) -> iced::widget::button::Style {
     iced::widget::button::Style {
         background: None,
-        text_color: iced::Color::WHITE,
+        text_color: tk().text,
         border: iced::Border::default().rounded(999),
         ..Default::default()
     }
@@ -480,8 +476,8 @@ pub(crate) fn hover_row(
         iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
     );
     iced::widget::button::Style {
-        background: hovered.then_some(iced::Background::Color(CARD_BG_HOVER)),
-        text_color: iced::Color::WHITE,
+        background: hovered.then_some(iced::Background::Color(tk().surface_hover)),
+        text_color: tk().text,
         border: iced::Border::default().rounded(8),
         ..Default::default()
     }
@@ -502,12 +498,10 @@ pub(crate) fn glass_row(
         _ => (0.0, 0.0),
     };
     iced::widget::button::Style {
-        background: (fill > 0.0).then_some(iced::Background::Color(iced::Color::from_rgba(
-            1.0, 1.0, 1.0, fill,
-        ))),
-        text_color: iced::Color::WHITE,
+        background: (fill > 0.0).then_some(iced::Background::Color(tk().text.scale_alpha(fill))),
+        text_color: tk().text,
         border: iced::Border {
-            color: iced::Color::from_rgba(1.0, 1.0, 1.0, edge),
+            color: tk().text.scale_alpha(edge),
             width: if edge > 0.0 { 1.0 } else { 0.0 },
             radius: 8.0.into(),
         },
@@ -528,16 +522,16 @@ pub(crate) fn ghost_button(
     );
     iced::widget::button::Style {
         background: Some(iced::Background::Color(if hovered {
-            iced::Color::from_rgb8(0x33, 0x33, 0x33)
+            tk().field_hover
         } else {
-            iced::Color::from_rgb8(0x22, 0x22, 0x22)
+            tk().field
         })),
-        text_color: iced::Color::WHITE,
+        text_color: tk().text,
         border: iced::Border {
             color: if hovered {
-                iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
+                tk().outline_strong
             } else {
-                iced::Color::from_rgb8(0x3A, 0x3A, 0x3A)
+                tk().outline
             },
             width: 1.0,
             radius: 20.0.into(),
@@ -550,11 +544,9 @@ pub(crate) fn ghost_button(
 /// segments, so the presets read as a single picker.
 pub(crate) fn seg_group(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(
-            0x16, 0x16, 0x16,
-        ))),
+        background: Some(iced::Background::Color(tk().inset)),
         border: iced::Border {
-            color: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+            color: tk().outline,
             width: 1.0,
             radius: 14.0.into(),
         },
@@ -575,16 +567,16 @@ pub(crate) fn seg_button(
         iced::widget::button::Style {
             background: if active {
                 Some(iced::Background::Color(if hovered {
-                    ACCENT_HOVER
+                    tk().accent_hover
                 } else {
-                    ACCENT
+                    tk().accent
                 }))
             } else if hovered {
-                Some(iced::Background::Color(CARD_BG_HOVER))
+                Some(iced::Background::Color(tk().surface_hover))
             } else {
                 None
             },
-            text_color: iced::Color::WHITE,
+            text_color: if active { tk().on_accent } else { tk().text },
             border: iced::Border::default().rounded(10),
             ..Default::default()
         }
@@ -603,18 +595,16 @@ pub(crate) fn seg_button_quiet(
         );
         iced::widget::button::Style {
             background: if active {
-                Some(iced::Background::Color(iced::Color::from_rgb8(
-                    0x3A, 0x3A, 0x3A,
-                )))
+                Some(iced::Background::Color(tk().outline))
             } else if hovered {
-                Some(iced::Background::Color(CARD_BG_HOVER))
+                Some(iced::Background::Color(tk().surface_hover))
             } else {
                 None
             },
             text_color: if active || hovered {
-                iced::Color::WHITE
+                tk().text
             } else {
-                MUTED
+                tk().text_muted
             },
             border: iced::Border::default().rounded(10),
             ..Default::default()
@@ -635,9 +625,9 @@ pub(crate) fn tab_button(
         iced::widget::button::Style {
             background: None,
             text_color: if active || hovered {
-                iced::Color::WHITE
+                tk().text
             } else {
-                MUTED
+                tk().text_muted
             },
             ..Default::default()
         }
@@ -649,7 +639,7 @@ pub(crate) fn tab_underline(
     active: bool,
 ) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
     move |_| iced::widget::container::Style {
-        background: active.then_some(iced::Background::Color(ACCENT)),
+        background: active.then_some(iced::Background::Color(tk().accent)),
         border: iced::Border::default().rounded(1),
         ..Default::default()
     }
@@ -661,8 +651,8 @@ pub(crate) fn selected_row(
     _: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     iced::widget::button::Style {
-        background: Some(iced::Background::Color(CARD_BG_HOVER)),
-        text_color: iced::Color::WHITE,
+        background: Some(iced::Background::Color(tk().surface_hover)),
+        text_color: tk().text,
         border: iced::Border::default().rounded(8),
         ..Default::default()
     }
@@ -674,12 +664,12 @@ pub(crate) fn card_button(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let bg = match status {
-        iced::widget::button::Status::Hovered => CARD_BG_HOVER,
-        _ => CARD_BG,
+        iced::widget::button::Status::Hovered => tk().surface_hover,
+        _ => tk().surface,
     };
     iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
-        text_color: iced::Color::WHITE,
+        text_color: tk().text,
         border: iced::Border::default().rounded(8),
         ..Default::default()
     }
@@ -691,11 +681,9 @@ pub(crate) fn card_button(
 /// by exactly one row to make room.
 pub(crate) fn drop_gap(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgba(
-            1.0, 1.0, 1.0, 0.05,
-        ))),
+        background: Some(iced::Background::Color(tk().text.scale_alpha(0.05))),
         border: iced::Border {
-            color: iced::Color::from_rgba(1.0, 0.0, 0.2, 0.35),
+            color: tk().accent.scale_alpha(0.35),
             width: 1.0,
             radius: 8.0.into(),
         },
@@ -720,7 +708,7 @@ pub(crate) fn drag_gap_box(h: f32) -> iced::Element<'static, Message> {
 /// Hairline divider between queue rows (visible on dark and hover).
 pub(crate) fn hairline(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(NAV_ACTIVE_BG)),
+        background: Some(iced::Background::Color(tk().surface_active)),
         ..Default::default()
     }
 }
@@ -768,7 +756,7 @@ pub(crate) fn row_click(
 ) -> iced::widget::button::Style {
     iced::widget::button::Style {
         background: None,
-        text_color: iced::Color::WHITE,
+        text_color: tk().text,
         border: iced::Border::default().rounded(8),
         ..Default::default()
     }
@@ -779,7 +767,7 @@ pub(crate) fn row_click(
 pub(crate) fn row_bg(hovered: bool) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
     move |_: &iced::Theme| iced::widget::container::Style {
         background: Some(iced::Background::Color(if hovered {
-            CARD_BG_HOVER
+            tk().surface_hover
         } else {
             iced::Color::TRANSPARENT
         })),
@@ -797,7 +785,7 @@ pub(crate) fn menu_item(
     use iced::Fill;
     row_button(
         row![
-            btn_icon(icon_name, 14.0, iced::Color::WHITE),
+            btn_icon(icon_name, 14.0, tk().text),
             btn_text(label.into(), 14),
         ]
         .spacing(8)

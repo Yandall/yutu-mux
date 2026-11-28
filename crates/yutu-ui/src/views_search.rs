@@ -61,11 +61,15 @@ impl AppState {
             return iced::widget::Space::new().into();
         }
         let liked = self.liked.contains(&t.id);
-        button(heart_icon(liked, 15.0, if liked { ACCENT } else { MUTED }))
-            .style(icon_hover)
-            .on_press(Message::Like(t.id.clone()))
-            .padding(6)
-            .into()
+        button(heart_icon(
+            liked,
+            15.0,
+            if liked { tk().accent } else { tk().text_muted },
+        ))
+        .style(icon_hover)
+        .on_press(Message::Like(t.id.clone()))
+        .padding(6)
+        .into()
     }
 
     pub(crate) fn track_row(&self, scope: &str, t: &Track) -> iced::Element<'_, Message> {
@@ -77,14 +81,14 @@ impl AppState {
             container(
                 row![
                     self.thumb(t),
-                    button(btn_icon("play", 13.0, iced::Color::WHITE))
+                    button(btn_icon("play", 13.0, tk().text))
                         .style(accent_button)
                         .on_press(Message::PlayNow(t.id.clone()))
                         .padding(6),
-                    Self::track_text_single(&t.title, &t.artist, 14, iced::Color::WHITE),
+                    Self::track_text_single(&t.title, &t.artist, 14, tk().text),
                     song_meta_text(self.row_plays(t), self.track_secs(t)),
                     self.row_heart(t),
-                    button(btn_icon("ellipsis", 15.0, MUTED))
+                    button(btn_icon("ellipsis", 15.0, tk().text_muted))
                         .style(icon_hover)
                         .on_press(Message::OpenContext(t.id.clone()))
                         .padding(6),
@@ -140,15 +144,17 @@ impl AppState {
                         &t.title,
                         &t.artist,
                         14,
-                        iced::Color::WHITE
+                        tk().text
                     ))
                     .style(row_click)
                     .on_press(play_here_text)
                     .padding(3)
                     .width(Fill),
-                    text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
+                    text(fmt_len(self.track_secs(t)))
+                        .size(12)
+                        .color(tk().text_muted),
                     self.row_heart(t),
-                    button(btn_icon("ellipsis", 15.0, MUTED))
+                    button(btn_icon("ellipsis", 15.0, tk().text_muted))
                         .style(icon_hover)
                         .on_press(Message::OpenContext(t.id.clone()))
                         .padding(6),
@@ -203,11 +209,12 @@ impl AppState {
         // a slot reorders instead. Same one-press-path contract as the
         // queue row.
         let heart_btn: iced::Element<'_, Message> = self.row_heart(t);
-        let more_btn: iced::Element<'_, Message> = button(btn_icon("ellipsis", 15.0, MUTED))
-            .style(icon_hover)
-            .on_press(Message::OpenContext(t.id.clone()))
-            .padding(6)
-            .into();
+        let more_btn: iced::Element<'_, Message> =
+            button(btn_icon("ellipsis", 15.0, tk().text_muted))
+                .style(icon_hover)
+                .on_press(Message::OpenContext(t.id.clone()))
+                .padding(6)
+                .into();
         let heart_cell: iced::Element<'_, Message> = mouse_area(heart_btn)
             .on_enter(Message::PlActionHover(Some(index)))
             .on_exit(Message::PlActionExit(index))
@@ -224,11 +231,13 @@ impl AppState {
                         &t.title,
                         &t.artist,
                         14,
-                        iced::Color::WHITE
+                        tk().text
                     ))
                     .padding(3)
                     .width(Fill),
-                    text(fmt_len(self.track_secs(t))).size(12).color(MUTED),
+                    text(fmt_len(self.track_secs(t)))
+                        .size(12)
+                        .color(tk().text_muted),
                     heart_cell,
                     more_cell,
                 ]
@@ -312,18 +321,20 @@ impl AppState {
                         self.thumb_sized(t, 32.0),
                         column![
                             btn_text(truncate_title(&t.title, 30), 13)
-                                .color(iced::Color::WHITE)
+                                .color(tk().text)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                             btn_text(truncate_title(&t.artist, 28), 11)
-                                .color(MUTED)
+                                .color(tk().text_muted)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                         ]
                         .spacing(2)
                         .width(Fill)
                         .clip(true),
-                        btn_text(meta, 11).color(MUTED).wrapping(Wrapping::None),
+                        btn_text(meta, 11)
+                            .color(tk().text_muted)
+                            .wrapping(Wrapping::None),
                     ]
                     .spacing(8)
                     .align_y(iced::alignment::Vertical::Center)
@@ -353,7 +364,10 @@ impl AppState {
     ) -> iced::Element<'a, Message> {
         use iced::widget::{column, text};
         let list: iced::Element<'_, Message> = if rows.is_empty() {
-            text(lang.section_empty()).size(12).color(MUTED).into()
+            text(lang.section_empty())
+                .size(12)
+                .color(tk().text_muted)
+                .into()
         } else {
             column(rows).spacing(2).into()
         };
@@ -421,11 +435,13 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| (d.as_millis() / 500 % 4) as usize)
             .unwrap_or(0);
-        column![text(self.language.searching(dots)).size(15).color(MUTED),]
-            .spacing(10)
-            .width(Fill)
-            .align_x(iced::alignment::Horizontal::Center)
-            .into()
+        column![text(self.language.searching(dots))
+            .size(15)
+            .color(tk().text_muted),]
+        .spacing(10)
+        .width(Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .into()
     }
 
     /// Top-result hero for the unified search list: the head hit in a
@@ -500,16 +516,18 @@ impl AppState {
         use iced::widget::{button, column, container, mouse_area, row, text};
         use iced::Fill;
         let heart_color = if self.liked.contains(&t.id) {
-            ACCENT
+            tk().accent
         } else {
-            MUTED
+            tk().text_muted
         };
         mouse_area(
             container(
                 self.search_card(
                     self.thumb_sized(t, 96.0),
                     column![
-                        text(self.language.top_result()).size(12).color(MUTED),
+                        text(self.language.top_result())
+                            .size(12)
+                            .color(tk().text_muted),
                         text(t.title.clone()).size(20),
                         text(Self::hero_song_subtitle(
                             t.is_video,
@@ -518,14 +536,14 @@ impl AppState {
                             t.plays.as_deref().or_else(|| self.top_hit_plays(&t.id))
                         ))
                         .size(13)
-                        .color(MUTED),
+                        .color(tk().text_muted),
                         row![
                             Self::play_pill(Message::PlayNow(t.id.clone())),
                             button(heart_icon(self.liked.contains(&t.id), 15.0, heart_color))
                                 .style(icon_hover)
                                 .on_press(Message::Like(t.id.clone()))
                                 .padding(8),
-                            button(btn_icon("ellipsis", 15.0, MUTED))
+                            button(btn_icon("ellipsis", 15.0, tk().text_muted))
                                 .style(icon_hover)
                                 .on_press(Message::OpenContext(t.id.clone()))
                                 .padding(8),
@@ -560,7 +578,7 @@ impl AppState {
         };
         let tracks = self.album_display_tracks(&a.id);
         let more: iced::Element<'_, Message> =
-            iced::widget::button(ctrl_box(btn_icon("ellipsis", 18.0, iced::Color::WHITE)))
+            iced::widget::button(ctrl_box(btn_icon("ellipsis", 18.0, tk().text)))
                 .style(icon_hover)
                 .on_press(Message::OpenAlbumMenu(a.id.clone()))
                 .padding(11)
@@ -590,13 +608,15 @@ impl AppState {
                     .on_press(Message::OpenAlbum(a.id.clone()))
                     .padding(0),
                 column![
-                    text(self.language.top_result()).size(12).color(MUTED),
+                    text(self.language.top_result())
+                        .size(12)
+                        .color(tk().text_muted),
                     row_button(btn_text(a.title.clone(), 20))
                         .style(row_click)
                         .on_press(Message::OpenAlbum(a.id.clone()))
                         .padding(0)
                         .width(Fill),
-                    text(sub).size(13).color(MUTED),
+                    text(sub).size(13).color(tk().text_muted),
                     actions,
                 ]
                 .spacing(4)
@@ -644,13 +664,17 @@ impl AppState {
                     .on_press(Message::OpenArtist(a.id.clone()))
                     .padding(0),
                 column![
-                    text(self.language.top_result()).size(12).color(MUTED),
+                    text(self.language.top_result())
+                        .size(12)
+                        .color(tk().text_muted),
                     row_button(btn_text(a.name.clone(), 20))
                         .style(row_click)
                         .on_press(Message::OpenArtist(a.id.clone()))
                         .padding(0)
                         .width(Fill),
-                    text(self.language.artist_label()).size(13).color(MUTED),
+                    text(self.language.artist_label())
+                        .size(13)
+                        .color(tk().text_muted),
                     actions,
                 ]
                 .spacing(4)
@@ -693,7 +717,7 @@ impl AppState {
                         &t.title,
                         &format!("{} · {}", self.language.track_kind(t.is_video), t.artist),
                         14,
-                        iced::Color::WHITE
+                        tk().text
                     ),
                     song_meta_text(self.row_plays(t), self.track_secs(t)),
                     heart,
@@ -738,11 +762,11 @@ impl AppState {
                     row_button(
                         column![
                             btn_text(truncate_title(&a.title, 45), 14)
-                                .color(iced::Color::WHITE)
+                                .color(tk().text)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                             btn_text(truncate_title(&sub, 40), 11)
-                                .color(MUTED)
+                                .color(tk().text_muted)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                         ]
@@ -793,11 +817,11 @@ impl AppState {
                     row_button(
                         column![
                             btn_text(truncate_title(&a.name, 45), 14)
-                                .color(iced::Color::WHITE)
+                                .color(tk().text)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                             btn_text(self.language.artist_label(), 11)
-                                .color(MUTED)
+                                .color(tk().text_muted)
                                 .width(Fill),
                         ]
                         .spacing(2)
@@ -854,13 +878,15 @@ impl AppState {
                     .on_press(Message::OpenSearchPlaylist(p.id.clone()))
                     .padding(0),
                 column![
-                    text(self.language.top_result()).size(12).color(MUTED),
+                    text(self.language.top_result())
+                        .size(12)
+                        .color(tk().text_muted),
                     row_button(btn_text(p.title.clone(), 20))
                         .style(row_click)
                         .on_press(Message::OpenSearchPlaylist(p.id.clone()))
                         .padding(0)
                         .width(Fill),
-                    text(sub).size(13).color(MUTED),
+                    text(sub).size(13).color(tk().text_muted),
                     row![
                         Self::play_pill(Message::PlaySearchPlaylist(p.id.clone())),
                         Self::shuffle_pill(
@@ -901,11 +927,11 @@ impl AppState {
                     row_button(
                         column![
                             btn_text(truncate_title(&p.title, 45), 14)
-                                .color(iced::Color::WHITE)
+                                .color(tk().text)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                             btn_text(truncate_title(&sub, 40), 11)
-                                .color(MUTED)
+                                .color(tk().text_muted)
                                 .width(Fill)
                                 .wrapping(Wrapping::None),
                         ]

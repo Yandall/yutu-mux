@@ -689,7 +689,7 @@ pub(crate) fn song_meta_text(
     use iced::widget::text::Wrapping;
     text(song_meta(plays, duration_secs))
         .size(12)
-        .color(MUTED)
+        .color(tk().text_muted)
         .wrapping(Wrapping::None)
         .into()
 }

@@ -7,7 +7,7 @@
 //! drag slides, release drops). Slider rows elsewhere are gone: presets
 //! are predefined curves for these same gains.
 
-use crate::{Message, ACCENT, MUTED};
+use crate::{tk, Message};
 use iced::advanced::text::Alignment;
 use iced::widget::canvas::{
     self, Action, Event, Frame, Geometry, LineCap, Path, Program, Stroke, Text,
@@ -24,9 +24,6 @@ const PAD_BOTTOM: f32 = 22.0;
 const HANDLE_R: f32 = 8.0;
 const BAR_W: f32 = 5.0;
 const TRACK_W: f32 = 3.0;
-
-/// Track gray matches the themed horizontal sliders (same rail color).
-const TRACK_GRAY: Color = Color::from_rgb8(0x3A, 0x3A, 0x3A);
 
 /// Plot geometry for one canvas size: plot rect + band column centers.
 pub struct GraphLayout {
@@ -304,14 +301,14 @@ impl Program<Message> for EqGraph {
                 Stroke::default()
                     .with_color(Color {
                         a: 0.10,
-                        ..Color::WHITE
+                        ..tk().text
                     })
                     .with_width(1.0),
             );
             frame.fill_text(Text {
                 content: gain_label(gain),
                 position: Point::new(layout.left - 5.0, y),
-                color: MUTED,
+                color: tk().text_muted,
                 size: axis_size.into(),
                 align_x: Alignment::Right,
                 align_y: iced::alignment::Vertical::Center,
@@ -333,14 +330,20 @@ impl Program<Message> for EqGraph {
                 Stroke::default()
                     .with_color(Color {
                         a: 0.08,
-                        ..Color::WHITE
+                        ..tk().text
                     })
                     .with_width(1.0),
             );
         }
 
         // Wash under the curve.
-        frame.fill(&area_path(&handles, bottom), Color { a: 0.15, ..ACCENT });
+        frame.fill(
+            &area_path(&handles, bottom),
+            Color {
+                a: 0.15,
+                ..tk().accent
+            },
+        );
 
         // Track (full) + fill (handle to bottom) per column.
         for handle in &handles {
@@ -350,14 +353,14 @@ impl Program<Message> for EqGraph {
                     Point::new(handle.x, bottom),
                 ),
                 Stroke::default()
-                    .with_color(TRACK_GRAY)
+                    .with_color(tk().outline)
                     .with_width(track_w)
                     .with_line_cap(LineCap::Round),
             );
             frame.stroke(
                 &Path::line(*handle, Point::new(handle.x, bottom)),
                 Stroke::default()
-                    .with_color(ACCENT)
+                    .with_color(tk().accent)
                     .with_width(bar_w)
                     .with_line_cap(LineCap::Round),
             );
@@ -367,17 +370,17 @@ impl Program<Message> for EqGraph {
         frame.stroke(
             &curve_path(&handles),
             Stroke::default()
-                .with_color(ACCENT)
+                .with_color(tk().accent)
                 .with_width(2.0)
                 .with_line_cap(LineCap::Round),
         );
 
         // Handles on top of the curve.
         for handle in &handles {
-            frame.fill(&Path::circle(*handle, handle_r), ACCENT);
+            frame.fill(&Path::circle(*handle, handle_r), tk().accent);
             frame.stroke(
                 &Path::circle(*handle, handle_r),
-                Stroke::default().with_color(Color::WHITE).with_width(1.5),
+                Stroke::default().with_color(tk().text).with_width(1.5),
             );
         }
 
@@ -386,7 +389,7 @@ impl Program<Message> for EqGraph {
             frame.fill_text(Text {
                 content: gain_label(self.gains[i]),
                 position: Point::new(handle.x, 8.0),
-                color: Color::WHITE,
+                color: tk().text,
                 size: label_size.into(),
                 align_x: Alignment::Center,
                 align_y: iced::alignment::Vertical::Top,
@@ -395,7 +398,7 @@ impl Program<Message> for EqGraph {
             frame.fill_text(Text {
                 content: freq_label(EQ_FREQUENCIES[i]),
                 position: Point::new(handle.x, bottom + 5.0),
-                color: MUTED,
+                color: tk().text_muted,
                 size: label_size.into(),
                 align_x: Alignment::Center,
                 align_y: iced::alignment::Vertical::Top,

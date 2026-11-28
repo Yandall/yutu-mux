@@ -15,6 +15,7 @@
 //! drawn muted and ignore clicks. Esc, a click elsewhere or the wheel
 //! closes the card.
 
+use crate::tk;
 use iced::advanced::layout::{self, Layout, Node};
 use iced::advanced::mouse;
 use iced::advanced::overlay;
@@ -413,18 +414,18 @@ impl<Message> overlay::Overlay<Message, iced::Theme, iced::Renderer>
             Quad {
                 bounds,
                 border: iced::Border {
-                    color: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+                    color: tk().outline,
                     width: 1.0,
                     radius: 8.0.into(),
                 },
                 shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                    color: tk().shadow.scale_alpha(0.45),
                     offset: Vector::new(0.0, 4.0),
                     blur_radius: 14.0,
                 },
                 snap: true,
             },
-            iced::Color::from_rgb8(0x24, 0x24, 0x24),
+            tk().menu,
         );
         // Enabled flags need the input state, which `draw` (&self) can
         // only read: recompute from an immutable view.
@@ -457,7 +458,7 @@ impl<Message> overlay::Overlay<Message, iced::Theme, iced::Renderer>
                         border: iced::Border::default().rounded(6),
                         ..Quad::default()
                     },
-                    iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+                    tk().outline,
                 );
             }
             renderer.fill_text(
@@ -473,11 +474,7 @@ impl<Message> overlay::Overlay<Message, iced::Theme, iced::Renderer>
                     wrapping: text::Wrapping::None,
                 },
                 Point::new(row.x + 10.0, row.center_y()),
-                if on {
-                    iced::Color::WHITE
-                } else {
-                    iced::Color::from_rgb8(0x6E, 0x6E, 0x6E)
-                },
+                if on { tk().text } else { tk().text_disabled },
                 row,
             );
         }

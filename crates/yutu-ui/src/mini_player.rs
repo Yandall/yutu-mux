@@ -98,6 +98,17 @@ const MINI_GLOW_OPACITY: f32 = 0.9;
 const MINI_VEIL: iced::Color = iced::Color::from_rgba(0.04, 0.02, 0.03, 0.45);
 /// Base capsule surface (shows alone until the glow is decoded).
 pub(crate) const MINI_SURFACE: iced::Color = iced::Color::from_rgb8(0x1A, 0x14, 0x17);
+/// Fixed pill palette: the capsule paints over the cover glow under
+/// its own dark veil (art, not a theme surface), so like `ART_FG` it
+/// keeps light-on-dark colors whatever the theme.
+const MINI_PLAY_GLYPH: iced::Color = iced::Color::BLACK;
+const MINI_PLAY_HOVER: iced::Color = iced::Color::from_rgb8(0xE6, 0xE6, 0xE6);
+const MINI_CHIP: iced::Color = iced::Color::from_rgba8(0x1E, 0x1E, 0x1E, 0.94);
+const MINI_CHIP_HOVER: iced::Color = iced::Color::from_rgb8(0x2E, 0x2E, 0x2E);
+const MINI_GLYPH: iced::Color = iced::Color::from_rgb8(0xEE, 0xE4, 0xE8);
+const MINI_GLYPH_SOFT: iced::Color = iced::Color::from_rgb8(0xE0, 0xE0, 0xE0);
+const MINI_ARTIST: iced::Color = iced::Color::from_rgb8(0xE6, 0xD3, 0xDA);
+const MINI_ART_EMPTY: iced::Color = iced::Color::from_rgb8(0x2A, 0x2A, 0x2A);
 
 /// Live mini player window state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,7 +728,7 @@ impl iced::widget::canvas::Program<Message> for ProgressRing {
             &Path::circle(center, radius),
             Stroke::default()
                 .with_width(MINI_RING_W)
-                .with_color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.18)),
+                .with_color(ART_FG.scale_alpha(0.18)),
         );
         let frac = self.frac.clamp(0.0, 1.0);
         if frac > 0.0 {
@@ -734,7 +745,7 @@ impl iced::widget::canvas::Program<Message> for ProgressRing {
                 &arc,
                 Stroke::default()
                     .with_width(MINI_RING_W)
-                    .with_color(iced::Color::WHITE)
+                    .with_color(ART_FG)
                     .with_line_cap(LineCap::Round),
             );
         }
@@ -750,13 +761,13 @@ fn mini_play_button(
 ) -> iced::widget::button::Style {
     let bg = match status {
         iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed => {
-            iced::Color::from_rgb8(0xE6, 0xE6, 0xE6)
+            MINI_PLAY_HOVER
         }
-        _ => iced::Color::WHITE,
+        _ => ART_FG,
     };
     iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
-        text_color: iced::Color::BLACK,
+        text_color: MINI_PLAY_GLYPH,
         border: iced::Border::default().rounded(999),
         ..Default::default()
     }
@@ -770,13 +781,13 @@ fn mini_chip(_: &iced::Theme, status: iced::widget::button::Status) -> iced::wid
     );
     iced::widget::button::Style {
         background: Some(iced::Background::Color(if hovered {
-            iced::Color::from_rgb8(0x2E, 0x2E, 0x2E)
+            MINI_CHIP_HOVER
         } else {
-            iced::Color::from_rgba8(0x1E, 0x1E, 0x1E, 0.94)
+            MINI_CHIP
         })),
-        text_color: if hovered { iced::Color::WHITE } else { MUTED },
+        text_color: if hovered { ART_FG } else { tk().text_muted },
         border: iced::Border {
-            color: iced::Color::from_rgba(1.0, 1.0, 1.0, 0.1),
+            color: ART_FG.scale_alpha(0.1),
             width: 1.0,
             radius: (MINI_CHIPS_H / 2.0).into(),
         },
@@ -786,14 +797,10 @@ fn mini_chip(_: &iced::Theme, status: iced::widget::button::Status) -> iced::wid
 
 /// Icon-only control on the glow: light glyph, round soft hover.
 fn mini_icon_button(name: &'static str, msg: Message) -> iced::widget::Button<'static, Message> {
-    iced::widget::button(ctrl_box(btn_icon(
-        name,
-        14.0,
-        iced::Color::from_rgb8(0xEE, 0xE4, 0xE8),
-    )))
-    .style(mini_icon_hover)
-    .on_press(msg)
-    .padding(7)
+    iced::widget::button(ctrl_box(btn_icon(name, 14.0, MINI_GLYPH)))
+        .style(mini_icon_hover)
+        .on_press(msg)
+        .padding(7)
 }
 
 fn mini_icon_hover(
@@ -805,10 +812,8 @@ fn mini_icon_hover(
         iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
     );
     iced::widget::button::Style {
-        background: hovered.then_some(iced::Background::Color(iced::Color::from_rgba(
-            1.0, 1.0, 1.0, 0.12,
-        ))),
-        text_color: iced::Color::WHITE,
+        background: hovered.then_some(iced::Background::Color(ART_FG.scale_alpha(0.12))),
+        text_color: ART_FG,
         border: iced::Border::default().rounded(999),
         ..Default::default()
     }
@@ -829,11 +834,16 @@ impl AppState {
             button(ctrl_box(btn_icon(
                 "picture-in-picture-2",
                 14.0,
-                iced::Color::WHITE,
+                tk().on_accent,
             )))
             .style(accent_button)
         } else {
-            button(ctrl_box(btn_icon("picture-in-picture-2", 14.0, MUTED))).style(icon_hover)
+            button(ctrl_box(btn_icon(
+                "picture-in-picture-2",
+                14.0,
+                tk().text_muted,
+            )))
+            .style(icon_hover)
         };
         tooltip(
             btn.on_press(Message::ToggleMiniPlayer).padding(7),
@@ -1099,12 +1109,7 @@ impl AppState {
             let broken = l.text.contains('\n');
             let mut line = text(l.text)
                 .size(l.size)
-                .color(iced::Color::from_rgba(
-                    1.0,
-                    1.0,
-                    1.0,
-                    l.alpha.clamp(0.0, 1.0),
-                ))
+                .color(ART_FG.scale_alpha(l.alpha.clamp(0.0, 1.0)))
                 .align_x(iced::alignment::Horizontal::Center)
                 .width(Fill);
             // The current verse comes pre-broken (its lines never
@@ -1122,7 +1127,7 @@ impl AppState {
                     line,
                     text(r)
                         .size(romaji_size(l.size))
-                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.75))
+                        .color(ART_FG.scale_alpha(alpha * 0.75))
                         .align_x(iced::alignment::Horizontal::Center)
                         .wrapping(wrap)
                         .width(Fill),
@@ -1356,14 +1361,10 @@ impl AppState {
     ) -> iced::Element<'static, Message> {
         use iced::widget::{button, text, tooltip};
         tooltip(
-            button(ctrl_box(btn_icon(
-                icon_name,
-                12.0,
-                iced::Color::from_rgb8(0xE0, 0xE0, 0xE0),
-            )))
-            .style(mini_icon_hover)
-            .on_press(msg)
-            .padding(5),
+            button(ctrl_box(btn_icon(icon_name, 12.0, MINI_GLYPH_SOFT)))
+                .style(mini_icon_hover)
+                .on_press(msg)
+                .padding(5),
             text(label).size(11),
             tooltip::Position::Bottom,
         )
@@ -1380,7 +1381,7 @@ impl AppState {
         use iced::widget::{button, row, text};
         button(
             row![
-                btn_icon(icon_name, 12.0, iced::Color::from_rgb8(0xE0, 0xE0, 0xE0)),
+                btn_icon(icon_name, 12.0, MINI_GLYPH_SOFT),
                 text(label).size(11),
             ]
             .spacing(6)
@@ -1436,13 +1437,13 @@ impl AppState {
             .style(move |_: &iced::Theme| container::Style {
                 background: Some(iced::Background::Color(MINI_SURFACE)),
                 border: iced::Border {
-                    color: iced::Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                    color: ART_FG.scale_alpha(0.08),
                     width: 1.0,
                     radius: radius.into(),
                 },
                 shadow: if shadow {
                     iced::Shadow {
-                        color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                        color: tk().shadow.scale_alpha(0.5),
                         offset: iced::Vector::new(0.0, 3.0),
                         blur_radius: 8.0,
                     }
@@ -1501,7 +1502,7 @@ impl AppState {
                     .wrapping(Wrapping::None),
                 text(truncate_title(&artist, MINI_TITLE_CHARS))
                     .size(11)
-                    .color(iced::Color::from_rgb8(0xE6, 0xD3, 0xDA))
+                    .color(MINI_ARTIST)
                     .wrapping(Wrapping::None),
             ]
             .spacing(2)
@@ -1515,7 +1516,7 @@ impl AppState {
         .align_y(iced::alignment::Vertical::Center);
         let play_icon = if self.paused { "play" } else { "pause" };
         let lyrics_btn: iced::Element<'_, Message> = if lyrics_open {
-            button(ctrl_box(btn_icon("mic-vocal", 14.0, iced::Color::WHITE)))
+            button(ctrl_box(btn_icon("mic-vocal", 14.0, ART_FG)))
                 .style(accent_button)
                 .on_press(Message::MiniToggleLyrics)
                 .padding(7)
@@ -1528,7 +1529,7 @@ impl AppState {
                 .on_press(Message::MiniDrag)
                 .interaction(iced::mouse::Interaction::Grab),
             mini_icon_button("skip-back", Message::Prev),
-            button(ctrl_box(btn_icon(play_icon, 16.0, iced::Color::BLACK)))
+            button(ctrl_box(btn_icon(play_icon, 16.0, MINI_PLAY_GLYPH)))
                 .style(mini_play_button)
                 .on_press(Message::TogglePause)
                 .padding(9),
@@ -1626,11 +1627,9 @@ impl AppState {
                 .width(iced::Length::Fixed(MINI_ART))
                 .height(iced::Length::Fixed(MINI_ART))
                 .into(),
-            None => container(btn_icon("music", 16.0, MUTED))
+            None => container(btn_icon("music", 16.0, tk().text_muted))
                 .style(|_: &iced::Theme| container::Style {
-                    background: Some(iced::Background::Color(iced::Color::from_rgb8(
-                        0x2A, 0x2A, 0x2A,
-                    ))),
+                    background: Some(iced::Background::Color(MINI_ART_EMPTY)),
                     border: iced::Border::default().rounded(MINI_ART / 2.0),
                     ..Default::default()
                 })
@@ -1672,7 +1671,7 @@ impl AppState {
                     self.verse_with_romaji(
                         text(l.to_string())
                             .size(13)
-                            .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.72))
+                            .color(ART_FG.scale_alpha(0.72))
                             .align_x(iced::alignment::Horizontal::Center)
                             .wrapping(Wrapping::WordOrGlyph)
                             .width(Fill),
@@ -1704,7 +1703,7 @@ impl AppState {
         let notice = |s: String| -> iced::Element<'_, Message> {
             text(s)
                 .size(13)
-                .color(MUTED)
+                .color(tk().text_muted)
                 .align_x(iced::alignment::Horizontal::Center)
                 .into()
         };

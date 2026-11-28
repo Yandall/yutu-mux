@@ -30,7 +30,7 @@ impl AppState {
     pub(crate) fn hover_remove_slot(armed: Option<Message>) -> iced::Element<'static, Message> {
         use iced::widget::button;
         let glyph = if armed.is_some() {
-            btn_icon("x", 11.0, iced::Color::WHITE)
+            btn_icon("x", 11.0, tk().text)
         } else {
             Self::empty_slot_icon(11.0)
         };
@@ -54,7 +54,7 @@ impl AppState {
             return column![
                 text(self.language.signed_in_cookies())
                     .size(13)
-                    .color(ACCENT),
+                    .color(tk().accent),
                 // No separate import action: Sync now (below) is the one
                 // refresh, so the two buttons never coexist.
                 button(btn_text(self.language.sign_out(), 12))
@@ -79,11 +79,14 @@ impl AppState {
             (center_w - COOKIE_IMPORT_ROOM).max(0.0)
         };
         let (pick_label, pick_color) = if self.cookie_path.trim().is_empty() {
-            (self.language.choose_cookies_file().to_string(), MUTED)
+            (
+                self.language.choose_cookies_file().to_string(),
+                tk().text_muted,
+            )
         } else {
             (
                 trim_cookie_path(self.cookie_path.trim(), cookie_path_budget(field_w)),
-                iced::Color::WHITE,
+                tk().text,
             )
         };
         // Fixed field width on roomy windows, aligned with the other
@@ -93,7 +96,7 @@ impl AppState {
         // can never outgrow the field, so nothing paints past the border.
         let mut row_items: Vec<iced::Element<'_, Message>> = vec![button(
             iced::widget::row![
-                btn_icon("folder", 14.0, MUTED),
+                btn_icon("folder", 14.0, tk().text_muted),
                 text(pick_label)
                     .size(12)
                     .color(pick_color)
@@ -128,7 +131,7 @@ impl AppState {
         let content: Vec<iced::Element<'_, Message>> = vec![
             text(self.language.cookie_explainer())
                 .size(11)
-                .color(MUTED)
+                .color(tk().text_muted)
                 .into(),
             Row::with_children(row_items)
                 .spacing(8)
@@ -201,12 +204,14 @@ impl AppState {
         let card: iced::Element<'_, Message> = container(
             column![
                 text(self.language.cleanup_title()).size(16),
-                text(self.language.cleanup_body()).size(12).color(MUTED),
+                text(self.language.cleanup_body())
+                    .size(12)
+                    .color(tk().text_muted),
                 // Glyph wrapping: a long path wraps mid-name and grows
                 // the card instead of painting past its border.
                 text(src)
                     .size(11)
-                    .color(MUTED)
+                    .color(tk().text_muted)
                     .width(Fill)
                     .wrapping(Wrapping::WordOrGlyph),
                 iced::widget::row![
@@ -244,7 +249,9 @@ impl AppState {
         let card: iced::Element<'_, Message> = container(
             column![
                 text(self.language.signout_title()).size(16),
-                text(self.language.signout_body()).size(12).color(MUTED),
+                text(self.language.signout_body())
+                    .size(12)
+                    .color(tk().text_muted),
                 iced::widget::row![
                     button(btn_text(self.language.sign_out(), 12))
                         .style(accent_button)
@@ -284,7 +291,7 @@ impl AppState {
                 text(self.language.delete_playlist_title()).size(16),
                 text(self.language.delete_playlist_body(&title, n))
                     .size(12)
-                    .color(MUTED),
+                    .color(tk().text_muted),
                 iced::widget::row![
                     button(btn_text(self.language.delete_playlist(), 12))
                         .style(accent_button)
@@ -398,7 +405,7 @@ impl AppState {
         use iced::Fill;
         let form = self.new_playlist.as_ref()?;
         let import = form.mode == NewPlaylistMode::Import;
-        let label = |s: String| text(s).size(12).color(MUTED);
+        let label = |s: String| text(s).size(12).color(tk().text_muted);
         let field = |placeholder: String, value: &str| {
             text_input(&placeholder, value)
                 .style(rounded_input)
@@ -424,7 +431,7 @@ impl AppState {
         };
         let header = row![
             text(self.language.new_playlist()).size(18).width(Fill),
-            button(btn_icon("x", 16.0, MUTED))
+            button(btn_icon("x", 16.0, tk().text_muted))
                 .style(icon_hover)
                 .on_press(Message::CloseNewPlaylist)
                 .padding(6),
@@ -452,11 +459,11 @@ impl AppState {
             // Which links work lives in the tooltip, keeping the form
             // itself short.
             let info = iced::widget::tooltip(
-                btn_icon("info", 14.0, MUTED),
+                btn_icon("info", 14.0, tk().text_muted),
                 container(
                     text(self.language.new_playlist_link_tooltip())
                         .size(12)
-                        .color(iced::Color::WHITE),
+                        .color(tk().text),
                 )
                 .style(floating_panel_bg)
                 .padding([8, 10])
@@ -471,7 +478,7 @@ impl AppState {
             let csv: Option<iced::Element<'_, Message>> = Some(
                 button(
                     row![
-                        btn_icon("file-up", 14.0, iced::Color::WHITE),
+                        btn_icon("file-up", 14.0, tk().text),
                         btn_text(self.language.new_playlist_choose_file(), 12),
                     ]
                     .spacing(6)
@@ -570,7 +577,7 @@ impl AppState {
             fields = fields.push(label(self.language.new_playlist_local_hint()).size(11));
         }
         if let Some(err) = &form.error {
-            fields = fields.push(text(err.clone()).size(12).color(ACCENT));
+            fields = fields.push(text(err.clone()).size(12).color(tk().accent));
         }
         let cta = if let (true, Some((done, total))) = (form.busy, form.progress) {
             self.language.new_playlist_progress(done, total)
@@ -614,13 +621,13 @@ impl AppState {
                 )]
                 .spacing(3);
                 for m in sum.missing.iter().take(SHOWN) {
-                    list = list.push(text(format!("· {m}")).size(12).color(MUTED));
+                    list = list.push(text(format!("· {m}")).size(12).color(tk().text_muted));
                 }
                 if sum.missing.len() > SHOWN {
                     list = list.push(
                         text(self.language.import_summary_more(sum.missing.len() - SHOWN))
                             .size(12)
-                            .color(MUTED),
+                            .color(tk().text_muted),
                     );
                 }
                 notes = notes.push(list);
@@ -705,18 +712,18 @@ impl AppState {
                     .height(iced::Length::Fixed(PILL_H))
                     .into()];
             if self.update_checking {
-                items.push(Self::spinner_frame(self.spin_frame, 12.0, MUTED));
+                items.push(Self::spinner_frame(self.spin_frame, 12.0, tk().text_muted));
                 items.push(
                     text(self.language.checking_for_updates())
                         .size(12)
-                        .color(MUTED)
+                        .color(tk().text_muted)
                         .into(),
                 );
             } else if self.update_checked {
                 items.push(
                     text(self.language.up_to_date(crate::APP_VERSION))
                         .size(12)
-                        .color(MUTED)
+                        .color(tk().text_muted)
                         .into(),
                 );
             }
@@ -733,7 +740,7 @@ impl AppState {
         use iced::widget::text;
         text(self.language.needs_update_check())
             .size(12)
-            .color(MUTED)
+            .color(tk().text_muted)
             .into()
     }
 
@@ -760,14 +767,17 @@ impl AppState {
         if !info.notes.trim().is_empty() {
             body.push(
                 container(
-                    scrollable(text(info.notes.clone()).size(12).color(MUTED).width(Fill))
-                        .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
-                        .style(move |t, s| {
-                            slim_scroll_alpha(t, s, self.scroll_opacity("update-notes"))
-                        })
-                        .on_scroll(|v| Message::Scrolled("update-notes", v.absolute_offset().y))
-                        .height(iced::Length::Fixed(notes_h))
-                        .width(Fill),
+                    scrollable(
+                        text(info.notes.clone())
+                            .size(12)
+                            .color(tk().text_muted)
+                            .width(Fill),
+                    )
+                    .direction(iced::widget::scrollable::Direction::Vertical(slim_bar()))
+                    .style(move |t, s| slim_scroll_alpha(t, s, self.scroll_opacity("update-notes")))
+                    .on_scroll(|v| Message::Scrolled("update-notes", v.absolute_offset().y))
+                    .height(iced::Length::Fixed(notes_h))
+                    .width(Fill),
                 )
                 .width(Fill)
                 .into(),
@@ -784,26 +794,26 @@ impl AppState {
                                 .style(import_bar),
                             text(self.language.update_progress(pct.round() as u64))
                                 .size(12)
-                                .color(MUTED),
+                                .color(tk().text_muted),
                         ]
                         .spacing(4)
                         .into()
                     }
                     _ => row![
-                        Self::spinner_frame(self.spin_frame, 12.0, ACCENT),
+                        Self::spinner_frame(self.spin_frame, 12.0, tk().accent),
                         text(self.language.update_progress_unknown())
                             .size(12)
-                            .color(MUTED),
+                            .color(tk().text_muted),
                     ]
                     .spacing(6)
                     .align_y(iced::alignment::Vertical::Center)
                     .into(),
                 },
                 _ => row![
-                    Self::spinner_frame(self.spin_frame, 12.0, ACCENT),
+                    Self::spinner_frame(self.spin_frame, 12.0, tk().accent),
                     text(self.language.update_installing())
                         .size(12)
-                        .color(MUTED),
+                        .color(tk().text_muted),
                 ]
                 .spacing(6)
                 .align_y(iced::alignment::Vertical::Center)
@@ -984,7 +994,7 @@ impl AppState {
                     .last_sync(&self.language.sync_ago(self.last_sync_unix, now_unix())),
             )
             .size(12)
-            .color(MUTED),
+            .color(tk().text_muted),
             row![
                 button(self.busy_content(self.language.sync_now(), 12.0))
                     .style(accent_button)
@@ -1009,7 +1019,7 @@ impl AppState {
         use iced::widget::text;
         text(self.language.needs_innertube_sync())
             .size(12)
-            .color(MUTED)
+            .color(tk().text_muted)
             .into()
     }
 
@@ -1062,7 +1072,7 @@ impl AppState {
     #[cfg(feature = "innertube")]
     pub(crate) fn sync_spinner(&self) -> iced::Element<'_, Message> {
         if self.syncing() {
-            Self::spinner_frame(self.spin_frame, 14.0, ACCENT)
+            Self::spinner_frame(self.spin_frame, 14.0, tk().accent)
         } else {
             iced::widget::Space::new()
                 .width(iced::Length::Fixed(14.0))
@@ -1087,7 +1097,7 @@ impl AppState {
             // (`accent_button`), where the accent glyph would vanish.
             row![
                 btn_text(label, size),
-                Self::spinner_frame(self.spin_frame, 12.0, iced::Color::WHITE),
+                Self::spinner_frame(self.spin_frame, 12.0, tk().text),
             ]
             .spacing(6)
             .align_y(iced::alignment::Vertical::Center)
@@ -1173,15 +1183,15 @@ impl AppState {
                     row![
                         text(self.language.importing_title())
                             .size(13)
-                            .color(iced::Color::WHITE),
+                            .color(tk().text),
                         Space::new().width(Fill),
-                        text(pct_label).size(13).color(ACCENT),
+                        text(pct_label).size(13).color(tk().accent),
                     ]
                     .spacing(8)
                     .width(Fill)
                     .align_y(iced::alignment::Vertical::Center),
                     progress_bar(0.0..=100.0, pct).girth(8).style(import_bar),
-                    text(counts).size(11).color(MUTED),
+                    text(counts).size(11).color(tk().text_muted),
                 ]
                 .spacing(4),
             )
@@ -1204,14 +1214,17 @@ impl AppState {
         {
             use iced::widget::{column, text};
             let body: iced::Element<'_, Message> = if self.error_log.is_empty() {
-                text(self.language.no_errors()).size(12).color(MUTED).into()
+                text(self.language.no_errors())
+                    .size(12)
+                    .color(tk().text_muted)
+                    .into()
             } else {
                 column(
                     self.error_log
                         .iter()
                         .rev()
                         .take(10)
-                        .map(|e| text(e.clone()).size(11).color(MUTED).into())
+                        .map(|e| text(e.clone()).size(11).color(tk().text_muted).into())
                         .collect::<Vec<_>>(),
                 )
                 .spacing(2)
@@ -1247,7 +1260,7 @@ impl AppState {
                     self.search_cache.len(),
                 ))
                 .size(12)
-                .color(MUTED),
+                .color(tk().text_muted),
             ]
             .spacing(4)
             .into()
@@ -1260,7 +1273,7 @@ impl AppState {
         use iced::widget::text;
         text(self.language.needs_innertube_import())
             .size(12)
-            .color(MUTED)
+            .color(tk().text_muted)
             .into()
     }
 
@@ -1603,9 +1616,9 @@ impl AppState {
         let mut menu_rows: Vec<iced::Element<'_, Message>> = Vec::with_capacity(rows.len());
         for (label, active, msg) in rows {
             let text = if active {
-                btn_text(label, 14).color(ACCENT)
+                btn_text(label, 14).color(tk().accent)
             } else {
-                btn_text(label, 14).color(iced::Color::WHITE)
+                btn_text(label, 14).color(tk().text)
             };
             menu_rows.push(
                 row_button(

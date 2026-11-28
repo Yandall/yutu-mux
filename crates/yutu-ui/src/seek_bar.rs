@@ -8,15 +8,14 @@
 //! on release when it was playing. Pure math is unit-tested; the
 //! [`Program`] only wires pointer events to preview/commit messages.
 
-use crate::{Message, ACCENT};
+use crate::{tk, Message};
 use iced::widget::canvas::{self, Action, Event, Frame, Geometry, LineCap, Path, Program, Stroke};
-use iced::{Color, Length, Point, Rectangle};
+use iced::{Length, Point, Rectangle};
 
 /// Bar height: knob + touch padding.
 pub const SEEK_HEIGHT: f32 = 26.0;
 const KNOB_R: f32 = 8.0;
 const TRACK_W: f32 = 4.0;
-const TRACK_GRAY: Color = Color::from_rgb8(0x3A, 0x3A, 0x3A);
 
 /// Canvas x for a value (knob-radius inset so the knob never clips).
 #[must_use]
@@ -150,7 +149,7 @@ impl Program<Message> for SeekBar {
         frame.stroke(
             &Path::line(from, to),
             Stroke::default()
-                .with_color(TRACK_GRAY)
+                .with_color(tk().outline)
                 .with_width(TRACK_W)
                 .with_line_cap(LineCap::Round),
         );
@@ -159,11 +158,11 @@ impl Program<Message> for SeekBar {
             frame.stroke(
                 &Path::line(from, knob),
                 Stroke::default()
-                    .with_color(ACCENT)
+                    .with_color(tk().accent)
                     .with_width(TRACK_W)
                     .with_line_cap(LineCap::Round),
             );
-            frame.fill(&Path::circle(knob, KNOB_R), Color::WHITE);
+            frame.fill(&Path::circle(knob, KNOB_R), tk().handle);
         }
         vec![frame.into_geometry()]
     }

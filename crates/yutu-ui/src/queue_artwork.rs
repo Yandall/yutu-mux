@@ -290,7 +290,7 @@ impl AppState {
                 .align_x(iced::alignment::Horizontal::Center)
                 .align_y(iced::alignment::Vertical::Center)
                 .into(),
-            None => container(icon("music", size * 0.4, MUTED))
+            None => container(icon("music", size * 0.4, tk().text_muted))
                 .style(card_bg)
                 .padding(0)
                 .width(iced::Length::Fixed(size))
@@ -1004,7 +1004,7 @@ impl AppState {
                 .line_height(LineHeight::Relative(LH)),
             text(truncate_title(artist, 32))
                 .size(artist_px)
-                .color(MUTED)
+                .color(tk().text_muted)
                 .width(Fill)
                 .wrapping(Wrapping::None)
                 .line_height(LineHeight::Relative(LH)),
@@ -1063,7 +1063,7 @@ impl AppState {
         };
         let artist = text(truncate_title(artist, row_title_chars().min(40)))
             .size(f32::from(title_size.saturating_sub(2).max(11)))
-            .color(MUTED)
+            .color(tk().text_muted)
             .width(Fill)
             .wrapping(Wrapping::None);
         let artist = if bold {

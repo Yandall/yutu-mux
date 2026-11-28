@@ -180,8 +180,8 @@ fn search_preserves_play_counts() {
     let _ = s.track_row("search", &wide);
     let _ = s.queue_row(0);
     // Queue text boxes hold 2 title lines + 1 artist line always.
-    let _ = AppState::track_text(&long, &long, 12, iced::Color::WHITE);
-    let _ = AppState::track_text_single(&long, &long, 14, iced::Color::WHITE);
+    let _ = AppState::track_text(&long, &long, 12, tk().text);
+    let _ = AppState::track_text_single(&long, &long, 14, tk().text);
     // Home pick strip renders with real picks (long names truncate).
     s.history.push("m1".into());
     s.history.push("m2".into());
@@ -4229,18 +4229,27 @@ fn seg_button_marks_active_preset() {
     let theme = iced::Theme::Dark;
     let on = seg_button(true)(&theme, Status::Hovered);
     let off = seg_button(false)(&theme, Status::Hovered);
-    assert_eq!(on.background, Some(iced::Background::Color(ACCENT_HOVER)));
-    assert_eq!(off.background, Some(iced::Background::Color(CARD_BG_HOVER)));
+    assert_eq!(
+        on.background,
+        Some(iced::Background::Color(tk().accent_hover))
+    );
+    assert_eq!(
+        off.background,
+        Some(iced::Background::Color(tk().surface_hover))
+    );
     let idle_on = seg_button(true)(&theme, Status::Active);
     let idle_off = seg_button(false)(&theme, Status::Active);
-    assert_eq!(idle_on.background, Some(iced::Background::Color(ACCENT)));
+    assert_eq!(
+        idle_on.background,
+        Some(iced::Background::Color(tk().accent))
+    );
     assert_eq!(idle_off.background, None);
     // Pressed counts as hovered; disabled falls back to idle.
     let pressed_on = seg_button(true)(&theme, Status::Pressed);
     let disabled_off = seg_button(false)(&theme, Status::Disabled);
     assert_eq!(
         pressed_on.background,
-        Some(iced::Background::Color(ACCENT_HOVER))
+        Some(iced::Background::Color(tk().accent_hover))
     );
     assert_eq!(disabled_off.background, None);
 }
@@ -6963,11 +6972,11 @@ fn button_helpers_build() {
     let _ = logo_mark(26.0);
     let _ = btn_text("Sync now", 12);
     let _ = btn_text(format!("Clear queue ({})", 3), 12.0);
-    let _ = btn_icon("play", 14.0, iced::Color::WHITE);
+    let _ = btn_icon("play", 14.0, tk().text);
     // Twice: cache hit on the second call, plus a variable name.
     let name = if true { "play" } else { "pause" };
-    let _ = btn_icon(name, 14.0, iced::Color::WHITE);
-    let _ = btn_icon("ghost-name", 14.0, iced::Color::WHITE);
+    let _ = btn_icon(name, 14.0, tk().text);
+    let _ = btn_icon("ghost-name", 14.0, tk().text);
     // The stroke surgery fires on real assets (and only there).
     let raw = thicken_svg(include_bytes!("../assets/icons/play.svg"));
     let thick = String::from_utf8_lossy(&raw);
@@ -12841,4 +12850,48 @@ fn mini_wheel_keeps_the_incoming_verse_lines_through_the_glide() {
         let l = f.iter().find(|l| l.index == 1).unwrap();
         assert_eq!(l.text, target, "frame {step}");
     }
+}
+
+/// Theme guard: views name colors through `tk()` tokens, never raw
+/// literals, so every theme reaches every pixel. Allowed: the token
+/// definitions (`Tokens::DARK`) and named `const` colors in `theme.rs`
+/// (art overlays) and `mini_player.rs` (the pill's fixed art palette).
+#[test]
+fn views_use_theme_tokens_not_raw_colors() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let raw = [
+        "Color::from_rgb",
+        "Color::from_rgba",
+        "Color::WHITE",
+        "Color::BLACK",
+    ];
+    let mut bad = Vec::new();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if !name.ends_with(".rs") || name == "app_tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut in_tokens = false;
+        for (i, line) in text.lines().enumerate() {
+            let t = line.trim_start();
+            if name == "theme.rs" && t.starts_with("pub(crate) const DARK: Tokens") {
+                in_tokens = true;
+            }
+            let named_const = (name == "theme.rs" || name == "mini_player.rs")
+                && (t.starts_with("const ") || t.starts_with("pub(crate) const "));
+            if !in_tokens && !named_const && raw.iter().any(|r| line.contains(r)) {
+                bad.push(format!("{name}:{}: {}", i + 1, t));
+            }
+            if in_tokens && t == "};" {
+                in_tokens = false;
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "raw colors outside the theme:\n{}",
+        bad.join("\n")
+    );
 }

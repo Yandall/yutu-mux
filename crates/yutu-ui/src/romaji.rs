@@ -215,18 +215,18 @@ impl AppState {
                 RomajiSetup::Idle => self.language.lyrics_romaji_hint(),
             };
             let note_color = if self.romaji_setup == RomajiSetup::Failed {
-                ACCENT_HOVER
+                tk().accent_hover
             } else {
-                MUTED
+                tk().text_muted
             };
             // Romaji is machine-made: the info tooltip says so, so a
             // wrong reading is no surprise.
             let info = tooltip(
-                btn_icon("info", 14.0, MUTED),
+                btn_icon("info", 14.0, tk().text_muted),
                 container(
                     text(self.language.lyrics_romaji_tooltip())
                         .size(12)
-                        .color(iced::Color::WHITE),
+                        .color(tk().text),
                 )
                 .style(floating_panel_bg)
                 .padding([8, 10])
@@ -261,7 +261,7 @@ impl AppState {
         let glyph = btn_icon(
             "languages",
             14.0,
-            if on { iced::Color::WHITE } else { MUTED },
+            if on { tk().text } else { tk().text_muted },
         );
         let b = button(ctrl_box(glyph))
             .on_press(Message::SetLyricsRomaji(!on))
@@ -316,7 +316,7 @@ impl AppState {
                     None => roma.to_string(),
                 })
                 .size(romaji_size(size))
-                .color(iced::Color::from_rgba(1.0, 1.0, 1.0, alpha * 0.75))
+                .color(tk().text.scale_alpha(alpha * 0.75))
                 .align_x(iced::alignment::Horizontal::Center)
                 .width(iced::Fill),
             ]

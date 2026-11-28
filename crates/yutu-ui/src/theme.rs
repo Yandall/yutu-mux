@@ -20,25 +20,114 @@ use yutu_player::MpvBackend;
 #[allow(unused_imports)]
 use yutu_player::{EqPreset, Queue, RodioBackend, BAND_COUNT, MAX_GAIN_DB, MIN_GAIN_DB};
 
-pub(crate) const ACCENT: iced::Color = iced::Color::from_rgb8(0xFF, 0x00, 0x33);
-pub(crate) const ACCENT_HOVER: iced::Color = iced::Color::from_rgb8(0xFF, 0x33, 0x66);
-pub(crate) const MUTED: iced::Color = iced::Color::from_rgb8(0xB3, 0xB3, 0xB3);
-pub(crate) const CARD_BG: iced::Color = iced::Color::from_rgb8(0x18, 0x18, 0x18);
-pub(crate) const CARD_BG_HOVER: iced::Color = iced::Color::from_rgb8(0x28, 0x28, 0x28);
-pub(crate) const SIDEBAR_BG: iced::Color = iced::Color::from_rgb8(0x12, 0x12, 0x12);
-pub(crate) const APP_BG: iced::Color = iced::Color::from_rgb8(0x0A, 0x0A, 0x0A);
-pub(crate) const NAV_ACTIVE_BG: iced::Color = iced::Color::from_rgb8(0x2A, 0x2A, 0x2A);
+/// Semantic theme colors: every view reads its colors from here (via
+/// `tk()`), never from a literal, so a theme is just another `Tokens`
+/// value. Names describe the role ("panel", "text_muted"), not the
+/// widget. See `docs/THEMING_PLAN.md`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Tokens {
+    /// App background, page veil end.
+    pub window: iced::Color,
+    /// Sidebars, drawers, player bar.
+    pub panel: iced::Color,
+    /// Cards, Now Playing sheet.
+    pub surface: iced::Color,
+    /// Card and row hover.
+    pub surface_hover: iced::Color,
+    /// Active nav row, focused field.
+    pub surface_active: iced::Color,
+    /// Recessed shell (segmented pickers).
+    pub inset: iced::Color,
+    /// Text inputs, secondary buttons at rest.
+    pub field: iced::Color,
+    /// Secondary buttons hovered.
+    pub field_hover: iced::Color,
+    /// Popup menus.
+    pub menu: iced::Color,
+    /// Borders, slider rails, seek and EQ tracks.
+    pub outline: iced::Color,
+    /// Focused or hovered borders.
+    pub outline_strong: iced::Color,
+    /// Primary text and icons on theme surfaces.
+    pub text: iced::Color,
+    /// Secondary text and idle icons.
+    pub text_muted: iced::Color,
+    /// Disabled menu entries.
+    pub text_disabled: iced::Color,
+    /// Input placeholders.
+    pub placeholder: iced::Color,
+    /// Active controls, highlights, the live song.
+    pub accent: iced::Color,
+    /// Accent under the pointer.
+    pub accent_hover: iced::Color,
+    /// Glyphs and text drawn on the accent.
+    pub on_accent: iced::Color,
+    /// Slider, toggle and seek knobs.
+    pub handle: iced::Color,
+    /// Modal and drawer dim.
+    pub scrim: iced::Color,
+    /// Drop shadows (alpha set per site).
+    pub shadow: iced::Color,
+}
+
+impl Tokens {
+    /// The default look (dark surfaces, vivid red accent).
+    pub(crate) const DARK: Tokens = Tokens {
+        window: iced::Color::from_rgb8(0x0A, 0x0A, 0x0A),
+        panel: iced::Color::from_rgb8(0x12, 0x12, 0x12),
+        surface: iced::Color::from_rgb8(0x18, 0x18, 0x18),
+        surface_hover: iced::Color::from_rgb8(0x28, 0x28, 0x28),
+        surface_active: iced::Color::from_rgb8(0x2A, 0x2A, 0x2A),
+        inset: iced::Color::from_rgb8(0x16, 0x16, 0x16),
+        field: iced::Color::from_rgb8(0x22, 0x22, 0x22),
+        field_hover: iced::Color::from_rgb8(0x33, 0x33, 0x33),
+        menu: iced::Color::from_rgb8(0x24, 0x24, 0x24),
+        outline: iced::Color::from_rgb8(0x3A, 0x3A, 0x3A),
+        outline_strong: iced::Color::from_rgb8(0x6E, 0x6E, 0x6E),
+        text: iced::Color::WHITE,
+        text_muted: iced::Color::from_rgb8(0xB3, 0xB3, 0xB3),
+        text_disabled: iced::Color::from_rgb8(0x6E, 0x6E, 0x6E),
+        placeholder: iced::Color::from_rgb8(0xDD, 0xDD, 0xDD),
+        accent: iced::Color::from_rgb8(0xFF, 0x00, 0x33),
+        accent_hover: iced::Color::from_rgb8(0xFF, 0x33, 0x66),
+        on_accent: iced::Color::WHITE,
+        handle: iced::Color::WHITE,
+        scrim: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+        shadow: iced::Color::BLACK,
+    };
+}
+
+/// The live theme. A `Copy` struct behind a lock (not inside
+/// `iced::Theme`, whose palette has too few slots): style fns read it
+/// with `tk()`, a theme switch swaps it with `set_tokens`.
+static TOKENS: std::sync::RwLock<Tokens> = std::sync::RwLock::new(Tokens::DARK);
+
+/// Current theme colors.
+pub(crate) fn tk() -> Tokens {
+    *TOKENS.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Swap the live theme (takes effect on the next frame).
+#[allow(dead_code)]
+pub(crate) fn set_tokens(tokens: Tokens) {
+    *TOKENS.write().unwrap_or_else(|e| e.into_inner()) = tokens;
+}
+
+/// Content drawn over cover art or video (play overlays, the mini
+/// player's art glow): always white, whatever the theme, because the
+/// art underneath is not a theme surface.
+pub(crate) const ART_FG: iced::Color = iced::Color::WHITE;
 
 pub(crate) fn app_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(APP_BG)),
+        background: Some(iced::Background::Color(tk().window)),
         ..Default::default()
     }
 }
 
 pub(crate) fn sidebar_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(SIDEBAR_BG)),
+        background: Some(iced::Background::Color(tk().panel)),
         border: iced::Border::default().rounded(12),
         ..Default::default()
     }
@@ -46,7 +135,7 @@ pub(crate) fn sidebar_bg(_: &iced::Theme) -> iced::widget::container::Style {
 
 pub(crate) fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(CARD_BG)),
+        background: Some(iced::Background::Color(tk().surface)),
         border: iced::Border::default().rounded(8),
         ..Default::default()
     }
@@ -56,9 +145,7 @@ pub(crate) fn card_bg(_: &iced::Theme) -> iced::widget::container::Style {
 /// Alpha-only (no layout), same overlay idiom as `art_dim`.
 pub(crate) fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgba(
-            0.0, 0.0, 0.0, 0.55,
-        ))),
+        background: Some(iced::Background::Color(tk().scrim)),
         ..Default::default()
     }
 }
@@ -67,8 +154,14 @@ pub(crate) fn modal_dim(_: &iced::Theme) -> iced::widget::container::Style {
 /// at the top (cover colors show) to heavy at the bottom (lyrics read
 /// on a near-plain surface).
 pub(crate) fn np_backdrop_veil(_: &iced::Theme) -> iced::widget::container::Style {
-    let top = iced::Color { a: 0.25, ..CARD_BG };
-    let bottom = iced::Color { a: 0.85, ..CARD_BG };
+    let top = iced::Color {
+        a: 0.25,
+        ..tk().surface
+    };
+    let bottom = iced::Color {
+        a: 0.85,
+        ..tk().surface
+    };
     iced::widget::container::Style {
         background: Some(iced::Background::Gradient(iced::Gradient::Linear(
             iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
@@ -87,11 +180,29 @@ pub(crate) fn page_backdrop_veil(_: &iced::Theme) -> iced::widget::container::St
     iced::widget::container::Style {
         background: Some(iced::Background::Gradient(iced::Gradient::Linear(
             iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-                .add_stop(0.0, iced::Color { a: 0.30, ..APP_BG })
-                .add_stop(0.4, iced::Color { a: 0.60, ..APP_BG })
-                .add_stop(0.7, iced::Color { a: 0.90, ..APP_BG })
-                .add_stop(0.88, APP_BG)
-                .add_stop(1.0, APP_BG),
+                .add_stop(
+                    0.0,
+                    iced::Color {
+                        a: 0.30,
+                        ..tk().window
+                    },
+                )
+                .add_stop(
+                    0.4,
+                    iced::Color {
+                        a: 0.60,
+                        ..tk().window
+                    },
+                )
+                .add_stop(
+                    0.7,
+                    iced::Color {
+                        a: 0.90,
+                        ..tk().window
+                    },
+                )
+                .add_stop(0.88, tk().window)
+                .add_stop(1.0, tk().window),
         ))),
         // Window-level band: square edges, the panels cover the sides.
         ..Default::default()
@@ -102,10 +213,10 @@ pub(crate) fn page_backdrop_veil(_: &iced::Theme) -> iced::widget::container::St
 /// surface plus a soft shadow so it reads as above the content.
 pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(SIDEBAR_BG)),
+        background: Some(iced::Background::Color(tk().panel)),
         border: iced::Border::default().rounded(12),
         shadow: iced::Shadow {
-            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6),
+            color: tk().shadow.scale_alpha(0.6),
             offset: iced::Vector::new(0.0, 0.0),
             blur_radius: 28.0,
         },
@@ -117,9 +228,7 @@ pub(crate) fn floating_panel_bg(_: &iced::Theme) -> iced::widget::container::Sty
 /// covers so its corners never stick out square.
 pub(crate) fn drawer_scrim(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgba(
-            0.0, 0.0, 0.0, 0.55,
-        ))),
+        background: Some(iced::Background::Color(tk().scrim)),
         border: iced::Border::default().rounded(12),
         ..Default::default()
     }
@@ -131,10 +240,10 @@ pub(crate) fn rail_thumb_bg(
     current: bool,
 ) -> impl Fn(&iced::Theme) -> iced::widget::container::Style {
     move |_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(CARD_BG)),
+        background: Some(iced::Background::Color(tk().surface)),
         border: iced::Border {
             color: if current {
-                ACCENT
+                tk().accent
             } else {
                 iced::Color::TRANSPARENT
             },
@@ -204,7 +313,7 @@ pub(crate) fn slim_scroll_alpha(
         background: None,
         border: iced::Border::default(),
         scroller: iced::widget::scrollable::Scroller {
-            background: iced::Background::Color(iced::Color::from_rgba(1.0, 1.0, 1.0, a)),
+            background: iced::Background::Color(tk().text.scale_alpha(a)),
             border: iced::Border::default().rounded(2),
         },
     };
@@ -216,22 +325,21 @@ pub(crate) fn slim_scroll_alpha(
 /// Shared field look (every text input, the top search pill, the file
 /// picker and select faces): one fill, border, radius and placeholder,
 /// with a lighter fill and border while hovered or focused.
-pub(crate) const FIELD_BG: iced::Color = iced::Color::from_rgb8(0x22, 0x22, 0x22);
-pub(crate) const FIELD_BG_ACTIVE: iced::Color = iced::Color::from_rgb8(0x2A, 0x2A, 0x2A);
-pub(crate) const FIELD_BORDER: iced::Color = iced::Color::from_rgb8(0x3A, 0x3A, 0x3A);
-pub(crate) const FIELD_BORDER_ACTIVE: iced::Color = iced::Color::from_rgb8(0x6E, 0x6E, 0x6E);
-pub(crate) const FIELD_PLACEHOLDER: iced::Color = iced::Color::from_rgb8(0xDD, 0xDD, 0xDD);
 pub(crate) const FIELD_RADIUS: f32 = 20.0;
 
 /// Field fill + border for the active (hovered/focused) or resting state.
 pub(crate) fn field_look(active: bool) -> (iced::Background, iced::Border) {
     (
-        iced::Background::Color(if active { FIELD_BG_ACTIVE } else { FIELD_BG }),
+        iced::Background::Color(if active {
+            tk().surface_active
+        } else {
+            tk().field
+        }),
         iced::Border {
             color: if active {
-                FIELD_BORDER_ACTIVE
+                tk().outline_strong
             } else {
-                FIELD_BORDER
+                tk().outline
             },
             width: 1.0,
             radius: FIELD_RADIUS.into(),
@@ -262,16 +370,16 @@ pub(crate) fn search_inner_input(
     iced::widget::text_input::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
         border: iced::Border::default(),
-        icon: MUTED,
-        placeholder: FIELD_PLACEHOLDER,
-        value: iced::Color::WHITE,
-        selection: ACCENT,
+        icon: tk().text_muted,
+        placeholder: tk().placeholder,
+        value: tk().text,
+        selection: tk().accent,
     }
 }
 
 pub(crate) fn player_bg(_: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(iced::Background::Color(SIDEBAR_BG)),
+        background: Some(iced::Background::Color(tk().panel)),
         border: iced::Border::default().rounded(8),
         ..Default::default()
     }
@@ -283,12 +391,12 @@ pub(crate) fn accent_button(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let bg = match status {
-        iced::widget::button::Status::Hovered => ACCENT_HOVER,
-        _ => ACCENT,
+        iced::widget::button::Status::Hovered => tk().accent_hover,
+        _ => tk().accent,
     };
     iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
-        text_color: iced::Color::WHITE,
+        text_color: tk().on_accent,
         border: iced::Border::default().rounded(20),
         ..Default::default()
     }
@@ -304,14 +412,14 @@ pub(crate) fn nav_style(
             iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
         );
         let background = if active || hovered {
-            Some(iced::Background::Color(NAV_ACTIVE_BG))
+            Some(iced::Background::Color(tk().surface_active))
         } else {
             None
         };
         let text_color = if active || hovered {
-            iced::Color::WHITE
+            tk().text
         } else {
-            MUTED
+            tk().text_muted
         };
         iced::widget::button::Style {
             background,

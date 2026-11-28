@@ -932,13 +932,16 @@ impl AppState {
         mouse_area(
             container(
                 row![
-                    text(format!("{n}")).size(13).color(MUTED).width(28),
+                    text(format!("{n}"))
+                        .size(13)
+                        .color(tk().text_muted)
+                        .width(28),
                     self.art_play_button(t, hovered, play_msg),
                     Self::track_text_single(
                         &t.title,
                         &Self::artist_album_sub(&t.artist, t.album.as_deref()),
                         14,
-                        iced::Color::WHITE
+                        tk().text
                     ),
                     song_meta_text(self.row_plays(t), self.track_secs(t)),
                     heart,
