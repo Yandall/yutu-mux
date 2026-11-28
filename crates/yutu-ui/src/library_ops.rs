@@ -677,9 +677,53 @@ impl AppState {
         self.queue_many(tracks, &label)
     }
 
+    /// Fold the current search results into the page entity sets
+    /// (see [`Self::absorb_page_entities`]).
+    pub(crate) fn sync_page_entities(&mut self) {
+        let artists: Vec<Artist> = self
+            .results
+            .artists
+            .iter()
+            .chain(&self.all_results.artists)
+            .cloned()
+            .collect();
+        let albums: Vec<Album> = self
+            .results
+            .albums
+            .iter()
+            .chain(&self.all_results.albums)
+            .cloned()
+            .collect();
+        self.absorb_page_entities(artists, albums);
+    }
+
+    /// Merge searched artists and albums into the page entity sets:
+    /// upsert by id, the fresh copy moves to the end (newest wins on
+    /// name lookups). Never drops what a search left out, so an open
+    /// page only ever gains newer data about its own artist/album.
+    pub(crate) fn absorb_page_entities(
+        &mut self,
+        artists: impl IntoIterator<Item = Artist>,
+        albums: impl IntoIterator<Item = Album>,
+    ) {
+        fn upsert<T>(dst: &mut Vec<T>, src: impl IntoIterator<Item = T>, id: impl Fn(&T) -> &str) {
+            for item in src {
+                dst.retain(|d| id(d) != id(&item));
+                dst.push(item);
+            }
+            if dst.len() > PAGE_ENTITY_CAP {
+                let extra = dst.len() - PAGE_ENTITY_CAP;
+                dst.drain(..extra);
+            }
+        }
+        const PAGE_ENTITY_CAP: usize = 1000;
+        upsert(&mut self.page_artists, artists, |a: &Artist| a.id.as_str());
+        upsert(&mut self.page_albums, albums, |a: &Album| a.id.as_str());
+    }
+
     /// Accept an artist id, a catalog track id, or a plain name.
     pub(crate) fn resolve_artist_name(&self, id_or_name: &str) -> String {
-        if let Some(a) = self.results.artists.iter().find(|a| a.id == id_or_name) {
+        if let Some(a) = self.page_artists.iter().find(|a| a.id == id_or_name) {
             return a.name.clone();
         }
         if let Some(a) = self.artist_meta.get(id_or_name) {
@@ -688,17 +732,7 @@ impl AppState {
         if let Some(t) = self.catalog.get(id_or_name) {
             return t.artist.clone();
         }
-        if self.results.artists.iter().any(|a| a.name == id_or_name) {
-            return id_or_name.to_string();
-        }
-        if self.catalog.values().any(|t| t.artist == id_or_name) {
-            return id_or_name.to_string();
-        }
-        self.results
-            .artists
-            .first()
-            .map(|a| a.name.clone())
-            .unwrap_or_else(|| id_or_name.to_string())
+        id_or_name.to_string()
     }
 
     pub(crate) fn artist_tracks(&self, artist: &str) -> Vec<Track> {
@@ -808,6 +842,16 @@ impl AppState {
     /// playlists) and the channel's own name and photo.
     pub(crate) fn store_artist_page(&mut self, channel: String, page: yutu_core::ArtistPage) {
         if !page.name.is_empty() {
+            // The channel's own header is the newest word on its name
+            // and photo (newer than any search hit met before).
+            self.absorb_page_entities(
+                [Artist {
+                    id: channel.clone(),
+                    name: page.name.clone(),
+                    thumbnail_url: page.thumbnail_url.clone(),
+                }],
+                [],
+            );
             self.artist_meta.insert(
                 channel.clone(),
                 Artist {
@@ -984,19 +1028,20 @@ impl AppState {
         }
     }
 
-    /// Searched or shelf-met artist with this exact channel id.
+    /// Searched or shelf-met artist with this exact channel id (page
+    /// entities, never the live results: see `page_artists`).
     pub(crate) fn artist_hit(&self, id: &str) -> Option<&Artist> {
-        self.results
-            .artists
+        self.page_artists
             .iter()
+            .rev()
             .find(|a| a.id == id)
             .or_else(|| self.artist_meta.get(id))
     }
 
-    /// Searched or shelf-met album with this exact browse id.
+    /// Searched or shelf-met album with this exact browse id (page
+    /// entities, never the live results).
     pub(crate) fn album_hit(&self, id: &str) -> Option<&Album> {
-        self.results
-            .albums
+        self.page_albums
             .iter()
             .find(|a| a.id == id)
             .or_else(|| self.album_meta.get(id))
@@ -1203,13 +1248,13 @@ impl AppState {
     /// replace `results` while a cached list survives). Unknown names
     /// mean catalog-only.
     pub(crate) fn artist_channel_id(&self, route_id: &str) -> Option<String> {
-        if self.results.artists.iter().any(|a| a.id == route_id) {
+        if self.page_artists.iter().any(|a| a.id == route_id) {
             return Some(route_id.to_string());
         }
         if let Some(hit) = self
-            .results
-            .artists
+            .page_artists
             .iter()
+            .rev()
             .find(|a| a.name == route_id)
             .map(|a| a.id.clone())
         {
@@ -1252,8 +1297,7 @@ impl AppState {
 
     pub(crate) fn artist_albums(&self, artist: &str) -> Vec<Album> {
         let mut albums: Vec<Album> = self
-            .results
-            .albums
+            .page_albums
             .iter()
             .filter(|a| a.artist == artist)
             .cloned()
@@ -1384,8 +1428,7 @@ impl AppState {
             // counts, and the bare-title alias (which may point at a
             // same-titled album by someone else) is never consulted.
             if let Some(hit) = self
-                .results
-                .albums
+                .page_albums
                 .iter()
                 .find(|a| a.title == title && a.artist == owner)
             {
@@ -1393,7 +1436,7 @@ impl AppState {
             }
             return self.album_alias.get(route_id).cloned();
         }
-        let mut candidates = self.results.albums.iter().filter(|a| a.title == title);
+        let mut candidates = self.page_albums.iter().filter(|a| a.title == title);
         if let Some(first) = candidates.next() {
             // Duplicate titles across artists: prefer the one owning
             // catalog tracks under this title.
@@ -1722,8 +1765,7 @@ impl AppState {
         }
         let title = self.resolve_album_title(route_id);
         let owner = self.album_owner(route_id);
-        self.results
-            .albums
+        self.page_albums
             .iter()
             .find(|a| a.title == title && owner.as_deref().is_none_or(|o| a.artist == o))
     }

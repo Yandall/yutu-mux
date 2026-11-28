@@ -27,6 +27,13 @@ pub struct AppState {
     /// Server-ordered All response for the current query (keystroke
     /// narrowed like `results`; the All tab renders it as-is).
     pub all_results: SearchAll,
+    /// Searched artists and albums the artist and album pages resolve
+    /// against (name, photo, channel, album cards). Every search merges
+    /// in (newest copy wins) and nothing is dropped, so a page shows the
+    /// latest data about its own artist and never loses it to a search
+    /// for someone else.
+    pub(crate) page_artists: Vec<Artist>,
+    pub(crate) page_albums: Vec<Album>,
     pub queue: Queue,
     pub liked: HashSet<String>,
     /// Liked ids in add order (membership stays in `liked`).
