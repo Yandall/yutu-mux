@@ -8791,6 +8791,64 @@ fn fake_backdrop(s: &mut AppState, url: String) {
     );
 }
 
+/// Made-up artist page for the layout snapshots: every card kind.
+fn snapshot_artist_page() -> yutu_core::ArtistPage {
+    use yutu_core::{ArtistShelf, ShelfItem, ShelfItemKind, ShelfMore};
+    let cards = |kind: ShelfItemKind, prefix: &str, sub: &str| -> Vec<ShelfItem> {
+        (0..8)
+            .map(|i| ShelfItem {
+                kind,
+                id: format!("{prefix}{i}"),
+                title: format!("{prefix} card number {i} with a long title"),
+                subtitle: sub.to_string(),
+                year: None,
+                thumbnail_url: Some(format!("https://example.invalid/{prefix}{i}.jpg")),
+            })
+            .collect()
+    };
+    yutu_core::ArtistPage {
+        name: "Queen".into(),
+        thumbnail_url: None,
+        shelves: vec![
+            ArtistShelf {
+                title: "Albums".into(),
+                items: cards(ShelfItemKind::Album, "MPRE", "2026"),
+                more: Some(ShelfMore::Grid {
+                    browse_id: "MPADq".into(),
+                    params: "p=".into(),
+                }),
+            },
+            ArtistShelf {
+                title: "Singles & EPs".into(),
+                items: cards(ShelfItemKind::Album, "MPRS", "EP \u{b7} 2026"),
+                more: Some(ShelfMore::Grid {
+                    browse_id: "MPADq".into(),
+                    params: "s=".into(),
+                }),
+            },
+            ArtistShelf {
+                title: "Videos".into(),
+                items: cards(ShelfItemKind::Video, "vid", "Queen \u{b7} 1.2M views"),
+                more: Some(ShelfMore::Playlist("OLAKv".into())),
+            },
+            ArtistShelf {
+                title: "Featured on".into(),
+                items: cards(
+                    ShelfItemKind::Playlist,
+                    "RDCLAK",
+                    "Playlist \u{b7} YouTube Music",
+                ),
+                more: None,
+            },
+            ArtistShelf {
+                title: "Fans might also like".into(),
+                items: cards(ShelfItemKind::Artist, "UC", "294K subscribers"),
+                more: None,
+            },
+        ],
+    }
+}
+
 /// Headless layout screenshots (no display, no network): renders the
 /// whole window for each page and panel state at every layout width
 /// and writes PNGs to `YUTU_SNAPSHOT_DIR` (default
@@ -8824,6 +8882,8 @@ fn layout_snapshots() {
         "search",
         "playlist",
         "album",
+        "artist",
+        "artistmore",
         "settings",
         "nowplaying",
         "romaji",
@@ -8889,6 +8949,39 @@ fn layout_snapshots() {
                     // the catalog rows instead of the loading line.
                     s.album_resolving = None;
                     s.hovered_track = Some(track_hover_key("album", "t4"));
+                }
+                "artist" | "artistmore" => {
+                    // Live top songs plus every server shelf (offline:
+                    // the page lands by hand).
+                    let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+                    s.merge_live_tracks(tracks.clone());
+                    s.artist_alias.insert("Queen".into(), "UCq".into());
+                    s.artist_top.insert("UCq".into(), ids);
+                    let _ = s.update(Message::OpenArtist("Queen".into()));
+                    s.artist_loading = None;
+                    s.artist_page_loading = None;
+                    let _ = s.update(Message::ArtistPageLoaded {
+                        channel_id: "UCq".into(),
+                        result: Ok(snapshot_artist_page()),
+                    });
+                    if name == "artistmore" {
+                        let _ = s.update(Message::OpenArtistShelfMore {
+                            channel: "UCq".into(),
+                            shelf: 0,
+                        });
+                        s.artist_grid_loading = None;
+                        let grid: Vec<_> = snapshot_artist_page().shelves[0]
+                            .items
+                            .iter()
+                            .cycle()
+                            .take(24)
+                            .cloned()
+                            .collect();
+                        let _ = s.update(Message::ArtistGridLoaded {
+                            key: "MPADq|p=".into(),
+                            result: Ok(grid),
+                        });
+                    }
                 }
                 "settings" => s.navigate(Route::Settings),
                 "history" => s.navigate(Route::History),

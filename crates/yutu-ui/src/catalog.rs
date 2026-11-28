@@ -475,7 +475,7 @@ impl AppState {
                 ids
             }
             Route::Lyrics(id) => vec![id.clone()],
-            Route::Settings => Vec::new(),
+            Route::Settings | Route::ArtistShelf { .. } => Vec::new(),
         }
     }
 

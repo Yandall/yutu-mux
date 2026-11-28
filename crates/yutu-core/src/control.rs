@@ -69,7 +69,7 @@ pub enum Command {
     Like(Option<String>),
     /// Go to a page: `home`, `search`, `history`, `discovery`,
     /// `settings`, `back`, `forward`, `artist:<id>`, `album:<id>`,
-    /// `playlist:<id>`, `lyrics:<id>`.
+    /// `playlist:<id>`, `lyrics:<id>`, `artist-more:<channel>:<shelf>`.
     Nav(String),
     /// Now Playing drawer.
     NowPlaying(Option<bool>),
@@ -150,6 +150,7 @@ Playback:
 UI:
   nav <page>               home|search|history|discovery|settings|back|forward
                            artist:<id>|album:<id>|playlist:<id>|lyrics:<id>
+                           artist-more:<channel>:<shelf> (a shelf's More)
   now-playing [on|off]     Now Playing drawer
   library [on|off]         library panel
   queue-panel [on|off]     queue panel

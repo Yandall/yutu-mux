@@ -67,7 +67,7 @@ impl SearchAuth {
         Self::cookie(auth.header_value().to_string())
     }
 
-    fn authed(&self) -> bool {
+    pub(crate) fn authed(&self) -> bool {
         self.cookie.is_some() || self.bearer.is_some()
     }
 
@@ -80,6 +80,25 @@ impl SearchAuth {
                 .filter(|v| !v.is_empty())
         })
     }
+}
+
+/// Session headers on an Innertube POST: the cookie plus its
+/// `SAPISIDHASH`, or the OAuth bearer. Anonymous adds nothing.
+pub(crate) fn with_auth(
+    mut request: reqwest::RequestBuilder,
+    auth: &SearchAuth,
+) -> reqwest::RequestBuilder {
+    if let Some(cookie) = &auth.cookie {
+        request = request.header("Cookie", cookie.clone());
+        if let Some(sapisid) = auth.sapisid() {
+            let hash = sapisid_hash(now_secs(), sapisid);
+            request = request.header("Authorization", format!("SAPISIDHASH {hash}"));
+        }
+    }
+    if let Some(bearer) = &auth.bearer {
+        request = request.header("Authorization", format!("Bearer {bearer}"));
+    }
+    request
 }
 
 /// `SAPISIDHASH {timestamp}_{sha1(timestamp + " " + SAPISID + " " +
@@ -205,16 +224,7 @@ async fn post_search(
         .header("Referer", "https://music.youtube.com/")
         .header("Content-Type", "application/json")
         .json(&body);
-    if let Some(cookie) = &auth.cookie {
-        request = request.header("Cookie", cookie.clone());
-        if let Some(sapisid) = auth.sapisid() {
-            let hash = sapisid_hash(now_secs(), sapisid);
-            request = request.header("Authorization", format!("SAPISIDHASH {hash}"));
-        }
-    }
-    if let Some(bearer) = &auth.bearer {
-        request = request.header("Authorization", format!("Bearer {bearer}"));
-    }
+    request = with_auth(request, auth);
     let response = request
         .send()
         .await

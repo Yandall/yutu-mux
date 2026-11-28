@@ -313,6 +313,22 @@ pub struct AppState {
     /// Full top-songs list expanded (artist page "Show all"): reset
     /// on every page open; the collapsed Popular shows the head.
     pub(crate) artist_expanded: bool,
+    /// Every shelf of an artist page (Albums, Singles & EPs, Videos,
+    /// Featured on, ...) per channel id, server order. Capped like the
+    /// live lists (FIFO via `artist_pages_order`).
+    pub(crate) artist_pages: HashMap<String, yutu_core::ArtistPage>,
+    pub(crate) artist_pages_order: Vec<String>,
+    /// In-flight shelf page fetch (channel id).
+    pub(crate) artist_page_loading: Option<String>,
+    /// "More" grids (full discography) per `browse_id` + params key.
+    pub(crate) artist_grids: HashMap<String, Vec<yutu_core::ShelfItem>>,
+    /// In-flight grid fetch (grid key).
+    pub(crate) artist_grid_loading: Option<String>,
+    /// Albums and artists met on artist shelves (browse id -> card),
+    /// so album and artist pages, menus and headers resolve them like
+    /// search hits after later searches replace `results`.
+    pub(crate) album_meta: HashMap<String, Album>,
+    pub(crate) artist_meta: HashMap<String, Artist>,
     /// Drawer lyrics scroll offset (sticky compact header past 200px).
     pub(crate) drawer_scroll: f32,
     /// Measured drawer lyrics viewport height (the scrollable's own

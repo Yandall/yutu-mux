@@ -682,6 +682,9 @@ impl AppState {
         if let Some(a) = self.results.artists.iter().find(|a| a.id == id_or_name) {
             return a.name.clone();
         }
+        if let Some(a) = self.artist_meta.get(id_or_name) {
+            return a.name.clone();
+        }
         if let Some(t) = self.catalog.get(id_or_name) {
             return t.artist.clone();
         }
@@ -739,8 +742,9 @@ impl AppState {
                         "live-detail",
                         format_args!("artist top fetch: {channel}"),
                     );
-                    tasks.push(Self::artist_top_task(channel));
+                    tasks.push(Self::artist_top_task(channel.clone()));
                 }
+                tasks.extend(self.artist_page_fetch(&channel));
             } else {
                 yutu_core::app_log::info(
                     "live-detail",
@@ -760,6 +764,242 @@ impl AppState {
         {
             self.ensure_visible_tasks()
         }
+    }
+
+    /// Shelf page fetch for a channel (once per id: cached pages and
+    /// in-flight fetches skip). Offline builds fetch nothing.
+    #[cfg(feature = "innertube")]
+    pub(crate) fn artist_page_fetch(&mut self, channel: &str) -> Option<iced::Task<Message>> {
+        if self.artist_pages.contains_key(channel)
+            || self.artist_page_loading.as_deref() == Some(channel)
+        {
+            return None;
+        }
+        self.artist_page_loading = Some(channel.to_string());
+        yutu_core::app_log::info(
+            "live-detail",
+            format_args!("artist shelves fetch: {channel}"),
+        );
+        Some(Self::artist_page_task(
+            channel.to_string(),
+            self.language.hl(),
+        ))
+    }
+
+    /// Cached shelf page for an artist route (None until it lands).
+    pub(crate) fn artist_page(&self, route_id: &str) -> Option<&yutu_core::ArtistPage> {
+        let channel = self.artist_channel_id(route_id)?;
+        self.artist_pages.get(&channel)
+    }
+
+    /// Shelf fetch in flight for this artist route.
+    pub(crate) fn artist_page_pending(&self, route_id: &str) -> bool {
+        self.artist_channel_id(route_id)
+            .is_some_and(|c| self.artist_page_loading.as_deref() == Some(c.as_str()))
+    }
+
+    /// Cache key of a "More" grid.
+    pub(crate) fn artist_grid_key(browse_id: &str, params: &str) -> String {
+        format!("{browse_id}|{params}")
+    }
+
+    /// Store a landed shelf page: capped cache, plus the metadata that
+    /// lets its cards open like search hits (albums, artists,
+    /// playlists) and the channel's own name and photo.
+    pub(crate) fn store_artist_page(&mut self, channel: String, page: yutu_core::ArtistPage) {
+        if !page.name.is_empty() {
+            self.artist_meta.insert(
+                channel.clone(),
+                Artist {
+                    id: channel.clone(),
+                    name: page.name.clone(),
+                    thumbnail_url: page.thumbnail_url.clone(),
+                },
+            );
+        }
+        for shelf in &page.shelves {
+            self.register_shelf_items(&shelf.items, &page.name);
+        }
+        if !self.artist_pages.contains_key(&channel) {
+            self.artist_pages_order.push(channel.clone());
+        }
+        self.artist_pages.insert(channel, page);
+        while self.artist_pages_order.len() > 64 {
+            let old = self.artist_pages_order.remove(0);
+            self.artist_pages.remove(&old);
+        }
+    }
+
+    /// Record shelf cards so their pages and menus resolve (see
+    /// [`Self::store_artist_page`]). Existing search hits win.
+    pub(crate) fn register_shelf_items(&mut self, items: &[yutu_core::ShelfItem], owner: &str) {
+        use yutu_core::ShelfItemKind;
+        for item in items {
+            match item.kind {
+                ShelfItemKind::Album => {
+                    self.album_meta.entry(item.id.clone()).or_insert(Album {
+                        id: item.id.clone(),
+                        title: item.title.clone(),
+                        artist: owner.to_string(),
+                        year: item.year,
+                        thumbnail_url: item.thumbnail_url.clone(),
+                    });
+                }
+                ShelfItemKind::Artist => {
+                    self.artist_meta.entry(item.id.clone()).or_insert(Artist {
+                        id: item.id.clone(),
+                        name: item.title.clone(),
+                        thumbnail_url: item.thumbnail_url.clone(),
+                    });
+                }
+                ShelfItemKind::Playlist => {
+                    self.remote_playlist_meta.entry(item.id.clone()).or_insert(
+                        yutu_core::PlaylistHit {
+                            id: item.id.clone(),
+                            title: item.title.clone(),
+                            author: String::new(),
+                            detail: item.subtitle.clone(),
+                            thumbnail_url: item.thumbnail_url.clone(),
+                        },
+                    );
+                }
+                ShelfItemKind::Video => {}
+            }
+        }
+    }
+
+    /// Playable track for a shelf video card: the page's artist (not
+    /// the uploader channel, so lyrics and scrobbles match), a video
+    /// flag, and the card art.
+    pub(crate) fn shelf_video_track(item: &yutu_core::ShelfItem, owner: &str) -> Track {
+        Track {
+            id: item.id.clone(),
+            title: item.title.clone(),
+            artist: owner.to_string(),
+            album: None,
+            duration_secs: 0,
+            thumbnail_url: item.thumbnail_url.clone(),
+            thumbnail_large_url: item.thumbnail_url.clone(),
+            plays: None,
+            is_video: true,
+        }
+    }
+
+    /// Shelf of a cached artist page by index.
+    pub(crate) fn artist_shelf(
+        &self,
+        channel: &str,
+        shelf: usize,
+    ) -> Option<&yutu_core::ArtistShelf> {
+        self.artist_pages.get(channel)?.shelves.get(shelf)
+    }
+
+    /// Grid key of the shelf page on screen (None elsewhere).
+    pub(crate) fn artist_shelf_grid_key(&self) -> Option<String> {
+        let Route::ArtistShelf { channel, shelf } = &self.route else {
+            return None;
+        };
+        match &self.artist_shelf(channel, *shelf)?.more {
+            Some(yutu_core::ShelfMore::Grid { browse_id, params }) => {
+                Some(Self::artist_grid_key(browse_id, params))
+            }
+            _ => None,
+        }
+    }
+
+    /// Cards of a shelf's full page: the fetched grid when it landed,
+    /// else the shelf's own cards (shown while the grid loads).
+    pub(crate) fn artist_shelf_cards(
+        &self,
+        channel: &str,
+        shelf: usize,
+    ) -> Vec<yutu_core::ShelfItem> {
+        let Some(s) = self.artist_shelf(channel, shelf) else {
+            return Vec::new();
+        };
+        if let Some(yutu_core::ShelfMore::Grid { browse_id, params }) = &s.more {
+            if let Some(items) = self
+                .artist_grids
+                .get(&Self::artist_grid_key(browse_id, params))
+            {
+                return items.clone();
+            }
+        }
+        s.items.clone()
+    }
+
+    /// Shelf "More": the Videos playlist opens on the playlist page,
+    /// the discography on its grid page (fetched once per grid).
+    pub(crate) fn open_artist_shelf_more(
+        &mut self,
+        channel: String,
+        shelf: usize,
+    ) -> iced::Task<Message> {
+        let Some(s) = self.artist_shelf(&channel, shelf).cloned() else {
+            return iced::Task::none();
+        };
+        let owner = self
+            .artist_pages
+            .get(&channel)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        match s.more {
+            Some(yutu_core::ShelfMore::Playlist(id)) => {
+                self.remote_playlist_meta
+                    .entry(id.clone())
+                    .or_insert(yutu_core::PlaylistHit {
+                        id: id.clone(),
+                        title: s.title.clone(),
+                        author: owner,
+                        detail: String::new(),
+                        thumbnail_url: s.items.first().and_then(|i| i.thumbnail_url.clone()),
+                    });
+                self.open_search_playlist(id)
+            }
+            Some(yutu_core::ShelfMore::Grid { browse_id, params }) => {
+                self.go(Route::ArtistShelf { channel, shelf });
+                self.publish_mpris();
+                #[allow(unused_mut)]
+                let mut tasks = vec![self.ensure_visible_tasks()];
+                #[cfg(feature = "innertube")]
+                {
+                    let key = Self::artist_grid_key(&browse_id, &params);
+                    if !self.artist_grids.contains_key(&key)
+                        && self.artist_grid_loading.as_deref() != Some(key.as_str())
+                    {
+                        self.artist_grid_loading = Some(key.clone());
+                        tasks.push(Self::artist_grid_task(
+                            key,
+                            browse_id,
+                            params,
+                            self.language.hl(),
+                        ));
+                    }
+                }
+                #[cfg(not(feature = "innertube"))]
+                let _ = (browse_id, params);
+                iced::Task::batch(tasks)
+            }
+            None => iced::Task::none(),
+        }
+    }
+
+    /// Searched or shelf-met artist with this exact channel id.
+    pub(crate) fn artist_hit(&self, id: &str) -> Option<&Artist> {
+        self.results
+            .artists
+            .iter()
+            .find(|a| a.id == id)
+            .or_else(|| self.artist_meta.get(id))
+    }
+
+    /// Searched or shelf-met album with this exact browse id.
+    pub(crate) fn album_hit(&self, id: &str) -> Option<&Album> {
+        self.results
+            .albums
+            .iter()
+            .find(|a| a.id == id)
+            .or_else(|| self.album_meta.get(id))
     }
 
     /// Open an album page (same funnel rule as [`Self::open_artist`]:
@@ -837,10 +1077,7 @@ impl AppState {
     /// Album menu header: cover (544 key), title, and subtitle for any
     /// album route, search hit or not (album page, artist page cards).
     pub(crate) fn album_menu_cover(&self, id: &str) -> Option<String> {
-        self.results
-            .albums
-            .iter()
-            .find(|a| a.id == id)
+        self.album_hit(id)
             .and_then(|a| self.album_cover(a))
             .or_else(|| self.album_header_cover(id))
     }
@@ -981,6 +1218,10 @@ impl AppState {
         if let Some(hit) = self.artist_alias.get(route_id) {
             return Some(hit.clone());
         }
+        // Channel met on a shelf (Fans might also like) or a page.
+        if self.artist_meta.contains_key(route_id) {
+            return Some(route_id.to_string());
+        }
         // Direct channel route whose results were replaced since.
         if self.artist_top.contains_key(route_id) {
             return Some(route_id.to_string());
@@ -1035,7 +1276,7 @@ impl AppState {
 
     /// Accept an album id, a catalog track id, or a plain title.
     pub(crate) fn resolve_album_title(&self, id_or_title: &str) -> String {
-        if let Some(a) = self.results.albums.iter().find(|a| a.id == id_or_title) {
+        if let Some(a) = self.album_hit(id_or_title) {
             return a.title.clone();
         }
         if let Some(t) = self.catalog.get(id_or_title) {
@@ -1094,7 +1335,7 @@ impl AppState {
         if let Some((_, artist)) = Self::split_album_route(route_id) {
             return artist.map(str::to_string);
         }
-        if let Some(a) = self.results.albums.iter().find(|a| a.id == route_id) {
+        if let Some(a) = self.album_hit(route_id) {
             return Some(a.artist.clone()).filter(|a| !a.is_empty());
         }
         self.catalog.get(route_id).map(|t| t.artist.clone())
@@ -1133,7 +1374,7 @@ impl AppState {
     /// collide across artists), then via recorded aliases and the live
     /// cache itself. Unknown titles mean catalog-only.
     pub(crate) fn album_browse_id(&self, route_id: &str) -> Option<String> {
-        if self.results.albums.iter().any(|a| a.id == route_id) {
+        if self.album_hit(route_id).is_some() {
             return Some(route_id.to_string());
         }
         let title = self.resolve_album_title(route_id);
@@ -1476,7 +1717,7 @@ impl AppState {
     /// Searched album matching an album route: the exact id, else the
     /// title, restricted to the route's artist when it names one.
     pub(crate) fn album_search_hit(&self, route_id: &str) -> Option<&Album> {
-        if let Some(a) = self.results.albums.iter().find(|a| a.id == route_id) {
+        if let Some(a) = self.album_hit(route_id) {
             return Some(a);
         }
         let title = self.resolve_album_title(route_id);

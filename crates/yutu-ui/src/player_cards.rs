@@ -490,6 +490,12 @@ impl AppState {
             .find(|a| a.name == name)
             .and_then(|a| a.thumbnail_url.clone())
             .or_else(|| {
+                self.artist_meta
+                    .values()
+                    .find(|a| a.name == name && a.thumbnail_url.is_some())
+                    .and_then(|a| a.thumbnail_url.clone())
+            })
+            .or_else(|| {
                 self.catalog
                     .values()
                     .find(|t| t.artist == name)

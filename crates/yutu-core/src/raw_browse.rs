@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::innertube::{is_play_count, parse_duration_secs};
 use crate::models::Track;
-use crate::raw_search::ORIGIN;
+use crate::raw_search::{SearchAuth, ORIGIN};
 
 const BROWSE_URL: &str =
     "https://music.youtube.com/youtubei/v1/browse?alt=json&prettyPrint=false&key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
@@ -31,33 +31,86 @@ pub async fn raw_shelf_tracklist(browse_id: &str) -> Result<Vec<Track>, String> 
         "context": crate::innertube::web_context(),
         "browseId": browse_id,
     });
-    let send = crate::shared_client()
+    let text = post_browse(&body, SHELF_TIMEOUT_SECS).await?;
+    Ok(parse_shelf_tracklist(&text))
+}
+
+/// Anonymous `youtubei/v1/browse` POST returning the raw body. One
+/// cap for connect + headers + body: a stall anywhere fails fast
+/// instead of wedging a page on "Loading..." (the once-per-id guards
+/// would otherwise skip every refetch).
+pub(crate) async fn post_browse(body: &Value, timeout_secs: u64) -> Result<String, String> {
+    post_browse_as(body, &SearchAuth::anonymous(), timeout_secs)
+        .await
+        .map_err(BrowseFail::message)
+}
+
+/// Browse as the signed-in session (personalized like the logged-in
+/// web client), retrying anonymously when the server rejects the
+/// session (a stale login must never blank the page).
+pub(crate) async fn post_browse_session(
+    body: &Value,
+    auth: &SearchAuth,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    match post_browse_as(body, auth, timeout_secs).await {
+        Ok(text) => Ok(text),
+        Err(BrowseFail::Auth) if auth.authed() => {
+            crate::app_log::warn("yutu-browse", "authed browse rejected: retrying anonymous");
+            post_browse(body, timeout_secs).await
+        }
+        Err(e) => Err(e.message()),
+    }
+}
+
+pub(crate) enum BrowseFail {
+    /// 401/403: the session was refused.
+    Auth,
+    Other(String),
+}
+
+impl BrowseFail {
+    fn message(self) -> String {
+        match self {
+            BrowseFail::Auth => "browse: session rejected".into(),
+            BrowseFail::Other(m) => m,
+        }
+    }
+}
+
+async fn post_browse_as(
+    body: &Value,
+    auth: &SearchAuth,
+    timeout_secs: u64,
+) -> Result<String, BrowseFail> {
+    let request = crate::shared_client()
         .post(BROWSE_URL)
         .header("User-Agent", crate::innertube::USER_AGENT)
         .header("X-Origin", ORIGIN)
         .header("Origin", ORIGIN)
         .header("Referer", "https://music.youtube.com/")
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send();
-    // One cap for connect + headers + body: a stall anywhere falls
-    // back to the typed 5-song shelf instead of wedging the page.
+        .json(body);
+    let send = crate::raw_search::with_auth(request, auth).send();
     let fetch = async {
         let response = send
             .await
-            .map_err(|e| format!("shelf browse request: {e}"))?;
-        if !response.status().is_success() {
-            return Err(format!("shelf browse: HTTP {}", response.status()));
+            .map_err(|e| BrowseFail::Other(format!("browse request: {e}")))?;
+        let status = response.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(BrowseFail::Auth);
+        }
+        if !status.is_success() {
+            return Err(BrowseFail::Other(format!("browse: HTTP {status}")));
         }
         response
             .text()
             .await
-            .map_err(|e| format!("shelf browse body: {e}"))
+            .map_err(|e| BrowseFail::Other(format!("browse body: {e}")))
     };
-    let text = tokio::time::timeout(std::time::Duration::from_secs(SHELF_TIMEOUT_SECS), fetch)
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fetch)
         .await
-        .map_err(|_| "shelf browse timed out".to_string())??;
-    Ok(parse_shelf_tracklist(&text))
+        .map_err(|_| BrowseFail::Other("browse timed out".into()))?
 }
 
 /// Parse a saved shelf-playlist browse response (see

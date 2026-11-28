@@ -364,6 +364,12 @@ impl AppState {
             if urls.len() >= ART_SWEEP_CAP {
                 break;
             }
+            // Loaded or in-flight art never takes a sweep slot: pages
+            // with many cards in view (artist shelves) would otherwise
+            // fill the cap with done art and starve the cards below.
+            if self.art_mem(&url).is_some() || self.artwork_loading.contains(&url) {
+                continue;
+            }
             if yy >= top && yy <= bottom && seen.insert(url.clone()) {
                 urls.push(url);
             }
@@ -894,7 +900,13 @@ impl AppState {
                     .collect();
                 let pop_y0 = BODY_PAD + 160.0 + 12.0 + SECTION_H;
                 slots.extend(Self::track_row_slots(&popular, pop_y0, ROW_PITCH));
-                let grid_y0 = pop_y0 + popular.len() as f32 * ROW_PITCH + 12.0 + SECTION_H;
+                let below_y0 = pop_y0 + popular.len() as f32 * ROW_PITCH + 12.0;
+                let shelf_slots = self.artist_shelf_art_slots(id, below_y0);
+                if !shelf_slots.is_empty() {
+                    slots.extend(shelf_slots);
+                    return slots;
+                }
+                let grid_y0 = below_y0 + SECTION_H;
                 slots.extend(
                     self.grid_art_slots(
                         grid_y0,
@@ -906,6 +918,17 @@ impl AppState {
                     ),
                 );
                 slots
+            }
+            Route::ArtistShelf { channel, shelf } => {
+                let y0 = BODY_PAD + Self::text_h(13.0) + 10.0 + Self::text_h(28.0) + 10.0;
+                self.grid_art_slots(
+                    y0,
+                    self.artist_shelf_cards(channel, *shelf)
+                        .into_iter()
+                        .filter_map(|i| i.thumbnail_url)
+                        .map(|u| yutu_core::hires_thumb_url(&u, 544))
+                        .collect(),
+                )
             }
             // Album rows carry no art (the header owns the cover,
             // warmed on open and on tracklist arrival).

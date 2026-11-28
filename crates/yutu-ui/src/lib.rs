@@ -44,6 +44,9 @@ pub(crate) use theme::*;
 pub(crate) use widgets::*;
 #[cfg(test)]
 mod app_tests;
+mod artist_shelves;
+#[cfg(test)]
+mod artist_shelves_tests;
 mod dialogs_menus;
 mod library_ops;
 mod lifecycle;

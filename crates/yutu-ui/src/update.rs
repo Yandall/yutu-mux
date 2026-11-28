@@ -2438,10 +2438,7 @@ impl AppState {
                 self.open_coll_for(CollectionMenu::Artist(id.clone()));
                 // Same contract (the menu reads the hit thumb at 544).
                 if let Some(url) = self
-                    .results
-                    .artists
-                    .iter()
-                    .find(|a| a.id == id)
+                    .artist_hit(&id)
                     .and_then(|a| a.thumbnail_url.clone())
                     .map(|u| yutu_core::hires_thumb_url(&u, 544))
                 {
@@ -2453,11 +2450,8 @@ impl AppState {
                 self.open_coll_for(CollectionMenu::Playlist(id.clone()));
                 // Same contract (`playlist_art` at menu size).
                 if let Some(url) = self
-                    .results
-                    .playlists
-                    .iter()
-                    .find(|p| p.id == id)
-                    .and_then(|p| p.thumbnail_url.clone())
+                    .remote_playlist_hit(&id)
+                    .and_then(|p| p.thumbnail_url)
                     .map(|u| yutu_core::hires_thumb_url(&u, 544))
                 {
                     self.publish_mpris();
@@ -2896,6 +2890,98 @@ impl AppState {
                     }
                 }
             }
+            Message::ArtistPageLoaded { channel_id, result } => {
+                let watching = self.artist_page_loading.as_deref() == Some(channel_id.as_str());
+                if watching {
+                    self.artist_page_loading = None;
+                }
+                match result {
+                    Ok(page) => {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!(
+                                "artist shelves arrived: {channel_id} ({} shelves)",
+                                page.shelves.len()
+                            ),
+                        );
+                        // Empty answers stay uncached: the next visit
+                        // retries (same rule as the top songs).
+                        if !page.shelves.is_empty() {
+                            self.store_artist_page(channel_id.clone(), page);
+                            if self.route_shows_browse(&channel_id, true) {
+                                return self.ensure_visible_tasks();
+                            }
+                        }
+                    }
+                    // The page keeps its local fallback (albums known
+                    // from searches and the library).
+                    Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("artist shelves failed: {channel_id} ({e})"),
+                        );
+                        if watching && self.route_shows_browse(&channel_id, true) {
+                            self.status =
+                                Self::failure_status(self.language.fail_artist_shelves(), &e);
+                        }
+                    }
+                }
+            }
+            Message::ArtistGridLoaded { key, result } => {
+                let watching = self.artist_grid_loading.as_deref() == Some(key.as_str());
+                if watching {
+                    self.artist_grid_loading = None;
+                }
+                let showing = self.artist_shelf_grid_key().as_deref() == Some(key.as_str());
+                match result {
+                    Ok(items) => {
+                        yutu_core::app_log::info(
+                            "live-detail",
+                            format_args!("artist grid arrived: {key} ({} cards)", items.len()),
+                        );
+                        if !items.is_empty() {
+                            let owner = match &self.route {
+                                Route::ArtistShelf { channel, .. } => self
+                                    .artist_pages
+                                    .get(channel)
+                                    .map(|p| p.name.clone())
+                                    .unwrap_or_default(),
+                                _ => String::new(),
+                            };
+                            self.register_shelf_items(&items, &owner);
+                            self.artist_grids.insert(key, items);
+                            if showing {
+                                return self.ensure_visible_tasks();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yutu_core::app_log::warn(
+                            "live-detail",
+                            format_args!("artist grid failed: {key} ({e})"),
+                        );
+                        if watching && showing {
+                            self.status =
+                                Self::failure_status(self.language.fail_artist_shelves(), &e);
+                        }
+                    }
+                }
+            }
+            Message::OpenArtistShelfMore { channel, shelf } => {
+                self.close_menu();
+                return self.open_artist_shelf_more(channel, shelf);
+            }
+            Message::ShelfVideo { track, menu } => {
+                let id = track.id.clone();
+                // Into the catalog first: play and the track menu both
+                // resolve ids there (merge keeps richer known fields).
+                self.merge_live_tracks(vec![track]);
+                return self.update(if menu {
+                    Message::OpenContext(id)
+                } else {
+                    Message::PlayNow(id)
+                });
+            }
             Message::ArtistFullLoaded { channel_id, result } => {
                 let watching = self.artist_full_loading.as_deref() == Some(channel_id.as_str());
                 if watching {
@@ -3003,12 +3089,17 @@ impl AppState {
                         );
                         Self::alias_insert(&mut self.artist_alias, name, channel.clone());
                         Self::alias_insert(&mut self.artist_alias, route_id, channel.clone());
+                        #[allow(unused_mut)]
+                        let mut tasks: Vec<iced::Task<Message>> = Vec::new();
                         if !self.artist_top.contains_key(&channel) {
                             self.artist_loading = Some(channel.clone());
                             #[cfg(feature = "innertube")]
-                            {
-                                return Self::artist_top_task(channel);
-                            }
+                            tasks.push(Self::artist_top_task(channel.clone()));
+                        }
+                        #[cfg(feature = "innertube")]
+                        tasks.extend(self.artist_page_fetch(&channel));
+                        if !tasks.is_empty() {
+                            return iced::Task::batch(tasks);
                         }
                     }
                     Err(e) => {

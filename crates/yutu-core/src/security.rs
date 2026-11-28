@@ -91,7 +91,8 @@ pub fn is_allowed_stream_url(url: &str) -> bool {
 
 /// True for artwork URLs: `https` plus a YouTube image host. Covers the
 /// thumbnail shapes Innertube serves (`i.ytimg.com`,
-/// `yt3/lh3.googleusercontent.com`) and nothing else.
+/// `yt3/lh3.googleusercontent.com`, `yt3.ggpht.com` for some playlist
+/// covers) and nothing else.
 #[must_use]
 pub fn is_allowed_artwork_url(url: &str) -> bool {
     let Some(host) = https_authority(url) else {
@@ -102,6 +103,8 @@ pub fn is_allowed_artwork_url(url: &str) -> bool {
         || host.ends_with(".ytimg.com")
         || host == "googleusercontent.com"
         || host.ends_with(".googleusercontent.com")
+        || host == "ggpht.com"
+        || host.ends_with(".ggpht.com")
         || host == "youtube.com"
         || host.ends_with(".youtube.com")
         || host == "youtu.be"
@@ -237,6 +240,8 @@ mod tests {
         assert!(is_allowed_artwork_url(
             "https://lh3.googleusercontent.com/abc=w60-h60"
         ));
+        assert!(is_allowed_artwork_url("https://yt3.ggpht.com/abc=s576"));
+        assert!(!is_allowed_artwork_url("https://ggpht.com.evil.com/x.jpg"));
         assert!(!is_allowed_artwork_url("https://evil.com/cover.jpg"));
         assert!(!is_allowed_artwork_url(
             "http://i.ytimg.com/vi/abc/hqdefault.jpg"
