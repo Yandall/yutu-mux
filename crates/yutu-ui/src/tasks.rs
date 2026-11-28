@@ -75,6 +75,36 @@ impl AppState {
         )
     }
 
+    /// Every shelf of an artist page (raw browse, anonymous, in the UI
+    /// language).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn artist_page_task(channel_id: String, hl: &'static str) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = yutu_core::raw_artist::raw_artist_page(&channel_id, hl).await;
+                (channel_id, result)
+            },
+            |(channel_id, result)| Message::ArtistPageLoaded { channel_id, result },
+        )
+    }
+
+    /// A shelf's "More" grid (full discography).
+    #[cfg(feature = "innertube")]
+    pub(crate) fn artist_grid_task(
+        key: String,
+        browse_id: String,
+        params: String,
+        hl: &'static str,
+    ) -> iced::Task<Message> {
+        iced::Task::perform(
+            async move {
+                let result = yutu_core::raw_artist::raw_artist_grid(&browse_id, &params, hl).await;
+                (key, result)
+            },
+            |(key, result)| Message::ArtistGridLoaded { key, result },
+        )
+    }
+
     /// Full ranked top-songs shelf for an expanded artist page:
     /// runs only on "Show more" (one connect + typed shelf lookup +
     /// raw rows, with the 5-song head as fallback).

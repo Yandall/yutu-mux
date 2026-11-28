@@ -36,6 +36,12 @@ pub enum Route {
     /// Read-only page for a search-result (community or featured)
     /// playlist: tracks fetch live on open, nothing is editable.
     RemotePlaylist(String),
+    /// Full list behind an artist shelf's "More" (the discography
+    /// grid): channel id + shelf index on its cached page.
+    ArtistShelf {
+        channel: String,
+        shelf: usize,
+    },
     Lyrics(String),
 }
 
@@ -918,6 +924,28 @@ pub enum Message {
     /// One-click restart for a pending font pick (Appearance shows
     /// the button only while the pick differs from the live font).
     RelaunchNow,
+    /// Every shelf of an artist page arrived (raw browse).
+    ArtistPageLoaded {
+        channel_id: String,
+        result: Result<yutu_core::ArtistPage, String>,
+    },
+    /// A shelf's "More" grid (full discography) arrived.
+    ArtistGridLoaded {
+        key: String,
+        result: Result<Vec<yutu_core::ShelfItem>, String>,
+    },
+    /// Shelf "More": the grid page (discography) or the playlist page
+    /// (Videos), by shelf index on the channel's cached page.
+    OpenArtistShelfMore {
+        channel: String,
+        shelf: usize,
+    },
+    /// Shelf video card: left click plays it (fresh queue, like any
+    /// title click), right click opens the track menu.
+    ShelfVideo {
+        track: Track,
+        menu: bool,
+    },
     /// Live artist top songs arrived (server rank with play counts).
     ArtistTopLoaded {
         channel_id: String,

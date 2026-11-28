@@ -1670,12 +1670,12 @@ impl AppState {
             // Album menus also open from the album page and artist
             // page cards: any album the app can list (or fetch) counts.
             CollectionMenu::Album(id) => {
-                self.results.albums.iter().any(|a| &a.id == id)
+                self.album_hit(id).is_some()
                     || self.album_browse_id(id).is_some()
                     || !self.album_display_tracks(id).is_empty()
             }
-            CollectionMenu::Artist(id) => self.results.artists.iter().any(|a| &a.id == id),
-            CollectionMenu::Playlist(id) => self.results.playlists.iter().any(|p| &p.id == id),
+            CollectionMenu::Artist(id) => self.artist_hit(id).is_some(),
+            CollectionMenu::Playlist(id) => self.remote_playlist_hit(id).is_some(),
             CollectionMenu::HomeAlbum { album, artist } => self
                 .catalog
                 .values()

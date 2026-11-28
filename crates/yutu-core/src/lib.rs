@@ -21,6 +21,10 @@ pub mod models;
 pub mod playlist_sources;
 pub mod pot;
 #[cfg(feature = "innertube")]
+pub mod raw_artist;
+#[cfg(all(test, feature = "innertube"))]
+mod raw_artist_tests;
+#[cfg(feature = "innertube")]
 pub mod raw_browse;
 #[cfg(feature = "innertube")]
 pub mod raw_lyrics;
@@ -120,9 +124,9 @@ pub use lyrics_providers::{
     ytm_timed_to_result, LyricLine, LyricsProvider, LyricsResult, MatchCandidate, MatchQuery,
 };
 pub use models::{
-    hires_thumb_url, Album, Artist, HistoryEntry, Lyrics, LyricsLine, MixedRef, NewPlaylistSpec,
-    Playlist, PlaylistHit, PlaylistPrivacy, QueueSnapshot, SearchAll, SearchResults, TopHit,
-    TopKind, Track,
+    hires_thumb_url, Album, Artist, ArtistPage, ArtistShelf, HistoryEntry, Lyrics, LyricsLine,
+    MixedRef, NewPlaylistSpec, Playlist, PlaylistHit, PlaylistPrivacy, QueueSnapshot, SearchAll,
+    SearchResults, ShelfItem, ShelfItemKind, ShelfMore, TopHit, TopKind, Track,
 };
 pub use pot::{fetch_po_token, find_botguard_bin, parse_po_output, PoToken};
 #[cfg(feature = "innertube")]

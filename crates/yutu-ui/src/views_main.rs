@@ -3304,8 +3304,28 @@ impl AppState {
                         text("").size(1).into(),
                     )
                 };
+                // Server shelves (Albums, Singles & EPs, Videos, ...)
+                // once they land; until then (or offline, or on a
+                // failed fetch) the local albums section stands in,
+                // hidden while the fetch is in flight so it never
+                // flashes before the real shelves.
+                let shelves = self.artist_shelves_view(id);
+                let shelves_pending = shelves.is_none() && self.artist_page_pending(id);
                 let cards: Vec<iced::Element<'_, Message>> =
                     albums.iter().take(5).map(|a| self.album_card(a)).collect();
+                let below: iced::Element<'_, Message> = match shelves {
+                    Some(view) => view,
+                    None if shelves_pending => text("").size(1).into(),
+                    None => Self::section(
+                        self.language,
+                        self.language.albums_section(),
+                        if cards.is_empty() {
+                            vec![]
+                        } else {
+                            vec![Self::card_strip(cards)]
+                        },
+                    ),
+                };
                 // Radio seeds from the displayed list (live top hit when
                 // fetched); header counts stay library-scoped by design.
                 let radio_btn: iced::Element<'_, Message> = match display.first() {
@@ -3349,19 +3369,12 @@ impl AppState {
                     ),
                     Self::section(self.language, self.language.popular(), popular),
                     show_all,
-                    Self::section(
-                        self.language,
-                        self.language.albums_section(),
-                        if cards.is_empty() {
-                            vec![]
-                        } else {
-                            vec![Self::card_strip(cards)]
-                        }
-                    ),
+                    below,
                 ]
                 .spacing(12)
                 .into()
             }
+            Route::ArtistShelf { channel, shelf } => self.artist_shelf_view(channel, *shelf),
             Route::Album(id) => {
                 let title = self.resolve_album_title(id);
                 // Live `track_no`-ordered tracklist when fetched, else
@@ -4630,31 +4643,24 @@ impl AppState {
                         sub,
                     ))
                 }
-                CollectionMenu::Artist(id) => {
-                    self.results.artists.iter().find(|a| &a.id == id).map(|a| {
-                        let photo = a
-                            .thumbnail_url
-                            .as_deref()
-                            .map(|u| yutu_core::hires_thumb_url(u, 544));
-                        (
-                            self.art_thumb(photo.as_deref(), 56.0),
-                            a.name.clone(),
-                            "Artist".to_string(),
-                        )
-                    })
-                }
-                CollectionMenu::Playlist(id) => self
-                    .results
-                    .playlists
-                    .iter()
-                    .find(|p| &p.id == id)
-                    .map(|p| {
-                        (
-                            self.playlist_art(p, 56.0),
-                            p.title.clone(),
-                            self.language.playlist_sub_full(&p.author, &p.detail),
-                        )
-                    }),
+                CollectionMenu::Artist(id) => self.artist_hit(id).map(|a| {
+                    let photo = a
+                        .thumbnail_url
+                        .as_deref()
+                        .map(|u| yutu_core::hires_thumb_url(u, 544));
+                    (
+                        self.art_thumb(photo.as_deref(), 56.0),
+                        a.name.clone(),
+                        "Artist".to_string(),
+                    )
+                }),
+                CollectionMenu::Playlist(id) => self.remote_playlist_hit(id).map(|p| {
+                    (
+                        self.playlist_art(&p, 56.0),
+                        p.title.clone(),
+                        self.language.playlist_sub_full(&p.author, &p.detail),
+                    )
+                }),
                 CollectionMenu::HomeAlbum { album, artist } => self
                     .catalog
                     .values()
@@ -4728,10 +4734,7 @@ impl AppState {
                     }
                     CollectionMenu::Artist(id) => {
                         let name = self
-                            .results
-                            .artists
-                            .iter()
-                            .find(|a| a.id == id)
+                            .artist_hit(&id)
                             .map(|a| a.name.clone())
                             .unwrap_or_default();
                         let tracks = self.artist_tracks(&name);

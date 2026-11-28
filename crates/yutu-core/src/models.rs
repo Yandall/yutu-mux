@@ -191,6 +191,64 @@ pub struct PlaylistHit {
     pub thumbnail_url: Option<String>,
 }
 
+/// What an artist-page card opens (the server's page type). Kinds
+/// the app cannot open (podcasts, episodes, user channels) never
+/// become items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShelfItemKind {
+    /// Album, single or EP (album browse id, `MPRE...`).
+    Album,
+    /// Music video (video id): plays on click.
+    Video,
+    /// Playlist (playlist id, no `VL` prefix).
+    Playlist,
+    /// Artist channel (`UC...`).
+    Artist,
+}
+
+/// One card of an artist-page shelf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShelfItem {
+    pub kind: ShelfItemKind,
+    pub id: String,
+    pub title: String,
+    /// Server subtitle, runs joined with `·` ("EP · 2026",
+    /// "Queen · 63M views"). Empty when the server sent none.
+    pub subtitle: String,
+    /// Release year when the subtitle carries one (albums, singles).
+    pub year: Option<u16>,
+    /// Largest thumbnail the server sent.
+    pub thumbnail_url: Option<String>,
+}
+
+/// Where a shelf's "More" button leads. Only targets that work
+/// without a signed-in session are kept (the artist's discography
+/// grids and plain playlists); other shelves just scroll.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShelfMore {
+    /// Full grid page (`MPAD...` discography plus its params).
+    Grid { browse_id: String, params: String },
+    /// A playlist page (the Videos shelf), id without `VL`.
+    Playlist(String),
+}
+
+/// One titled carousel of an artist page (Albums, Singles & EPs,
+/// Videos, Featured on, Fans might also like, ...), server order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtistShelf {
+    pub title: String,
+    pub items: Vec<ShelfItem>,
+    pub more: Option<ShelfMore>,
+}
+
+/// Every carousel of an artist page plus its header (name, photo).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtistPage {
+    pub name: String,
+    pub thumbnail_url: Option<String>,
+    pub shelves: Vec<ArtistShelf>,
+}
+
 /// Server-ranked top result kind (the web's "Top result" hero).
 /// Station/podcast kinds are not playable here and collapse to Other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

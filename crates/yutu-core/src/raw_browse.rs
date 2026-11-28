@@ -31,6 +31,15 @@ pub async fn raw_shelf_tracklist(browse_id: &str) -> Result<Vec<Track>, String> 
         "context": crate::innertube::web_context(),
         "browseId": browse_id,
     });
+    let text = post_browse(&body, SHELF_TIMEOUT_SECS).await?;
+    Ok(parse_shelf_tracklist(&text))
+}
+
+/// Anonymous `youtubei/v1/browse` POST returning the raw body. One
+/// cap for connect + headers + body: a stall anywhere fails fast
+/// instead of wedging a page on "Loading..." (the once-per-id guards
+/// would otherwise skip every refetch).
+pub(crate) async fn post_browse(body: &Value, timeout_secs: u64) -> Result<String, String> {
     let send = crate::shared_client()
         .post(BROWSE_URL)
         .header("User-Agent", crate::innertube::USER_AGENT)
@@ -38,26 +47,21 @@ pub async fn raw_shelf_tracklist(browse_id: &str) -> Result<Vec<Track>, String> 
         .header("Origin", ORIGIN)
         .header("Referer", "https://music.youtube.com/")
         .header("Content-Type", "application/json")
-        .json(&body)
+        .json(body)
         .send();
-    // One cap for connect + headers + body: a stall anywhere falls
-    // back to the typed 5-song shelf instead of wedging the page.
     let fetch = async {
-        let response = send
-            .await
-            .map_err(|e| format!("shelf browse request: {e}"))?;
+        let response = send.await.map_err(|e| format!("browse request: {e}"))?;
         if !response.status().is_success() {
-            return Err(format!("shelf browse: HTTP {}", response.status()));
+            return Err(format!("browse: HTTP {}", response.status()));
         }
         response
             .text()
             .await
-            .map_err(|e| format!("shelf browse body: {e}"))
+            .map_err(|e| format!("browse body: {e}"))
     };
-    let text = tokio::time::timeout(std::time::Duration::from_secs(SHELF_TIMEOUT_SECS), fetch)
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fetch)
         .await
-        .map_err(|_| "shelf browse timed out".to_string())??;
-    Ok(parse_shelf_tracklist(&text))
+        .map_err(|_| "browse timed out".to_string())?
 }
 
 /// Parse a saved shelf-playlist browse response (see

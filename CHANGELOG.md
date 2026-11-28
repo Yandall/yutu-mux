@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Artist pages show every YouTube Music shelf: albums, singles & EPs,
+  videos, live performances, featured on, playlists and similar artists.
+- "More" on an artist's albums or singles opens their full discography.
+
 ### Fixed
 
 - Now Playing lyrics no longer bounce when following the first verses

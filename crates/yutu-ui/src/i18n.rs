@@ -172,6 +172,15 @@ impl Language {
     /// First-launch default from the system locale (`LANGUAGE`, then
     /// `LC_ALL`, `LC_MESSAGES`, then `LANG`): Spanish when the tag is
     /// `es`, English otherwise (including unset/unreadable).
+    /// Innertube `hl` code: server-side shelf titles and subtitles
+    /// come back in the UI language.
+    pub fn hl(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Spanish => "es",
+        }
+    }
+
     pub fn system_default() -> Self {
         for key in ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"] {
             if let Ok(value) = std::env::var(key) {
@@ -640,6 +649,10 @@ impl Language {
     }
     pub fn loading_playlist(self, label: &str) -> String {
         self.tr_args("loading-playlist", &[("label", label)])
+    }
+    /// Artist shelf "More" pill (opens the full list).
+    pub fn shelf_more(self) -> String {
+        self.tr("shelf-more")
     }
     pub fn show_more(self) -> String {
         self.tr("show-more")
@@ -1619,6 +1632,9 @@ impl Language {
     }
     pub fn fail_update_restart(self) -> String {
         self.tr("fail-update-restart")
+    }
+    pub fn fail_artist_shelves(self) -> String {
+        self.tr("fail-artist-shelves")
     }
     pub fn fail_live_top(self) -> String {
         self.tr("fail-live-top")

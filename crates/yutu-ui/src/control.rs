@@ -106,6 +106,7 @@ pub(crate) fn route_word(r: &Route) -> String {
         Route::Album(id) => format!("album:{id}"),
         Route::PlaylistDetail(id) => format!("playlist:{id}"),
         Route::RemotePlaylist(id) => format!("remote-playlist:{id}"),
+        Route::ArtistShelf { channel, shelf } => format!("artist-more:{channel}:{shelf}"),
         Route::Lyrics(id) => format!("lyrics:{id}"),
     }
 }
@@ -293,6 +294,13 @@ impl AppState {
             ("back", None) => vec![Message::NavBack],
             ("forward", None) => vec![Message::NavForward],
             ("artist", Some(id)) => vec![Message::OpenArtist(id)],
+            ("artist-more", Some(rest)) => {
+                let (channel, shelf) = rest
+                    .rsplit_once(':')
+                    .and_then(|(c, n)| Some((c.to_string(), n.parse::<usize>().ok()?)))
+                    .ok_or_else(|| "usage: nav artist-more:<channel>:<shelf>".to_string())?;
+                vec![Message::OpenArtistShelfMore { channel, shelf }]
+            }
             ("album", Some(id)) => vec![Message::OpenAlbum(id)],
             ("playlist", Some(id)) => {
                 if self.find_playlist(&id).is_some() {
