@@ -20,10 +20,6 @@ const BUILTIN: &[(&str, &str)] = &[
     ("dark", include_str!("../assets/themes/dark.toml")),
     ("light", include_str!("../assets/themes/light.toml")),
     (
-        "youtube-music",
-        include_str!("../assets/themes/youtube-music.toml"),
-    ),
-    (
         "catppuccin-mocha",
         include_str!("../assets/themes/catppuccin-mocha.toml"),
     ),

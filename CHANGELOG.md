@@ -4,8 +4,8 @@
 
 ### Added
 
-- Themes: pick Dark, Light, YouTube Music, Catppuccin, Nord, Rose Pine,
-  Tokyo Night or Gruvbox in Settings > Appearance.
+- Themes: pick Dark, Light, Catppuccin, Nord, Rose Pine, Tokyo Night
+  or Gruvbox in Settings > Appearance.
 - Follow system: switch between a light and a dark theme with your OS.
 - Your own themes: import a .toml or .json file, or drop it in the
   themes folder (see docs/THEMES.md). Spotifast themes work too.

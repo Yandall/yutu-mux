@@ -118,7 +118,7 @@ tints on light themes. Exact list is finalized in Phase 1.
 ## Phase 3: built-in themes + picker
 
 1. Bundled `crates/yutu-ui/assets/themes/*.toml` (`include_str!`):
-   Dark (default), Light, YouTube Music, Catppuccin Mocha/Latte, Nord,
+   Dark (default), Light, Catppuccin Mocha/Latte, Nord,
    Rose Pine, Tokyo Night, Gruvbox. Same format users write.
 2. Pref `theme` (id), plus `theme_light` / `theme_dark` for the
    "Follow system" choice (`iced::system::theme()` +

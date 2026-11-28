@@ -11,7 +11,7 @@ OS changes mode.
 
 ## Built-in themes
 
-Dark (default), Light, YouTube Music, Catppuccin Mocha, Catppuccin
+Dark (default, the YouTube Music look), Light, Catppuccin Mocha, Catppuccin
 Latte, Nord, Rose Pine, Tokyo Night, Gruvbox Dark. Their files live in
 [`crates/yutu-ui/assets/themes/`](../crates/yutu-ui/assets/themes/)
 and are good starting points.
